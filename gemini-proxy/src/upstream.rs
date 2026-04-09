@@ -12,6 +12,7 @@ const V1_INTERNAL_BASE_URLS: [&str; 3] = [
 const CLIENT_VERSION: &str = "4.1.31";
 const USER_AGENT: &str =
     "Antigravity/4.1.31 (Macintosh; Intel Mac OS X 10_15_7) Chrome/132.0.6834.160 Electron/39.2.3";
+const OPENAI_RESPONSES_URL: &str = "https://api.openai.com/v1/responses";
 
 fn session_id() -> &'static str {
     static SESSION_ID: OnceLock<String> = OnceLock::new();
@@ -176,6 +177,41 @@ impl UpstreamClient {
             Err("all v1internal endpoints failed".to_string())
         } else {
             Err(errors.join(" | "))
+        }
+    }
+
+    pub async fn call_openai_responses(
+        &self,
+        request_id: &str,
+        access_token: &str,
+        body: Value,
+        stream: bool,
+    ) -> Result<Response, String> {
+        info!(
+            request_id = %request_id,
+            stream = stream,
+            url = %OPENAI_RESPONSES_URL,
+            request = %truncate_for_log(&body.to_string(), 4_000),
+            "sending upstream request to OpenAI"
+        );
+
+        let response = self
+            .http
+            .post(OPENAI_RESPONSES_URL)
+            .bearer_auth(access_token)
+            .header("content-type", "application/json")
+            .header("accept", if stream { "text/event-stream" } else { "application/json" })
+            .json(&body)
+            .send()
+            .await
+            .map_err(|err| format!("openai request failed: {err}"))?;
+
+        if response.status().is_success() {
+            Ok(response)
+        } else {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            Err(format!("openai upstream returned {status}: {body}"))
         }
     }
 }

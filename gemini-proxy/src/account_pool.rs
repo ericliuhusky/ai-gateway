@@ -1,7 +1,7 @@
 use crate::{
-    auth::{OAuthClient, TokenResponse, UserInfo},
+    auth::{ImportedOpenAIAuth, OAuthClient, TokenResponse, UserInfo},
     config::Config,
-    models::{AccountRecord, AccountSummary, TokenData},
+    models::{AccountRecord, AccountSummary, AccountToken},
     upstream::UpstreamClient,
 };
 use std::{
@@ -48,8 +48,14 @@ impl AccountPool {
 
             let content =
                 fs::read_to_string(&path).map_err(|err| format!("read account failed: {err}"))?;
+            let id = path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .ok_or_else(|| format!("invalid account filename: {}", path.display()))?
+                .to_string();
             let account = serde_json::from_str::<AccountRecord>(&content)
-                .map_err(|err| format!("parse account failed: {err}"))?;
+                .map_err(|err| format!("parse account failed: {err}"))?
+                .with_id(id);
             loaded.push(account);
         }
 
@@ -65,8 +71,9 @@ impl AccountPool {
             .map(|account| AccountSummary {
                 id: account.id.clone(),
                 email: account.email.clone(),
+                provider: account.provider().to_string(),
                 name: account.name.clone(),
-                has_project_id: account.token.project_id.is_some(),
+                has_project_id: account.has_project_id(),
                 disabled: account.disabled,
                 last_used: account.last_used,
             })
@@ -84,20 +91,12 @@ impl AccountPool {
             .ok_or_else(|| "google did not return refresh_token".to_string())?;
         let now = now_unix() as i64;
 
-        let token_data = TokenData {
-            access_token: token.access_token,
+        let token_data = AccountToken::google(
+            token.access_token,
             refresh_token,
-            expires_in: token.expires_in,
-            expiry_timestamp: now + token.expires_in,
-            token_type: if token.token_type.is_empty() {
-                "Bearer".to_string()
-            } else {
-                token.token_type
-            },
-            email: Some(user.email.clone()),
-            project_id: Some(project_id),
-            oauth_client_key: None,
-        };
+            now + token.expires_in,
+            project_id,
+        );
 
         let mut accounts = self.accounts.lock().await;
         let account = if let Some(existing) = accounts
@@ -129,14 +128,66 @@ impl AccountPool {
         Ok(account)
     }
 
-    pub async fn acquire(
+    pub async fn add_openai_account(
+        &self,
+        imported: ImportedOpenAIAuth,
+    ) -> Result<AccountRecord, String> {
+        let now = now_unix() as i64;
+
+        let token_data = AccountToken::openai(
+            imported.access_token,
+            imported.refresh_token,
+            imported.expiry_timestamp,
+            imported.client_id,
+        );
+
+        let mut accounts = self.accounts.lock().await;
+        let account = if let Some(existing) = accounts
+            .iter_mut()
+            .find(|account| account.email == imported.email && account.provider() == "openai")
+        {
+            existing.token = token_data;
+            existing.disabled = false;
+            existing.disabled_reason = None;
+            existing.last_used = now;
+            existing.clone()
+        } else {
+            let account = AccountRecord {
+                id: Uuid::new_v4().to_string(),
+                email: imported.email,
+                name: None,
+                token: token_data,
+                created_at: now,
+                last_used: now,
+                disabled: false,
+                disabled_reason: None,
+            };
+            accounts.push(account.clone());
+            account
+        };
+
+        self.persist_account(&account)?;
+        Ok(account)
+    }
+
+    pub async fn acquire_for_provider(
         &self,
         oauth: &OAuthClient,
         upstream: &UpstreamClient,
+        provider: &str,
     ) -> Result<AccountRecord, String> {
-        let snapshot = self.accounts.lock().await.clone();
+        let snapshot: Vec<AccountRecord> = self
+            .accounts
+            .lock()
+            .await
+            .iter()
+            .filter(|account| account.provider() == provider)
+            .cloned()
+            .collect();
         if snapshot.is_empty() {
-            return Err("no accounts in pool; login first via /auth/google/start".to_string());
+            return Err(format!(
+                "no {provider} accounts in pool; import or login before calling this route"
+            ));
         }
 
         let start = self.next_index.fetch_add(1, Ordering::SeqCst);
@@ -153,28 +204,40 @@ impl AccountPool {
                 continue;
             }
 
-            if oauth.refresh_needed(account.token.expiry_timestamp) {
+            if oauth.refresh_needed(account.token.expiry_timestamp()) {
                 info!(
                     account_id = %account.id,
                     email = %account.email,
-                    expires_at = account.token.expiry_timestamp,
+                    expires_at = account.token.expiry_timestamp(),
                     "refreshing access token before use"
                 );
-                match oauth
-                    .refresh_access_token(&account.token.refresh_token)
-                    .await
-                {
+                let refreshed = if account.provider() == "openai" {
+                    let client_id = account
+                        .token
+                        .client_id()
+                        .ok_or_else(|| "openai account missing oauth client id".to_string())?;
+                    oauth
+                        .refresh_openai_access_token(client_id, account.token.refresh_token())
+                        .await
+                } else {
+                    oauth
+                        .refresh_google_access_token(account.token.refresh_token())
+                        .await
+                };
+
+                match refreshed {
                     Ok(refreshed) => {
-                        account.token.access_token = refreshed.access_token;
-                        account.token.expires_in = refreshed.expires_in;
-                        account.token.expiry_timestamp = now_unix() as i64 + refreshed.expires_in;
-                        if !refreshed.token_type.is_empty() {
-                            account.token.token_type = refreshed.token_type;
+                        *account.token.access_token_mut() = refreshed.access_token;
+                        account
+                            .token
+                            .set_expiry_timestamp(now_unix() as i64 + refreshed.expires_in);
+                        if let Some(refresh_token) = refreshed.refresh_token {
+                            *account.token.refresh_token_mut() = refresh_token;
                         }
                         info!(
                             account_id = %account.id,
                             email = %account.email,
-                            expires_at = account.token.expiry_timestamp,
+                            expires_at = account.token.expiry_timestamp(),
                             "refreshed access token"
                         );
                     }
@@ -186,19 +249,21 @@ impl AccountPool {
                 }
             }
 
-            if account.token.project_id.as_deref().unwrap_or("").is_empty() {
+            if account.provider() == "google"
+                && account.token.project_id().unwrap_or("").is_empty()
+            {
                 info!(
                     account_id = %account.id,
                     email = %account.email,
                     "fetching missing project_id"
                 );
-                match upstream.fetch_project_id(&account.token.access_token).await {
+                match upstream.fetch_project_id(account.token.access_token()).await {
                     Ok(project_id) => {
-                        account.token.project_id = Some(project_id);
+                        account.token.set_project_id(project_id);
                         info!(
                             account_id = %account.id,
                             email = %account.email,
-                            project_id = %account.token.project_id.as_deref().unwrap_or(""),
+                            project_id = %account.token.project_id().unwrap_or(""),
                             "fetched project_id"
                         );
                     }
@@ -214,7 +279,7 @@ impl AccountPool {
             info!(
                 account_id = %account.id,
                 email = %account.email,
-                project_id = %account.token.project_id.as_deref().unwrap_or(""),
+                project_id = %account.token.project_id().unwrap_or(""),
                 index = idx,
                 "selected account from pool"
             );

@@ -14,7 +14,8 @@ use axum::{
 };
 use config::Config;
 use handlers::{
-    AppState, auth_google_callback, auth_google_start, healthz, list_accounts, responses,
+    AppState, auth_google_callback, auth_google_start, auth_openai_callback, auth_openai_start,
+    healthz, list_accounts, responses,
 };
 use reqwest::Client;
 use std::sync::Arc;
@@ -51,13 +52,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/healthz", get(healthz))
         .route("/auth/google/start", get(auth_google_start))
         .route("/auth/google/callback", get(auth_google_callback))
+        .route("/auth/openai/start", get(auth_openai_start))
+        .route("/auth/callback", get(auth_openai_callback))
+        .route("/auth/openai/callback", get(auth_openai_callback))
         .route("/v1/accounts", get(list_accounts))
         .route("/v1/responses", post(responses))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(config.bind_addr()).await?;
+    let openai_callback_listener =
+        tokio::net::TcpListener::bind(config.openai_callback_addr()).await?;
     tracing::info!("listening on http://{}", listener.local_addr()?);
-    axum::serve(listener, app).await?;
+    tracing::info!(
+        "listening on {} for OpenAI OAuth callback",
+        config.openai_callback_url()
+    );
+    let callback_app = app.clone();
+    let primary = axum::serve(listener, app);
+    let callback = axum::serve(openai_callback_listener, callback_app);
+    tokio::try_join!(primary, callback)?;
 
     Ok(())
 }

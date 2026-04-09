@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -261,27 +261,209 @@ pub struct GenerationConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TokenData {
+pub struct GoogleTokenData {
     pub access_token: String,
     pub refresh_token: String,
-    pub expires_in: i64,
     pub expiry_timestamp: i64,
-    pub token_type: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub email: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub project_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub oauth_client_key: Option<String>,
+    pub project_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAITokenData {
+    pub access_token: String,
+    pub refresh_token: String,
+    pub expiry_timestamp: i64,
+    pub client_id: String,
+}
+
+#[derive(Debug, Clone)]
+pub enum AccountToken {
+    Google(GoogleTokenData),
+    OpenAI(OpenAITokenData),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "provider")]
+enum AccountTokenWire {
+    #[serde(rename = "google")]
+    Google {
+        access_token: String,
+        refresh_token: String,
+        expiry_timestamp: i64,
+        project_id: String,
+    },
+    #[serde(rename = "openai")]
+    OpenAI {
+        access_token: String,
+        refresh_token: String,
+        expiry_timestamp: i64,
+        client_id: String,
+    },
+}
+
+impl AccountToken {
+    pub fn google(
+        access_token: String,
+        refresh_token: String,
+        expiry_timestamp: i64,
+        project_id: String,
+    ) -> Self {
+        Self::Google(GoogleTokenData {
+            access_token,
+            refresh_token,
+            expiry_timestamp,
+            project_id,
+        })
+    }
+
+    pub fn openai(
+        access_token: String,
+        refresh_token: String,
+        expiry_timestamp: i64,
+        client_id: String,
+    ) -> Self {
+        Self::OpenAI(OpenAITokenData {
+            access_token,
+            refresh_token,
+            expiry_timestamp,
+            client_id,
+        })
+    }
+
+    pub fn provider(&self) -> &'static str {
+        match self {
+            Self::Google(_) => "google",
+            Self::OpenAI(_) => "openai",
+        }
+    }
+
+    pub fn access_token(&self) -> &str {
+        match self {
+            Self::Google(token) => &token.access_token,
+            Self::OpenAI(token) => &token.access_token,
+        }
+    }
+
+    pub fn refresh_token(&self) -> &str {
+        match self {
+            Self::Google(token) => &token.refresh_token,
+            Self::OpenAI(token) => &token.refresh_token,
+        }
+    }
+
+    pub fn refresh_token_mut(&mut self) -> &mut String {
+        match self {
+            Self::Google(token) => &mut token.refresh_token,
+            Self::OpenAI(token) => &mut token.refresh_token,
+        }
+    }
+
+    pub fn access_token_mut(&mut self) -> &mut String {
+        match self {
+            Self::Google(token) => &mut token.access_token,
+            Self::OpenAI(token) => &mut token.access_token,
+        }
+    }
+
+    pub fn expiry_timestamp(&self) -> i64 {
+        match self {
+            Self::Google(token) => token.expiry_timestamp,
+            Self::OpenAI(token) => token.expiry_timestamp,
+        }
+    }
+
+    pub fn set_expiry_timestamp(&mut self, expiry_timestamp: i64) {
+        match self {
+            Self::Google(token) => token.expiry_timestamp = expiry_timestamp,
+            Self::OpenAI(token) => token.expiry_timestamp = expiry_timestamp,
+        }
+    }
+
+    pub fn project_id(&self) -> Option<&str> {
+        match self {
+            Self::Google(token) => Some(&token.project_id),
+            Self::OpenAI(_) => None,
+        }
+    }
+
+    pub fn set_project_id(&mut self, project_id: String) {
+        if let Self::Google(token) = self {
+            token.project_id = project_id;
+        }
+    }
+
+    pub fn client_id(&self) -> Option<&str> {
+        match self {
+            Self::OpenAI(token) => Some(&token.client_id),
+            Self::Google(_) => None,
+        }
+    }
+}
+
+impl Serialize for AccountToken {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let wire = match self {
+            Self::Google(token) => AccountTokenWire::Google {
+                access_token: token.access_token.clone(),
+                refresh_token: token.refresh_token.clone(),
+                expiry_timestamp: token.expiry_timestamp,
+                project_id: token.project_id.clone(),
+            },
+            Self::OpenAI(token) => AccountTokenWire::OpenAI {
+                access_token: token.access_token.clone(),
+                refresh_token: token.refresh_token.clone(),
+                expiry_timestamp: token.expiry_timestamp,
+                client_id: token.client_id.clone(),
+            },
+        };
+        wire.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for AccountToken {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wire = AccountTokenWire::deserialize(deserializer)?;
+        Ok(match wire {
+            AccountTokenWire::Google {
+                access_token,
+                refresh_token,
+                expiry_timestamp,
+                project_id,
+            } => Self::google(
+                access_token,
+                refresh_token,
+                expiry_timestamp,
+                project_id,
+            ),
+            AccountTokenWire::OpenAI {
+                access_token,
+                refresh_token,
+                expiry_timestamp,
+                client_id,
+            } => Self::openai(
+                access_token,
+                refresh_token,
+                expiry_timestamp,
+                client_id,
+            ),
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccountRecord {
+    #[serde(skip_serializing, default)]
     pub id: String,
     pub email: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    pub token: TokenData,
+    pub token: AccountToken,
     pub created_at: i64,
     pub last_used: i64,
     #[serde(default)]
@@ -290,10 +472,26 @@ pub struct AccountRecord {
     pub disabled_reason: Option<String>,
 }
 
+impl AccountRecord {
+    pub fn with_id(mut self, id: String) -> Self {
+        self.id = id;
+        self
+    }
+
+    pub fn provider(&self) -> &'static str {
+        self.token.provider()
+    }
+
+    pub fn has_project_id(&self) -> bool {
+        self.token.project_id().is_some_and(|project_id| !project_id.is_empty())
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct AccountSummary {
     pub id: String,
     pub email: String,
+    pub provider: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     pub has_project_id: bool,

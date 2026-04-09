@@ -53,6 +53,17 @@ pub async fn auth_google_start(
     Ok(Redirect::temporary(&url))
 }
 
+pub async fn auth_openai_start(
+    State(state): State<AppState>,
+) -> Result<Redirect, AppError> {
+    let url = state
+        .oauth
+        .create_openai_auth_url()
+        .await
+        .map_err(AppError::bad_request)?;
+    Ok(Redirect::temporary(&url))
+}
+
 #[derive(Debug, Deserialize)]
 pub struct OAuthCallbackQuery {
     pub code: Option<String>,
@@ -110,6 +121,55 @@ pub async fn auth_google_callback(
     )))
 }
 
+pub async fn auth_openai_callback(
+    State(state): State<AppState>,
+    Query(query): Query<OAuthCallbackQuery>,
+) -> Result<Html<String>, AppError> {
+    if let Some(error) = query.error {
+        return Err(AppError::bad_request(format!(
+            "openai oauth error: {error}"
+        )));
+    }
+
+    let code = query
+        .code
+        .ok_or_else(|| AppError::bad_request("missing oauth code"))?;
+    let state_token = query
+        .state
+        .ok_or_else(|| AppError::bad_request("missing oauth state"))?;
+    let code_verifier = state
+        .oauth
+        .consume_openai_code_verifier(&state_token)
+        .await
+        .map_err(AppError::bad_request)?;
+    let token = state
+        .oauth
+        .exchange_openai_code(&code, &code_verifier)
+        .await
+        .map_err(AppError::bad_request)?;
+    let imported = state
+        .oauth
+        .openai_auth_from_token_response(token)
+        .map_err(AppError::bad_request)?;
+    let has_responses_write = imported.scopes.iter().any(|scope| scope == "api.responses.write");
+    let email = imported.email.clone();
+    let account = state
+        .accounts
+        .add_openai_account(imported)
+        .await
+        .map_err(AppError::bad_request)?;
+    let scope_hint = if has_responses_write {
+        "<p>Detected <code>api.responses.write</code>, so this account should be able to call OpenAI Responses directly.</p>"
+    } else {
+        "<p><strong>Warning:</strong> this ChatGPT/Codex session does not appear to include <code>api.responses.write</code>. OAuth login succeeds, but direct calls to OpenAI <code>/v1/responses</code> may still return 401.</p>"
+    };
+
+    Ok(Html(format!(
+        "<html><body style='font-family:sans-serif;padding:32px'><h1>OpenAI login successful</h1><p>Account <strong>{}</strong> is now in the proxy pool.</p>{}<p>Stored account id: <code>{}</code></p><p>You can close this page and call <code>/v1/responses</code>.</p></body></html>",
+        email, scope_hint, account.id
+    )))
+}
+
 pub async fn list_accounts(State(state): State<AppState>) -> Json<Value> {
     Json(json!({ "accounts": state.accounts.list().await }))
 }
@@ -126,16 +186,74 @@ pub async fn responses(
         "received /v1/responses request"
     );
 
+    if is_openai_model(&request.model) {
+        let account = state
+            .accounts
+            .acquire_for_provider(&state.oauth, &state.upstream, "openai")
+            .await
+            .map_err(AppError::bad_request)?;
+        let request_body =
+            serde_json::to_value(&request).map_err(|err| AppError::internal(err.to_string()))?;
+        let upstream = state
+            .upstream
+            .call_openai_responses(
+                &request_id,
+                account.token.access_token(),
+                request_body,
+                request.stream,
+            )
+            .await
+            .map_err(AppError::upstream_message)?;
+
+        if !request.stream {
+            let response_body: Value = upstream.json().await.map_err(AppError::upstream)?;
+            info!(
+                request_id = %request_id,
+                elapsed_ms = started_at.elapsed().as_millis(),
+                email = %account.email,
+                provider = "openai",
+                response_body = %json_value_for_log(&response_body),
+                "returning OpenAI /v1/responses body"
+            );
+            return Ok((
+                StatusCode::OK,
+                [("x-account-email", account.email.as_str())],
+                Json(response_body),
+            )
+                .into_response());
+        }
+
+        let output = upstream
+            .bytes_stream()
+            .map(|result| result.map(Bytes::from).map_err(std::io::Error::other));
+
+        return Ok(Response::builder()
+            .status(StatusCode::OK)
+            .header(
+                "content-type",
+                HeaderValue::from_static("text/event-stream"),
+            )
+            .header("cache-control", HeaderValue::from_static("no-cache"))
+            .header("connection", HeaderValue::from_static("keep-alive"))
+            .header(
+                "x-account-email",
+                HeaderValue::from_str(&account.email)
+                    .map_err(|err| AppError::internal(err.to_string()))?,
+            )
+            .body(Body::from_stream(output))
+            .map_err(|err| AppError::internal(err.to_string()))?);
+    }
+
     let gemini_request = responses_to_gemini(&request).map_err(AppError::bad_request)?;
     let account = state
         .accounts
-        .acquire(&state.oauth, &state.upstream)
+        .acquire_for_provider(&state.oauth, &state.upstream, "google")
         .await
         .map_err(AppError::bad_request)?;
     let project_id = account
         .token
-        .project_id
-        .clone()
+        .project_id()
+        .map(str::to_string)
         .ok_or_else(|| AppError::bad_request("selected account has no project_id"))?;
     let request_body = wrap_v1internal(
         serde_json::to_value(&gemini_request).map_err(|err| AppError::internal(err.to_string()))?,
@@ -164,7 +282,7 @@ pub async fn responses(
                 "generateContent"
             },
             &request_id,
-            &account.token.access_token,
+            account.token.access_token(),
             request_body,
             request.stream,
         )
@@ -544,6 +662,14 @@ pub async fn responses(
         )
         .body(Body::from_stream(output))
         .map_err(|err| AppError::internal(err.to_string()))?)
+}
+
+fn is_openai_model(model: &str) -> bool {
+    model.starts_with("gpt-")
+        || model.starts_with("o1")
+        || model.starts_with("o3")
+        || model.starts_with("o4")
+        || model.starts_with("codex-")
 }
 
 fn json_for_log<T: serde::Serialize>(value: &T) -> String {
