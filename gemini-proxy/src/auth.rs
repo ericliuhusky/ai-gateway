@@ -66,6 +66,7 @@ pub struct ImportedOpenAIAuth {
     pub refresh_token: String,
     pub expiry_timestamp: i64,
     pub client_id: String,
+    pub account_id: Option<String>,
     pub scopes: Vec<String>,
 }
 
@@ -81,12 +82,26 @@ struct OpenAITokenClaims {
     scopes: Vec<String>,
     #[serde(default)]
     https_api_openai_com_profile: Option<OpenAIProfileClaims>,
+    #[serde(default)]
+    https_api_openai_com_auth: Option<OpenAIAuthClaims>,
 }
 
 #[derive(Debug, Deserialize)]
 struct OpenAIProfileClaims {
     #[serde(default)]
     email: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAIAuthClaims {
+    #[serde(default)]
+    chatgpt_account_id: Option<String>,
+    #[serde(default)]
+    chatgpt_account_user_id: Option<String>,
+    #[serde(default)]
+    chatgpt_user_id: Option<String>,
+    #[serde(default)]
+    user_id: Option<String>,
 }
 
 impl OAuthClient {
@@ -335,7 +350,9 @@ impl OAuthClient {
             expiry_timestamp,
             client_id: access_claims
                 .client_id
+                .clone()
                 .unwrap_or_else(|| OPENAI_CLIENT_ID.to_string()),
+            account_id: openai_account_id_from_claims(&access_claims),
             scopes: access_claims.scopes,
         })
     }
@@ -406,6 +423,17 @@ fn openai_email_from_claims(claims: &OpenAITokenClaims) -> Option<String> {
             .https_api_openai_com_profile
             .as_ref()
             .and_then(|profile| profile.email.clone())
+    })
+}
+
+fn openai_account_id_from_claims(claims: &OpenAITokenClaims) -> Option<String> {
+    claims.https_api_openai_com_auth.as_ref().and_then(|auth| {
+        auth.chatgpt_account_id
+            .clone()
+            .or_else(|| auth.chatgpt_account_user_id.clone())
+            .clone()
+            .or_else(|| auth.chatgpt_user_id.clone())
+            .or_else(|| auth.user_id.clone())
     })
 }
 

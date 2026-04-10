@@ -54,7 +54,7 @@ open http://127.0.0.1:10100/auth/openai/start
 
 ## 路由行为
 
-- `gpt-*`、`o1*`、`o3*`、`o4*`、`codex-*` 模型会直接转发到 OpenAI `POST /v1/responses`
+- `gpt-*`、`o1*`、`o3*`、`o4*`、`codex-*` 模型会直接转发到 ChatGPT Codex `POST https://chatgpt.com/backend-api/codex/responses`
 - 其他模型继续走 Gemini 私有 `v1internal`
 
 ## 当前范围

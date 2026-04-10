@@ -274,6 +274,7 @@ pub struct OpenAITokenData {
     pub refresh_token: String,
     pub expiry_timestamp: i64,
     pub client_id: String,
+    pub account_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -298,6 +299,8 @@ enum AccountTokenWire {
         refresh_token: String,
         expiry_timestamp: i64,
         client_id: String,
+        #[serde(default)]
+        account_id: Option<String>,
     },
 }
 
@@ -321,12 +324,14 @@ impl AccountToken {
         refresh_token: String,
         expiry_timestamp: i64,
         client_id: String,
+        account_id: Option<String>,
     ) -> Self {
         Self::OpenAI(OpenAITokenData {
             access_token,
             refresh_token,
             expiry_timestamp,
             client_id,
+            account_id,
         })
     }
 
@@ -398,6 +403,13 @@ impl AccountToken {
             Self::Google(_) => None,
         }
     }
+
+    pub fn account_id(&self) -> Option<&str> {
+        match self {
+            Self::OpenAI(token) => token.account_id.as_deref(),
+            Self::Google(_) => None,
+        }
+    }
 }
 
 impl Serialize for AccountToken {
@@ -417,6 +429,7 @@ impl Serialize for AccountToken {
                 refresh_token: token.refresh_token.clone(),
                 expiry_timestamp: token.expiry_timestamp,
                 client_id: token.client_id.clone(),
+                account_id: token.account_id.clone(),
             },
         };
         wire.serialize(serializer)
@@ -435,22 +448,19 @@ impl<'de> Deserialize<'de> for AccountToken {
                 refresh_token,
                 expiry_timestamp,
                 project_id,
-            } => Self::google(
-                access_token,
-                refresh_token,
-                expiry_timestamp,
-                project_id,
-            ),
+            } => Self::google(access_token, refresh_token, expiry_timestamp, project_id),
             AccountTokenWire::OpenAI {
                 access_token,
                 refresh_token,
                 expiry_timestamp,
                 client_id,
+                account_id,
             } => Self::openai(
                 access_token,
                 refresh_token,
                 expiry_timestamp,
                 client_id,
+                account_id,
             ),
         })
     }
@@ -483,7 +493,9 @@ impl AccountRecord {
     }
 
     pub fn has_project_id(&self) -> bool {
-        self.token.project_id().is_some_and(|project_id| !project_id.is_empty())
+        self.token
+            .project_id()
+            .is_some_and(|project_id| !project_id.is_empty())
     }
 }
 

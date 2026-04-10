@@ -12,7 +12,7 @@ const V1_INTERNAL_BASE_URLS: [&str; 3] = [
 const CLIENT_VERSION: &str = "4.1.31";
 const USER_AGENT: &str =
     "Antigravity/4.1.31 (Macintosh; Intel Mac OS X 10_15_7) Chrome/132.0.6834.160 Electron/39.2.3";
-const OPENAI_RESPONSES_URL: &str = "https://api.openai.com/v1/responses";
+const OPENAI_RESPONSES_URL: &str = "https://chatgpt.com/backend-api/codex/responses";
 
 fn session_id() -> &'static str {
     static SESSION_ID: OnceLock<String> = OnceLock::new();
@@ -184,6 +184,7 @@ impl UpstreamClient {
         &self,
         request_id: &str,
         access_token: &str,
+        account_id: Option<&str>,
         body: Value,
         stream: bool,
     ) -> Result<Response, String> {
@@ -195,12 +196,26 @@ impl UpstreamClient {
             "sending upstream request to OpenAI"
         );
 
-        let response = self
+        let mut request = self
             .http
             .post(OPENAI_RESPONSES_URL)
             .bearer_auth(access_token)
             .header("content-type", "application/json")
-            .header("accept", if stream { "text/event-stream" } else { "application/json" })
+            .header(
+                "accept",
+                if stream {
+                    "text/event-stream"
+                } else {
+                    "application/json"
+                },
+            )
+            .header("user-agent", "CodexBar");
+
+        if let Some(account_id) = account_id.filter(|value| !value.is_empty()) {
+            request = request.header("ChatGPT-Account-Id", account_id);
+        }
+
+        let response = request
             .json(&body)
             .send()
             .await
