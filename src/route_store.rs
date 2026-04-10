@@ -62,7 +62,10 @@ impl RouteStore {
 
     fn persist(&self, route: &RouteSelection) -> Result<(), String> {
         let path = self.route_path();
-        let tmp = path.with_extension("json.tmp");
+        let tmp = self
+            .config
+            .data_dir()
+            .join(format!("route.json.tmp.{}", now_unix_nanos()));
         let body = serde_json::to_string_pretty(route)
             .map_err(|err| format!("serialize route failed: {err}"))?;
         fs::write(&tmp, body).map_err(|err| format!("write temp route failed: {err}"))?;
@@ -82,4 +85,11 @@ fn now_unix() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+fn now_unix_nanos() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
 }

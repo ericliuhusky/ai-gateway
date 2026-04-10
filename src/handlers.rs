@@ -2,10 +2,13 @@ use crate::{
     account_pool::AccountPool,
     auth::OAuthClient,
     config::Config,
-    mapper::{gemini_to_responses, responses_to_gemini, wrap_v1internal},
+    mapper::{
+        chat_completions_to_responses, gemini_to_responses, responses_to_chat_completions,
+        responses_to_gemini, wrap_v1internal,
+    },
     models::{
         CreateApiProviderRequest, PROVIDER_GOOGLE_PROXY, PROVIDER_OPENAI_PROXY, ResponsesRequest,
-        RouteSelection, UpdateRouteRequest,
+        ResponsesResponse, RouteSelection, UpdateRouteRequest,
     },
     provider_store::ProviderStore,
     route_store::RouteStore,
@@ -1017,17 +1020,76 @@ pub async fn responses(
         .ok_or_else(|| AppError::bad_request(format!("unknown provider: {provider}")))?;
     if native_provider.disabled {
         return Err(AppError::bad_request(format!(
-            "provider {provider} is disabled"
+            "provider {} is disabled",
+            native_provider.name
         )));
     }
 
+    let native_target = resolve_native_target(&native_provider, &request.model);
+    if native_target.uses_chat_completions {
+        let request_body = responses_to_chat_completions(&request, &native_target.upstream_model)
+            .map_err(AppError::bad_request)?;
+        let upstream = state
+            .upstream
+            .call_native_chat_completions(
+                &request_id,
+                &native_provider.base_url,
+                &native_provider.api_key,
+                request_body,
+            )
+            .await
+            .map_err(AppError::upstream_message)?;
+        let chat_body: Value = upstream.json().await.map_err(AppError::upstream)?;
+        let response = chat_completions_to_responses(&request.model, &chat_body);
+
+        if !request.stream {
+            info!(
+                request_id = %request_id,
+                elapsed_ms = started_at.elapsed().as_millis(),
+                provider = %provider,
+                upstream_model = %native_target.upstream_model,
+                response_body = %json_for_log(&response),
+                "returning chat-completions-adapted /v1/responses body"
+            );
+            return Ok((
+                StatusCode::OK,
+                [("x-provider", provider.as_str())],
+                Json(response),
+            )
+                .into_response());
+        }
+
+        let output = synthesized_responses_stream(response).map(|result| result.map(Bytes::from));
+        return Ok(Response::builder()
+            .status(StatusCode::OK)
+            .header(
+                "content-type",
+                HeaderValue::from_static("text/event-stream"),
+            )
+            .header("cache-control", HeaderValue::from_static("no-cache"))
+            .header("connection", HeaderValue::from_static("keep-alive"))
+            .header(
+                "x-provider",
+                HeaderValue::from_str(&provider)
+                    .map_err(|err| AppError::internal(err.to_string()))?,
+            )
+            .body(Body::from_stream(output))
+            .map_err(|err| AppError::internal(err.to_string()))?);
+    }
+
+    let request_body = request_with_model(
+        &request,
+        &native_target.upstream_model,
+        &native_provider.name,
+    )
+        .map_err(|err| AppError::internal(err.to_string()))?;
     let upstream = state
         .upstream
         .call_native_responses(
             &request_id,
             &native_provider.base_url,
             &native_provider.api_key,
-            serde_json::to_value(&request).map_err(|err| AppError::internal(err.to_string()))?,
+            request_body,
             request.stream,
         )
         .await
@@ -1039,6 +1101,7 @@ pub async fn responses(
             request_id = %request_id,
             elapsed_ms = started_at.elapsed().as_millis(),
             provider = %provider,
+            upstream_model = %native_target.upstream_model,
             response_body = %json_value_for_log(&response_body),
             "returning native provider /v1/responses body"
         );
@@ -1118,6 +1181,393 @@ async fn validate_selected_provider(state: &AppState, provider: &str) -> Result<
         )));
     }
     Ok(())
+}
+
+#[derive(Clone, Debug)]
+struct NativeTarget {
+    upstream_model: String,
+    uses_chat_completions: bool,
+}
+
+fn resolve_native_target(
+    provider: &crate::models::ApiProviderRecord,
+    requested_model: &str,
+) -> NativeTarget {
+    let name = provider.name.as_str();
+    let base_url = provider.base_url.as_str();
+
+    if name == "bytedance-coding-plan" || base_url.contains("/api/coding/v3") {
+        return NativeTarget {
+            upstream_model: map_bytedance_coding_model(requested_model),
+            uses_chat_completions: true,
+        };
+    }
+
+    if name == "bytedance" || base_url.contains("volces.com/api/v3") {
+        return NativeTarget {
+            upstream_model: map_bytedance_model(requested_model),
+            uses_chat_completions: false,
+        };
+    }
+
+    NativeTarget {
+        upstream_model: requested_model.to_string(),
+        uses_chat_completions: false,
+    }
+}
+
+fn map_bytedance_model(requested_model: &str) -> String {
+    if is_codex_style_model(requested_model) {
+        "doubao-seed-2-0-lite-260215".to_string()
+    } else {
+        requested_model.to_string()
+    }
+}
+
+fn map_bytedance_coding_model(requested_model: &str) -> String {
+    if is_codex_style_model(requested_model) {
+        "ark-code-latest".to_string()
+    } else {
+        requested_model.to_string()
+    }
+}
+
+fn is_codex_style_model(model: &str) -> bool {
+    model.starts_with("gpt-")
+        || model.starts_with("o1")
+        || model.starts_with("o3")
+        || model.starts_with("o4")
+        || model.starts_with("codex-")
+}
+
+fn request_with_model(
+    request: &ResponsesRequest,
+    model: &str,
+    provider_name: &str,
+) -> Result<Value, serde_json::Error> {
+    let mut body = serde_json::to_value(request)?;
+    if let Some(object) = body.as_object_mut() {
+        object.insert("model".to_string(), Value::String(model.to_string()));
+    }
+    strip_null_fields(&mut body);
+    normalize_native_responses_request(&mut body, provider_name);
+    Ok(body)
+}
+
+fn strip_null_fields(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            map.retain(|_, nested| {
+                strip_null_fields(nested);
+                !nested.is_null()
+            });
+        }
+        Value::Array(items) => {
+            for item in items {
+                strip_null_fields(item);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn normalize_native_responses_request(body: &mut Value, provider_name: &str) {
+    let Some(object) = body.as_object_mut() else {
+        return;
+    };
+
+    if let Some(input) = object.get_mut("input") {
+        normalize_native_responses_input(input, provider_name);
+    }
+    if provider_name == "bytedance" {
+        if let Some(tools) = object.get_mut("tools") {
+            normalize_bytedance_responses_tools(tools);
+        }
+        if let Some(tool_choice) = object.get_mut("tool_choice") {
+            normalize_bytedance_responses_tool_choice(tool_choice);
+        }
+    }
+}
+
+fn normalize_native_responses_input(input: &mut Value, provider_name: &str) {
+    let Some(items) = input.as_array_mut() else {
+        rewrite_input_value_types(input);
+        return;
+    };
+
+    for item in items {
+        normalize_native_responses_input_item(item, provider_name);
+    }
+}
+
+fn normalize_native_responses_input_item(item: &mut Value, provider_name: &str) {
+    let Some(object) = item.as_object_mut() else {
+        rewrite_input_value_types(item);
+        return;
+    };
+
+    if provider_name == "bytedance" {
+        let item_type = object
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+
+        match item_type {
+            "custom_tool_call_output" => {
+                *item = json!({
+                    "type": "function_call_output",
+                    "call_id": object.get("call_id").cloned().unwrap_or(Value::Null),
+                    "output": stringify_openai_codex_output(object.get("output").cloned()),
+                });
+                return;
+            }
+            "local_shell_call" => {
+                let call_id = object
+                    .get("call_id")
+                    .cloned()
+                    .or_else(|| object.get("id").cloned())
+                    .unwrap_or_else(|| Value::String(format!("call_{}", Uuid::new_v4().simple())));
+                let arguments = build_shell_call_arguments(object.get("action"));
+                *item = json!({
+                    "type": "function_call",
+                    "call_id": call_id,
+                    "name": "shell",
+                    "arguments": Value::Object(arguments).to_string(),
+                });
+                return;
+            }
+            "web_search_call" => {
+                let call_id = object
+                    .get("call_id")
+                    .cloned()
+                    .or_else(|| object.get("id").cloned())
+                    .unwrap_or_else(|| Value::String(format!("call_{}", Uuid::new_v4().simple())));
+                let arguments = build_web_search_arguments(object.get("action"));
+                *item = json!({
+                    "type": "function_call",
+                    "call_id": call_id,
+                    "name": "google_search",
+                    "arguments": Value::Object(arguments).to_string(),
+                });
+                return;
+            }
+            _ => {}
+        }
+    }
+
+    rewrite_input_value_types(item);
+}
+
+fn build_shell_call_arguments(action: Option<&Value>) -> serde_json::Map<String, Value> {
+    let mut args = serde_json::Map::new();
+    let Some(exec) = action.and_then(|value| value.get("exec")) else {
+        return args;
+    };
+
+    if let Some(command) = exec.get("command") {
+        let command_value = if command.is_string() {
+            json!([command])
+        } else {
+            command.clone()
+        };
+        args.insert("command".to_string(), command_value);
+    }
+    if let Some(workdir) = exec
+        .get("working_directory")
+        .or_else(|| exec.get("workdir"))
+    {
+        args.insert("workdir".to_string(), workdir.clone());
+    }
+
+    args
+}
+
+fn build_web_search_arguments(action: Option<&Value>) -> serde_json::Map<String, Value> {
+    let mut args = serde_json::Map::new();
+    if let Some(query) = action.and_then(|value| value.get("query")) {
+        args.insert("query".to_string(), query.clone());
+    }
+    args
+}
+
+fn normalize_bytedance_responses_tools(tools: &mut Value) {
+    let Some(tool_items) = tools.as_array_mut() else {
+        return;
+    };
+
+    let mut normalized = Vec::with_capacity(tool_items.len());
+    for tool in tool_items.drain(..) {
+        let Some(tool_obj) = tool.as_object() else {
+            continue;
+        };
+
+        let function_obj = tool_obj.get("function").and_then(Value::as_object);
+        let name = tool_obj
+            .get("name")
+            .cloned()
+            .or_else(|| function_obj.and_then(|f| f.get("name").cloned()));
+        let description = tool_obj
+            .get("description")
+            .cloned()
+            .or_else(|| function_obj.and_then(|f| f.get("description").cloned()));
+        let parameters = tool_obj
+            .get("parameters")
+            .cloned()
+            .or_else(|| function_obj.and_then(|f| f.get("parameters").cloned()));
+        let strict = function_obj.and_then(|f| f.get("strict").cloned());
+
+        if name.as_ref().and_then(Value::as_str).is_none() {
+            continue;
+        }
+
+        normalized.push(json!({
+            "type": "function",
+            "name": name.unwrap_or(Value::String(String::new())),
+            "description": description.unwrap_or(Value::Null),
+            "parameters": parameters.unwrap_or_else(|| json!({"type":"object","properties":{}})),
+            "strict": strict.unwrap_or(Value::Null),
+        }));
+    }
+
+    *tool_items = normalized;
+}
+
+fn normalize_bytedance_responses_tool_choice(tool_choice: &mut Value) {
+    let Some(tool_choice_obj) = tool_choice.as_object() else {
+        return;
+    };
+
+    let choice_type = tool_choice_obj
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if choice_type != "tool" && choice_type != "function" {
+        return;
+    }
+
+    if let Some(name) = tool_choice_obj
+        .get("name")
+        .cloned()
+        .or_else(|| {
+            tool_choice_obj
+                .get("function")
+                .and_then(|function| function.get("name"))
+                .cloned()
+        })
+    {
+        *tool_choice = json!({
+            "type": "function",
+            "name": name,
+        });
+    }
+}
+
+fn rewrite_input_value_types(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            if let Some(item_type) = map.get_mut("type") {
+                if let Some(type_name) = item_type.as_str() {
+                    let rewritten = match type_name {
+                        "text" => Some("input_text"),
+                        "image_url" => Some("input_image"),
+                        "custom_tool_call_output" => Some("function_call_output"),
+                        _ => None,
+                    };
+                    if let Some(next) = rewritten {
+                        *item_type = Value::String(next.to_string());
+                    }
+                }
+            }
+
+            for nested in map.values_mut() {
+                rewrite_input_value_types(nested);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                rewrite_input_value_types(item);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn synthesized_responses_stream(
+    response: ResponsesResponse,
+) -> impl futures_util::Stream<Item = Result<String, std::io::Error>> {
+    stream! {
+        let response_value = match serde_json::to_value(&response) {
+            Ok(value) => value,
+            Err(err) => {
+                yield Err(std::io::Error::other(err));
+                return;
+            }
+        };
+        yield Ok(format!("data: {}\n\n", json!({
+            "type": "response.created",
+            "response": {
+                "id": &response.id,
+                "object": "response",
+                "status": "in_progress",
+                "output": []
+            }
+        })));
+
+        for (index, item) in response.output.iter().enumerate() {
+            yield Ok(format!("data: {}\n\n", json!({
+                "type": "response.output_item.added",
+                "output_index": index,
+                "item": item.clone()
+            })));
+
+            if item.item_type == "message" {
+                if let Some(content) = &item.content {
+                    for (content_index, part) in content.iter().enumerate() {
+                        yield Ok(format!("data: {}\n\n", json!({
+                            "type": "response.content_part.added",
+                            "item_id": &item.id,
+                            "output_index": index,
+                            "content_index": content_index,
+                            "part": part.clone()
+                        })));
+                        yield Ok(format!("data: {}\n\n", json!({
+                            "type": "response.output_text.delta",
+                            "item_id": &item.id,
+                            "output_index": index,
+                            "content_index": content_index,
+                            "delta": &part.text
+                        })));
+                        yield Ok(format!("data: {}\n\n", json!({
+                            "type": "response.output_text.done",
+                            "item_id": &item.id,
+                            "output_index": index,
+                            "content_index": content_index,
+                            "text": &part.text
+                        })));
+                        yield Ok(format!("data: {}\n\n", json!({
+                            "type": "response.content_part.done",
+                            "item_id": &item.id,
+                            "output_index": index,
+                            "content_index": content_index,
+                            "part": part.clone()
+                        })));
+                    }
+                }
+            }
+
+            yield Ok(format!("data: {}\n\n", json!({
+                "type": "response.output_item.done",
+                "output_index": index,
+                "item": item.clone()
+            })));
+        }
+
+        yield Ok(format!("data: {}\n\n", json!({
+            "type": "response.completed",
+            "response": response_value
+        })));
+        yield Ok("data: [DONE]\n\n".to_string());
+    }
 }
 
 fn json_for_log<T: serde::Serialize>(value: &T) -> String {

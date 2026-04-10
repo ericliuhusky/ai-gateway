@@ -273,15 +273,67 @@ impl UpstreamClient {
             Err(format!("native provider returned {status}: {body}"))
         }
     }
+
+    pub async fn call_native_chat_completions(
+        &self,
+        request_id: &str,
+        base_url: &str,
+        api_key: &str,
+        body: Value,
+    ) -> Result<Response, String> {
+        let url = chat_completions_api_url(base_url);
+        info!(
+            request_id = %request_id,
+            url = %url,
+            request = %truncate_for_log(&body.to_string(), 4_000),
+            "sending upstream request to native chat completions provider"
+        );
+
+        let response = self
+            .http
+            .post(&url)
+            .bearer_auth(api_key)
+            .header("content-type", "application/json")
+            .header("accept", "application/json")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|err| format!("native chat completions request failed: {err}"))?;
+
+        if response.status().is_success() {
+            Ok(response)
+        } else {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            Err(format!("native chat completions returned {status}: {body}"))
+        }
+    }
 }
 
 fn responses_api_url(base_url: &str) -> String {
     let trimmed = base_url.trim_end_matches('/');
     if trimmed.ends_with("/responses") {
         trimmed.to_string()
-    } else {
+    } else if has_api_prefix(trimmed) {
         format!("{trimmed}/responses")
+    } else {
+        format!("{trimmed}/v1/responses")
     }
+}
+
+fn chat_completions_api_url(base_url: &str) -> String {
+    let trimmed = base_url.trim_end_matches('/');
+    if trimmed.ends_with("/chat/completions") {
+        trimmed.to_string()
+    } else if has_api_prefix(trimmed) {
+        format!("{trimmed}/chat/completions")
+    } else {
+        format!("{trimmed}/v1/chat/completions")
+    }
+}
+
+fn has_api_prefix(base_url: &str) -> bool {
+    base_url.ends_with("/v1") || base_url.contains("/api/") || base_url.ends_with("/api")
 }
 
 fn should_try_next_endpoint(status: StatusCode) -> bool {

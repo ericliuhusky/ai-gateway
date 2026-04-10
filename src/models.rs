@@ -245,7 +245,7 @@ pub struct ToolFunction {
     pub arguments: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ResponsesResponse {
     pub id: String,
     pub object: String,
@@ -257,7 +257,7 @@ pub struct ResponsesResponse {
     pub usage: Option<ResponsesUsage>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ResponseOutputItem {
     pub id: String,
     #[serde(rename = "type")]
@@ -274,14 +274,14 @@ pub struct ResponseOutputItem {
     pub arguments: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ResponseOutputContent {
     #[serde(rename = "type")]
     pub content_type: String,
     pub text: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ResponsesUsage {
     pub input_tokens: u32,
     pub output_tokens: u32,
