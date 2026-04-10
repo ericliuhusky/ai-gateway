@@ -4,6 +4,8 @@ mod config;
 mod handlers;
 mod mapper;
 mod models;
+mod provider_store;
+mod route_store;
 mod upstream;
 
 use account_pool::AccountPool;
@@ -14,10 +16,12 @@ use axum::{
 };
 use config::Config;
 use handlers::{
-    AppState, auth_google_callback, auth_google_start, auth_openai_callback, auth_openai_start,
-    healthz, list_accounts, responses,
+    AppState, add_provider, auth_google_callback, auth_google_start, auth_openai_callback,
+    auth_openai_start, get_route, healthz, list_accounts, list_providers, responses, set_route,
 };
+use provider_store::ProviderStore;
 use reqwest::Client;
+use route_store::RouteStore;
 use std::sync::Arc;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use upstream::UpstreamClient;
@@ -35,16 +39,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = Arc::new(Config::from_env()?);
     let accounts = AccountPool::new(config.clone())?;
     let loaded = accounts.load().await?;
+    let providers = ProviderStore::new(config.clone())?;
+    let provider_count = providers.load().await?;
+    let routes = RouteStore::new(config.clone())?;
+    let route = routes.load().await?;
     let oauth = OAuthClient::new(config.clone());
     let upstream = UpstreamClient::new();
 
-    tracing::info!("loaded {} account(s) from {:?}", loaded, config.data_dir());
+    tracing::info!(
+        "loaded {} account(s), {} provider(s), current route {:?} from {:?}",
+        loaded,
+        provider_count,
+        route.provider,
+        config.data_dir()
+    );
 
     let state = AppState {
         _client: Client::new(),
         _config: config.clone(),
         oauth,
         accounts,
+        providers,
+        routes,
         upstream,
     };
 
@@ -56,6 +72,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/auth/callback", get(auth_openai_callback))
         .route("/auth/openai/callback", get(auth_openai_callback))
         .route("/v1/accounts", get(list_accounts))
+        .route("/v1/providers", get(list_providers).post(add_provider))
+        .route("/v1/route", get(get_route).post(set_route))
         .route("/v1/responses", post(responses))
         .with_state(state);
 

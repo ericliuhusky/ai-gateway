@@ -229,6 +229,59 @@ impl UpstreamClient {
             Err(format!("openai upstream returned {status}: {body}"))
         }
     }
+
+    pub async fn call_native_responses(
+        &self,
+        request_id: &str,
+        base_url: &str,
+        api_key: &str,
+        body: Value,
+        stream: bool,
+    ) -> Result<Response, String> {
+        let url = responses_api_url(base_url);
+        info!(
+            request_id = %request_id,
+            stream = stream,
+            url = %url,
+            request = %truncate_for_log(&body.to_string(), 4_000),
+            "sending upstream request to native provider"
+        );
+
+        let response = self
+            .http
+            .post(&url)
+            .bearer_auth(api_key)
+            .header("content-type", "application/json")
+            .header(
+                "accept",
+                if stream {
+                    "text/event-stream"
+                } else {
+                    "application/json"
+                },
+            )
+            .json(&body)
+            .send()
+            .await
+            .map_err(|err| format!("native provider request failed: {err}"))?;
+
+        if response.status().is_success() {
+            Ok(response)
+        } else {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            Err(format!("native provider returned {status}: {body}"))
+        }
+    }
+}
+
+fn responses_api_url(base_url: &str) -> String {
+    let trimmed = base_url.trim_end_matches('/');
+    if trimmed.ends_with("/responses") {
+        trimmed.to_string()
+    } else {
+        format!("{trimmed}/responses")
+    }
 }
 
 fn should_try_next_endpoint(status: StatusCode) -> bool {

@@ -4,6 +4,62 @@ use serde_json::Value;
 pub const PROVIDER_GOOGLE_PROXY: &str = "google-proxy";
 pub const PROVIDER_OPENAI_PROXY: &str = "openai-proxy";
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ApiProviderBillingMode {
+    Metered,
+    Subscription,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CreateApiProviderRequest {
+    #[serde(alias = "provider_name")]
+    pub name: String,
+    pub base_url: String,
+    pub api_key: String,
+    pub billing_mode: ApiProviderBillingMode,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApiProviderRecord {
+    #[serde(skip_serializing, default)]
+    pub id: String,
+    #[serde(alias = "provider_name")]
+    pub name: String,
+    pub base_url: String,
+    pub api_key: String,
+    pub billing_mode: ApiProviderBillingMode,
+    pub created_at: i64,
+    pub updated_at: i64,
+    #[serde(default)]
+    pub disabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ApiProviderSummary {
+    pub id: String,
+    pub name: String,
+    pub base_url: String,
+    pub billing_mode: ApiProviderBillingMode,
+    pub disabled: bool,
+    pub api_key_preview: String,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RouteSelection {
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpdateRouteRequest {
+    #[serde(default)]
+    pub provider: Option<String>,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ResponsesRequest {
     pub model: String,

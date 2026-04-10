@@ -3,7 +3,12 @@ use crate::{
     auth::OAuthClient,
     config::Config,
     mapper::{gemini_to_responses, responses_to_gemini, wrap_v1internal},
-    models::{PROVIDER_GOOGLE_PROXY, PROVIDER_OPENAI_PROXY, ResponsesRequest},
+    models::{
+        CreateApiProviderRequest, PROVIDER_GOOGLE_PROXY, PROVIDER_OPENAI_PROXY, ResponsesRequest,
+        RouteSelection, UpdateRouteRequest,
+    },
+    provider_store::ProviderStore,
+    route_store::RouteStore,
     upstream::UpstreamClient,
 };
 use async_stream::stream;
@@ -28,6 +33,8 @@ pub struct AppState {
     pub _config: Arc<Config>,
     pub oauth: OAuthClient,
     pub accounts: AccountPool,
+    pub providers: ProviderStore,
+    pub routes: RouteStore,
     pub upstream: UpstreamClient,
 }
 
@@ -173,6 +180,53 @@ pub async fn auth_openai_callback(
 
 pub async fn list_accounts(State(state): State<AppState>) -> Json<Value> {
     Json(json!({ "accounts": state.accounts.list().await }))
+}
+
+pub async fn list_providers(State(state): State<AppState>) -> Json<Value> {
+    Json(json!({ "providers": state.providers.list().await }))
+}
+
+pub async fn add_provider(
+    State(state): State<AppState>,
+    Json(request): Json<CreateApiProviderRequest>,
+) -> Result<Json<Value>, AppError> {
+    let provider = state
+        .providers
+        .upsert(request)
+        .await
+        .map_err(AppError::bad_request)?;
+
+    Ok(Json(json!({
+        "provider": {
+            "id": provider.id,
+            "name": provider.name,
+            "base_url": provider.base_url,
+            "billing_mode": provider.billing_mode,
+            "disabled": provider.disabled,
+            "updated_at": provider.updated_at,
+        }
+    })))
+}
+
+pub async fn get_route(State(state): State<AppState>) -> Json<Value> {
+    Json(json!({ "route": route_payload(state.routes.get().await) }))
+}
+
+pub async fn set_route(
+    State(state): State<AppState>,
+    Json(request): Json<UpdateRouteRequest>,
+) -> Result<Json<Value>, AppError> {
+    let provider = normalize_route_provider(request.provider);
+    if let Some(provider_name) = provider.as_deref() {
+        validate_selected_provider(&state, provider_name).await?;
+    }
+
+    let route = state
+        .routes
+        .set(provider)
+        .await
+        .map_err(AppError::bad_request)?;
+    Ok(Json(json!({ "route": route_payload(route) })))
 }
 
 const OPENAI_CODEX_DEFAULT_INSTRUCTIONS: &str = "You are Codex.";
@@ -442,13 +496,23 @@ pub async fn responses(
 ) -> Result<Response, AppError> {
     let request_id = format!("req_{}", Uuid::new_v4().simple());
     let started_at = Instant::now();
+    let route = state.routes.get().await;
+    let provider = route
+        .provider
+        .clone()
+        .unwrap_or_else(|| provider_for_model(&request.model).to_string());
+    let route_mode = if route.provider.is_some() {
+        "manual"
+    } else {
+        "auto"
+    };
     info!(
         request_id = %request_id,
+        provider = %provider,
+        route_mode = %route_mode,
         body = %json_for_log(&request),
         "received /v1/responses request"
     );
-
-    let provider = provider_for_model(&request.model);
 
     if provider == PROVIDER_OPENAI_PROXY {
         let account = state
@@ -483,7 +547,10 @@ pub async fn responses(
             );
             return Ok((
                 StatusCode::OK,
-                [("x-account-email", account.email.as_str())],
+                [
+                    ("x-account-email", account.email.as_str()),
+                    ("x-provider", PROVIDER_OPENAI_PROXY),
+                ],
                 Json(response_body),
             )
                 .into_response());
@@ -506,83 +573,92 @@ pub async fn responses(
                 HeaderValue::from_str(&account.email)
                     .map_err(|err| AppError::internal(err.to_string()))?,
             )
+            .header(
+                "x-provider",
+                HeaderValue::from_static(PROVIDER_OPENAI_PROXY),
+            )
             .body(Body::from_stream(output))
             .map_err(|err| AppError::internal(err.to_string()))?);
     }
 
-    let gemini_request = responses_to_gemini(&request).map_err(AppError::bad_request)?;
-    let account = state
-        .accounts
-        .acquire_for_provider(&state.oauth, &state.upstream, PROVIDER_GOOGLE_PROXY)
-        .await
-        .map_err(AppError::bad_request)?;
-    let project_id = account
-        .token
-        .project_id()
-        .map(str::to_string)
-        .ok_or_else(|| AppError::bad_request("selected account has no project_id"))?;
-    let request_body = wrap_v1internal(
-        serde_json::to_value(&gemini_request).map_err(|err| AppError::internal(err.to_string()))?,
-        &project_id,
-        &request.model,
-        &account.id,
-    );
+    if provider == PROVIDER_GOOGLE_PROXY {
+        let gemini_request = responses_to_gemini(&request).map_err(AppError::bad_request)?;
+        let account = state
+            .accounts
+            .acquire_for_provider(&state.oauth, &state.upstream, PROVIDER_GOOGLE_PROXY)
+            .await
+            .map_err(AppError::bad_request)?;
+        let project_id = account
+            .token
+            .project_id()
+            .map(str::to_string)
+            .ok_or_else(|| AppError::bad_request("selected account has no project_id"))?;
+        let request_body = wrap_v1internal(
+            serde_json::to_value(&gemini_request)
+                .map_err(|err| AppError::internal(err.to_string()))?,
+            &project_id,
+            &request.model,
+            &account.id,
+        );
 
-    info!(
-        request_id = %request_id,
-        model = %request.model,
-        stream = request.stream,
-        email = %account.email,
-        project_id = %project_id,
-        gemini_request = %json_for_log(&gemini_request),
-        upstream_request = %json_value_for_log(&request_body),
-        "proxying request to Gemini upstream"
-    );
-
-    let upstream = state
-        .upstream
-        .call_v1internal(
-            if request.stream {
-                "streamGenerateContent"
-            } else {
-                "generateContent"
-            },
-            &request_id,
-            account.token.access_token(),
-            request_body,
-            request.stream,
-        )
-        .await
-        .map_err(AppError::upstream_message)?;
-
-    if !request.stream {
-        let gemini_body: Value = upstream.json().await.map_err(AppError::upstream)?;
         info!(
             request_id = %request_id,
-            elapsed_ms = started_at.elapsed().as_millis(),
-            upstream_response = %json_value_for_log(&gemini_body),
-            "received non-stream Gemini response"
+            model = %request.model,
+            stream = request.stream,
+            email = %account.email,
+            project_id = %project_id,
+            gemini_request = %json_for_log(&gemini_request),
+            upstream_request = %json_value_for_log(&request_body),
+            "proxying request to Gemini upstream"
         );
-        let response = gemini_to_responses(&request.model, &gemini_body);
-        info!(
-            request_id = %request_id,
-            elapsed_ms = started_at.elapsed().as_millis(),
-            output_items = response.output.len(),
-            response_body = %json_for_log(&response),
-            "returning non-stream /v1/responses body"
-        );
-        return Ok((
-            StatusCode::OK,
-            [("x-account-email", account.email.as_str())],
-            Json(response),
-        )
-            .into_response());
-    }
 
-    let model = request.model.clone();
-    let stream = upstream.bytes_stream();
-    let request_id_for_stream = request_id.clone();
-    let output = stream! {
+        let upstream = state
+            .upstream
+            .call_v1internal(
+                if request.stream {
+                    "streamGenerateContent"
+                } else {
+                    "generateContent"
+                },
+                &request_id,
+                account.token.access_token(),
+                request_body,
+                request.stream,
+            )
+            .await
+            .map_err(AppError::upstream_message)?;
+
+        if !request.stream {
+            let gemini_body: Value = upstream.json().await.map_err(AppError::upstream)?;
+            info!(
+                request_id = %request_id,
+                elapsed_ms = started_at.elapsed().as_millis(),
+                upstream_response = %json_value_for_log(&gemini_body),
+                "received non-stream Gemini response"
+            );
+            let response = gemini_to_responses(&request.model, &gemini_body);
+            info!(
+                request_id = %request_id,
+                elapsed_ms = started_at.elapsed().as_millis(),
+                output_items = response.output.len(),
+                response_body = %json_for_log(&response),
+                "returning non-stream /v1/responses body"
+            );
+            return Ok((
+                StatusCode::OK,
+                [
+                    ("x-account-email", account.email.as_str()),
+                    ("x-provider", PROVIDER_GOOGLE_PROXY),
+                ],
+                Json(response),
+            )
+                .into_response());
+        }
+
+        let model = request.model.clone();
+        let stream = upstream.bytes_stream();
+        let request_id_for_stream = request_id.clone();
+        let output = stream! {
         let encode_event = |value: &Value| -> Result<String, std::io::Error> {
             serde_json::to_string(value)
                 .map(|body| format!("data: {body}\n\n"))
@@ -910,8 +986,73 @@ pub async fn responses(
         );
 
         yield Ok("data: [DONE]\n\n".to_string());
+        }
+        .map(|result| result.map(Bytes::from));
+
+        return Ok(Response::builder()
+            .status(StatusCode::OK)
+            .header(
+                "content-type",
+                HeaderValue::from_static("text/event-stream"),
+            )
+            .header("cache-control", HeaderValue::from_static("no-cache"))
+            .header("connection", HeaderValue::from_static("keep-alive"))
+            .header(
+                "x-account-email",
+                HeaderValue::from_str(&account.email)
+                    .map_err(|err| AppError::internal(err.to_string()))?,
+            )
+            .header(
+                "x-provider",
+                HeaderValue::from_static(PROVIDER_GOOGLE_PROXY),
+            )
+            .body(Body::from_stream(output))
+            .map_err(|err| AppError::internal(err.to_string()))?);
     }
-    .map(|result| result.map(Bytes::from));
+
+    let native_provider = state
+        .providers
+        .find_by_name(&provider)
+        .await
+        .ok_or_else(|| AppError::bad_request(format!("unknown provider: {provider}")))?;
+    if native_provider.disabled {
+        return Err(AppError::bad_request(format!(
+            "provider {provider} is disabled"
+        )));
+    }
+
+    let upstream = state
+        .upstream
+        .call_native_responses(
+            &request_id,
+            &native_provider.base_url,
+            &native_provider.api_key,
+            serde_json::to_value(&request).map_err(|err| AppError::internal(err.to_string()))?,
+            request.stream,
+        )
+        .await
+        .map_err(AppError::upstream_message)?;
+
+    if !request.stream {
+        let response_body: Value = upstream.json().await.map_err(AppError::upstream)?;
+        info!(
+            request_id = %request_id,
+            elapsed_ms = started_at.elapsed().as_millis(),
+            provider = %provider,
+            response_body = %json_value_for_log(&response_body),
+            "returning native provider /v1/responses body"
+        );
+        return Ok((
+            StatusCode::OK,
+            [("x-provider", provider.as_str())],
+            Json(response_body),
+        )
+            .into_response());
+    }
+
+    let output = upstream
+        .bytes_stream()
+        .map(|result| result.map(Bytes::from).map_err(std::io::Error::other));
 
     Ok(Response::builder()
         .status(StatusCode::OK)
@@ -922,9 +1063,8 @@ pub async fn responses(
         .header("cache-control", HeaderValue::from_static("no-cache"))
         .header("connection", HeaderValue::from_static("keep-alive"))
         .header(
-            "x-account-email",
-            HeaderValue::from_str(&account.email)
-                .map_err(|err| AppError::internal(err.to_string()))?,
+            "x-provider",
+            HeaderValue::from_str(&provider).map_err(|err| AppError::internal(err.to_string()))?,
         )
         .body(Body::from_stream(output))
         .map_err(|err| AppError::internal(err.to_string()))?)
@@ -941,6 +1081,43 @@ fn provider_for_model(model: &str) -> &'static str {
     } else {
         PROVIDER_GOOGLE_PROXY
     }
+}
+
+fn route_payload(route: RouteSelection) -> Value {
+    json!({
+        "mode": if route.provider.is_some() { "manual" } else { "auto" },
+        "provider": route.provider,
+        "updated_at": route.updated_at,
+    })
+}
+
+fn normalize_route_provider(provider: Option<String>) -> Option<String> {
+    provider.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("auto") {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
+}
+
+async fn validate_selected_provider(state: &AppState, provider: &str) -> Result<(), AppError> {
+    if provider == PROVIDER_OPENAI_PROXY || provider == PROVIDER_GOOGLE_PROXY {
+        return Ok(());
+    }
+
+    let native_provider = state
+        .providers
+        .find_by_name(provider)
+        .await
+        .ok_or_else(|| AppError::bad_request(format!("unknown provider: {provider}")))?;
+    if native_provider.disabled {
+        return Err(AppError::bad_request(format!(
+            "provider {provider} is disabled"
+        )));
+    }
+    Ok(())
 }
 
 fn json_for_log<T: serde::Serialize>(value: &T) -> String {
