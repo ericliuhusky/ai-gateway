@@ -1,10 +1,10 @@
-# gemini-proxy
+# ai-gateway
 
-参考 [`Antigravity-Manager`](https://github.com/lbjlaq/Antigravity-Manager) 的gemini代理：
+参考 [`Antigravity-Manager`](https://github.com/lbjlaq/Antigravity-Manager) 的代理实现：
 
 - 用户通过 Google OAuth 登录
 - 用户也可以仿照 Codex / OpenClaw 的方式，通过 ChatGPT OAuth + PKCE 登录
-- 登录成功后账号会写入本地账号池 `~/.gemini-proxy/accounts/*.json`
+- 登录成功后账号会写入本地账号池 `~/.ai-gateway/accounts/*.json`
 - 代理请求时从账号池轮询账号
 - access token 过期前自动刷新
 - project_id 缺失时通过私有 `v1internal:loadCodeAssist` 获取
@@ -18,7 +18,7 @@ cargo run
 
 默认固定监听 `127.0.0.1:10100`。
 
-账号数据固定保存在 `~/.gemini-proxy/accounts/*.json`。
+账号数据固定保存在 `~/.ai-gateway/accounts/*.json`。
 
 ## 登录
 

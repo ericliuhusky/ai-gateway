@@ -24,7 +24,7 @@ impl Config {
 
     pub fn data_dir(&self) -> PathBuf {
         PathBuf::from(env::var("HOME").expect("HOME environment variable is not set"))
-            .join(".gemini-proxy")
+            .join(".ai-gateway")
     }
 
     pub fn openai_callback_addr(&self) -> SocketAddr {
