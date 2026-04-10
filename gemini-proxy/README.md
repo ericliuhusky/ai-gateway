@@ -54,10 +54,14 @@ open http://127.0.0.1:10100/auth/openai/start
 
 ## 路由行为
 
-- `gpt-*`、`o1*`、`o3*`、`o4*`、`codex-*` 模型会直接转发到 ChatGPT Codex `POST https://chatgpt.com/backend-api/codex/responses`
-- 其他模型继续走 Gemini 私有 `v1internal`
+- 当前这两个 OAuth 供应商被视为“代理供应商”：
+  - `openai-proxy`: 使用 ChatGPT OAuth，会转发到 `https://chatgpt.com/backend-api/codex/responses`
+  - `google-proxy`: 使用 Google OAuth，会转发到 Gemini 私有 `v1internal`
+- `gpt-*`、`o1*`、`o3*`、`o4*`、`codex-*` 模型当前会路由到 `openai-proxy`
+- 其他模型当前会路由到 `google-proxy`
+- `/v1/accounts` 返回的 `provider` 也会使用这套命名，账号配置需直接写成 `google-proxy` / `openai-proxy`
 
 ## 当前范围
 
-- 已实现：Google 登录、OpenAI 浏览器 OAuth + PKCE 登录、账号持久化、账号轮询、token 刷新、`project_id` 获取、OpenAI Responses -> Gemini v1internal、GPT 请求直连 OpenAI Responses、最小函数工具调用映射
+- 已实现：Google 登录、OpenAI 浏览器 OAuth + PKCE 登录、账号持久化、账号轮询、token 刷新、`project_id` 获取、OpenAI Responses -> Gemini v1internal、GPT 请求直连 ChatGPT Codex backend-api、最小函数工具调用映射
 - 暂未实现：复杂配额保护、设备指纹、官方客户端全部 Header 指纹、更多管理接口

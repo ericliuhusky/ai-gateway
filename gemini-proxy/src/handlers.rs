@@ -3,7 +3,7 @@ use crate::{
     auth::OAuthClient,
     config::Config,
     mapper::{gemini_to_responses, responses_to_gemini, wrap_v1internal},
-    models::ResponsesRequest,
+    models::{PROVIDER_GOOGLE_PROXY, PROVIDER_OPENAI_PROXY, ResponsesRequest},
     upstream::UpstreamClient,
 };
 use async_stream::stream;
@@ -448,10 +448,12 @@ pub async fn responses(
         "received /v1/responses request"
     );
 
-    if is_openai_model(&request.model) {
+    let provider = provider_for_model(&request.model);
+
+    if provider == PROVIDER_OPENAI_PROXY {
         let account = state
             .accounts
-            .acquire_for_provider(&state.oauth, &state.upstream, "openai")
+            .acquire_for_provider(&state.oauth, &state.upstream, PROVIDER_OPENAI_PROXY)
             .await
             .map_err(AppError::bad_request)?;
         let mut request_body =
@@ -475,7 +477,7 @@ pub async fn responses(
                 request_id = %request_id,
                 elapsed_ms = started_at.elapsed().as_millis(),
                 email = %account.email,
-                provider = "openai",
+                provider = PROVIDER_OPENAI_PROXY,
                 response_body = %json_value_for_log(&response_body),
                 "returning OpenAI /v1/responses body"
             );
@@ -511,7 +513,7 @@ pub async fn responses(
     let gemini_request = responses_to_gemini(&request).map_err(AppError::bad_request)?;
     let account = state
         .accounts
-        .acquire_for_provider(&state.oauth, &state.upstream, "google")
+        .acquire_for_provider(&state.oauth, &state.upstream, PROVIDER_GOOGLE_PROXY)
         .await
         .map_err(AppError::bad_request)?;
     let project_id = account
@@ -928,12 +930,17 @@ pub async fn responses(
         .map_err(|err| AppError::internal(err.to_string()))?)
 }
 
-fn is_openai_model(model: &str) -> bool {
-    model.starts_with("gpt-")
+fn provider_for_model(model: &str) -> &'static str {
+    if model.starts_with("gpt-")
         || model.starts_with("o1")
         || model.starts_with("o3")
         || model.starts_with("o4")
         || model.starts_with("codex-")
+    {
+        PROVIDER_OPENAI_PROXY
+    } else {
+        PROVIDER_GOOGLE_PROXY
+    }
 }
 
 fn json_for_log<T: serde::Serialize>(value: &T) -> String {

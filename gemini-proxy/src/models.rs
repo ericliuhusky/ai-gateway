@@ -1,6 +1,9 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
+pub const PROVIDER_GOOGLE_PROXY: &str = "google-proxy";
+pub const PROVIDER_OPENAI_PROXY: &str = "openai-proxy";
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ResponsesRequest {
     pub model: String,
@@ -286,14 +289,14 @@ pub enum AccountToken {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "provider")]
 enum AccountTokenWire {
-    #[serde(rename = "google")]
+    #[serde(rename = "google-proxy")]
     Google {
         access_token: String,
         refresh_token: String,
         expiry_timestamp: i64,
         project_id: String,
     },
-    #[serde(rename = "openai")]
+    #[serde(rename = "openai-proxy")]
     OpenAI {
         access_token: String,
         refresh_token: String,
@@ -337,8 +340,8 @@ impl AccountToken {
 
     pub fn provider(&self) -> &'static str {
         match self {
-            Self::Google(_) => "google",
-            Self::OpenAI(_) => "openai",
+            Self::Google(_) => PROVIDER_GOOGLE_PROXY,
+            Self::OpenAI(_) => PROVIDER_OPENAI_PROXY,
         }
     }
 

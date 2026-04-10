@@ -1,11 +1,11 @@
 use crate::{
     auth::{ImportedOpenAIAuth, OAuthClient, TokenResponse, UserInfo},
     config::Config,
-    models::{AccountRecord, AccountSummary, AccountToken},
+    models::{
+        AccountRecord, AccountSummary, AccountToken, PROVIDER_GOOGLE_PROXY, PROVIDER_OPENAI_PROXY,
+    },
     upstream::UpstreamClient,
 };
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use serde_json::Value;
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -58,7 +58,6 @@ impl AccountPool {
             let account = serde_json::from_str::<AccountRecord>(&content)
                 .map_err(|err| format!("parse account failed: {err}"))?
                 .with_id(id);
-            let account = self.hydrate_legacy_openai_account(account)?;
             loaded.push(account);
         }
 
@@ -146,10 +145,9 @@ impl AccountPool {
         );
 
         let mut accounts = self.accounts.lock().await;
-        let account = if let Some(existing) = accounts
-            .iter_mut()
-            .find(|account| account.email == imported.email && account.provider() == "openai")
-        {
+        let account = if let Some(existing) = accounts.iter_mut().find(|account| {
+            account.email == imported.email && account.provider() == PROVIDER_OPENAI_PROXY
+        }) {
             existing.token = token_data;
             existing.disabled = false;
             existing.disabled_reason = None;
@@ -215,7 +213,7 @@ impl AccountPool {
                     expires_at = account.token.expiry_timestamp(),
                     "refreshing access token before use"
                 );
-                let refreshed = if account.provider() == "openai" {
+                let refreshed = if account.provider() == PROVIDER_OPENAI_PROXY {
                     let client_id = account
                         .token
                         .client_id()
@@ -253,7 +251,8 @@ impl AccountPool {
                 }
             }
 
-            if account.provider() == "google" && account.token.project_id().unwrap_or("").is_empty()
+            if account.provider() == PROVIDER_GOOGLE_PROXY
+                && account.token.project_id().unwrap_or("").is_empty()
             {
                 info!(
                     account_id = %account.id,
@@ -337,55 +336,6 @@ impl AccountPool {
     fn account_path(&self, account_id: &str) -> PathBuf {
         self.accounts_dir().join(format!("{account_id}.json"))
     }
-
-    fn hydrate_legacy_openai_account(
-        &self,
-        mut account: AccountRecord,
-    ) -> Result<AccountRecord, String> {
-        if account.provider() != "openai" || account.token.account_id().is_some() {
-            return Ok(account);
-        }
-
-        let Some(derived_account_id) = derive_chatgpt_account_id(account.token.access_token())
-        else {
-            return Ok(account);
-        };
-
-        if let AccountToken::OpenAI(token) = &mut account.token {
-            token.account_id = Some(derived_account_id);
-        }
-        self.persist_account(&account)?;
-        Ok(account)
-    }
-}
-
-fn derive_chatgpt_account_id(access_token: &str) -> Option<String> {
-    let payload = access_token.split('.').nth(1)?;
-    let bytes = URL_SAFE_NO_PAD.decode(payload).ok()?;
-    let claims = serde_json::from_slice::<Value>(&bytes).ok()?;
-    claims
-        .get("https://api.openai.com/auth")
-        .and_then(Value::as_object)
-        .and_then(|auth| {
-            auth.get("chatgpt_account_id")
-                .and_then(Value::as_str)
-                .map(ToOwned::to_owned)
-                .or_else(|| {
-                    auth.get("chatgpt_account_user_id")
-                        .and_then(Value::as_str)
-                        .map(ToOwned::to_owned)
-                })
-                .or_else(|| {
-                    auth.get("chatgpt_user_id")
-                        .and_then(Value::as_str)
-                        .map(ToOwned::to_owned)
-                })
-                .or_else(|| {
-                    auth.get("user_id")
-                        .and_then(Value::as_str)
-                        .map(ToOwned::to_owned)
-                })
-        })
 }
 
 fn rename_replace(src: &Path, dst: &Path) -> Result<(), String> {
