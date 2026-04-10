@@ -60,6 +60,17 @@ pub struct UpdateRouteRequest {
     pub provider: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct ModelListResponse {
+    pub object: String,
+    pub data: Vec<ModelListItem>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ModelListItem {
+    pub id: String,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ResponsesRequest {
     pub model: String,

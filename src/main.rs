@@ -17,7 +17,8 @@ use axum::{
 use config::Config;
 use handlers::{
     AppState, add_provider, auth_google_callback, auth_google_start, auth_openai_callback,
-    auth_openai_start, get_route, healthz, list_accounts, list_providers, responses, set_route,
+    auth_openai_start, get_route, healthz, list_accounts, list_models, list_providers, responses,
+    set_route,
 };
 use provider_store::ProviderStore;
 use reqwest::Client;
@@ -72,6 +73,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/auth/callback", get(auth_openai_callback))
         .route("/auth/openai/callback", get(auth_openai_callback))
         .route("/v1/accounts", get(list_accounts))
+        .route("/v1/models", get(list_models))
         .route("/v1/providers", get(list_providers).post(add_provider))
         .route("/v1/route", get(get_route).post(set_route))
         .route("/v1/responses", post(responses))

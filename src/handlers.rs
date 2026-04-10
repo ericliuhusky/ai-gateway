@@ -7,8 +7,9 @@ use crate::{
         responses_to_gemini, wrap_v1internal,
     },
     models::{
-        CreateApiProviderRequest, PROVIDER_GOOGLE_PROXY, PROVIDER_OPENAI_PROXY, ResponsesRequest,
-        ResponsesResponse, RouteSelection, UpdateRouteRequest,
+        CreateApiProviderRequest, ModelListItem, ModelListResponse, PROVIDER_GOOGLE_PROXY,
+        PROVIDER_OPENAI_PROXY, ResponsesRequest, ResponsesResponse, RouteSelection,
+        UpdateRouteRequest,
     },
     provider_store::ProviderStore,
     route_store::RouteStore,
@@ -187,6 +188,65 @@ pub async fn list_accounts(State(state): State<AppState>) -> Json<Value> {
 
 pub async fn list_providers(State(state): State<AppState>) -> Json<Value> {
     Json(json!({ "providers": state.providers.list().await }))
+}
+
+pub async fn list_models(
+    State(state): State<AppState>,
+) -> Result<Json<ModelListResponse>, AppError> {
+    let provider = resolve_models_provider(&state).await?;
+    let response = if provider == PROVIDER_GOOGLE_PROXY {
+        let account = state
+            .accounts
+            .acquire_for_provider(&state.oauth, &state.upstream, PROVIDER_GOOGLE_PROXY)
+            .await
+            .map_err(AppError::bad_request)?;
+        let raw = state
+            .upstream
+            .fetch_google_available_models(account.token.access_token(), account.token.project_id())
+            .await
+            .map_err(AppError::upstream_message)?;
+        google_models_response(&provider, &raw)?
+    } else if provider == PROVIDER_OPENAI_PROXY {
+        let account = state
+            .accounts
+            .acquire_for_provider(&state.oauth, &state.upstream, PROVIDER_OPENAI_PROXY)
+            .await
+            .map_err(AppError::bad_request)?;
+        let raw = state
+            .upstream
+            .fetch_openai_models(
+                &format!("models_{}", Uuid::new_v4().simple()),
+                account.token.access_token(),
+                account.token.account_id(),
+            )
+            .await
+            .map_err(AppError::upstream_message)?;
+        openai_models_response(&provider, &raw)?
+    } else {
+        let native_provider = state
+            .providers
+            .find_by_name(&provider)
+            .await
+            .ok_or_else(|| AppError::bad_request(format!("unknown provider: {provider}")))?;
+        if native_provider.disabled {
+            return Err(AppError::bad_request(format!(
+                "provider {} is disabled",
+                native_provider.name
+            )));
+        }
+        let raw = state
+            .upstream
+            .fetch_native_models(
+                &format!("models_{}", Uuid::new_v4().simple()),
+                &native_provider.base_url,
+                &native_provider.api_key,
+            )
+            .await
+            .map_err(AppError::upstream_message)?;
+        native_models_response(&provider, &raw)?
+    };
+
+    Ok(Json(response))
 }
 
 pub async fn add_provider(
@@ -1082,7 +1142,7 @@ pub async fn responses(
         &native_target.upstream_model,
         &native_provider.name,
     )
-        .map_err(|err| AppError::internal(err.to_string()))?;
+    .map_err(|err| AppError::internal(err.to_string()))?;
     let upstream = state
         .upstream
         .call_native_responses(
@@ -1146,6 +1206,16 @@ fn provider_for_model(model: &str) -> &'static str {
     }
 }
 
+async fn resolve_models_provider(state: &AppState) -> Result<String, AppError> {
+    let route = state.routes.get().await;
+    if let Some(provider_name) = route.provider {
+        validate_selected_provider(state, &provider_name).await?;
+        return Ok(provider_name);
+    }
+
+    Ok(PROVIDER_GOOGLE_PROXY.to_string())
+}
+
 fn route_payload(route: RouteSelection) -> Value {
     json!({
         "mode": if route.provider.is_some() { "manual" } else { "auto" },
@@ -1163,6 +1233,95 @@ fn normalize_route_provider(provider: Option<String>) -> Option<String> {
             Some(trimmed.to_string())
         }
     })
+}
+
+fn google_models_response(_provider: &str, raw: &Value) -> Result<ModelListResponse, AppError> {
+    let models = raw
+        .get("models")
+        .and_then(Value::as_object)
+        .ok_or_else(|| AppError::upstream_message("google models payload missing `models`"))?;
+
+    let mut data = Vec::with_capacity(models.len());
+    for (id, meta) in models {
+        let _ = meta;
+        data.push(ModelListItem { id: id.clone() });
+    }
+    data.sort_by(|left, right| left.id.cmp(&right.id));
+
+    Ok(ModelListResponse {
+        object: "list".to_string(),
+        data,
+    })
+}
+
+fn native_models_response(_provider: &str, raw: &Value) -> Result<ModelListResponse, AppError> {
+    let entries: Vec<&Value> = if let Some(data) = raw.get("data").and_then(Value::as_array) {
+        data.iter().collect()
+    } else if let Some(models) = raw.get("models").and_then(Value::as_array) {
+        models.iter().collect()
+    } else if let Some(array) = raw.as_array() {
+        array.iter().collect()
+    } else {
+        return Err(AppError::upstream_message(
+            "native models payload missing `data` or `models` array",
+        ));
+    };
+
+    let mut data = Vec::with_capacity(entries.len());
+    for entry in entries {
+        if let Some(id) = native_model_id(entry) {
+            data.push(ModelListItem { id: id.to_string() });
+        }
+    }
+    data.sort_by(|left, right| left.id.cmp(&right.id));
+
+    Ok(ModelListResponse {
+        object: "list".to_string(),
+        data,
+    })
+}
+
+fn openai_models_response(_provider: &str, raw: &Value) -> Result<ModelListResponse, AppError> {
+    let entries = raw
+        .get("models")
+        .and_then(Value::as_array)
+        .ok_or_else(|| AppError::upstream_message("openai models payload missing `models`"))?;
+
+    let mut data = Vec::with_capacity(entries.len());
+    for entry in entries {
+        if entry.get("supported_in_api").and_then(Value::as_bool) == Some(false) {
+            continue;
+        }
+        let id = entry
+            .get("slug")
+            .or_else(|| entry.get("id"))
+            .and_then(Value::as_str);
+        if let Some(id) = id {
+            let priority = entry
+                .get("priority")
+                .and_then(Value::as_i64)
+                .unwrap_or(i64::MAX);
+            data.push((
+                priority,
+                id.to_string(),
+                ModelListItem { id: id.to_string() },
+            ));
+        }
+    }
+    data.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+
+    Ok(ModelListResponse {
+        object: "list".to_string(),
+        data: data.into_iter().map(|(_, _, item)| item).collect(),
+    })
+}
+
+fn native_model_id(entry: &Value) -> Option<&str> {
+    entry
+        .get("id")
+        .or_else(|| entry.get("model"))
+        .or_else(|| entry.get("name"))
+        .and_then(Value::as_str)
 }
 
 async fn validate_selected_provider(state: &AppState, provider: &str) -> Result<(), AppError> {
@@ -1445,16 +1604,12 @@ fn normalize_bytedance_responses_tool_choice(tool_choice: &mut Value) {
         return;
     }
 
-    if let Some(name) = tool_choice_obj
-        .get("name")
-        .cloned()
-        .or_else(|| {
-            tool_choice_obj
-                .get("function")
-                .and_then(|function| function.get("name"))
-                .cloned()
-        })
-    {
+    if let Some(name) = tool_choice_obj.get("name").cloned().or_else(|| {
+        tool_choice_obj
+            .get("function")
+            .and_then(|function| function.get("name"))
+            .cloned()
+    }) {
         *tool_choice = json!({
             "type": "function",
             "name": name,
@@ -1639,5 +1794,29 @@ impl IntoResponse for AppError {
             })),
         )
             .into_response()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::openai_models_response;
+    use serde_json::json;
+
+    #[test]
+    fn parses_openai_codex_models_payload() {
+        let raw = json!({
+            "models": [
+                {
+                    "slug": "gpt-5.4",
+                    "display_name": "GPT-5.4"
+                }
+            ]
+        });
+
+        let response = openai_models_response("openai-proxy", &raw).expect("parse response");
+
+        assert_eq!(response.object, "list");
+        assert_eq!(response.data.len(), 1);
+        assert_eq!(response.data[0].id, "gpt-5.4");
     }
 }

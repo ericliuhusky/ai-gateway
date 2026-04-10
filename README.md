@@ -81,6 +81,16 @@ curl -X POST http://127.0.0.1:10100/v1/providers \
 curl http://127.0.0.1:10100/v1/providers
 ```
 
+### 列出供应商模型
+
+```bash
+curl 'http://127.0.0.1:10100/v1/models'
+```
+
+- 返回当前路由选中的供应商模型列表
+- 当前是手动路由时，使用手动选中的 provider
+- 当前是自动路由时，默认回落到 `google-proxy`
+
 原生 API 供应商配置会写入 `~/.ai-gateway/providers/*.json`。
 
 ## 切换当前路由
