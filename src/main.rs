@@ -72,11 +72,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/auth/openai/start", get(auth_openai_start))
         .route("/auth/callback", get(auth_openai_callback))
         .route("/auth/openai/callback", get(auth_openai_callback))
-        .route("/v1/accounts", get(list_accounts))
-        .route("/v1/models", get(list_models))
-        .route("/v1/providers", get(list_providers).post(add_provider))
-        .route("/v1/route", get(get_route).post(set_route))
-        .route("/v1/responses", post(responses))
+        .route("/accounts", get(list_accounts))
+        .route("/providers", get(list_providers).post(add_provider))
+        .route("/selected-provider", get(get_route).put(set_route))
+        .route("/openai/v1/models", get(list_models))
+        .route("/openai/v1/responses", post(responses))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(config.bind_addr()).await?;

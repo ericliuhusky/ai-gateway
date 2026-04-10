@@ -125,7 +125,7 @@ pub async fn auth_google_callback(
         .map_err(AppError::bad_request)?;
 
     Ok(Html(format!(
-        "<html><body style='font-family:sans-serif;padding:32px'><h1>Login successful</h1><p>Account <strong>{}</strong> is now in the proxy pool.</p><p>You can close this page and call <code>/v1/responses</code>.</p></body></html>",
+        "<html><body style='font-family:sans-serif;padding:32px'><h1>Login successful</h1><p>Account <strong>{}</strong> is now in the proxy pool.</p><p>You can close this page and call <code>/openai/v1/responses</code>.</p></body></html>",
         account.email
     )))
 }
@@ -177,7 +177,7 @@ pub async fn auth_openai_callback(
     };
 
     Ok(Html(format!(
-        "<html><body style='font-family:sans-serif;padding:32px'><h1>OpenAI login successful</h1><p>Account <strong>{}</strong> is now in the proxy pool.</p>{}<p>Stored account id: <code>{}</code></p><p>You can close this page and call <code>/v1/responses</code>.</p></body></html>",
+        "<html><body style='font-family:sans-serif;padding:32px'><h1>OpenAI login successful</h1><p>Account <strong>{}</strong> is now in the proxy pool.</p>{}<p>Stored account id: <code>{}</code></p><p>You can close this page and call <code>/openai/v1/responses</code>.</p></body></html>",
         email, scope_hint, account.id
     )))
 }
@@ -272,7 +272,7 @@ pub async fn add_provider(
 }
 
 pub async fn get_route(State(state): State<AppState>) -> Json<Value> {
-    Json(json!({ "route": route_payload(state.routes.get().await) }))
+    Json(json!({ "selected_provider": route_payload(state.routes.get().await) }))
 }
 
 pub async fn set_route(
@@ -289,7 +289,7 @@ pub async fn set_route(
         .set(provider)
         .await
         .map_err(AppError::bad_request)?;
-    Ok(Json(json!({ "route": route_payload(route) })))
+    Ok(Json(json!({ "selected_provider": route_payload(route) })))
 }
 
 const OPENAI_CODEX_DEFAULT_INSTRUCTIONS: &str = "You are Codex.";
@@ -574,7 +574,7 @@ pub async fn responses(
         provider = %provider,
         route_mode = %route_mode,
         body = %json_for_log(&request),
-        "received /v1/responses request"
+        "received /openai/v1/responses request"
     );
 
     if provider == PROVIDER_OPENAI_PROXY {
@@ -606,7 +606,7 @@ pub async fn responses(
                 email = %account.email,
                 provider = PROVIDER_OPENAI_PROXY,
                 response_body = %json_value_for_log(&response_body),
-                "returning OpenAI /v1/responses body"
+                "returning OpenAI /openai/v1/responses body"
             );
             return Ok((
                 StatusCode::OK,
@@ -705,7 +705,7 @@ pub async fn responses(
                 elapsed_ms = started_at.elapsed().as_millis(),
                 output_items = response.output.len(),
                 response_body = %json_for_log(&response),
-                "returning non-stream /v1/responses body"
+                "returning non-stream /openai/v1/responses body"
             );
             return Ok((
                 StatusCode::OK,
@@ -1045,7 +1045,7 @@ pub async fn responses(
             emitted_events = emitted_event_count,
             output_items = completed_output_items.len(),
             text_len = accumulated_text.len(),
-            "completed streaming /v1/responses request"
+            "completed streaming /openai/v1/responses request"
         );
 
         yield Ok("data: [DONE]\n\n".to_string());
@@ -1109,7 +1109,7 @@ pub async fn responses(
                 provider = %provider,
                 upstream_model = %native_target.upstream_model,
                 response_body = %json_for_log(&response),
-                "returning chat-completions-adapted /v1/responses body"
+                "returning chat-completions-adapted /openai/v1/responses body"
             );
             return Ok((
                 StatusCode::OK,
@@ -1163,7 +1163,7 @@ pub async fn responses(
             provider = %provider,
             upstream_model = %native_target.upstream_model,
             response_body = %json_value_for_log(&response_body),
-            "returning native provider /v1/responses body"
+            "returning native provider /openai/v1/responses body"
         );
         return Ok((
             StatusCode::OK,
