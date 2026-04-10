@@ -1,9 +1,7 @@
 use crate::{
     auth::{ImportedOpenAIAuth, OAuthClient, TokenResponse, UserInfo},
     config::Config,
-    models::{
-        AccountRecord, AccountSummary, AccountToken, PROVIDER_GOOGLE_PROXY, PROVIDER_OPENAI_PROXY,
-    },
+    models::{AccountRecord, AccountSummary, PROVIDER_GOOGLE_PROXY, PROVIDER_OPENAI_PROXY},
     upstream::UpstreamClient,
 };
 use std::{
@@ -74,9 +72,10 @@ impl AccountPool {
                 id: account.id.clone(),
                 email: account.email.clone(),
                 provider: account.provider().to_string(),
-                name: account.name.clone(),
+                name: account.display_name.clone(),
                 has_project_id: account.has_project_id(),
-                disabled: account.disabled,
+                created_at: account.created_at,
+                updated_at: account.updated_at,
                 last_used: account.last_used,
             })
             .collect()
@@ -92,35 +91,38 @@ impl AccountPool {
             .refresh_token
             .ok_or_else(|| "google did not return refresh_token".to_string())?;
         let now = now_unix() as i64;
-
-        let token_data = AccountToken::google(
-            token.access_token,
-            refresh_token,
-            now + token.expires_in,
-            project_id,
-        );
+        let expiry_timestamp = now + token.expires_in;
 
         let mut accounts = self.accounts.lock().await;
-        let account = if let Some(existing) = accounts
-            .iter_mut()
-            .find(|account| account.email == user.email)
-        {
-            existing.name = user.name.clone();
-            existing.token = token_data;
-            existing.disabled = false;
-            existing.disabled_reason = None;
+        let account = if let Some(existing) = accounts.iter_mut().find(|account| {
+            account.email == user.email && account.provider() == PROVIDER_GOOGLE_PROXY
+        }) {
+            existing.name = PROVIDER_GOOGLE_PROXY.to_string();
+            existing.display_name = user.name.clone();
+            existing.access_token = token.access_token;
+            existing.refresh_token = refresh_token;
+            existing.expiry_timestamp = expiry_timestamp;
+            existing.client_id = None;
+            existing.project_id = Some(project_id);
+            existing.account_id = None;
+            existing.updated_at = now;
             existing.last_used = now;
             existing.clone()
         } else {
             let account = AccountRecord {
                 id: Uuid::new_v4().to_string(),
+                name: PROVIDER_GOOGLE_PROXY.to_string(),
                 email: user.email,
-                name: user.name,
-                token: token_data,
+                display_name: user.name,
+                access_token: token.access_token,
+                refresh_token,
+                expiry_timestamp,
+                client_id: None,
+                project_id: Some(project_id),
+                account_id: None,
                 created_at: now,
+                updated_at: now,
                 last_used: now,
-                disabled: false,
-                disabled_reason: None,
             };
             accounts.push(account.clone());
             account
@@ -136,33 +138,35 @@ impl AccountPool {
     ) -> Result<AccountRecord, String> {
         let now = now_unix() as i64;
 
-        let token_data = AccountToken::openai(
-            imported.access_token,
-            imported.refresh_token,
-            imported.expiry_timestamp,
-            imported.client_id,
-            imported.account_id,
-        );
-
         let mut accounts = self.accounts.lock().await;
         let account = if let Some(existing) = accounts.iter_mut().find(|account| {
             account.email == imported.email && account.provider() == PROVIDER_OPENAI_PROXY
         }) {
-            existing.token = token_data;
-            existing.disabled = false;
-            existing.disabled_reason = None;
+            existing.name = PROVIDER_OPENAI_PROXY.to_string();
+            existing.access_token = imported.access_token;
+            existing.refresh_token = imported.refresh_token;
+            existing.expiry_timestamp = imported.expiry_timestamp;
+            existing.client_id = Some(imported.client_id);
+            existing.project_id = None;
+            existing.account_id = imported.account_id;
+            existing.updated_at = now;
             existing.last_used = now;
             existing.clone()
         } else {
             let account = AccountRecord {
                 id: Uuid::new_v4().to_string(),
+                name: PROVIDER_OPENAI_PROXY.to_string(),
                 email: imported.email,
-                name: None,
-                token: token_data,
+                display_name: None,
+                access_token: imported.access_token,
+                refresh_token: imported.refresh_token,
+                expiry_timestamp: imported.expiry_timestamp,
+                client_id: Some(imported.client_id),
+                project_id: None,
+                account_id: imported.account_id,
                 created_at: now,
+                updated_at: now,
                 last_used: now,
-                disabled: false,
-                disabled_reason: None,
             };
             accounts.push(account.clone());
             account
@@ -196,79 +200,65 @@ impl AccountPool {
         for offset in 0..snapshot.len() {
             let idx = (start + offset) % snapshot.len();
             let mut account = snapshot[idx].clone();
-            if account.disabled {
-                info!(
-                    account_id = %account.id,
-                    email = %account.email,
-                    index = idx,
-                    "skipping disabled account"
-                );
-                continue;
-            }
 
-            if oauth.refresh_needed(account.token.expiry_timestamp()) {
+            if oauth.refresh_needed(account.expiry_timestamp) {
                 info!(
                     account_id = %account.id,
                     email = %account.email,
-                    expires_at = account.token.expiry_timestamp(),
+                    expires_at = account.expiry_timestamp,
                     "refreshing access token before use"
                 );
                 let refreshed = if account.provider() == PROVIDER_OPENAI_PROXY {
                     let client_id = account
-                        .token
                         .client_id()
                         .ok_or_else(|| "openai account missing oauth client id".to_string())?;
                     oauth
-                        .refresh_openai_access_token(client_id, account.token.refresh_token())
+                        .refresh_openai_access_token(client_id, account.refresh_token())
                         .await
                 } else {
                     oauth
-                        .refresh_google_access_token(account.token.refresh_token())
+                        .refresh_google_access_token(account.refresh_token())
                         .await
                 };
 
                 match refreshed {
                     Ok(refreshed) => {
-                        *account.token.access_token_mut() = refreshed.access_token;
-                        account
-                            .token
-                            .set_expiry_timestamp(now_unix() as i64 + refreshed.expires_in);
+                        *account.access_token_mut() = refreshed.access_token;
+                        account.set_expiry_timestamp(now_unix() as i64 + refreshed.expires_in);
                         if let Some(refresh_token) = refreshed.refresh_token {
-                            *account.token.refresh_token_mut() = refresh_token;
+                            *account.refresh_token_mut() = refresh_token;
                         }
+                        account.updated_at = now_unix() as i64;
                         info!(
                             account_id = %account.id,
                             email = %account.email,
-                            expires_at = account.token.expiry_timestamp(),
+                            expires_at = account.expiry_timestamp,
                             "refreshed access token"
                         );
                     }
                     Err(err) => {
                         warn!("refresh failed for {}: {}", account.email, err);
-                        self.mark_disabled(&account.id, err).await?;
                         continue;
                     }
                 }
             }
 
             if account.provider() == PROVIDER_GOOGLE_PROXY
-                && account.token.project_id().unwrap_or("").is_empty()
+                && account.project_id().unwrap_or("").is_empty()
             {
                 info!(
                     account_id = %account.id,
                     email = %account.email,
                     "fetching missing project_id"
                 );
-                match upstream
-                    .fetch_project_id(account.token.access_token())
-                    .await
-                {
+                match upstream.fetch_project_id(account.access_token()).await {
                     Ok(project_id) => {
-                        account.token.set_project_id(project_id);
+                        account.set_project_id(project_id);
+                        account.updated_at = now_unix() as i64;
                         info!(
                             account_id = %account.id,
                             email = %account.email,
-                            project_id = %account.token.project_id().unwrap_or(""),
+                            project_id = %account.project_id().unwrap_or(""),
                             "fetched project_id"
                         );
                     }
@@ -279,12 +269,14 @@ impl AccountPool {
                 }
             }
 
-            account.last_used = now_unix() as i64;
+            let now = now_unix() as i64;
+            account.last_used = now;
+            account.updated_at = now;
             self.update_account(account.clone()).await?;
             info!(
                 account_id = %account.id,
                 email = %account.email,
-                project_id = %account.token.project_id().unwrap_or(""),
+                project_id = %account.project_id().unwrap_or(""),
                 index = idx,
                 "selected account from pool"
             );
@@ -303,16 +295,6 @@ impl AccountPool {
             accounts.push(account.clone());
         }
         self.persist_account(&account)
-    }
-
-    async fn mark_disabled(&self, account_id: &str, reason: String) -> Result<(), String> {
-        let mut accounts = self.accounts.lock().await;
-        if let Some(account) = accounts.iter_mut().find(|item| item.id == account_id) {
-            account.disabled = true;
-            account.disabled_reason = Some(reason);
-            self.persist_account(account)?;
-        }
-        Ok(())
     }
 
     fn ensure_dirs(&self) -> Result<(), String> {

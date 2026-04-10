@@ -202,7 +202,7 @@ pub async fn list_models(
             .map_err(AppError::bad_request)?;
         let raw = state
             .upstream
-            .fetch_google_available_models(account.token.access_token(), account.token.project_id())
+            .fetch_google_available_models(account.access_token(), account.project_id())
             .await
             .map_err(AppError::upstream_message)?;
         google_models_response(&provider, &raw)?
@@ -216,8 +216,8 @@ pub async fn list_models(
             .upstream
             .fetch_openai_models(
                 &format!("models_{}", Uuid::new_v4().simple()),
-                account.token.access_token(),
-                account.token.account_id(),
+                account.access_token(),
+                account.account_id(),
             )
             .await
             .map_err(AppError::upstream_message)?;
@@ -228,12 +228,6 @@ pub async fn list_models(
             .find_by_name(&provider)
             .await
             .ok_or_else(|| AppError::bad_request(format!("unknown provider: {provider}")))?;
-        if native_provider.disabled {
-            return Err(AppError::bad_request(format!(
-                "provider {} is disabled",
-                native_provider.name
-            )));
-        }
         let raw = state
             .upstream
             .fetch_native_models(
@@ -264,8 +258,9 @@ pub async fn add_provider(
             "id": provider.id,
             "name": provider.name,
             "base_url": provider.base_url,
+            "api_key": provider.api_key,
             "billing_mode": provider.billing_mode,
-            "disabled": provider.disabled,
+            "created_at": provider.created_at,
             "updated_at": provider.updated_at,
         }
     })))
@@ -279,14 +274,12 @@ pub async fn set_route(
     State(state): State<AppState>,
     Json(request): Json<UpdateRouteRequest>,
 ) -> Result<Json<Value>, AppError> {
-    let provider = normalize_route_provider(request.provider);
-    if let Some(provider_name) = provider.as_deref() {
-        validate_selected_provider(&state, provider_name).await?;
-    }
+    let provider = normalize_route_provider(request.provider)?;
+    validate_selected_provider(&state, &provider).await?;
 
     let route = state
         .routes
-        .set(provider)
+        .set(Some(provider))
         .await
         .map_err(AppError::bad_request)?;
     Ok(Json(json!({ "selected_provider": route_payload(route) })))
@@ -559,20 +552,10 @@ pub async fn responses(
 ) -> Result<Response, AppError> {
     let request_id = format!("req_{}", Uuid::new_v4().simple());
     let started_at = Instant::now();
-    let route = state.routes.get().await;
-    let provider = route
-        .provider
-        .clone()
-        .unwrap_or_else(|| provider_for_model(&request.model).to_string());
-    let route_mode = if route.provider.is_some() {
-        "manual"
-    } else {
-        "auto"
-    };
+    let provider = resolve_models_provider(&state).await?;
     info!(
         request_id = %request_id,
         provider = %provider,
-        route_mode = %route_mode,
         body = %json_for_log(&request),
         "received /openai/v1/responses request"
     );
@@ -590,8 +573,8 @@ pub async fn responses(
             .upstream
             .call_openai_responses(
                 &request_id,
-                account.token.access_token(),
-                account.token.account_id(),
+                account.access_token(),
+                account.account_id(),
                 request_body,
                 request.stream,
             )
@@ -652,7 +635,6 @@ pub async fn responses(
             .await
             .map_err(AppError::bad_request)?;
         let project_id = account
-            .token
             .project_id()
             .map(str::to_string)
             .ok_or_else(|| AppError::bad_request("selected account has no project_id"))?;
@@ -684,7 +666,7 @@ pub async fn responses(
                     "generateContent"
                 },
                 &request_id,
-                account.token.access_token(),
+                account.access_token(),
                 request_body,
                 request.stream,
             )
@@ -1078,12 +1060,6 @@ pub async fn responses(
         .find_by_name(&provider)
         .await
         .ok_or_else(|| AppError::bad_request(format!("unknown provider: {provider}")))?;
-    if native_provider.disabled {
-        return Err(AppError::bad_request(format!(
-            "provider {} is disabled",
-            native_provider.name
-        )));
-    }
 
     let native_target = resolve_native_target(&native_provider, &request.model);
     if native_target.uses_chat_completions {
@@ -1193,19 +1169,6 @@ pub async fn responses(
         .map_err(|err| AppError::internal(err.to_string()))?)
 }
 
-fn provider_for_model(model: &str) -> &'static str {
-    if model.starts_with("gpt-")
-        || model.starts_with("o1")
-        || model.starts_with("o3")
-        || model.starts_with("o4")
-        || model.starts_with("codex-")
-    {
-        PROVIDER_OPENAI_PROXY
-    } else {
-        PROVIDER_GOOGLE_PROXY
-    }
-}
-
 async fn resolve_models_provider(state: &AppState) -> Result<String, AppError> {
     let route = state.routes.get().await;
     if let Some(provider_name) = route.provider {
@@ -1213,26 +1176,34 @@ async fn resolve_models_provider(state: &AppState) -> Result<String, AppError> {
         return Ok(provider_name);
     }
 
-    Ok(PROVIDER_GOOGLE_PROXY.to_string())
+    Err(AppError::bad_request(
+        "no provider selected; call PUT /selected-provider first",
+    ))
 }
 
 fn route_payload(route: RouteSelection) -> Value {
     json!({
-        "mode": if route.provider.is_some() { "manual" } else { "auto" },
         "provider": route.provider,
         "updated_at": route.updated_at,
     })
 }
 
-fn normalize_route_provider(provider: Option<String>) -> Option<String> {
-    provider.and_then(|value| {
-        let trimmed = value.trim();
-        if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("auto") {
-            None
-        } else {
-            Some(trimmed.to_string())
-        }
-    })
+fn normalize_route_provider(provider: Option<String>) -> Result<String, AppError> {
+    let provider = provider.ok_or_else(|| {
+        AppError::bad_request("provider is required; automatic routing has been removed")
+    })?;
+    let trimmed = provider.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::bad_request(
+            "provider cannot be empty; automatic routing has been removed",
+        ));
+    }
+    if trimmed.eq_ignore_ascii_case("auto") {
+        return Err(AppError::bad_request(
+            "provider cannot be `auto`; automatic routing has been removed",
+        ));
+    }
+    Ok(trimmed.to_string())
 }
 
 fn google_models_response(_provider: &str, raw: &Value) -> Result<ModelListResponse, AppError> {
@@ -1329,16 +1300,11 @@ async fn validate_selected_provider(state: &AppState, provider: &str) -> Result<
         return Ok(());
     }
 
-    let native_provider = state
+    state
         .providers
         .find_by_name(provider)
         .await
         .ok_or_else(|| AppError::bad_request(format!("unknown provider: {provider}")))?;
-    if native_provider.disabled {
-        return Err(AppError::bad_request(format!(
-            "provider {provider} is disabled"
-        )));
-    }
     Ok(())
 }
 

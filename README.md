@@ -19,6 +19,7 @@ cargo run
 默认固定监听 `127.0.0.1:10100`。
 
 账号数据固定保存在 `~/.ai-gateway/accounts/*.json`。
+原生 provider 数据固定保存在 `~/.ai-gateway/providers/*.json`。
 
 ## 登录
 
@@ -88,10 +89,7 @@ curl 'http://127.0.0.1:10100/openai/v1/models'
 ```
 
 - 返回当前路由选中的供应商模型列表
-- 当前是手动路由时，使用手动选中的 provider
-- 当前是自动路由时，默认回落到 `google-proxy`
-
-原生 API 供应商配置会写入 `~/.ai-gateway/providers/*.json`。
+- 必须先通过 `/selected-provider` 明确选择 provider
 
 ## 选择当前 Provider
 
@@ -106,7 +104,7 @@ curl -X POST http://127.0.0.1:10100/openai/v1/responses \
   }'
 ```
 
-如果你想查看当前手动选择的 provider，可以调用：
+如果你想查看当前选择的 provider，可以调用：
 
 ```bash
 curl http://127.0.0.1:10100/selected-provider
@@ -117,7 +115,6 @@ curl http://127.0.0.1:10100/selected-provider
 ```json
 {
   "selected_provider": {
-    "mode": "manual",
     "provider": "bytedance",
     "updated_at": 1744250000
   }
@@ -134,16 +131,6 @@ curl -X PUT http://127.0.0.1:10100/selected-provider \
   }'
 ```
 
-更新为自动路由：
-
-```bash
-curl -X PUT http://127.0.0.1:10100/selected-provider \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "provider": null
-  }'
-```
-
 `provider` 可以是：
 
 - `openai-proxy`
@@ -155,8 +142,7 @@ curl -X PUT http://127.0.0.1:10100/selected-provider \
 - 当前这两个 OAuth 供应商被视为“代理供应商”：
   - `openai-proxy`: 使用 ChatGPT OAuth，会转发到 `https://chatgpt.com/backend-api/codex/responses`
   - `google-proxy`: 使用 Google OAuth，会转发到 Gemini 私有 `v1internal`
-- 自动路由模式下，`gpt-*`、`o1*`、`o3*`、`o4*`、`codex-*` 模型当前会路由到 `openai-proxy`
-- 自动路由模式下，其他模型当前会路由到 `google-proxy`
+- 不再提供自动路由；所有 `/openai/v1/models` 和 `/openai/v1/responses` 调用都依赖用户显式选择的 provider
 - `/accounts` 返回的 `provider` 也会使用这套命名，账号配置需直接写成 `google-proxy` / `openai-proxy`
 
 ## 当前范围

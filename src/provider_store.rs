@@ -64,8 +64,8 @@ impl ProviderStore {
                 name: provider.name.clone(),
                 base_url: provider.base_url.clone(),
                 billing_mode: provider.billing_mode.clone(),
-                disabled: provider.disabled,
                 api_key_preview: mask_api_key(&provider.api_key),
+                created_at: provider.created_at,
                 updated_at: provider.updated_at,
             })
             .collect()
@@ -97,7 +97,6 @@ impl ProviderStore {
                 existing.base_url = base_url;
                 existing.api_key = api_key;
                 existing.billing_mode = request.billing_mode;
-                existing.disabled = false;
                 existing.updated_at = now;
                 existing.clone()
             } else {
@@ -109,7 +108,6 @@ impl ProviderStore {
                     billing_mode: request.billing_mode,
                     created_at: now,
                     updated_at: now,
-                    disabled: false,
                 };
                 providers.push(provider.clone());
                 provider
