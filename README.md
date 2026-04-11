@@ -51,42 +51,33 @@ open http://127.0.0.1:10100/auth/openai/start
 
 ## 原生 API 供应商
 
-除了 `openai-proxy` / `google-proxy` 这类 OAuth 代理供应商，现在也支持登记“原生 key 的 API 供应商”配置。`provider` 现在是统一入口，会通过 `auth_mode` 决定是走 API key 还是绑定本地 account：
+除了 `openai-proxy` / `google-proxy` 这类 OAuth 代理供应商，现在也支持登记“原生 key 的 API 供应商”配置。`provider` 是统一入口：
+
+- `api_key` 型 provider 通过 `POST /providers` 手动创建
+- `account` 型 provider 只能通过 OAuth 登录自动创建或更新
+- 用户不会手动绑定 account；登录成功后系统会自动维护 `provider <-> account` 这一对一关系
 
 ```bash
 curl -X POST http://127.0.0.1:10100/providers \
   -H 'Content-Type: application/json' \
   -d '{
     "name": "bytedance",
-    "auth_mode": "api_key",
     "base_url": "https://ark.cn-beijing.volces.com/api/v3",
     "api_key": "sk-xxx",
     "billing_mode": "metered"
   }'
 ```
 
-如果是登录型 provider，也可以直接绑定一个本地 account：
-
-```bash
-curl -X POST http://127.0.0.1:10100/providers \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "name": "openai-proxy",
-    "auth_mode": "account",
-    "account_id": "acc_xxx"
-  }'
-```
-
 其中：
 
 - `name`: 供应商名，例如 `openai`、`google`、`bytedance`、`bytedance-coding-plan`、`local-8080`
-- `auth_mode`: `api_key` 或 `account`
-- `base_url`: 该供应商的 API 基础地址；`auth_mode=api_key` 时必填
-- `api_key`: 上游 API key；`auth_mode=api_key` 时必填
-- `account_id`: 绑定的本地 account 记录 id；`auth_mode=account` 时必填
+- `base_url`: 该供应商的 API 基础地址
+- `api_key`: 上游 API key
 - `billing_mode`: `metered` 或 `subscription`
   - `metered`: 按量计费，通常按 token、请求次数或实际用量扣费
   - `subscription`: 订阅制 / 套餐制，通常不是每次调用单独计费
+
+`POST /providers` 不接受 `auth_mode` 或 `account_id`；这个接口默认创建的就是 `api_key` 型 provider。
 
 查看已登记的供应商：
 
@@ -153,7 +144,8 @@ curl -X PUT http://127.0.0.1:10100/selected-provider \
 - 当前这两个 OAuth 供应商被视为“账号型 provider”：
   - `openai-proxy`: 使用 ChatGPT OAuth，会转发到 `https://chatgpt.com/backend-api/codex/responses`
   - `google-proxy`: 使用 Google OAuth，会转发到 Gemini 私有 `v1internal`
-- OAuth 登录成功后，会自动把对应 provider 绑定到刚登录的本地 account
+- OAuth 登录成功后，会自动创建或更新对应 provider，并绑定到刚登录的本地 account
+- 当前设计要求 `account` 和 `provider` 一对一存在：要么同时存在，要么同时不存在
 - 不再提供自动路由；所有 `/openai/v1/models` 和 `/openai/v1/responses` 调用都依赖用户显式选择的 provider
 - `account` 不再对外暴露接口，只作为 provider 的内部认证信息存在
 

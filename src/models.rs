@@ -33,6 +33,7 @@ pub enum AccountType {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CreateApiProviderRequest {
     #[serde(alias = "provider_name")]
     pub name: String,
@@ -42,10 +43,6 @@ pub struct CreateApiProviderRequest {
     pub api_key: Option<String>,
     #[serde(default)]
     pub billing_mode: Option<ApiProviderBillingMode>,
-    #[serde(default)]
-    pub auth_mode: Option<ProviderAuthMode>,
-    #[serde(default)]
-    pub account_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

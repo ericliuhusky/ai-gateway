@@ -82,44 +82,22 @@ impl ProviderStore {
             return Err("name cannot be empty".to_string());
         }
 
-        let auth_mode = request.auth_mode.unwrap_or_else(|| {
-            if request
-                .account_id
-                .as_deref()
-                .is_some_and(|id| !id.trim().is_empty())
-            {
-                ProviderAuthMode::Account
-            } else {
-                ProviderAuthMode::ApiKey
-            }
-        });
         let base_url = request.base_url.unwrap_or_default().trim().to_string();
         let api_key = request.api_key.unwrap_or_default().trim().to_string();
-        let account_id = request.account_id.and_then(|value| {
-            let trimmed = value.trim().to_string();
-            (!trimmed.is_empty()).then_some(trimmed)
-        });
-
-        if auth_mode == ProviderAuthMode::ApiKey {
-            if api_key.is_empty() {
-                return Err("api_key cannot be empty when auth_mode=api_key".to_string());
-            }
-            if base_url.is_empty() {
-                return Err("base_url cannot be empty when auth_mode=api_key".to_string());
-            }
+        if api_key.is_empty() {
+            return Err("api_key cannot be empty".to_string());
         }
-
-        if auth_mode == ProviderAuthMode::Account && account_id.is_none() {
-            return Err("account_id cannot be empty when auth_mode=account".to_string());
+        if base_url.is_empty() {
+            return Err("base_url cannot be empty".to_string());
         }
 
         let mut providers = self.providers.lock().await;
         let provider =
             if let Some(existing) = providers.iter_mut().find(|provider| provider.name == name) {
-                existing.auth_mode = auth_mode;
+                existing.auth_mode = ProviderAuthMode::ApiKey;
                 existing.base_url = base_url;
                 existing.api_key = api_key;
-                existing.account_id = account_id;
+                existing.account_id = None;
                 existing.billing_mode = request
                     .billing_mode
                     .unwrap_or_else(|| existing.billing_mode.clone());
@@ -128,10 +106,10 @@ impl ProviderStore {
                 let provider = ApiProviderRecord {
                     id: Uuid::new_v4().to_string(),
                     name,
-                    auth_mode,
+                    auth_mode: ProviderAuthMode::ApiKey,
                     base_url,
                     api_key,
-                    account_id,
+                    account_id: None,
                     billing_mode: request
                         .billing_mode
                         .unwrap_or(ApiProviderBillingMode::Metered),
