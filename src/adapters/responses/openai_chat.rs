@@ -220,3 +220,71 @@ fn now_unix() -> u64 {
         .unwrap_or_default()
         .as_secs()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{chat_completions_to_responses, responses_to_chat_completions};
+    use crate::models::ResponsesRequest;
+    use serde_json::json;
+
+    #[test]
+    fn preserves_lowercase_json_schema_for_chat_tools() {
+        let request: ResponsesRequest = serde_json::from_value(json!({
+            "model": "gpt-5.4",
+            "input": "hello",
+            "tools": [{
+                "type": "function",
+                "name": "shell",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "command": { "type": "array" },
+                        "workdir": { "type": "string", "format": "uri-reference" }
+                    }
+                }
+            }]
+        }))
+        .expect("request should parse");
+
+        let body = responses_to_chat_completions(&request, "ark-code-latest")
+            .expect("request should convert");
+        let parameters = &body["tools"][0]["function"]["parameters"];
+
+        assert_eq!(parameters["type"], "object");
+        assert_eq!(parameters["properties"]["command"]["type"], "array");
+        assert_eq!(parameters["properties"]["workdir"]["type"], "string");
+        assert!(parameters["properties"]["workdir"].get("format").is_none());
+    }
+
+    #[test]
+    fn maps_chat_completions_tool_calls_and_text_back_to_responses() {
+        let chat = json!({
+            "id": "chatcmpl_123",
+            "created": 1_700_000_000u64,
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 6,
+                "total_tokens": 16
+            },
+            "choices": [{
+                "message": {
+                    "content": "done",
+                    "tool_calls": [{
+                        "id": "call_123",
+                        "function": {
+                            "name": "shell",
+                            "arguments": "{\"command\":[\"pwd\"]}"
+                        }
+                    }]
+                }
+            }]
+        });
+
+        let response = chat_completions_to_responses("gpt-5.4", &chat);
+
+        assert_eq!(response.output.len(), 2);
+        assert_eq!(response.output[0].item_type, "function_call");
+        assert_eq!(response.output[0].name.as_deref(), Some("shell"));
+        assert_eq!(response.output[1].item_type, "message");
+    }
+}

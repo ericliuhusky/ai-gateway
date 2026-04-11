@@ -82,6 +82,14 @@ pub fn build_messages(request: &ResponsesRequest) -> Result<Vec<OpenAIMessage>, 
 }
 
 pub fn clean_tool_schema(value: &mut Value) {
+    clean_tool_schema_with_case(value, false);
+}
+
+pub fn clean_tool_schema_for_gemini(value: &mut Value) {
+    clean_tool_schema_with_case(value, true);
+}
+
+fn clean_tool_schema_with_case(value: &mut Value, uppercase_types: bool) {
     match value {
         Value::Object(map) => {
             map.remove("$schema");
@@ -99,31 +107,36 @@ pub fn clean_tool_schema(value: &mut Value) {
 
             if let Some(type_value) = map.get_mut("type") {
                 if let Value::String(type_name) = type_value {
-                    *type_name = type_name.to_uppercase();
+                    if uppercase_types {
+                        *type_name = type_name.to_uppercase();
+                    }
                 }
             } else if looks_like_schema {
-                map.insert("type".to_string(), Value::String("OBJECT".to_string()));
+                map.insert(
+                    "type".to_string(),
+                    Value::String(if uppercase_types { "OBJECT" } else { "object" }.to_string()),
+                );
             }
 
             if let Some(properties) = map.get_mut("properties") {
                 if let Value::Object(properties_map) = properties {
                     for value in properties_map.values_mut() {
-                        clean_tool_schema(value);
+                        clean_tool_schema_with_case(value, uppercase_types);
                     }
                 }
             } else {
                 for value in map.values_mut() {
-                    clean_tool_schema(value);
+                    clean_tool_schema_with_case(value, uppercase_types);
                 }
             }
 
             if let Some(items) = map.get_mut("items") {
-                clean_tool_schema(items);
+                clean_tool_schema_with_case(items, uppercase_types);
             }
         }
         Value::Array(values) => {
             for value in values {
-                clean_tool_schema(value);
+                clean_tool_schema_with_case(value, uppercase_types);
             }
         }
         _ => {}

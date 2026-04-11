@@ -1,4 +1,4 @@
-use crate::adapters::responses::shared::{build_messages, clean_tool_schema};
+use crate::adapters::responses::shared::{build_messages, clean_tool_schema_for_gemini};
 use crate::models::{
     GeminiContent, GeminiGenerateRequest, GenerationConfig, OpenAIContent, OpenAIContentBlock,
     OpenAIMessage, ResponseOutputContent, ResponseOutputItem, ResponseTool, ResponsesRequest,
@@ -151,7 +151,7 @@ fn build_tools(
                 .clone()
                 .or_else(|| function.and_then(|f| f.get("parameters")).cloned())
                 .unwrap_or_else(|| json!({"type":"object","properties":{},"required":[]}));
-            clean_tool_schema(&mut parameters);
+            clean_tool_schema_for_gemini(&mut parameters);
             Some(json!({ "name": name, "description": description, "parameters": parameters }))
         })
         .collect();
@@ -357,5 +357,41 @@ fn map_image_part(url: &str) -> Result<Value, String> {
         Ok(json!({ "inlineData": { "mimeType": mime_type, "data": data } }))
     } else {
         Ok(json!({ "fileData": { "fileUri": url, "mimeType": "image/*" } }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::responses_to_gemini;
+    use crate::models::ResponsesRequest;
+    use serde_json::json;
+
+    #[test]
+    fn keeps_uppercase_json_schema_for_gemini_tools() {
+        let request: ResponsesRequest = serde_json::from_value(json!({
+            "model": "gemini-2.5-pro",
+            "input": "hello",
+            "tools": [{
+                "type": "function",
+                "name": "shell",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "command": { "type": "array" },
+                        "workdir": { "type": "string", "format": "uri-reference" }
+                    }
+                }
+            }]
+        }))
+        .expect("request should parse");
+
+        let body = responses_to_gemini(&request).expect("request should convert");
+        let parameters = &body.tools.as_ref().expect("tools should exist")[0]["functionDeclarations"]
+            [0]["parameters"];
+
+        assert_eq!(parameters["type"], "OBJECT");
+        assert_eq!(parameters["properties"]["command"]["type"], "ARRAY");
+        assert_eq!(parameters["properties"]["workdir"]["type"], "STRING");
+        assert!(parameters["properties"]["workdir"].get("format").is_none());
     }
 }
