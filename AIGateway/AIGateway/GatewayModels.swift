@@ -14,9 +14,9 @@ enum GatewayBillingMode: String, Codable, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .metered:
-            return "Metered"
+            return "按量"
         case .subscription:
-            return "Subscription"
+            return "订阅"
         }
     }
 }
@@ -27,6 +27,7 @@ struct GatewayProvider: Codable, Identifiable, Hashable {
     let authMode: GatewayAuthMode
     let baseURL: String
     let accountID: String?
+    let accountEmail: String?
     let billingMode: GatewayBillingMode
     let apiKeyPreview: String
 
@@ -36,6 +37,7 @@ struct GatewayProvider: Codable, Identifiable, Hashable {
         case authMode = "auth_mode"
         case baseURL = "base_url"
         case accountID = "account_id"
+        case accountEmail = "account_email"
         case billingMode = "billing_mode"
         case apiKeyPreview = "api_key_preview"
     }
@@ -105,9 +107,9 @@ enum AccountLoginProvider: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .google:
-            return "Google Account"
+            return "Google"
         case .openai:
-            return "OpenAI Account"
+            return "OpenAI"
         }
     }
 }

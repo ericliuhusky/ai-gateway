@@ -42,6 +42,7 @@ impl ProviderStore {
                 auth_mode: provider.auth_mode.clone(),
                 base_url: provider.base_url.clone(),
                 account_id: provider.account_id.clone(),
+                account_email: None,
                 billing_mode: provider.billing_mode.clone(),
                 api_key_preview: mask_api_key(&provider.api_key),
             })

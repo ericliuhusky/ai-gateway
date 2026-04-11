@@ -68,6 +68,8 @@ pub struct ApiProviderSummary {
     pub base_url: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub account_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_email: Option<String>,
     pub billing_mode: ApiProviderBillingMode,
     pub api_key_preview: String,
 }

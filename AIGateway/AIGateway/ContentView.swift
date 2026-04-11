@@ -45,18 +45,18 @@ struct ContentView: View {
     private var header: some View {
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 10) {
-                Text("Providers")
+                Text("供应商")
                     .font(.system(size: 32, weight: .bold, design: .rounded))
-                Text("管理 API provider、发起 Google / OpenAI 账号登录，并切换当前选中的 provider。")
+                Text("管理 API 供应商、发起 Google / OpenAI 账号登录，并切换当前选中的供应商。")
                     .font(.system(size: 14, weight: .medium))
                     .foregroundStyle(.secondary)
 
                 if let selected = viewModel.selectedProviderName {
-                    Label("Current: \(selected)", systemImage: "checkmark.circle.fill")
+                    Label("当前选中的供应商：\(selected)", systemImage: "checkmark.circle.fill")
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(selectionAccent)
                 } else {
-                    Label("No provider selected", systemImage: "circle.dashed")
+                    Label("当前未选择供应商", systemImage: "circle.dashed")
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(.secondary)
                 }
@@ -70,14 +70,14 @@ struct ContentView: View {
                         await viewModel.refresh()
                     }
                 } label: {
-                    Label("Refresh", systemImage: "arrow.clockwise")
+                    Label("刷新", systemImage: "arrow.clockwise")
                 }
                 .buttonStyle(.bordered)
 
                 Button {
                     showingAddProvider = true
                 } label: {
-                    Label("Add Provider", systemImage: "plus")
+                    Label("添加供应商", systemImage: "plus")
                 }
                 .buttonStyle(.borderedProminent)
             }
@@ -92,9 +92,9 @@ struct ContentView: View {
         ScrollView {
             if viewModel.providers.isEmpty && !viewModel.isLoading {
                 ContentUnavailableView(
-                    "No Providers Yet",
+                    "还没有供应商",
                     systemImage: "tray",
-                    description: Text("添加一个 API provider，或者用账号登录自动生成 provider。")
+                    description: Text("添加一个 API 供应商，或者用账号登录自动生成供应商。")
                 )
                 .frame(maxWidth: .infinity, minHeight: 420)
             } else {
@@ -128,7 +128,7 @@ struct ContentView: View {
     }
 
     private func authBadge(for provider: GatewayProvider) -> some View {
-        Text(provider.authMode == .apiKey ? "API Key" : "Account")
+        Text(provider.authMode == .apiKey ? "API Key" : "账户")
             .font(.system(size: 11, weight: .bold))
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
@@ -156,7 +156,8 @@ struct ContentView: View {
                             .font(.system(size: 11, weight: .semibold))
                             .padding(.horizontal, 9)
                             .padding(.vertical, 6)
-                            .background(chipBackground)
+                            .background(billingBadgeBackground(for: provider))
+                            .foregroundStyle(billingBadgeForeground(for: provider))
                             .clipShape(Capsule())
                     }
                 }
@@ -170,50 +171,17 @@ struct ContentView: View {
                 }
             }
 
-            VStack(alignment: .leading, spacing: 10) {
+            if provider.authMode == .account {
                 providerMetaRow(
-                    title: "Base URL",
-                    value: provider.baseURL.isEmpty ? "OAuth managed by gateway" : provider.baseURL,
-                    emphasized: false
-                )
-
-                providerMetaRow(
-                    title: provider.authMode == .account ? "Account" : "Credential",
-                    value: provider.authMode == .account
-                        ? (provider.accountID ?? "Waiting for login")
-                        : provider.apiKeyPreview,
-                    emphasized: provider.authMode == .account
+                    title: "邮箱",
+                    value: provider.accountEmail ?? "等待登录完成",
+                    emphasized: true
                 )
             }
 
-            HStack {
-                if isSelected {
-                    Text("Selected")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(selectionAccent)
-                } else {
-                    Text("Ready to use")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(.secondary)
-                }
-
-                Spacer()
-
-                Button {
-                    Task {
-                        await viewModel.selectProvider(id: provider.id)
-                    }
-                } label: {
-                    Text(isSelected ? "Current" : "Select")
-                        .frame(minWidth: 88)
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(isSelected ? selectionAccent : apiAccent)
-                .disabled(isSelected || viewModel.isLoading)
-            }
         }
         .padding(20)
-        .frame(maxWidth: .infinity, minHeight: 220, alignment: .topLeading)
+        .frame(maxWidth: .infinity, minHeight: 170, alignment: .topLeading)
         .background(cardBackground(isSelected: isSelected))
         .overlay(
             RoundedRectangle(cornerRadius: 24, style: .continuous)
@@ -227,6 +195,13 @@ struct ContentView: View {
         .shadow(color: shadowColor.opacity(isSelected ? 0.34 : 0.18), radius: isSelected ? 22 : 12, x: 0, y: 12)
         .scaleEffect(isSelected ? 1.01 : 1.0)
         .animation(.spring(response: 0.26, dampingFraction: 0.85), value: isSelected)
+        .contentShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .onTapGesture {
+            guard !isSelected, !viewModel.isLoading else { return }
+            Task {
+                await viewModel.selectProvider(id: provider.id)
+            }
+        }
     }
 
     private func providerMetaRow(title: String, value: String, emphasized: Bool) -> some View {
@@ -328,12 +303,6 @@ struct ContentView: View {
             : Color.white.opacity(0.6)
     }
 
-    private var chipBackground: Color {
-        colorScheme == .dark
-            ? Color.white.opacity(0.08)
-            : Color.primary.opacity(0.07)
-    }
-
     private var apiAccent: Color {
         Color(red: 0.22, green: 0.52, blue: 0.96)
     }
@@ -356,6 +325,32 @@ struct ContentView: View {
 
     private var shadowColor: Color {
         .black
+    }
+
+    private func billingBadgeBackground(for provider: GatewayProvider) -> Color {
+        switch provider.billingMode {
+        case .metered:
+            return colorScheme == .dark
+                ? Color(red: 0.55, green: 0.31, blue: 0.08).opacity(0.34)
+                : Color(red: 0.98, green: 0.72, blue: 0.33).opacity(0.28)
+        case .subscription:
+            return colorScheme == .dark
+                ? apiAccent.opacity(0.18)
+                : apiAccent.opacity(0.12)
+        }
+    }
+
+    private func billingBadgeForeground(for provider: GatewayProvider) -> Color {
+        switch provider.billingMode {
+        case .metered:
+            return colorScheme == .dark
+                ? Color(red: 1.00, green: 0.82, blue: 0.48)
+                : Color(red: 0.66, green: 0.38, blue: 0.05)
+        case .subscription:
+            return colorScheme == .dark
+                ? Color(red: 0.61, green: 0.78, blue: 1.00)
+                : apiAccent
+        }
     }
 }
 

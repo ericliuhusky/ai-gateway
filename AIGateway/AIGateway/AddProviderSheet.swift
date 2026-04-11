@@ -13,12 +13,12 @@ struct AddProviderSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
-            Text("Add Provider")
+            Text("添加供应商")
                 .font(.system(size: 26, weight: .bold, design: .rounded))
 
-            Picker("Mode", selection: $mode) {
+            Picker("模式", selection: $mode) {
                 Text("API").tag(ProviderCreationMode.apiKey)
-                Text("Account").tag(ProviderCreationMode.account)
+                Text("账户").tag(ProviderCreationMode.account)
             }
             .pickerStyle(.segmented)
 
@@ -39,7 +39,7 @@ struct AddProviderSheet: View {
 
     private var apiForm: some View {
         VStack(alignment: .leading, spacing: 16) {
-            labeledField("Provider Name", text: $name, prompt: "bytedance")
+            labeledField("供应商名字", text: $name, prompt: "bytedance")
             labeledField("Base URL", text: $baseURL, prompt: "https://api.example.com/v1")
 
             VStack(alignment: .leading, spacing: 8) {
@@ -51,10 +51,10 @@ struct AddProviderSheet: View {
             }
 
             VStack(alignment: .leading, spacing: 8) {
-                Text("Billing Mode")
+                Text("付费模式")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(.secondary)
-                Picker("Billing Mode", selection: $billingMode) {
+                Picker("付费模式", selection: $billingMode) {
                     ForEach(GatewayBillingMode.allCases) { item in
                         Text(item.title).tag(item)
                     }
@@ -65,7 +65,7 @@ struct AddProviderSheet: View {
             HStack {
                 Spacer()
 
-                Button("Cancel") {
+                Button("取消") {
                     dismiss()
                 }
                 .buttonStyle(.bordered)
@@ -83,7 +83,7 @@ struct AddProviderSheet: View {
                         }
                     }
                 } label: {
-                    Text("Create Provider")
+                    Text("创建供应商")
                         .frame(minWidth: 120)
                 }
                 .buttonStyle(.borderedProminent)
@@ -96,30 +96,21 @@ struct AddProviderSheet: View {
 
     private var accountForm: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text("账号型 provider 不通过表单直接创建，而是通过登录自动生成。登录成功后，网关会自动创建或更新对应 provider。")
+            Text("账户型供应商不通过表单直接创建，而是通过登录自动生成。登录成功后，网关会自动创建或更新对应供应商。")
                 .font(.system(size: 14))
                 .foregroundStyle(.secondary)
 
-            Picker("Login Provider", selection: $loginProvider) {
+            Picker("登录供应商", selection: $loginProvider) {
                 ForEach(AccountLoginProvider.allCases) { provider in
                     Text(provider.title).tag(provider)
                 }
             }
             .pickerStyle(.segmented)
 
-            VStack(alignment: .leading, spacing: 10) {
-                Text("对应接口")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                Text(loginProvider == .google ? "/auth/google/start" : "/auth/openai/start")
-                    .font(.system(size: 13, design: .monospaced))
-                    .textSelection(.enabled)
-            }
-
             HStack {
                 Spacer()
 
-                Button("Close") {
+                Button("关闭") {
                     dismiss()
                 }
                 .buttonStyle(.bordered)
@@ -127,7 +118,7 @@ struct AddProviderSheet: View {
                 Button {
                     viewModel.openLogin(provider: loginProvider)
                 } label: {
-                    Label("Open Login", systemImage: "link")
+                    Label("打开登录链接", systemImage: "link")
                         .frame(minWidth: 120)
                 }
                 .buttonStyle(.borderedProminent)
@@ -137,7 +128,7 @@ struct AddProviderSheet: View {
                         await viewModel.refresh()
                     }
                 } label: {
-                    Label("I Finished Login", systemImage: "arrow.clockwise")
+                    Label("完成登录", systemImage: "arrow.clockwise")
                 }
                 .buttonStyle(.bordered)
             }

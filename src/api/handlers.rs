@@ -193,7 +193,20 @@ pub async fn auth_openai_callback(
 }
 
 pub async fn list_providers(State(state): State<AppState>) -> Json<Value> {
-    Json(json!({ "providers": state.providers.list().await }))
+    let mut providers = state.providers.list().await;
+    for provider in &mut providers {
+        if provider.auth_mode == ProviderAuthMode::Account {
+            if let Some(account_id) = provider.account_id.as_deref() {
+                provider.account_email = state
+                    .accounts
+                    .find_by_id(account_id)
+                    .await
+                    .map(|account| account.email);
+            }
+        }
+    }
+
+    Json(json!({ "providers": providers }))
 }
 
 pub async fn list_models(
