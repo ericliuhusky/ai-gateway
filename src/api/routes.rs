@@ -1,7 +1,7 @@
 use crate::api::handlers::{
     add_provider, apply_codex_config, auth_google_callback, auth_google_start,
-    auth_openai_callback, auth_openai_start, get_codex_config_status, get_route, healthz,
-    list_models, list_providers, responses, restore_codex_config, set_route,
+    auth_openai_callback, auth_openai_start, get_codex_config_status, get_provider_quota,
+    get_route, healthz, list_models, list_providers, responses, restore_codex_config, set_route,
 };
 use axum::{
     Router,
@@ -19,6 +19,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/auth/callback", get(auth_openai_callback))
         .route("/auth/openai/callback", get(auth_openai_callback))
         .route("/providers", get(list_providers).post(add_provider))
+        .route("/providers/:provider_id/quota", get(get_provider_quota))
         .route("/selected-provider", get(get_route).put(set_route))
         .route(
             "/codex-config",

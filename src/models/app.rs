@@ -110,6 +110,119 @@ pub struct ModelListItem {
     pub id: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum QuotaSource {
+    ChatgptCodexUsageApi,
+    Unsupported,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum QuotaSupportStatus {
+    Supported,
+    Unsupported,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProviderQuotaWindow {
+    pub used_percent: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window_minutes: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resets_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProviderQuotaCredits {
+    pub has_credits: bool,
+    pub unlimited: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub balance: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProviderQuotaSnapshot {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub primary: Option<ProviderQuotaWindow>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secondary: Option<ProviderQuotaWindow>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credits: Option<ProviderQuotaCredits>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan_type: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProviderQuotaSummary {
+    pub source: QuotaSource,
+    pub status: QuotaSupportStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<ProviderQuotaSnapshot>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub additional_snapshots: Vec<ProviderQuotaSnapshot>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProviderQuotaResponse {
+    pub provider: ApiProviderSummary,
+    pub quota: ProviderQuotaSummary,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpstreamRateLimitStatusPayload {
+    pub plan_type: String,
+    #[serde(default)]
+    pub rate_limit: Option<UpstreamRateLimitStatusDetails>,
+    #[serde(default)]
+    pub credits: Option<UpstreamCreditStatusDetails>,
+    #[serde(default)]
+    pub additional_rate_limits: Option<Vec<UpstreamAdditionalRateLimitDetails>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpstreamRateLimitStatusDetails {
+    #[allow(dead_code)]
+    pub allowed: bool,
+    #[allow(dead_code)]
+    pub limit_reached: bool,
+    #[serde(default)]
+    pub primary_window: Option<UpstreamRateLimitWindowSnapshot>,
+    #[serde(default)]
+    pub secondary_window: Option<UpstreamRateLimitWindowSnapshot>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpstreamRateLimitWindowSnapshot {
+    pub used_percent: i32,
+    pub limit_window_seconds: i32,
+    #[allow(dead_code)]
+    pub reset_after_seconds: i32,
+    pub reset_at: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpstreamCreditStatusDetails {
+    pub has_credits: bool,
+    pub unlimited: bool,
+    #[serde(default)]
+    pub balance: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpstreamAdditionalRateLimitDetails {
+    pub limit_name: String,
+    pub metered_feature: String,
+    #[serde(default)]
+    pub rate_limit: Option<UpstreamRateLimitStatusDetails>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccountRecord {
     #[serde(default)]

@@ -76,6 +76,17 @@ impl UpstreamClient {
             .await
     }
 
+    pub async fn fetch_openai_usage(
+        &self,
+        request_id: &str,
+        access_token: &str,
+        account_id: Option<&str>,
+    ) -> Result<Value, String> {
+        self.openai_private
+            .fetch_usage(request_id, access_token, account_id)
+            .await
+    }
+
     pub async fn call_openai_responses_upstream(
         &self,
         request_id: &str,

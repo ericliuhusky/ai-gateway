@@ -7,10 +7,13 @@ use crate::{
     auth::OAuthClient,
     config::Config,
     models::{
-        AccountRecord, ApiProviderRecord, CodexConfigStatus, CreateApiProviderRequest,
-        EgressProtocol, IngressProtocol, ModelListItem, ModelListResponse, PROVIDER_GOOGLE_PROXY,
-        PROVIDER_OPENAI_PROXY, ProviderAuthMode, ResponsesRequest, ResponsesResponse,
-        SelectedProvider, UpdateSelectedProviderRequest,
+        AccountRecord, ApiProviderRecord, ApiProviderSummary, CodexConfigStatus,
+        CreateApiProviderRequest, EgressProtocol, IngressProtocol, ModelListItem,
+        ModelListResponse, PROVIDER_GOOGLE_PROXY, PROVIDER_OPENAI_PROXY, ProviderAuthMode,
+        ProviderQuotaCredits, ProviderQuotaResponse, ProviderQuotaSnapshot, ProviderQuotaSummary,
+        ProviderQuotaWindow, QuotaSource, QuotaSupportStatus, ResponsesRequest, ResponsesResponse,
+        SelectedProvider, UpdateSelectedProviderRequest, UpstreamRateLimitStatusDetails,
+        UpstreamRateLimitStatusPayload, UpstreamRateLimitWindowSnapshot,
     },
     store::{AccountPool, ProviderStore, RouteStore},
     upstream::UpstreamClient,
@@ -18,7 +21,7 @@ use crate::{
 use async_stream::stream;
 use axum::{
     body::{Body, Bytes},
-    extract::{Host, Query, State},
+    extract::{Host, Path as AxumPath, Query, State},
     http::{HeaderMap, HeaderValue, StatusCode},
     response::{Html, IntoResponse, Json, Redirect, Response},
 };
@@ -196,20 +199,49 @@ pub async fn auth_openai_callback(
 }
 
 pub async fn list_providers(State(state): State<AppState>) -> Json<Value> {
-    let mut providers = state.providers.list().await;
-    for provider in &mut providers {
-        if provider.auth_mode == ProviderAuthMode::Account {
-            if let Some(account_id) = provider.account_id.as_deref() {
-                provider.account_email = state
-                    .accounts
-                    .find_by_id(account_id)
-                    .await
-                    .map(|account| account.email);
-            }
-        }
-    }
-
+    let providers = hydrated_provider_summaries(&state).await;
     Json(json!({ "providers": providers }))
+}
+
+pub async fn get_provider_quota(
+    State(state): State<AppState>,
+    AxumPath(provider_id): AxumPath<String>,
+) -> Result<Json<ProviderQuotaResponse>, AppError> {
+    let provider = resolve_provider_by_id(&state, &provider_id).await?;
+    let provider_summary = provider_summary_for_resolved(&state, &provider).await?;
+
+    let quota = if provider.auth_mode == ProviderAuthMode::Account {
+        if provider.name == PROVIDER_OPENAI_PROXY {
+            let account = resolve_account_for_provider(&state, &provider).await?;
+            let raw = state
+                .upstream
+                .fetch_openai_usage(
+                    &format!("quota_{}", Uuid::new_v4().simple()),
+                    account.access_token(),
+                    account.upstream_account_id(),
+                )
+                .await
+                .map_err(AppError::upstream_message)?;
+            let payload: UpstreamRateLimitStatusPayload = serde_json::from_value(raw)
+                .map_err(|err| AppError::upstream_message(err.to_string()))?;
+            quota_from_openai_usage(payload)
+        } else {
+            unsupported_quota_summary(format!(
+                "official quota snapshot is not supported yet for account provider `{}`",
+                provider.name
+            ))
+        }
+    } else {
+        unsupported_quota_summary(format!(
+            "official quota snapshot is not supported yet for api_key provider `{}`",
+            provider.name
+        ))
+    };
+
+    Ok(Json(ProviderQuotaResponse {
+        provider: provider_summary,
+        quota,
+    }))
 }
 
 pub async fn list_models(
@@ -1212,6 +1244,138 @@ async fn resolve_account_for_provider(
         .map_err(AppError::bad_request)
 }
 
+async fn hydrated_provider_summaries(state: &AppState) -> Vec<ApiProviderSummary> {
+    let mut providers = state.providers.list().await;
+    for provider in &mut providers {
+        hydrate_provider_summary(state, provider).await;
+    }
+    providers
+}
+
+async fn provider_summary_for_resolved(
+    state: &AppState,
+    provider: &ResolvedProvider,
+) -> Result<ApiProviderSummary, AppError> {
+    let record = provider
+        .record
+        .clone()
+        .ok_or_else(|| AppError::bad_request(format!("unknown provider: {}", provider.name)))?;
+    let mut summary = ApiProviderSummary {
+        id: record.id.clone(),
+        name: record.name.clone(),
+        auth_mode: record.auth_mode.clone(),
+        base_url: record.base_url.clone(),
+        account_id: record.account_id.clone(),
+        account_email: None,
+        billing_mode: record.billing_mode.clone(),
+        api_key_preview: if record.api_key.is_empty() {
+            "********".to_string()
+        } else {
+            let prefix = &record.api_key[..record.api_key.len().min(4)];
+            let suffix_start = record.api_key.len().saturating_sub(4);
+            let suffix = &record.api_key[suffix_start..];
+            if record.api_key.len() <= 8 {
+                "********".to_string()
+            } else {
+                format!("{prefix}...{suffix}")
+            }
+        },
+    };
+    hydrate_provider_summary(state, &mut summary).await;
+    Ok(summary)
+}
+
+async fn hydrate_provider_summary(state: &AppState, provider: &mut ApiProviderSummary) {
+    if provider.auth_mode == ProviderAuthMode::Account
+        && let Some(account_id) = provider.account_id.as_deref()
+    {
+        provider.account_email = state
+            .accounts
+            .find_by_id(account_id)
+            .await
+            .map(|account| account.email);
+    }
+}
+
+fn unsupported_quota_summary(message: String) -> ProviderQuotaSummary {
+    ProviderQuotaSummary {
+        source: QuotaSource::Unsupported,
+        status: QuotaSupportStatus::Unsupported,
+        snapshot: None,
+        additional_snapshots: Vec::new(),
+        message: Some(message),
+    }
+}
+
+fn quota_from_openai_usage(payload: UpstreamRateLimitStatusPayload) -> ProviderQuotaSummary {
+    ProviderQuotaSummary {
+        source: QuotaSource::ChatgptCodexUsageApi,
+        status: QuotaSupportStatus::Supported,
+        snapshot: Some(rate_limit_snapshot_from_payload(
+            Some("codex".to_string()),
+            None,
+            payload.rate_limit,
+            payload.credits,
+            Some(payload.plan_type.clone()),
+        )),
+        additional_snapshots: payload
+            .additional_rate_limits
+            .unwrap_or_default()
+            .into_iter()
+            .map(|details| {
+                rate_limit_snapshot_from_payload(
+                    Some(details.metered_feature),
+                    Some(details.limit_name),
+                    details.rate_limit,
+                    None,
+                    Some(payload.plan_type.clone()),
+                )
+            })
+            .collect(),
+        message: None,
+    }
+}
+
+fn rate_limit_snapshot_from_payload(
+    limit_id: Option<String>,
+    limit_name: Option<String>,
+    rate_limit: Option<UpstreamRateLimitStatusDetails>,
+    credits: Option<crate::models::UpstreamCreditStatusDetails>,
+    plan_type: Option<String>,
+) -> ProviderQuotaSnapshot {
+    let (primary, secondary) = match rate_limit {
+        Some(details) => (
+            rate_limit_window_from_payload(details.primary_window),
+            rate_limit_window_from_payload(details.secondary_window),
+        ),
+        None => (None, None),
+    };
+
+    ProviderQuotaSnapshot {
+        limit_id,
+        limit_name,
+        primary,
+        secondary,
+        credits: credits.map(|details| ProviderQuotaCredits {
+            has_credits: details.has_credits,
+            unlimited: details.unlimited,
+            balance: details.balance,
+        }),
+        plan_type,
+    }
+}
+
+fn rate_limit_window_from_payload(
+    window: Option<UpstreamRateLimitWindowSnapshot>,
+) -> Option<ProviderQuotaWindow> {
+    let window = window?;
+    Some(ProviderQuotaWindow {
+        used_percent: f64::from(window.used_percent),
+        window_minutes: Some(i64::from(window.limit_window_seconds) / 60),
+        resets_at: Some(window.reset_at),
+    })
+}
+
 #[derive(Clone, Debug)]
 struct NativeTarget {
     upstream_model: String,
@@ -1422,7 +1586,7 @@ impl IntoResponse for AppError {
 
 #[cfg(test)]
 mod tests {
-    use super::openai_models_response;
+    use super::{openai_models_response, quota_from_openai_usage};
     use serde_json::json;
 
     #[test]
@@ -1441,5 +1605,92 @@ mod tests {
         assert_eq!(response.object, "list");
         assert_eq!(response.data.len(), 1);
         assert_eq!(response.data[0].id, "gpt-5.4");
+    }
+
+    #[test]
+    fn maps_openai_usage_payload_to_gateway_quota_snapshot() {
+        let payload = serde_json::from_value(json!({
+            "plan_type": "pro",
+            "rate_limit": {
+                "allowed": true,
+                "limit_reached": false,
+                "primary_window": {
+                    "used_percent": 42,
+                    "limit_window_seconds": 18000,
+                    "reset_after_seconds": 120,
+                    "reset_at": 1735689720
+                },
+                "secondary_window": {
+                    "used_percent": 5,
+                    "limit_window_seconds": 604800,
+                    "reset_after_seconds": 3600,
+                    "reset_at": 1736294400
+                }
+            },
+            "credits": {
+                "has_credits": true,
+                "unlimited": false,
+                "balance": "9.99"
+            },
+            "additional_rate_limits": [{
+                "limit_name": "codex_other",
+                "metered_feature": "codex_other",
+                "rate_limit": {
+                    "allowed": true,
+                    "limit_reached": false,
+                    "primary_window": {
+                        "used_percent": 88,
+                        "limit_window_seconds": 1800,
+                        "reset_after_seconds": 600,
+                        "reset_at": 1735693200
+                    }
+                }
+            }]
+        }))
+        .expect("payload should parse");
+
+        let quota = quota_from_openai_usage(payload);
+
+        assert_eq!(
+            quota.source,
+            crate::models::QuotaSource::ChatgptCodexUsageApi
+        );
+        assert_eq!(quota.status, crate::models::QuotaSupportStatus::Supported);
+        assert_eq!(
+            quota
+                .snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.limit_id.as_deref()),
+            Some("codex")
+        );
+        assert_eq!(
+            quota
+                .snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.primary.as_ref())
+                .and_then(|window| window.window_minutes),
+            Some(300)
+        );
+        assert_eq!(
+            quota
+                .snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.secondary.as_ref())
+                .and_then(|window| window.window_minutes),
+            Some(10080)
+        );
+        assert_eq!(
+            quota
+                .snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.credits.as_ref())
+                .and_then(|credits| credits.balance.as_deref()),
+            Some("9.99")
+        );
+        assert_eq!(quota.additional_snapshots.len(), 1);
+        assert_eq!(
+            quota.additional_snapshots[0].limit_id.as_deref(),
+            Some("codex_other")
+        );
     }
 }

@@ -5,6 +5,7 @@ use tracing::info;
 
 pub const OPENAI_RESPONSES_URL: &str = "https://chatgpt.com/backend-api/codex/responses";
 pub const OPENAI_MODELS_URL: &str = "https://chatgpt.com/backend-api/codex/models";
+pub const OPENAI_USAGE_URL: &str = "https://chatgpt.com/backend-api/codex/usage";
 
 #[derive(Clone, Debug)]
 pub struct OpenAiPrivateClient {
@@ -105,6 +106,47 @@ impl OpenAiPrivateClient {
             let response_body = response.text().await.unwrap_or_default();
             Err(format!(
                 "openai models upstream returned {status}: {response_body}"
+            ))
+        }
+    }
+
+    pub async fn fetch_usage(
+        &self,
+        request_id: &str,
+        access_token: &str,
+        account_id: Option<&str>,
+    ) -> Result<Value, String> {
+        info!(
+            request_id = %request_id,
+            url = %OPENAI_USAGE_URL,
+            "sending upstream request to OpenAI usage"
+        );
+
+        let mut request = self
+            .http
+            .get(OPENAI_USAGE_URL)
+            .bearer_auth(access_token)
+            .header("accept", "application/json");
+
+        if let Some(account_id) = account_id.filter(|value| !value.is_empty()) {
+            request = request.header("ChatGPT-Account-Id", account_id);
+        }
+
+        let response = request
+            .send()
+            .await
+            .map_err(|err| format!("openai usage request failed: {err}"))?;
+
+        if response.status().is_success() {
+            response
+                .json()
+                .await
+                .map_err(|err| format!("openai usage parse failed: {err}"))
+        } else {
+            let status = response.status();
+            let response_body = response.text().await.unwrap_or_default();
+            Err(format!(
+                "openai usage upstream returned {status}: {response_body}"
             ))
         }
     }
