@@ -6,7 +6,6 @@ import Foundation
 final class GatewayViewModel: ObservableObject {
     @Published var providers: [GatewayProvider] = []
     @Published var selectedProviderID: String?
-    @Published var selectedTableID: GatewayProvider.ID?
     @Published var isLoading = false
     @Published var errorMessage: String?
 
@@ -33,7 +32,6 @@ final class GatewayViewModel: ObservableObject {
             let (providers, selected) = try await (providersTask, selectedTask)
             self.providers = providers.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
             self.selectedProviderID = selected.providerID
-            self.selectedTableID = selected.providerID
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -72,7 +70,6 @@ final class GatewayViewModel: ObservableObject {
         do {
             try await client.selectProvider(id: id)
             selectedProviderID = id
-            selectedTableID = id
         } catch {
             errorMessage = error.localizedDescription
         }
