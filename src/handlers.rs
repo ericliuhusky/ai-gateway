@@ -215,7 +215,7 @@ pub async fn list_models(
                 .fetch_openai_models(
                     &format!("models_{}", Uuid::new_v4().simple()),
                     account.access_token(),
-                    account.account_id(),
+                    account.upstream_account_id(),
                 )
                 .await
                 .map_err(AppError::upstream_message)?;
@@ -264,8 +264,6 @@ pub async fn add_provider(
             "api_key": provider.api_key,
             "account_id": provider.account_id,
             "billing_mode": provider.billing_mode,
-            "created_at": provider.created_at,
-            "updated_at": provider.updated_at,
         }
     })))
 }
@@ -574,7 +572,7 @@ pub async fn responses(
             .call_openai_responses(
                 &request_id,
                 account.access_token(),
-                account.account_id(),
+                account.upstream_account_id(),
                 request_body,
                 request.stream,
             )

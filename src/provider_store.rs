@@ -9,7 +9,6 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
 };
 use tokio::sync::Mutex;
 use uuid::Uuid;
@@ -70,8 +69,6 @@ impl ProviderStore {
                 account_id: provider.account_id.clone(),
                 billing_mode: provider.billing_mode.clone(),
                 api_key_preview: mask_api_key(&provider.api_key),
-                created_at: provider.created_at,
-                updated_at: provider.updated_at,
             })
             .collect()
     }
@@ -116,7 +113,6 @@ impl ProviderStore {
             return Err("account_id cannot be empty when auth_mode=account".to_string());
         }
 
-        let now = now_unix() as i64;
         let mut providers = self.providers.lock().await;
         let provider =
             if let Some(existing) = providers.iter_mut().find(|provider| provider.name == name) {
@@ -127,7 +123,6 @@ impl ProviderStore {
                 existing.billing_mode = request
                     .billing_mode
                     .unwrap_or_else(|| existing.billing_mode.clone());
-                existing.updated_at = now;
                 existing.clone()
             } else {
                 let provider = ApiProviderRecord {
@@ -140,8 +135,6 @@ impl ProviderStore {
                     billing_mode: request
                         .billing_mode
                         .unwrap_or(ApiProviderBillingMode::Metered),
-                    created_at: now,
-                    updated_at: now,
                 };
                 providers.push(provider.clone());
                 provider
@@ -165,13 +158,11 @@ impl ProviderStore {
         name: &str,
         account_id: &str,
     ) -> Result<ApiProviderRecord, String> {
-        let now = now_unix() as i64;
         let mut providers = self.providers.lock().await;
         let provider =
             if let Some(existing) = providers.iter_mut().find(|provider| provider.name == name) {
                 existing.auth_mode = ProviderAuthMode::Account;
                 existing.account_id = Some(account_id.to_string());
-                existing.updated_at = now;
                 existing.clone()
             } else {
                 let provider = ApiProviderRecord {
@@ -182,8 +173,6 @@ impl ProviderStore {
                     api_key: String::new(),
                     account_id: Some(account_id.to_string()),
                     billing_mode: ApiProviderBillingMode::Metered,
-                    created_at: now,
-                    updated_at: now,
                 };
                 providers.push(provider.clone());
                 provider
@@ -238,11 +227,4 @@ fn rename_replace(src: &Path, dst: &Path) -> Result<(), String> {
         fs::remove_file(dst).map_err(|err| format!("remove old file failed: {err}"))?;
     }
     fs::rename(src, dst).map_err(|err| format!("rename failed: {err}"))
-}
-
-fn now_unix() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
 }

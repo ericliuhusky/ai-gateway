@@ -1,7 +1,7 @@
 use crate::{
     auth::{ImportedOpenAIAuth, OAuthClient, TokenResponse, UserInfo},
     config::Config,
-    models::{AccountRecord, PROVIDER_GOOGLE_PROXY, PROVIDER_OPENAI_PROXY},
+    models::{AccountRecord, AccountType, PROVIDER_GOOGLE_PROXY, PROVIDER_OPENAI_PROXY},
     upstream::UpstreamClient,
 };
 use std::{
@@ -72,41 +72,31 @@ impl AccountPool {
         let refresh_token = token
             .refresh_token
             .ok_or_else(|| "google did not return refresh_token".to_string())?;
-        let now = now_unix() as i64;
-        let expiry_timestamp = now + token.expires_in;
+        let expiry_timestamp = now_unix() as i64 + token.expires_in;
 
         let mut accounts = self.accounts.lock().await;
         let account = if let Some(existing) = accounts.iter_mut().find(|account| {
             account.email == user.email && account.provider() == PROVIDER_GOOGLE_PROXY
         }) {
-            existing.name = PROVIDER_GOOGLE_PROXY.to_string();
-            existing.provider_id = PROVIDER_GOOGLE_PROXY.to_string();
-            existing.display_name = user.name.clone();
+            existing.account_type = AccountType::Google;
             existing.access_token = token.access_token;
             existing.refresh_token = refresh_token;
             existing.expiry_timestamp = expiry_timestamp;
             existing.client_id = None;
             existing.project_id = Some(project_id);
-            existing.account_id = None;
-            existing.updated_at = now;
-            existing.last_used = now;
+            existing.upstream_account_id = None;
             existing.clone()
         } else {
             let account = AccountRecord {
                 id: Uuid::new_v4().to_string(),
-                name: PROVIDER_GOOGLE_PROXY.to_string(),
-                provider_id: PROVIDER_GOOGLE_PROXY.to_string(),
+                account_type: AccountType::Google,
                 email: user.email,
-                display_name: user.name,
                 access_token: token.access_token,
                 refresh_token,
                 expiry_timestamp,
                 client_id: None,
                 project_id: Some(project_id),
-                account_id: None,
-                created_at: now,
-                updated_at: now,
-                last_used: now,
+                upstream_account_id: None,
             };
             accounts.push(account.clone());
             account
@@ -120,39 +110,29 @@ impl AccountPool {
         &self,
         imported: ImportedOpenAIAuth,
     ) -> Result<AccountRecord, String> {
-        let now = now_unix() as i64;
-
         let mut accounts = self.accounts.lock().await;
         let account = if let Some(existing) = accounts.iter_mut().find(|account| {
             account.email == imported.email && account.provider() == PROVIDER_OPENAI_PROXY
         }) {
-            existing.name = PROVIDER_OPENAI_PROXY.to_string();
-            existing.provider_id = PROVIDER_OPENAI_PROXY.to_string();
+            existing.account_type = AccountType::Openai;
             existing.access_token = imported.access_token;
             existing.refresh_token = imported.refresh_token;
             existing.expiry_timestamp = imported.expiry_timestamp;
             existing.client_id = Some(imported.client_id);
             existing.project_id = None;
-            existing.account_id = imported.account_id;
-            existing.updated_at = now;
-            existing.last_used = now;
+            existing.upstream_account_id = imported.account_id;
             existing.clone()
         } else {
             let account = AccountRecord {
                 id: Uuid::new_v4().to_string(),
-                name: PROVIDER_OPENAI_PROXY.to_string(),
-                provider_id: PROVIDER_OPENAI_PROXY.to_string(),
+                account_type: AccountType::Openai,
                 email: imported.email,
-                display_name: None,
                 access_token: imported.access_token,
                 refresh_token: imported.refresh_token,
                 expiry_timestamp: imported.expiry_timestamp,
                 client_id: Some(imported.client_id),
                 project_id: None,
-                account_id: imported.account_id,
-                created_at: now,
-                updated_at: now,
-                last_used: now,
+                upstream_account_id: imported.account_id,
             };
             accounts.push(account.clone());
             account
@@ -298,7 +278,6 @@ impl AccountPool {
                     if let Some(refresh_token) = refreshed.refresh_token {
                         *account.refresh_token_mut() = refresh_token;
                     }
-                    account.updated_at = now_unix() as i64;
                     info!(
                         account_id = %account.id,
                         email = %account.email,
@@ -323,7 +302,6 @@ impl AccountPool {
             match upstream.fetch_project_id(account.access_token()).await {
                 Ok(project_id) => {
                     account.set_project_id(project_id);
-                    account.updated_at = now_unix() as i64;
                     info!(
                         account_id = %account.id,
                         email = %account.email,
@@ -340,9 +318,6 @@ impl AccountPool {
             }
         }
 
-        let now = now_unix() as i64;
-        account.last_used = now;
-        account.updated_at = now;
         self.update_account(account.clone()).await?;
         Ok(account)
     }

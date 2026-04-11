@@ -127,8 +127,7 @@ curl http://127.0.0.1:10100/selected-provider
 ```json
 {
   "selected_provider": {
-    "provider": "bytedance",
-    "updated_at": 1744250000
+    "provider": "bytedance"
   }
 }
 ```

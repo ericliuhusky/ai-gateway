@@ -56,7 +56,6 @@ pub struct TokenResponse {
 #[derive(Debug, Clone, Deserialize)]
 pub struct UserInfo {
     pub email: String,
-    pub name: Option<String>,
 }
 
 #[derive(Debug, Clone)]

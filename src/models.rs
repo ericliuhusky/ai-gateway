@@ -25,6 +25,13 @@ pub enum ProviderAuthMode {
     Account,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AccountType {
+    Openai,
+    Google,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct CreateApiProviderRequest {
     #[serde(alias = "provider_name")]
@@ -55,8 +62,6 @@ pub struct ApiProviderRecord {
     pub account_id: Option<String>,
     #[serde(default)]
     pub billing_mode: ApiProviderBillingMode,
-    pub created_at: i64,
-    pub updated_at: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -69,8 +74,6 @@ pub struct ApiProviderSummary {
     pub account_id: Option<String>,
     pub billing_mode: ApiProviderBillingMode,
     pub api_key_preview: String,
-    pub created_at: i64,
-    pub updated_at: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -361,12 +364,9 @@ pub struct GenerationConfig {
 pub struct AccountRecord {
     #[serde(default)]
     pub id: String,
-    pub name: String,
-    #[serde(default)]
-    pub provider_id: String,
+    #[serde(rename = "type", alias = "account_type", alias = "kind")]
+    pub account_type: AccountType,
     pub email: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub display_name: Option<String>,
     pub access_token: String,
     pub refresh_token: String,
     pub expiry_timestamp: i64,
@@ -374,11 +374,8 @@ pub struct AccountRecord {
     pub client_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub account_id: Option<String>,
-    pub created_at: i64,
-    pub updated_at: i64,
-    pub last_used: i64,
+    #[serde(skip_serializing_if = "Option::is_none", alias = "account_id")]
+    pub upstream_account_id: Option<String>,
 }
 
 impl AccountRecord {
@@ -388,10 +385,9 @@ impl AccountRecord {
     }
 
     pub fn provider(&self) -> &str {
-        if self.provider_id.is_empty() {
-            self.name.as_str()
-        } else {
-            self.provider_id.as_str()
+        match self.account_type {
+            AccountType::Openai => PROVIDER_OPENAI_PROXY,
+            AccountType::Google => PROVIDER_GOOGLE_PROXY,
         }
     }
 
@@ -427,7 +423,7 @@ impl AccountRecord {
         self.client_id.as_deref()
     }
 
-    pub fn account_id(&self) -> Option<&str> {
-        self.account_id.as_deref()
+    pub fn upstream_account_id(&self) -> Option<&str> {
+        self.upstream_account_id.as_deref()
     }
 }
