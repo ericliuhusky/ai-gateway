@@ -1,6 +1,9 @@
 use crate::{
     config::Config,
-    models::{ApiProviderRecord, ApiProviderSummary, CreateApiProviderRequest},
+    models::{
+        ApiProviderBillingMode, ApiProviderRecord, ApiProviderSummary, CreateApiProviderRequest,
+        ProviderAuthMode,
+    },
 };
 use std::{
     fs,
@@ -62,7 +65,9 @@ impl ProviderStore {
             .map(|provider| ApiProviderSummary {
                 id: provider.id.clone(),
                 name: provider.name.clone(),
+                auth_mode: provider.auth_mode.clone(),
                 base_url: provider.base_url.clone(),
+                account_id: provider.account_id.clone(),
                 billing_mode: provider.billing_mode.clone(),
                 api_key_preview: mask_api_key(&provider.api_key),
                 created_at: provider.created_at,
@@ -80,32 +85,61 @@ impl ProviderStore {
             return Err("name cannot be empty".to_string());
         }
 
-        let api_key = request.api_key.trim().to_string();
-        if api_key.is_empty() {
-            return Err("api_key cannot be empty".to_string());
+        let auth_mode = request.auth_mode.unwrap_or_else(|| {
+            if request
+                .account_id
+                .as_deref()
+                .is_some_and(|id| !id.trim().is_empty())
+            {
+                ProviderAuthMode::Account
+            } else {
+                ProviderAuthMode::ApiKey
+            }
+        });
+        let base_url = request.base_url.unwrap_or_default().trim().to_string();
+        let api_key = request.api_key.unwrap_or_default().trim().to_string();
+        let account_id = request.account_id.and_then(|value| {
+            let trimmed = value.trim().to_string();
+            (!trimmed.is_empty()).then_some(trimmed)
+        });
+
+        if auth_mode == ProviderAuthMode::ApiKey {
+            if api_key.is_empty() {
+                return Err("api_key cannot be empty when auth_mode=api_key".to_string());
+            }
+            if base_url.is_empty() {
+                return Err("base_url cannot be empty when auth_mode=api_key".to_string());
+            }
         }
 
-        let base_url = request.base_url.trim().to_string();
-        if base_url.is_empty() {
-            return Err("base_url cannot be empty".to_string());
+        if auth_mode == ProviderAuthMode::Account && account_id.is_none() {
+            return Err("account_id cannot be empty when auth_mode=account".to_string());
         }
 
         let now = now_unix() as i64;
         let mut providers = self.providers.lock().await;
         let provider =
             if let Some(existing) = providers.iter_mut().find(|provider| provider.name == name) {
+                existing.auth_mode = auth_mode;
                 existing.base_url = base_url;
                 existing.api_key = api_key;
-                existing.billing_mode = request.billing_mode;
+                existing.account_id = account_id;
+                existing.billing_mode = request
+                    .billing_mode
+                    .unwrap_or_else(|| existing.billing_mode.clone());
                 existing.updated_at = now;
                 existing.clone()
             } else {
                 let provider = ApiProviderRecord {
                     id: Uuid::new_v4().to_string(),
                     name,
+                    auth_mode,
                     base_url,
                     api_key,
-                    billing_mode: request.billing_mode,
+                    account_id,
+                    billing_mode: request
+                        .billing_mode
+                        .unwrap_or(ApiProviderBillingMode::Metered),
                     created_at: now,
                     updated_at: now,
                 };
@@ -124,6 +158,39 @@ impl ProviderStore {
             .iter()
             .find(|provider| provider.name == name)
             .cloned()
+    }
+
+    pub async fn bind_account_provider(
+        &self,
+        name: &str,
+        account_id: &str,
+    ) -> Result<ApiProviderRecord, String> {
+        let now = now_unix() as i64;
+        let mut providers = self.providers.lock().await;
+        let provider =
+            if let Some(existing) = providers.iter_mut().find(|provider| provider.name == name) {
+                existing.auth_mode = ProviderAuthMode::Account;
+                existing.account_id = Some(account_id.to_string());
+                existing.updated_at = now;
+                existing.clone()
+            } else {
+                let provider = ApiProviderRecord {
+                    id: Uuid::new_v4().to_string(),
+                    name: name.to_string(),
+                    auth_mode: ProviderAuthMode::Account,
+                    base_url: String::new(),
+                    api_key: String::new(),
+                    account_id: Some(account_id.to_string()),
+                    billing_mode: ApiProviderBillingMode::Metered,
+                    created_at: now,
+                    updated_at: now,
+                };
+                providers.push(provider.clone());
+                provider
+            };
+
+        self.persist_provider(&provider)?;
+        Ok(provider)
     }
 
     fn ensure_dirs(&self) -> Result<(), String> {

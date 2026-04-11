@@ -5,7 +5,7 @@
 - 用户通过 Google OAuth 登录
 - 用户也可以仿照 Codex / OpenClaw 的方式，通过 ChatGPT OAuth + PKCE 登录
 - 登录成功后账号会写入本地账号池 `~/.ai-gateway/accounts/*.json`
-- 代理请求时从账号池轮询账号
+- provider 如果使用账号登录，会绑定本地账号池里的账号
 - access token 过期前自动刷新
 - project_id 缺失时通过私有 `v1internal:loadCodeAssist` 获取
 - `POST /openai/v1/responses` 走私有 `cloudcode-pa.googleapis.com/v1internal`
@@ -19,7 +19,7 @@ cargo run
 默认固定监听 `127.0.0.1:10100`。
 
 账号数据固定保存在 `~/.ai-gateway/accounts/*.json`。
-原生 provider 数据固定保存在 `~/.ai-gateway/providers/*.json`。
+provider 数据固定保存在 `~/.ai-gateway/providers/*.json`。
 
 ## 登录
 
@@ -30,10 +30,6 @@ open http://127.0.0.1:10100/auth/google/start
 ```
 
 登录成功后，账号会被加入本地账号池。可用下面接口查看：
-
-```bash
-curl http://127.0.0.1:10100/accounts
-```
 
 如果你想直接走浏览器 OAuth，而不是导入本地文件：
 
@@ -55,23 +51,39 @@ open http://127.0.0.1:10100/auth/openai/start
 
 ## 原生 API 供应商
 
-除了 `openai-proxy` / `google-proxy` 这类 OAuth 代理供应商，现在也支持登记“原生 key 的 API 供应商”配置：
+除了 `openai-proxy` / `google-proxy` 这类 OAuth 代理供应商，现在也支持登记“原生 key 的 API 供应商”配置。`provider` 现在是统一入口，会通过 `auth_mode` 决定是走 API key 还是绑定本地 account：
 
 ```bash
 curl -X POST http://127.0.0.1:10100/providers \
   -H 'Content-Type: application/json' \
   -d '{
     "name": "bytedance",
+    "auth_mode": "api_key",
     "base_url": "https://ark.cn-beijing.volces.com/api/v3",
     "api_key": "sk-xxx",
     "billing_mode": "metered"
   }'
 ```
 
+如果是登录型 provider，也可以直接绑定一个本地 account：
+
+```bash
+curl -X POST http://127.0.0.1:10100/providers \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "name": "openai-proxy",
+    "auth_mode": "account",
+    "account_id": "acc_xxx"
+  }'
+```
+
 其中：
 
 - `name`: 供应商名，例如 `openai`、`google`、`bytedance`、`bytedance-coding-plan`、`local-8080`
-- `base_url`: 该供应商的 API 基础地址
+- `auth_mode`: `api_key` 或 `account`
+- `base_url`: 该供应商的 API 基础地址；`auth_mode=api_key` 时必填
+- `api_key`: 上游 API key；`auth_mode=api_key` 时必填
+- `account_id`: 绑定的本地 account 记录 id；`auth_mode=account` 时必填
 - `billing_mode`: `metered` 或 `subscription`
   - `metered`: 按量计费，通常按 token、请求次数或实际用量扣费
   - `subscription`: 订阅制 / 套餐制，通常不是每次调用单独计费
@@ -139,11 +151,12 @@ curl -X PUT http://127.0.0.1:10100/selected-provider \
 
 ## 路由行为
 
-- 当前这两个 OAuth 供应商被视为“代理供应商”：
+- 当前这两个 OAuth 供应商被视为“账号型 provider”：
   - `openai-proxy`: 使用 ChatGPT OAuth，会转发到 `https://chatgpt.com/backend-api/codex/responses`
   - `google-proxy`: 使用 Google OAuth，会转发到 Gemini 私有 `v1internal`
+- OAuth 登录成功后，会自动把对应 provider 绑定到刚登录的本地 account
 - 不再提供自动路由；所有 `/openai/v1/models` 和 `/openai/v1/responses` 调用都依赖用户显式选择的 provider
-- `/accounts` 返回的 `provider` 也会使用这套命名，账号配置需直接写成 `google-proxy` / `openai-proxy`
+- `account` 不再对外暴露接口，只作为 provider 的内部认证信息存在
 
 ## 当前范围
 

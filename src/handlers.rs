@@ -7,9 +7,9 @@ use crate::{
         responses_to_gemini, wrap_v1internal,
     },
     models::{
-        CreateApiProviderRequest, ModelListItem, ModelListResponse, PROVIDER_GOOGLE_PROXY,
-        PROVIDER_OPENAI_PROXY, ResponsesRequest, ResponsesResponse, RouteSelection,
-        UpdateRouteRequest,
+        AccountRecord, ApiProviderRecord, CreateApiProviderRequest, ModelListItem,
+        ModelListResponse, PROVIDER_GOOGLE_PROXY, PROVIDER_OPENAI_PROXY, ProviderAuthMode,
+        ResponsesRequest, ResponsesResponse, RouteSelection, UpdateRouteRequest,
     },
     provider_store::ProviderStore,
     route_store::RouteStore,
@@ -123,6 +123,11 @@ pub async fn auth_google_callback(
         .add_oauth_account(user, token, project_id)
         .await
         .map_err(AppError::bad_request)?;
+    state
+        .providers
+        .bind_account_provider(PROVIDER_GOOGLE_PROXY, &account.id)
+        .await
+        .map_err(AppError::bad_request)?;
 
     Ok(Html(format!(
         "<html><body style='font-family:sans-serif;padding:32px'><h1>Login successful</h1><p>Account <strong>{}</strong> is now in the proxy pool.</p><p>You can close this page and call <code>/openai/v1/responses</code>.</p></body></html>",
@@ -170,6 +175,11 @@ pub async fn auth_openai_callback(
         .add_openai_account(imported)
         .await
         .map_err(AppError::bad_request)?;
+    state
+        .providers
+        .bind_account_provider(PROVIDER_OPENAI_PROXY, &account.id)
+        .await
+        .map_err(AppError::bad_request)?;
     let scope_hint = if has_responses_write {
         "<p>Detected <code>api.responses.write</code>, so this account should be able to call the ChatGPT Codex responses endpoint directly.</p>"
     } else {
@@ -182,10 +192,6 @@ pub async fn auth_openai_callback(
     )))
 }
 
-pub async fn list_accounts(State(state): State<AppState>) -> Json<Value> {
-    Json(json!({ "accounts": state.accounts.list().await }))
-}
-
 pub async fn list_providers(State(state): State<AppState>) -> Json<Value> {
     Json(json!({ "providers": state.providers.list().await }))
 }
@@ -193,41 +199,37 @@ pub async fn list_providers(State(state): State<AppState>) -> Json<Value> {
 pub async fn list_models(
     State(state): State<AppState>,
 ) -> Result<Json<ModelListResponse>, AppError> {
-    let provider = resolve_models_provider(&state).await?;
-    let response = if provider == PROVIDER_GOOGLE_PROXY {
-        let account = state
-            .accounts
-            .acquire_for_provider(&state.oauth, &state.upstream, PROVIDER_GOOGLE_PROXY)
-            .await
-            .map_err(AppError::bad_request)?;
-        let raw = state
-            .upstream
-            .fetch_google_available_models(account.access_token(), account.project_id())
-            .await
-            .map_err(AppError::upstream_message)?;
-        google_models_response(&provider, &raw)?
-    } else if provider == PROVIDER_OPENAI_PROXY {
-        let account = state
-            .accounts
-            .acquire_for_provider(&state.oauth, &state.upstream, PROVIDER_OPENAI_PROXY)
-            .await
-            .map_err(AppError::bad_request)?;
-        let raw = state
-            .upstream
-            .fetch_openai_models(
-                &format!("models_{}", Uuid::new_v4().simple()),
-                account.access_token(),
-                account.account_id(),
-            )
-            .await
-            .map_err(AppError::upstream_message)?;
-        openai_models_response(&provider, &raw)?
+    let provider = resolve_selected_provider(&state).await?;
+    let response = if provider.auth_mode == ProviderAuthMode::Account {
+        let account = resolve_account_for_provider(&state, &provider).await?;
+        if provider.name == PROVIDER_GOOGLE_PROXY {
+            let raw = state
+                .upstream
+                .fetch_google_available_models(account.access_token(), account.project_id())
+                .await
+                .map_err(AppError::upstream_message)?;
+            google_models_response(&provider.name, &raw)?
+        } else if provider.name == PROVIDER_OPENAI_PROXY {
+            let raw = state
+                .upstream
+                .fetch_openai_models(
+                    &format!("models_{}", Uuid::new_v4().simple()),
+                    account.access_token(),
+                    account.account_id(),
+                )
+                .await
+                .map_err(AppError::upstream_message)?;
+            openai_models_response(&provider.name, &raw)?
+        } else {
+            return Err(AppError::bad_request(format!(
+                "account auth provider is not supported yet: {}",
+                provider.name
+            )));
+        }
     } else {
-        let native_provider = state
-            .providers
-            .find_by_name(&provider)
-            .await
-            .ok_or_else(|| AppError::bad_request(format!("unknown provider: {provider}")))?;
+        let native_provider = provider
+            .record
+            .ok_or_else(|| AppError::bad_request(format!("unknown provider: {}", provider.name)))?;
         let raw = state
             .upstream
             .fetch_native_models(
@@ -237,7 +239,7 @@ pub async fn list_models(
             )
             .await
             .map_err(AppError::upstream_message)?;
-        native_models_response(&provider, &raw)?
+        native_models_response(&provider.name, &raw)?
     };
 
     Ok(Json(response))
@@ -257,8 +259,10 @@ pub async fn add_provider(
         "provider": {
             "id": provider.id,
             "name": provider.name,
+            "auth_mode": provider.auth_mode,
             "base_url": provider.base_url,
             "api_key": provider.api_key,
+            "account_id": provider.account_id,
             "billing_mode": provider.billing_mode,
             "created_at": provider.created_at,
             "updated_at": provider.updated_at,
@@ -552,20 +556,16 @@ pub async fn responses(
 ) -> Result<Response, AppError> {
     let request_id = format!("req_{}", Uuid::new_v4().simple());
     let started_at = Instant::now();
-    let provider = resolve_models_provider(&state).await?;
+    let provider = resolve_selected_provider(&state).await?;
     info!(
         request_id = %request_id,
-        provider = %provider,
+        provider = %provider.name,
         body = %json_for_log(&request),
         "received /openai/v1/responses request"
     );
 
-    if provider == PROVIDER_OPENAI_PROXY {
-        let account = state
-            .accounts
-            .acquire_for_provider(&state.oauth, &state.upstream, PROVIDER_OPENAI_PROXY)
-            .await
-            .map_err(AppError::bad_request)?;
+    if provider.auth_mode == ProviderAuthMode::Account && provider.name == PROVIDER_OPENAI_PROXY {
+        let account = resolve_account_for_provider(&state, &provider).await?;
         let mut request_body =
             serde_json::to_value(&request).map_err(|err| AppError::internal(err.to_string()))?;
         sanitize_openai_codex_request_body(&mut request_body);
@@ -587,7 +587,7 @@ pub async fn responses(
                 request_id = %request_id,
                 elapsed_ms = started_at.elapsed().as_millis(),
                 email = %account.email,
-                provider = PROVIDER_OPENAI_PROXY,
+                provider = %provider.name,
                 response_body = %json_value_for_log(&response_body),
                 "returning OpenAI /openai/v1/responses body"
             );
@@ -595,7 +595,7 @@ pub async fn responses(
                 StatusCode::OK,
                 [
                     ("x-account-email", account.email.as_str()),
-                    ("x-provider", PROVIDER_OPENAI_PROXY),
+                    ("x-provider", provider.name.as_str()),
                 ],
                 Json(response_body),
             )
@@ -621,19 +621,16 @@ pub async fn responses(
             )
             .header(
                 "x-provider",
-                HeaderValue::from_static(PROVIDER_OPENAI_PROXY),
+                HeaderValue::from_str(&provider.name)
+                    .map_err(|err| AppError::internal(err.to_string()))?,
             )
             .body(Body::from_stream(output))
             .map_err(|err| AppError::internal(err.to_string()))?);
     }
 
-    if provider == PROVIDER_GOOGLE_PROXY {
+    if provider.auth_mode == ProviderAuthMode::Account && provider.name == PROVIDER_GOOGLE_PROXY {
         let gemini_request = responses_to_gemini(&request).map_err(AppError::bad_request)?;
-        let account = state
-            .accounts
-            .acquire_for_provider(&state.oauth, &state.upstream, PROVIDER_GOOGLE_PROXY)
-            .await
-            .map_err(AppError::bad_request)?;
+        let account = resolve_account_for_provider(&state, &provider).await?;
         let project_id = account
             .project_id()
             .map(str::to_string)
@@ -693,7 +690,7 @@ pub async fn responses(
                 StatusCode::OK,
                 [
                     ("x-account-email", account.email.as_str()),
-                    ("x-provider", PROVIDER_GOOGLE_PROXY),
+                    ("x-provider", provider.name.as_str()),
                 ],
                 Json(response),
             )
@@ -1049,17 +1046,24 @@ pub async fn responses(
             )
             .header(
                 "x-provider",
-                HeaderValue::from_static(PROVIDER_GOOGLE_PROXY),
+                HeaderValue::from_str(&provider.name)
+                    .map_err(|err| AppError::internal(err.to_string()))?,
             )
             .body(Body::from_stream(output))
             .map_err(|err| AppError::internal(err.to_string()))?);
     }
 
-    let native_provider = state
-        .providers
-        .find_by_name(&provider)
-        .await
-        .ok_or_else(|| AppError::bad_request(format!("unknown provider: {provider}")))?;
+    if provider.auth_mode == ProviderAuthMode::Account {
+        return Err(AppError::bad_request(format!(
+            "account auth provider is not supported yet: {}",
+            provider.name
+        )));
+    }
+
+    let native_provider = provider
+        .record
+        .clone()
+        .ok_or_else(|| AppError::bad_request(format!("unknown provider: {}", provider.name)))?;
 
     let native_target = resolve_native_target(&native_provider, &request.model);
     if native_target.uses_chat_completions {
@@ -1082,14 +1086,14 @@ pub async fn responses(
             info!(
                 request_id = %request_id,
                 elapsed_ms = started_at.elapsed().as_millis(),
-                provider = %provider,
+                provider = %provider.name,
                 upstream_model = %native_target.upstream_model,
                 response_body = %json_for_log(&response),
                 "returning chat-completions-adapted /openai/v1/responses body"
             );
             return Ok((
                 StatusCode::OK,
-                [("x-provider", provider.as_str())],
+                [("x-provider", provider.name.as_str())],
                 Json(response),
             )
                 .into_response());
@@ -1106,7 +1110,7 @@ pub async fn responses(
             .header("connection", HeaderValue::from_static("keep-alive"))
             .header(
                 "x-provider",
-                HeaderValue::from_str(&provider)
+                HeaderValue::from_str(&provider.name)
                     .map_err(|err| AppError::internal(err.to_string()))?,
             )
             .body(Body::from_stream(output))
@@ -1136,14 +1140,14 @@ pub async fn responses(
         info!(
             request_id = %request_id,
             elapsed_ms = started_at.elapsed().as_millis(),
-            provider = %provider,
+            provider = %provider.name,
             upstream_model = %native_target.upstream_model,
             response_body = %json_value_for_log(&response_body),
             "returning native provider /openai/v1/responses body"
         );
         return Ok((
             StatusCode::OK,
-            [("x-provider", provider.as_str())],
+            [("x-provider", provider.name.as_str())],
             Json(response_body),
         )
             .into_response());
@@ -1163,17 +1167,17 @@ pub async fn responses(
         .header("connection", HeaderValue::from_static("keep-alive"))
         .header(
             "x-provider",
-            HeaderValue::from_str(&provider).map_err(|err| AppError::internal(err.to_string()))?,
+            HeaderValue::from_str(&provider.name)
+                .map_err(|err| AppError::internal(err.to_string()))?,
         )
         .body(Body::from_stream(output))
         .map_err(|err| AppError::internal(err.to_string()))?)
 }
 
-async fn resolve_models_provider(state: &AppState) -> Result<String, AppError> {
+async fn resolve_selected_provider(state: &AppState) -> Result<ResolvedProvider, AppError> {
     let route = state.routes.get().await;
     if let Some(provider_name) = route.provider {
-        validate_selected_provider(state, &provider_name).await?;
-        return Ok(provider_name);
+        return resolve_provider_by_name(state, &provider_name).await;
     }
 
     Err(AppError::bad_request(
@@ -1296,16 +1300,61 @@ fn native_model_id(entry: &Value) -> Option<&str> {
 }
 
 async fn validate_selected_provider(state: &AppState, provider: &str) -> Result<(), AppError> {
+    resolve_provider_by_name(state, provider).await.map(|_| ())
+}
+
+#[derive(Clone, Debug)]
+struct ResolvedProvider {
+    name: String,
+    auth_mode: ProviderAuthMode,
+    account_id: Option<String>,
+    record: Option<ApiProviderRecord>,
+}
+
+async fn resolve_provider_by_name(
+    state: &AppState,
+    provider: &str,
+) -> Result<ResolvedProvider, AppError> {
+    if let Some(record) = state.providers.find_by_name(provider).await {
+        return Ok(ResolvedProvider {
+            name: record.name.clone(),
+            auth_mode: record.auth_mode.clone(),
+            account_id: record.account_id.clone(),
+            record: Some(record),
+        });
+    }
+
     if provider == PROVIDER_OPENAI_PROXY || provider == PROVIDER_GOOGLE_PROXY {
-        return Ok(());
+        return Ok(ResolvedProvider {
+            name: provider.to_string(),
+            auth_mode: ProviderAuthMode::Account,
+            account_id: None,
+            record: None,
+        });
+    }
+
+    Err(AppError::bad_request(format!(
+        "unknown provider: {provider}"
+    )))
+}
+
+async fn resolve_account_for_provider(
+    state: &AppState,
+    provider: &ResolvedProvider,
+) -> Result<AccountRecord, AppError> {
+    if let Some(account_id) = provider.account_id.as_deref() {
+        return state
+            .accounts
+            .acquire_by_id(&state.oauth, &state.upstream, account_id)
+            .await
+            .map_err(AppError::bad_request);
     }
 
     state
-        .providers
-        .find_by_name(provider)
+        .accounts
+        .acquire_for_provider(&state.oauth, &state.upstream, &provider.name)
         .await
-        .ok_or_else(|| AppError::bad_request(format!("unknown provider: {provider}")))?;
-    Ok(())
+        .map_err(AppError::bad_request)
 }
 
 #[derive(Clone, Debug)]
