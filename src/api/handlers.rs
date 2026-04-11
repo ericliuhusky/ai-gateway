@@ -7,8 +7,8 @@ use crate::{
     auth::OAuthClient,
     config::Config,
     models::{
-        AccountRecord, ApiProviderRecord, CreateApiProviderRequest, EgressProtocol,
-        IngressProtocol, ModelListItem, ModelListResponse, PROVIDER_GOOGLE_PROXY,
+        AccountRecord, ApiProviderRecord, CodexConfigStatus, CreateApiProviderRequest,
+        EgressProtocol, IngressProtocol, ModelListItem, ModelListResponse, PROVIDER_GOOGLE_PROXY,
         PROVIDER_OPENAI_PROXY, ProviderAuthMode, ResponsesRequest, ResponsesResponse,
         SelectedProvider, UpdateSelectedProviderRequest,
     },
@@ -26,10 +26,13 @@ use futures_util::StreamExt;
 use reqwest::Client;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::sync::Arc;
 use std::time::Instant;
+use std::{fs, path::Path, sync::Arc};
 use tracing::{info, warn};
 use uuid::Uuid;
+
+const BUNDLED_CODEX_CONFIG: &str = include_str!("../../assets/codex-config.toml");
+const MISSING_FILE_SENTINEL: &str = "__AI_GATEWAY_MISSING__";
 
 #[derive(Clone)]
 pub struct AppState {
@@ -298,6 +301,67 @@ pub async fn set_route(
         .await
         .map_err(AppError::bad_request)?;
     Ok(Json(json!({ "selected_provider": route_payload(route) })))
+}
+
+pub async fn get_codex_config_status(
+    State(state): State<AppState>,
+) -> Result<Json<Value>, AppError> {
+    let status = codex_config_status(&state)?;
+    Ok(Json(json!({ "codex_config": status })))
+}
+
+pub async fn apply_codex_config(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
+    let config = state._config.as_ref();
+    let target_path = config.codex_config_path();
+    let backup_path = config.codex_config_backup_path();
+    let auth_path = config.codex_auth_path();
+    let auth_backup_path = config.codex_auth_backup_path();
+
+    fs::create_dir_all(config.data_dir())
+        .map_err(|err| AppError::bad_request(format!("failed to create data dir: {err}")))?;
+    fs::create_dir_all(config.codex_dir())
+        .map_err(|err| AppError::bad_request(format!("failed to create CodeX dir: {err}")))?;
+
+    if !backup_path.exists() {
+        backup_or_mark_missing(&target_path, &backup_path, "CodeX config")?;
+    }
+
+    if !auth_backup_path.exists() {
+        backup_or_mark_missing(&auth_path, &auth_backup_path, "CodeX auth")?;
+    }
+
+    fs::write(&target_path, BUNDLED_CODEX_CONFIG)
+        .map_err(|err| AppError::bad_request(format!("failed to write CodeX config: {err}")))?;
+
+    Ok(Json(
+        json!({ "codex_config": codex_config_status(&state)? }),
+    ))
+}
+
+pub async fn restore_codex_config(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
+    let config = state._config.as_ref();
+    let target_path = config.codex_config_path();
+    let backup_path = config.codex_config_backup_path();
+    let auth_path = config.codex_auth_path();
+    let auth_backup_path = config.codex_auth_backup_path();
+
+    if !backup_path.exists() && !auth_backup_path.exists() {
+        return Err(AppError::bad_request("no CodeX config backup available"));
+    }
+
+    if backup_path.exists() {
+        restore_or_remove_backup(&backup_path, &target_path, "CodeX config")?;
+        let _ = fs::remove_file(&backup_path);
+    }
+
+    if auth_backup_path.exists() {
+        restore_or_remove_backup(&auth_backup_path, &auth_path, "CodeX auth")?;
+        let _ = fs::remove_file(&auth_backup_path);
+    }
+
+    Ok(Json(
+        json!({ "codex_config": codex_config_status(&state)? }),
+    ))
 }
 
 pub async fn responses(
@@ -944,6 +1008,57 @@ fn route_payload(route: SelectedProvider) -> Value {
         "provider_id": route.provider_id,
         "updated_at": route.updated_at,
     })
+}
+
+fn codex_config_status(state: &AppState) -> Result<CodexConfigStatus, AppError> {
+    let config = state._config.as_ref();
+    let config_backup_exists = config.codex_config_backup_path().exists();
+    let auth_backup_exists = config.codex_auth_backup_path().exists();
+
+    Ok(CodexConfigStatus {
+        target_path: config.codex_config_path().display().to_string(),
+        auth_path: config.codex_auth_path().display().to_string(),
+        config_backup_exists,
+        auth_backup_exists,
+        restore_available: config_backup_exists || auth_backup_exists,
+        target_exists: config.codex_config_path().exists(),
+        auth_exists: config.codex_auth_path().exists(),
+    })
+}
+
+fn backup_or_mark_missing(source: &Path, backup: &Path, label: &str) -> Result<(), AppError> {
+    if source.exists() {
+        fs::copy(source, backup)
+            .map_err(|err| AppError::bad_request(format!("failed to back up {label}: {err}")))?;
+    } else {
+        fs::write(backup, MISSING_FILE_SENTINEL)
+            .map_err(|err| AppError::bad_request(format!("failed to back up {label}: {err}")))?;
+    }
+
+    Ok(())
+}
+
+fn restore_or_remove_backup(backup: &Path, target: &Path, label: &str) -> Result<(), AppError> {
+    let backup_contents = fs::read(backup)
+        .map_err(|err| AppError::bad_request(format!("failed to read {label} backup: {err}")))?;
+
+    if backup_contents == MISSING_FILE_SENTINEL.as_bytes() {
+        if target.exists() {
+            fs::remove_file(target).map_err(|err| {
+                AppError::bad_request(format!("failed to remove {label} file: {err}"))
+            })?;
+        }
+    } else {
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent).map_err(|err| {
+                AppError::bad_request(format!("failed to create {label} directory: {err}"))
+            })?;
+        }
+        fs::write(target, backup_contents)
+            .map_err(|err| AppError::bad_request(format!("failed to restore {label}: {err}")))?;
+    }
+
+    Ok(())
 }
 
 fn normalize_selected_provider_id(provider_id: Option<String>) -> Result<String, AppError> {

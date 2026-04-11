@@ -27,6 +27,11 @@ struct GatewayAPIClient {
         return response.selectedProvider
     }
 
+    func fetchCodexConfigStatus() async throws -> CodexConfigStatus {
+        let response: CodexConfigStatusResponse = try await request(path: "/codex-config")
+        return response.codexConfig
+    }
+
     func createProvider(_ payload: CreateAPIProviderRequest) async throws {
         _ = try await requestWithoutBody(
             path: "/providers",
@@ -43,6 +48,16 @@ struct GatewayAPIClient {
         )
     }
 
+    func applyCodexConfig() async throws -> CodexConfigStatus {
+        let response: CodexConfigStatusResponse = try await request(path: "/codex-config", method: "PUT")
+        return response.codexConfig
+    }
+
+    func restoreCodexConfig() async throws -> CodexConfigStatus {
+        let response: CodexConfigStatusResponse = try await request(path: "/codex-config", method: "DELETE")
+        return response.codexConfig
+    }
+
     func loginURL(for provider: AccountLoginProvider) -> URL {
         switch provider {
         case .google:
@@ -52,9 +67,9 @@ struct GatewayAPIClient {
         }
     }
 
-    private func request<T: Decodable>(path: String) async throws -> T {
+    private func request<T: Decodable>(path: String, method: String = "GET") async throws -> T {
         var request = URLRequest(url: baseURL.appending(path: path))
-        request.httpMethod = "GET"
+        request.httpMethod = method
         let (data, response) = try await URLSession.shared.data(for: request)
         try validate(response: response, data: data)
         return try JSONDecoder().decode(T.self, from: data)

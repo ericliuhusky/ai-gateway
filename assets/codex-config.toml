@@ -1,0 +1,9 @@
+model_provider = "ai-gateway"
+model = "gpt-5.4"
+model_reasoning_effort = "high"
+disable_response_storage = true
+
+[model_providers.ai-gateway]
+name = "ai-gateway"
+base_url = "http://127.0.0.1:10100/openai/v1"
+wire_api = "responses"

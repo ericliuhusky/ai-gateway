@@ -31,6 +31,27 @@ impl Config {
         self.data_dir().join("db.sqlite")
     }
 
+    pub fn codex_dir(&self) -> PathBuf {
+        PathBuf::from(env::var("HOME").expect("HOME environment variable is not set"))
+            .join(".codex")
+    }
+
+    pub fn codex_config_path(&self) -> PathBuf {
+        self.codex_dir().join("config.toml")
+    }
+
+    pub fn codex_config_backup_path(&self) -> PathBuf {
+        self.data_dir().join("codex-config.backup.toml")
+    }
+
+    pub fn codex_auth_path(&self) -> PathBuf {
+        self.codex_dir().join("auth.json")
+    }
+
+    pub fn codex_auth_backup_path(&self) -> PathBuf {
+        self.data_dir().join("codex-auth.backup.json")
+    }
+
     pub fn openai_callback_addr(&self) -> SocketAddr {
         OPENAI_CALLBACK_ADDR
             .parse()
