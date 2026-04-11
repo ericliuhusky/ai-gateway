@@ -1,6 +1,6 @@
 use crate::api::handlers::{
-    add_provider, auth_google_callback, auth_google_start, auth_openai_callback,
-    auth_openai_start, get_route, healthz, list_models, list_providers, responses, set_route,
+    add_provider, auth_google_callback, auth_google_start, auth_openai_callback, auth_openai_start,
+    get_route, healthz, list_models, list_providers, responses, set_route,
 };
 use axum::{
     Router,

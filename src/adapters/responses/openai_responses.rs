@@ -34,7 +34,9 @@ fn strip_null_fields(value: &mut Value) {
 }
 
 fn normalize_request(body: &mut Value, provider_name: &str) {
-    let Some(object) = body.as_object_mut() else { return };
+    let Some(object) = body.as_object_mut() else {
+        return;
+    };
     if let Some(input) = object.get_mut("input") {
         normalize_input(input, provider_name);
     }
@@ -65,7 +67,10 @@ fn normalize_input_item(item: &mut Value, provider_name: &str) {
     };
 
     if provider_name == "bytedance" {
-        let item_type = object.get("type").and_then(Value::as_str).unwrap_or_default();
+        let item_type = object
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
         match item_type {
             "custom_tool_call_output" => {
                 *item = json!({
@@ -76,7 +81,11 @@ fn normalize_input_item(item: &mut Value, provider_name: &str) {
                 return;
             }
             "local_shell_call" => {
-                let call_id = object.get("call_id").cloned().or_else(|| object.get("id").cloned()).unwrap_or_else(|| Value::String(format!("call_{}", Uuid::new_v4().simple())));
+                let call_id = object
+                    .get("call_id")
+                    .cloned()
+                    .or_else(|| object.get("id").cloned())
+                    .unwrap_or_else(|| Value::String(format!("call_{}", Uuid::new_v4().simple())));
                 *item = json!({
                     "type": "function_call",
                     "call_id": call_id,
@@ -86,7 +95,11 @@ fn normalize_input_item(item: &mut Value, provider_name: &str) {
                 return;
             }
             "web_search_call" => {
-                let call_id = object.get("call_id").cloned().or_else(|| object.get("id").cloned()).unwrap_or_else(|| Value::String(format!("call_{}", Uuid::new_v4().simple())));
+                let call_id = object
+                    .get("call_id")
+                    .cloned()
+                    .or_else(|| object.get("id").cloned())
+                    .unwrap_or_else(|| Value::String(format!("call_{}", Uuid::new_v4().simple())));
                 *item = json!({
                     "type": "function_call",
                     "call_id": call_id,
@@ -103,12 +116,21 @@ fn normalize_input_item(item: &mut Value, provider_name: &str) {
 
 fn build_shell_call_arguments(action: Option<&Value>) -> serde_json::Map<String, Value> {
     let mut args = serde_json::Map::new();
-    let Some(exec) = action.and_then(|value| value.get("exec")) else { return args };
+    let Some(exec) = action.and_then(|value| value.get("exec")) else {
+        return args;
+    };
     if let Some(command) = exec.get("command") {
-        let command_value = if command.is_string() { json!([command]) } else { command.clone() };
+        let command_value = if command.is_string() {
+            json!([command])
+        } else {
+            command.clone()
+        };
         args.insert("command".to_string(), command_value);
     }
-    if let Some(workdir) = exec.get("working_directory").or_else(|| exec.get("workdir")) {
+    if let Some(workdir) = exec
+        .get("working_directory")
+        .or_else(|| exec.get("workdir"))
+    {
         args.insert("workdir".to_string(), workdir.clone());
     }
     args
@@ -123,16 +145,31 @@ fn build_web_search_arguments(action: Option<&Value>) -> serde_json::Map<String,
 }
 
 fn normalize_bytedance_tools(tools: &mut Value) {
-    let Some(tool_items) = tools.as_array_mut() else { return };
+    let Some(tool_items) = tools.as_array_mut() else {
+        return;
+    };
     let mut normalized = Vec::with_capacity(tool_items.len());
     for tool in tool_items.drain(..) {
-        let Some(tool_obj) = tool.as_object() else { continue };
+        let Some(tool_obj) = tool.as_object() else {
+            continue;
+        };
         let function_obj = tool_obj.get("function").and_then(Value::as_object);
-        let name = tool_obj.get("name").cloned().or_else(|| function_obj.and_then(|f| f.get("name").cloned()));
-        let description = tool_obj.get("description").cloned().or_else(|| function_obj.and_then(|f| f.get("description").cloned()));
-        let parameters = tool_obj.get("parameters").cloned().or_else(|| function_obj.and_then(|f| f.get("parameters").cloned()));
+        let name = tool_obj
+            .get("name")
+            .cloned()
+            .or_else(|| function_obj.and_then(|f| f.get("name").cloned()));
+        let description = tool_obj
+            .get("description")
+            .cloned()
+            .or_else(|| function_obj.and_then(|f| f.get("description").cloned()));
+        let parameters = tool_obj
+            .get("parameters")
+            .cloned()
+            .or_else(|| function_obj.and_then(|f| f.get("parameters").cloned()));
         let strict = function_obj.and_then(|f| f.get("strict").cloned());
-        if name.as_ref().and_then(Value::as_str).is_none() { continue; }
+        if name.as_ref().and_then(Value::as_str).is_none() {
+            continue;
+        }
         normalized.push(json!({
             "type": "function",
             "name": name.unwrap_or(Value::String(String::new())),
@@ -145,10 +182,22 @@ fn normalize_bytedance_tools(tools: &mut Value) {
 }
 
 fn normalize_bytedance_tool_choice(tool_choice: &mut Value) {
-    let Some(tool_choice_obj) = tool_choice.as_object() else { return };
-    let choice_type = tool_choice_obj.get("type").and_then(Value::as_str).unwrap_or_default();
-    if choice_type != "tool" && choice_type != "function" { return; }
-    if let Some(name) = tool_choice_obj.get("name").cloned().or_else(|| tool_choice_obj.get("function").and_then(|function| function.get("name")).cloned()) {
+    let Some(tool_choice_obj) = tool_choice.as_object() else {
+        return;
+    };
+    let choice_type = tool_choice_obj
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if choice_type != "tool" && choice_type != "function" {
+        return;
+    }
+    if let Some(name) = tool_choice_obj.get("name").cloned().or_else(|| {
+        tool_choice_obj
+            .get("function")
+            .and_then(|function| function.get("name"))
+            .cloned()
+    }) {
         *tool_choice = json!({ "type": "function", "name": name });
     }
 }

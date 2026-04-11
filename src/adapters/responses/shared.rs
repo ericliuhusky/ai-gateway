@@ -2,8 +2,8 @@ use crate::models::{
     OpenAIContent, OpenAIContentBlock, OpenAIImageUrl, OpenAIMessage,
     ResponseCustomToolCallOutputItem, ResponseFunctionCallItem, ResponseFunctionCallOutputItem,
     ResponseFunctionToolCall, ResponseLocalShellCallItem, ResponseMessageInput,
-    ResponseWebSearchCallItem, ResponsesInput, ResponsesInputBlock, ResponsesInputItem, ResponsesRequest,
-    ToolCall, ToolFunction,
+    ResponseWebSearchCallItem, ResponsesInput, ResponsesInputBlock, ResponsesInputItem,
+    ResponsesRequest, ToolCall, ToolFunction,
 };
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -32,14 +32,20 @@ pub fn build_messages(request: &ResponsesRequest) -> Result<Vec<OpenAIMessage>, 
         Some(ResponsesInput::Array(items)) => {
             for item in items {
                 match item {
-                    ResponsesInputItem::Message(message) => messages.push(response_message_to_openai(message)),
+                    ResponsesInputItem::Message(message) => {
+                        messages.push(response_message_to_openai(message))
+                    }
                     ResponsesInputItem::Block(block) => messages.push(OpenAIMessage {
                         role: "user".to_string(),
                         content: Some(match block {
-                            ResponsesInputBlock::InputText { text } => OpenAIContent::String(text.clone()),
+                            ResponsesInputBlock::InputText { text } => {
+                                OpenAIContent::String(text.clone())
+                            }
                             ResponsesInputBlock::InputImage { image_url } => {
                                 OpenAIContent::Array(vec![OpenAIContentBlock::ImageUrl {
-                                    image_url: OpenAIImageUrl { url: image_url.clone() },
+                                    image_url: OpenAIImageUrl {
+                                        url: image_url.clone(),
+                                    },
                                 }])
                             }
                         }),
@@ -47,11 +53,21 @@ pub fn build_messages(request: &ResponsesRequest) -> Result<Vec<OpenAIMessage>, 
                         tool_call_id: None,
                         name: None,
                     }),
-                    ResponsesInputItem::FunctionCall(item) => messages.push(function_call_item_to_message(item)),
-                    ResponsesInputItem::LocalShellCall(item) => messages.push(local_shell_call_item_to_message(item)),
-                    ResponsesInputItem::WebSearchCall(item) => messages.push(web_search_call_item_to_message(item)),
-                    ResponsesInputItem::FunctionCallOutput(item) => messages.push(function_call_output_item_to_message(item)),
-                    ResponsesInputItem::CustomToolCallOutput(item) => messages.push(custom_tool_call_output_item_to_message(item)),
+                    ResponsesInputItem::FunctionCall(item) => {
+                        messages.push(function_call_item_to_message(item))
+                    }
+                    ResponsesInputItem::LocalShellCall(item) => {
+                        messages.push(local_shell_call_item_to_message(item))
+                    }
+                    ResponsesInputItem::WebSearchCall(item) => {
+                        messages.push(web_search_call_item_to_message(item))
+                    }
+                    ResponsesInputItem::FunctionCallOutput(item) => {
+                        messages.push(function_call_output_item_to_message(item))
+                    }
+                    ResponsesInputItem::CustomToolCallOutput(item) => {
+                        messages.push(custom_tool_call_output_item_to_message(item))
+                    }
                 }
             }
         }
@@ -118,10 +134,12 @@ fn response_message_to_openai(message: &ResponseMessageInput) -> OpenAIMessage {
     OpenAIMessage {
         role: message.role.clone(),
         content: message.content.clone(),
-        tool_calls: message
-            .tool_calls
-            .as_ref()
-            .map(|tool_calls| tool_calls.iter().map(response_tool_call_to_openai).collect::<Vec<_>>()),
+        tool_calls: message.tool_calls.as_ref().map(|tool_calls| {
+            tool_calls
+                .iter()
+                .map(response_tool_call_to_openai)
+                .collect::<Vec<_>>()
+        }),
         tool_call_id: None,
         name: None,
     }
@@ -168,7 +186,9 @@ fn function_call_output_item_to_message(item: &ResponseFunctionCallOutputItem) -
     }
 }
 
-fn custom_tool_call_output_item_to_message(item: &ResponseCustomToolCallOutputItem) -> OpenAIMessage {
+fn custom_tool_call_output_item_to_message(
+    item: &ResponseCustomToolCallOutputItem,
+) -> OpenAIMessage {
     OpenAIMessage {
         role: "tool".to_string(),
         content: Some(OpenAIContent::String(match &item.output {
@@ -187,15 +207,26 @@ fn custom_tool_call_output_item_to_message(item: &ResponseCustomToolCallOutputIt
 }
 
 fn local_shell_call_item_to_message(item: &ResponseLocalShellCallItem) -> OpenAIMessage {
-    let call_id = item.call_id.clone().or_else(|| item.id.clone()).unwrap_or_else(|| format!("call_{}", Uuid::new_v4()));
+    let call_id = item
+        .call_id
+        .clone()
+        .or_else(|| item.id.clone())
+        .unwrap_or_else(|| format!("call_{}", Uuid::new_v4()));
     let mut args = serde_json::Map::new();
     if let Some(action) = &item.action {
         if let Some(exec) = action.get("exec") {
             if let Some(command) = exec.get("command") {
-                let command_value = if command.is_string() { json!([command]) } else { command.clone() };
+                let command_value = if command.is_string() {
+                    json!([command])
+                } else {
+                    command.clone()
+                };
                 args.insert("command".to_string(), command_value);
             }
-            if let Some(workdir) = exec.get("working_directory").or_else(|| exec.get("workdir")) {
+            if let Some(workdir) = exec
+                .get("working_directory")
+                .or_else(|| exec.get("workdir"))
+            {
                 args.insert("workdir".to_string(), workdir.clone());
             }
         }
@@ -217,7 +248,11 @@ fn local_shell_call_item_to_message(item: &ResponseLocalShellCallItem) -> OpenAI
 }
 
 fn web_search_call_item_to_message(item: &ResponseWebSearchCallItem) -> OpenAIMessage {
-    let call_id = item.call_id.clone().or_else(|| item.id.clone()).unwrap_or_else(|| format!("call_{}", Uuid::new_v4()));
+    let call_id = item
+        .call_id
+        .clone()
+        .or_else(|| item.id.clone())
+        .unwrap_or_else(|| format!("call_{}", Uuid::new_v4()));
     let mut args = serde_json::Map::new();
     if let Some(action) = &item.action {
         if let Some(query) = action.get("query") {

@@ -4,54 +4,29 @@ use crate::{
         ApiProviderBillingMode, ApiProviderRecord, ApiProviderSummary, CreateApiProviderRequest,
         ProviderAuthMode,
     },
+    store::sqlite::SqliteStore,
 };
-use std::{
-    fs,
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::sync::Arc;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
 #[derive(Clone, Debug)]
 pub struct ProviderStore {
-    config: Arc<Config>,
+    sqlite: SqliteStore,
     providers: Arc<Mutex<Vec<ApiProviderRecord>>>,
 }
 
 impl ProviderStore {
     pub fn new(config: Arc<Config>) -> Result<Self, String> {
         let store = Self {
-            config,
+            sqlite: SqliteStore::new(config.clone())?,
             providers: Arc::new(Mutex::new(Vec::new())),
         };
-        store.ensure_dirs()?;
         Ok(store)
     }
 
     pub async fn load(&self) -> Result<usize, String> {
-        let providers_dir = self.providers_dir();
-        let mut loaded = Vec::new();
-
-        for entry in fs::read_dir(providers_dir).map_err(|err| format!("read_dir failed: {err}"))? {
-            let entry = entry.map_err(|err| format!("dir entry failed: {err}"))?;
-            let path = entry.path();
-            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
-                continue;
-            }
-
-            let content =
-                fs::read_to_string(&path).map_err(|err| format!("read provider failed: {err}"))?;
-            let id = path
-                .file_stem()
-                .and_then(|stem| stem.to_str())
-                .ok_or_else(|| format!("invalid provider filename: {}", path.display()))?
-                .to_string();
-            let provider = serde_json::from_str::<ApiProviderRecord>(&content)
-                .map_err(|err| format!("parse provider failed: {err}"))?;
-            loaded.push(provider.with_id(id));
-        }
-
+        let loaded = self.sqlite.load_providers()?;
         *self.providers.lock().await = loaded;
         Ok(self.providers.lock().await.len())
     }
@@ -122,12 +97,12 @@ impl ProviderStore {
         Ok(provider)
     }
 
-    pub async fn find_by_name(&self, name: &str) -> Option<ApiProviderRecord> {
+    pub async fn find_by_id(&self, id: &str) -> Option<ApiProviderRecord> {
         self.providers
             .lock()
             .await
             .iter()
-            .find(|provider| provider.name == name)
+            .find(|provider| provider.id == id)
             .cloned()
     }
 
@@ -160,33 +135,8 @@ impl ProviderStore {
         Ok(provider)
     }
 
-    fn ensure_dirs(&self) -> Result<(), String> {
-        fs::create_dir_all(self.providers_dir())
-            .map_err(|err| format!("create providers dir failed: {err}"))
-    }
-
-    fn providers_dir(&self) -> PathBuf {
-        self.config.data_dir().join("providers")
-    }
-
-    fn provider_path(&self, provider_id: &str) -> PathBuf {
-        self.providers_dir().join(format!("{provider_id}.json"))
-    }
-
     fn persist_provider(&self, provider: &ApiProviderRecord) -> Result<(), String> {
-        let path = self.provider_path(&provider.id);
-        let tmp = path.with_extension("json.tmp");
-        let body = serde_json::to_string_pretty(provider)
-            .map_err(|err| format!("serialize provider failed: {err}"))?;
-        fs::write(&tmp, body).map_err(|err| format!("write temp provider failed: {err}"))?;
-        rename_replace(&tmp, &path)
-    }
-}
-
-impl ApiProviderRecord {
-    fn with_id(mut self, id: String) -> Self {
-        self.id = id;
-        self
+        self.sqlite.upsert_provider(provider)
     }
 }
 
@@ -198,11 +148,4 @@ fn mask_api_key(api_key: &str) -> String {
     let prefix = &api_key[..4];
     let suffix = &api_key[api_key.len().saturating_sub(4)..];
     format!("{prefix}...{suffix}")
-}
-
-fn rename_replace(src: &Path, dst: &Path) -> Result<(), String> {
-    if dst.exists() {
-        fs::remove_file(dst).map_err(|err| format!("remove old file failed: {err}"))?;
-    }
-    fs::rename(src, dst).map_err(|err| format!("rename failed: {err}"))
 }

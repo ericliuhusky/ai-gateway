@@ -23,7 +23,7 @@
 
 - 用户通过 Google OAuth 登录
 - 用户也可以仿照 Codex / OpenClaw 的方式，通过 ChatGPT OAuth + PKCE 登录
-- 登录成功后账号会写入本地账号池 `~/.ai-gateway/accounts/*.json`
+- 登录成功后账号会写入本地 SQLite 数据库 `~/.ai-gateway/db.sqlite`
 - provider 如果使用账号登录，会绑定本地账号池里的账号
 - access token 过期前自动刷新
 - project_id 缺失时通过私有 `v1internal:loadCodeAssist` 获取
@@ -37,8 +37,7 @@ cargo run
 
 默认固定监听 `127.0.0.1:10100`。
 
-账号数据固定保存在 `~/.ai-gateway/accounts/*.json`。
-provider 数据固定保存在 `~/.ai-gateway/providers/*.json`。
+账号、provider 和路由状态固定保存在 `~/.ai-gateway/db.sqlite`。
 
 ## 登录
 
@@ -137,7 +136,7 @@ curl http://127.0.0.1:10100/selected-provider
 ```json
 {
   "selected_provider": {
-    "provider": "bytedance"
+    "provider_id": "385ea1cd-9ab5-4517-ab54-8519943febba"
   }
 }
 ```
@@ -148,15 +147,11 @@ curl http://127.0.0.1:10100/selected-provider
 curl -X PUT http://127.0.0.1:10100/selected-provider \
   -H 'Content-Type: application/json' \
   -d '{
-    "provider": "bytedance"
+    "provider_id": "385ea1cd-9ab5-4517-ab54-8519943febba"
   }'
 ```
 
-`provider` 可以是：
-
-- `openai-proxy`
-- `google-proxy`
-- 通过 `/providers` 已登记的原生供应商名
+`provider_id` 必须是 `/providers` 返回里的 `id`。
 
 ## 路由行为
 

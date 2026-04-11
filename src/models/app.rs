@@ -72,18 +72,18 @@ pub struct ApiProviderSummary {
     pub api_key_preview: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct RouteSelection {
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct SelectedProvider {
     #[serde(default)]
-    pub provider: Option<String>,
+    pub provider_id: Option<String>,
     #[serde(default)]
     pub updated_at: i64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct UpdateRouteRequest {
+pub struct UpdateSelectedProviderRequest {
     #[serde(default)]
-    pub provider: Option<String>,
+    pub provider_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -116,11 +116,6 @@ pub struct AccountRecord {
 }
 
 impl AccountRecord {
-    pub fn with_id(mut self, id: String) -> Self {
-        self.id = id;
-        self
-    }
-
     pub fn provider(&self) -> &str {
         match self.account_type {
             AccountType::Openai => PROVIDER_OPENAI_PROXY,

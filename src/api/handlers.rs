@@ -10,7 +10,7 @@ use crate::{
         AccountRecord, ApiProviderRecord, CreateApiProviderRequest, EgressProtocol,
         IngressProtocol, ModelListItem, ModelListResponse, PROVIDER_GOOGLE_PROXY,
         PROVIDER_OPENAI_PROXY, ProviderAuthMode, ResponsesRequest, ResponsesResponse,
-        RouteSelection, UpdateRouteRequest,
+        SelectedProvider, UpdateSelectedProviderRequest,
     },
     store::{AccountPool, ProviderStore, RouteStore},
     upstream::UpstreamClient,
@@ -274,14 +274,14 @@ pub async fn get_route(State(state): State<AppState>) -> Json<Value> {
 
 pub async fn set_route(
     State(state): State<AppState>,
-    Json(request): Json<UpdateRouteRequest>,
+    Json(request): Json<UpdateSelectedProviderRequest>,
 ) -> Result<Json<Value>, AppError> {
-    let provider = normalize_route_provider(request.provider)?;
-    validate_selected_provider(&state, &provider).await?;
+    let provider_id = normalize_selected_provider_id(request.provider_id)?;
+    validate_selected_provider(&state, &provider_id).await?;
 
     let route = state
         .routes
-        .set(Some(provider))
+        .set(Some(provider_id))
         .await
         .map_err(AppError::bad_request)?;
     Ok(Json(json!({ "selected_provider": route_payload(route) })))
@@ -304,8 +304,8 @@ pub async fn responses(
 
     if provider.auth_mode == ProviderAuthMode::Account && provider.name == PROVIDER_OPENAI_PROXY {
         let account = resolve_account_for_provider(&state, &provider).await?;
-        let request_body =
-            responses_to_openai_private(&request).map_err(|err| AppError::internal(err.to_string()))?;
+        let request_body = responses_to_openai_private(&request)
+            .map_err(|err| AppError::internal(err.to_string()))?;
         let upstream = state
             .upstream
             .call_openai_responses(
@@ -917,8 +917,8 @@ pub async fn responses(
 
 async fn resolve_selected_provider(state: &AppState) -> Result<ResolvedProvider, AppError> {
     let route = state.routes.get().await;
-    if let Some(provider_name) = route.provider {
-        return resolve_provider_by_name(state, &provider_name).await;
+    if let Some(provider_id) = route.provider_id {
+        return resolve_provider_by_id(state, &provider_id).await;
     }
 
     Err(AppError::bad_request(
@@ -926,26 +926,21 @@ async fn resolve_selected_provider(state: &AppState) -> Result<ResolvedProvider,
     ))
 }
 
-fn route_payload(route: RouteSelection) -> Value {
+fn route_payload(route: SelectedProvider) -> Value {
     json!({
-        "provider": route.provider,
+        "provider_id": route.provider_id,
         "updated_at": route.updated_at,
     })
 }
 
-fn normalize_route_provider(provider: Option<String>) -> Result<String, AppError> {
-    let provider = provider.ok_or_else(|| {
-        AppError::bad_request("provider is required; automatic routing has been removed")
+fn normalize_selected_provider_id(provider_id: Option<String>) -> Result<String, AppError> {
+    let provider_id = provider_id.ok_or_else(|| {
+        AppError::bad_request("provider_id is required; automatic routing has been removed")
     })?;
-    let trimmed = provider.trim();
+    let trimmed = provider_id.trim();
     if trimmed.is_empty() {
         return Err(AppError::bad_request(
-            "provider cannot be empty; automatic routing has been removed",
-        ));
-    }
-    if trimmed.eq_ignore_ascii_case("auto") {
-        return Err(AppError::bad_request(
-            "provider cannot be `auto`; automatic routing has been removed",
+            "provider_id cannot be empty; automatic routing has been removed",
         ));
     }
     Ok(trimmed.to_string())
@@ -1040,8 +1035,8 @@ fn native_model_id(entry: &Value) -> Option<&str> {
         .and_then(Value::as_str)
 }
 
-async fn validate_selected_provider(state: &AppState, provider: &str) -> Result<(), AppError> {
-    resolve_provider_by_name(state, provider).await.map(|_| ())
+async fn validate_selected_provider(state: &AppState, provider_id: &str) -> Result<(), AppError> {
+    resolve_provider_by_id(state, provider_id).await.map(|_| ())
 }
 
 #[derive(Clone, Debug)]
@@ -1052,31 +1047,22 @@ struct ResolvedProvider {
     record: Option<ApiProviderRecord>,
 }
 
-async fn resolve_provider_by_name(
+async fn resolve_provider_by_id(
     state: &AppState,
-    provider: &str,
+    provider_id: &str,
 ) -> Result<ResolvedProvider, AppError> {
-    if let Some(record) = state.providers.find_by_name(provider).await {
-        return Ok(ResolvedProvider {
-            name: record.name.clone(),
-            auth_mode: record.auth_mode.clone(),
-            account_id: record.account_id.clone(),
-            record: Some(record),
-        });
-    }
+    let record = state
+        .providers
+        .find_by_id(provider_id)
+        .await
+        .ok_or_else(|| AppError::bad_request(format!("unknown provider_id: {provider_id}")))?;
 
-    if provider == PROVIDER_OPENAI_PROXY || provider == PROVIDER_GOOGLE_PROXY {
-        return Ok(ResolvedProvider {
-            name: provider.to_string(),
-            auth_mode: ProviderAuthMode::Account,
-            account_id: None,
-            record: None,
-        });
-    }
-
-    Err(AppError::bad_request(format!(
-        "unknown provider: {provider}"
-    )))
+    Ok(ResolvedProvider {
+        name: record.name.clone(),
+        auth_mode: record.auth_mode.clone(),
+        account_id: record.account_id.clone(),
+        record: Some(record),
+    })
 }
 
 async fn resolve_account_for_provider(
@@ -1105,10 +1091,7 @@ struct NativeTarget {
     uses_chat_completions: bool,
 }
 
-fn resolve_native_target(
-    provider: &ApiProviderRecord,
-    requested_model: &str,
-) -> NativeTarget {
+fn resolve_native_target(provider: &ApiProviderRecord, requested_model: &str) -> NativeTarget {
     let name = provider.name.as_str();
     let base_url = provider.base_url.as_str();
 

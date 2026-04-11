@@ -2,24 +2,21 @@ use crate::{
     auth::{ImportedOpenAIAuth, OAuthClient, TokenResponse, UserInfo},
     config::Config,
     models::{AccountRecord, AccountType, PROVIDER_GOOGLE_PROXY, PROVIDER_OPENAI_PROXY},
+    store::sqlite::SqliteStore,
     upstream::UpstreamClient,
 };
-use std::{
-    fs,
-    path::{Path, PathBuf},
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
-    time::{SystemTime, UNIX_EPOCH},
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
 };
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 use uuid::Uuid;
 
 #[derive(Clone, Debug)]
 pub struct AccountPool {
-    config: Arc<Config>,
+    sqlite: SqliteStore,
     accounts: Arc<Mutex<Vec<AccountRecord>>>,
     next_index: Arc<AtomicUsize>,
 }
@@ -27,38 +24,15 @@ pub struct AccountPool {
 impl AccountPool {
     pub fn new(config: Arc<Config>) -> Result<Self, String> {
         let pool = Self {
-            config,
+            sqlite: SqliteStore::new(config.clone())?,
             accounts: Arc::new(Mutex::new(Vec::new())),
             next_index: Arc::new(AtomicUsize::new(0)),
         };
-        pool.ensure_dirs()?;
         Ok(pool)
     }
 
     pub async fn load(&self) -> Result<usize, String> {
-        let accounts_dir = self.accounts_dir();
-        let mut loaded = Vec::new();
-
-        for entry in fs::read_dir(accounts_dir).map_err(|err| format!("read_dir failed: {err}"))? {
-            let entry = entry.map_err(|err| format!("dir entry failed: {err}"))?;
-            let path = entry.path();
-            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
-                continue;
-            }
-
-            let content =
-                fs::read_to_string(&path).map_err(|err| format!("read account failed: {err}"))?;
-            let id = path
-                .file_stem()
-                .and_then(|stem| stem.to_str())
-                .ok_or_else(|| format!("invalid account filename: {}", path.display()))?
-                .to_string();
-            let account = serde_json::from_str::<AccountRecord>(&content)
-                .map_err(|err| format!("parse account failed: {err}"))?
-                .with_id(id);
-            loaded.push(account);
-        }
-
+        let loaded = self.sqlite.load_accounts()?;
         *self.accounts.lock().await = loaded;
         Ok(self.accounts.lock().await.len())
     }
@@ -223,26 +197,8 @@ impl AccountPool {
         self.persist_account(&account)
     }
 
-    fn ensure_dirs(&self) -> Result<(), String> {
-        fs::create_dir_all(self.accounts_dir())
-            .map_err(|err| format!("create data dir failed: {err}"))
-    }
-
-    fn accounts_dir(&self) -> PathBuf {
-        self.config.data_dir().join("accounts")
-    }
-
     fn persist_account(&self, account: &AccountRecord) -> Result<(), String> {
-        let path = self.account_path(&account.id);
-        let tmp = path.with_extension("json.tmp");
-        let body = serde_json::to_string_pretty(account)
-            .map_err(|err| format!("serialize account failed: {err}"))?;
-        fs::write(&tmp, body).map_err(|err| format!("write temp account failed: {err}"))?;
-        rename_replace(&tmp, &path)
-    }
-
-    fn account_path(&self, account_id: &str) -> PathBuf {
-        self.accounts_dir().join(format!("{account_id}.json"))
+        self.sqlite.upsert_account(account)
     }
 
     async fn prepare_account_for_use(
@@ -321,13 +277,6 @@ impl AccountPool {
         self.update_account(account.clone()).await?;
         Ok(account)
     }
-}
-
-fn rename_replace(src: &Path, dst: &Path) -> Result<(), String> {
-    if dst.exists() {
-        fs::remove_file(dst).map_err(|err| format!("remove old file failed: {err}"))?;
-    }
-    fs::rename(src, dst).map_err(|err| format!("rename failed: {err}"))
 }
 
 fn now_unix() -> u64 {

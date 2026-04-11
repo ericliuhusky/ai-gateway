@@ -62,7 +62,9 @@ impl OpenAiPrivateClient {
         } else {
             let status = response.status();
             let response_body = response.text().await.unwrap_or_default();
-            Err(format!("openai upstream returned {status}: {response_body}"))
+            Err(format!(
+                "openai upstream returned {status}: {response_body}"
+            ))
         }
     }
 
@@ -101,7 +103,9 @@ impl OpenAiPrivateClient {
         } else {
             let status = response.status();
             let response_body = response.text().await.unwrap_or_default();
-            Err(format!("openai models upstream returned {status}: {response_body}"))
+            Err(format!(
+                "openai models upstream returned {status}: {response_body}"
+            ))
         }
     }
 }

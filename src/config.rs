@@ -27,6 +27,10 @@ impl Config {
             .join(".ai-gateway")
     }
 
+    pub fn sqlite_path(&self) -> PathBuf {
+        self.data_dir().join("db.sqlite")
+    }
+
     pub fn openai_callback_addr(&self) -> SocketAddr {
         OPENAI_CALLBACK_ADDR
             .parse()

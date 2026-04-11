@@ -1,8 +1,6 @@
 use crate::upstream::{
-    google_v1internal::GoogleV1InternalClient,
-    openai_chat::OpenAiChatClient,
-    openai_private::OpenAiPrivateClient,
-    openai_responses::OpenAiResponsesClient,
+    google_v1internal::GoogleV1InternalClient, openai_chat::OpenAiChatClient,
+    openai_private::OpenAiPrivateClient, openai_responses::OpenAiResponsesClient,
     shared::build_http_client,
 };
 use reqwest::Response;
@@ -120,6 +118,9 @@ mod tests {
     use crate::upstream::openai_private::OPENAI_MODELS_URL;
     #[test]
     fn openai_models_endpoint_uses_codex_backend() {
-        assert_eq!(OPENAI_MODELS_URL, "https://chatgpt.com/backend-api/codex/models");
+        assert_eq!(
+            OPENAI_MODELS_URL,
+            "https://chatgpt.com/backend-api/codex/models"
+        );
     }
 }

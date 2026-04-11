@@ -18,13 +18,28 @@ pub fn responses_to_gemini(request: &ResponsesRequest) -> Result<GeminiGenerateR
 
     for message in &messages {
         if matches!(message.role.as_str(), "system" | "developer") {
-            system_parts.extend(build_gemini_message_parts(message, &mut tool_id_to_name, needs_tool_thought_signature)?);
+            system_parts.extend(build_gemini_message_parts(
+                message,
+                &mut tool_id_to_name,
+                needs_tool_thought_signature,
+            )?);
             continue;
         }
-        let role = if message.role == "assistant" { "model" } else { "user" };
-        let parts = build_gemini_message_parts(message, &mut tool_id_to_name, needs_tool_thought_signature)?;
+        let role = if message.role == "assistant" {
+            "model"
+        } else {
+            "user"
+        };
+        let parts = build_gemini_message_parts(
+            message,
+            &mut tool_id_to_name,
+            needs_tool_thought_signature,
+        )?;
         if !parts.is_empty() {
-            contents.push(GeminiContent { role: role.to_string(), parts });
+            contents.push(GeminiContent {
+                role: role.to_string(),
+                parts,
+            });
         }
     }
 
@@ -56,7 +71,10 @@ pub fn wrap_v1internal(body: Value, project_id: &str, model: &str, account_id: &
     let session_hint = &account_id[..account_id.len().min(8)];
     let mut request = body;
     if let Some(object) = request.as_object_mut() {
-        object.insert("sessionId".to_string(), Value::String(format!("rustproxy-{account_id}")));
+        object.insert(
+            "sessionId".to_string(),
+            Value::String(format!("rustproxy-{account_id}")),
+        );
     }
     json!({
         "project": project_id,
@@ -71,9 +89,18 @@ pub fn wrap_v1internal(body: Value, project_id: &str, model: &str, account_id: &
 pub fn gemini_to_responses(model: &str, gemini: &Value) -> ResponsesResponse {
     let raw = gemini.get("response").unwrap_or(gemini);
     let usage = raw.get("usageMetadata").map(|usage| ResponsesUsage {
-        input_tokens: usage.get("promptTokenCount").and_then(Value::as_u64).unwrap_or(0) as u32,
-        output_tokens: usage.get("candidatesTokenCount").and_then(Value::as_u64).unwrap_or(0) as u32,
-        total_tokens: usage.get("totalTokenCount").and_then(Value::as_u64).unwrap_or(0) as u32,
+        input_tokens: usage
+            .get("promptTokenCount")
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as u32,
+        output_tokens: usage
+            .get("candidatesTokenCount")
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as u32,
+        total_tokens: usage
+            .get("totalTokenCount")
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as u32,
     });
     ResponsesResponse {
         id: response_id(raw),
@@ -86,23 +113,55 @@ pub fn gemini_to_responses(model: &str, gemini: &Value) -> ResponsesResponse {
     }
 }
 
-fn build_tools(tools: &Option<Vec<ResponseTool>>, tool_choice: Option<&Value>) -> (Option<Vec<Value>>, Option<Value>) {
-    let Some(tools) = tools else { return (None, None) };
-    let function_declarations: Vec<Value> = tools.iter().filter_map(|tool| {
-        if tool.tool_type != "function" { return None; }
-        let function = tool.function.as_ref();
-        let name = tool.name.as_deref().or_else(|| function.and_then(|f| f.get("name")).and_then(Value::as_str)).unwrap_or("").trim();
-        if name.is_empty() { return None; }
-        let description = tool.description.clone().or_else(|| function.and_then(|f| f.get("description")).and_then(Value::as_str).map(ToOwned::to_owned)).unwrap_or_default();
-        let mut parameters = tool.parameters.clone().or_else(|| function.and_then(|f| f.get("parameters")).cloned()).unwrap_or_else(|| json!({"type":"object","properties":{},"required":[]}));
-        clean_tool_schema(&mut parameters);
-        Some(json!({ "name": name, "description": description, "parameters": parameters }))
-    }).collect();
+fn build_tools(
+    tools: &Option<Vec<ResponseTool>>,
+    tool_choice: Option<&Value>,
+) -> (Option<Vec<Value>>, Option<Value>) {
+    let Some(tools) = tools else {
+        return (None, None);
+    };
+    let function_declarations: Vec<Value> = tools
+        .iter()
+        .filter_map(|tool| {
+            if tool.tool_type != "function" {
+                return None;
+            }
+            let function = tool.function.as_ref();
+            let name = tool
+                .name
+                .as_deref()
+                .or_else(|| function.and_then(|f| f.get("name")).and_then(Value::as_str))
+                .unwrap_or("")
+                .trim();
+            if name.is_empty() {
+                return None;
+            }
+            let description = tool
+                .description
+                .clone()
+                .or_else(|| {
+                    function
+                        .and_then(|f| f.get("description"))
+                        .and_then(Value::as_str)
+                        .map(ToOwned::to_owned)
+                })
+                .unwrap_or_default();
+            let mut parameters = tool
+                .parameters
+                .clone()
+                .or_else(|| function.and_then(|f| f.get("parameters")).cloned())
+                .unwrap_or_else(|| json!({"type":"object","properties":{},"required":[]}));
+            clean_tool_schema(&mut parameters);
+            Some(json!({ "name": name, "description": description, "parameters": parameters }))
+        })
+        .collect();
     if function_declarations.is_empty() {
         (None, None)
     } else {
         (
-            Some(vec![json!({ "functionDeclarations": function_declarations })]),
+            Some(vec![
+                json!({ "functionDeclarations": function_declarations }),
+            ]),
             Some(json!({ "functionCallingConfig": map_tool_choice(tool_choice) })),
         )
     }
@@ -119,7 +178,11 @@ fn map_tool_choice(tool_choice: Option<&Value>) -> Value {
         Some(Value::Object(map)) => {
             let choice_type = map.get("type").and_then(Value::as_str).unwrap_or("");
             if choice_type == "function" {
-                let name = map.get("name").or_else(|| map.get("function").and_then(|f| f.get("name"))).and_then(Value::as_str).unwrap_or("");
+                let name = map
+                    .get("name")
+                    .or_else(|| map.get("function").and_then(|f| f.get("name")))
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
                 if !name.is_empty() {
                     return json!({ "mode": "ANY", "allowedFunctionNames": [name] });
                 }
@@ -136,14 +199,27 @@ fn requires_tool_thought_signature(model: &str) -> bool {
 
 fn extract_output_items(raw: &Value) -> Vec<ResponseOutputItem> {
     let mut output = Vec::new();
-    if let Some(parts) = raw.get("candidates").and_then(Value::as_array).and_then(|c| c.first()).and_then(|c| c.get("content")).and_then(|c| c.get("parts")).and_then(Value::as_array) {
-        let text = parts.iter().filter_map(|part| part.get("text").and_then(Value::as_str)).collect::<String>();
+    if let Some(parts) = raw
+        .get("candidates")
+        .and_then(Value::as_array)
+        .and_then(|c| c.first())
+        .and_then(|c| c.get("content"))
+        .and_then(|c| c.get("parts"))
+        .and_then(Value::as_array)
+    {
+        let text = parts
+            .iter()
+            .filter_map(|part| part.get("text").and_then(Value::as_str))
+            .collect::<String>();
         if !text.is_empty() {
             output.push(ResponseOutputItem {
                 id: format!("msg_{}", Uuid::new_v4()),
                 item_type: "message".to_string(),
                 role: Some("assistant".to_string()),
-                content: Some(vec![ResponseOutputContent { content_type: "output_text".to_string(), text }]),
+                content: Some(vec![ResponseOutputContent {
+                    content_type: "output_text".to_string(),
+                    text,
+                }]),
                 call_id: None,
                 name: None,
                 arguments: None,
@@ -156,9 +232,23 @@ fn extract_output_items(raw: &Value) -> Vec<ResponseOutputItem> {
                     item_type: "function_call".to_string(),
                     role: None,
                     content: None,
-                    call_id: Some(function_call.get("id").and_then(Value::as_str).map(ToOwned::to_owned).unwrap_or_else(|| format!("call_{}", Uuid::new_v4()))),
-                    name: function_call.get("name").and_then(Value::as_str).map(ToOwned::to_owned),
-                    arguments: Some(function_call.get("args").map(Value::to_string).unwrap_or_else(|| "{}".to_string())),
+                    call_id: Some(
+                        function_call
+                            .get("id")
+                            .and_then(Value::as_str)
+                            .map(ToOwned::to_owned)
+                            .unwrap_or_else(|| format!("call_{}", Uuid::new_v4())),
+                    ),
+                    name: function_call
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .map(ToOwned::to_owned),
+                    arguments: Some(
+                        function_call
+                            .get("args")
+                            .map(Value::to_string)
+                            .unwrap_or_else(|| "{}".to_string()),
+                    ),
                 });
             }
         }
@@ -167,11 +257,17 @@ fn extract_output_items(raw: &Value) -> Vec<ResponseOutputItem> {
 }
 
 fn response_id(raw: &Value) -> String {
-    raw.get("responseId").and_then(Value::as_str).map(ToOwned::to_owned).unwrap_or_else(|| format!("resp_{}", Uuid::new_v4()))
+    raw.get("responseId")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| format!("resp_{}", Uuid::new_v4()))
 }
 
 fn now_unix() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 fn build_gemini_message_parts(
@@ -188,8 +284,12 @@ fn build_gemini_message_parts(
                 OpenAIContent::Array(blocks) => {
                     for block in blocks {
                         match block {
-                            OpenAIContentBlock::Text { text } => parts.push(json!({ "text": text })),
-                            OpenAIContentBlock::ImageUrl { image_url } => parts.push(map_image_part(&image_url.url)?),
+                            OpenAIContentBlock::Text { text } => {
+                                parts.push(json!({ "text": text }))
+                            }
+                            OpenAIContentBlock::ImageUrl { image_url } => {
+                                parts.push(map_image_part(&image_url.url)?)
+                            }
                         }
                     }
                 }

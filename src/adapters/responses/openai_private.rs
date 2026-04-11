@@ -10,9 +10,17 @@ pub fn responses_to_openai_private(request: &ResponsesRequest) -> Result<Value, 
 }
 
 fn sanitize_openai_codex_request_body(body: &mut Value) {
-    let Some(object) = body.as_object_mut() else { return };
-    if object.get("instructions").is_none_or(|value| value.is_null() || value.as_str().is_some_and(str::is_empty)) {
-        object.insert("instructions".to_string(), Value::String(OPENAI_CODEX_DEFAULT_INSTRUCTIONS.to_string()));
+    let Some(object) = body.as_object_mut() else {
+        return;
+    };
+    if object
+        .get("instructions")
+        .is_none_or(|value| value.is_null() || value.as_str().is_some_and(str::is_empty))
+    {
+        object.insert(
+            "instructions".to_string(),
+            Value::String(OPENAI_CODEX_DEFAULT_INSTRUCTIONS.to_string()),
+        );
     }
     object.insert("store".to_string(), Value::Bool(false));
     for key in ["max_output_tokens", "max_tokens", "temperature", "top_p"] {
@@ -30,14 +38,19 @@ fn sanitize_openai_codex_request_body(body: &mut Value) {
 }
 
 fn normalize_openai_codex_input(input: &mut Value) {
-    let Some(items) = input.as_array_mut() else { return };
+    let Some(items) = input.as_array_mut() else {
+        return;
+    };
     let mut rewritten = Vec::with_capacity(items.len());
     for item in items.drain(..) {
         let Some(item_obj) = item.as_object() else {
             rewritten.push(item);
             continue;
         };
-        let item_type = item_obj.get("type").and_then(Value::as_str).unwrap_or_default();
+        let item_type = item_obj
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
         match item_type {
             "function_call" => {
                 rewritten.push(json!({
@@ -66,7 +79,11 @@ fn normalize_openai_codex_input(input: &mut Value) {
             }
             _ => {}
         }
-        let role = item_obj.get("role").and_then(Value::as_str).unwrap_or("user").to_string();
+        let role = item_obj
+            .get("role")
+            .and_then(Value::as_str)
+            .unwrap_or("user")
+            .to_string();
         let content = normalize_message_content(item_obj.get("content").cloned());
         if let Some(content) = content {
             rewritten.push(json!({ "type": "message", "role": role, "content": content }));
@@ -92,8 +109,13 @@ fn normalize_message_content(content: Option<Value>) -> Option<Value> {
     if let Some(text) = content.as_str() {
         return Some(json!([{ "type": "input_text", "text": text }]));
     }
-    let Some(parts) = content.as_array() else { return None };
-    let normalized = parts.iter().map(|part| normalize_content_part(part.clone())).collect::<Vec<_>>();
+    let Some(parts) = content.as_array() else {
+        return None;
+    };
+    let normalized = parts
+        .iter()
+        .map(|part| normalize_content_part(part.clone()))
+        .collect::<Vec<_>>();
     (!normalized.is_empty()).then_some(Value::Array(normalized))
 }
 
@@ -101,8 +123,14 @@ fn normalize_content_part(part: Value) -> Value {
     let Some(part_obj) = part.as_object() else {
         return json!({ "type": "input_text", "text": part });
     };
-    let part_type = part_obj.get("type").and_then(Value::as_str).unwrap_or_default();
-    let is_text_like = matches!(part_type, "text" | "input_text" | "output_text" | "summary_text") || part_obj.get("text").is_some();
+    let part_type = part_obj
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let is_text_like = matches!(
+        part_type,
+        "text" | "input_text" | "output_text" | "summary_text"
+    ) || part_obj.get("text").is_some();
     if is_text_like {
         return json!({
             "type": "input_text",
@@ -126,15 +154,24 @@ fn stringify_output(value: Option<Value>) -> String {
 }
 
 fn normalize_openai_codex_tools(tools: &mut Value) {
-    let Some(tool_items) = tools.as_array_mut() else { return };
+    let Some(tool_items) = tools.as_array_mut() else {
+        return;
+    };
     let mut normalized = Vec::with_capacity(tool_items.len());
     for tool in tool_items.drain(..) {
-        let Some(tool_obj) = tool.as_object() else { continue };
-        let tool_type = tool_obj.get("type").and_then(Value::as_str).unwrap_or_default();
+        let Some(tool_obj) = tool.as_object() else {
+            continue;
+        };
+        let tool_type = tool_obj
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
         if tool_type != "function" {
             let mut preserved = serde_json::Map::new();
             for (key, value) in tool_obj {
-                if key == "function" || value.is_null() { continue; }
+                if key == "function" || value.is_null() {
+                    continue;
+                }
                 preserved.insert(key.clone(), value.clone());
             }
             if !preserved.is_empty() {
@@ -143,11 +180,22 @@ fn normalize_openai_codex_tools(tools: &mut Value) {
             continue;
         }
         let function_obj = tool_obj.get("function").and_then(Value::as_object);
-        let name = tool_obj.get("name").cloned().or_else(|| function_obj.and_then(|f| f.get("name").cloned()));
-        let description = tool_obj.get("description").cloned().or_else(|| function_obj.and_then(|f| f.get("description").cloned()));
-        let parameters = tool_obj.get("parameters").cloned().or_else(|| function_obj.and_then(|f| f.get("parameters").cloned()));
+        let name = tool_obj
+            .get("name")
+            .cloned()
+            .or_else(|| function_obj.and_then(|f| f.get("name").cloned()));
+        let description = tool_obj
+            .get("description")
+            .cloned()
+            .or_else(|| function_obj.and_then(|f| f.get("description").cloned()));
+        let parameters = tool_obj
+            .get("parameters")
+            .cloned()
+            .or_else(|| function_obj.and_then(|f| f.get("parameters").cloned()));
         let strict = function_obj.and_then(|f| f.get("strict").cloned());
-        if name.as_ref().and_then(Value::as_str).is_none() { continue; }
+        if name.as_ref().and_then(Value::as_str).is_none() {
+            continue;
+        }
         normalized.push(json!({
             "type": "function",
             "name": name.unwrap_or(Value::String(String::new())),
@@ -160,7 +208,9 @@ fn normalize_openai_codex_tools(tools: &mut Value) {
 }
 
 fn normalize_openai_codex_tool_choice(tool_choice: &mut Value) {
-    let Some(tool_choice_obj) = tool_choice.as_object() else { return };
+    let Some(tool_choice_obj) = tool_choice.as_object() else {
+        return;
+    };
     if tool_choice_obj.get("type").and_then(Value::as_str) == Some("tool") {
         if let Some(name) = tool_choice_obj.get("name").cloned() {
             *tool_choice = json!({ "type": "function", "function": { "name": name } });

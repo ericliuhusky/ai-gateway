@@ -10,8 +10,8 @@ use api::{AppState, build_router};
 use auth::OAuthClient;
 use config::Config;
 use reqwest::Client;
-use store::{AccountPool, ProviderStore, RouteStore};
 use std::sync::Arc;
+use store::{AccountPool, ProviderStore, RouteStore};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use upstream::UpstreamClient;
 
@@ -39,8 +39,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "loaded {} account(s), {} provider(s), current route {:?} from {:?}",
         loaded,
         provider_count,
-        route.provider,
-        config.data_dir()
+        route.provider_id,
+        config.sqlite_path()
     );
 
     let state = AppState {

@@ -1,10 +1,16 @@
 use crate::adapters::responses::shared::{build_messages, clean_tool_schema};
-use crate::models::{ResponseOutputContent, ResponseOutputItem, ResponseTool, ResponsesRequest, ResponsesResponse, ResponsesUsage};
+use crate::models::{
+    ResponseOutputContent, ResponseOutputItem, ResponseTool, ResponsesRequest, ResponsesResponse,
+    ResponsesUsage,
+};
 use serde_json::{Value, json};
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
-pub fn responses_to_chat_completions(request: &ResponsesRequest, model: &str) -> Result<Value, String> {
+pub fn responses_to_chat_completions(
+    request: &ResponsesRequest,
+    model: &str,
+) -> Result<Value, String> {
     let mut messages = build_messages(request)?;
     for message in &mut messages {
         if message.role == "developer" {
@@ -13,7 +19,10 @@ pub fn responses_to_chat_completions(request: &ResponsesRequest, model: &str) ->
     }
     let mut body = serde_json::Map::new();
     body.insert("model".to_string(), Value::String(model.to_string()));
-    body.insert("messages".to_string(), serde_json::to_value(&messages).map_err(|err| err.to_string())?);
+    body.insert(
+        "messages".to_string(),
+        serde_json::to_value(&messages).map_err(|err| err.to_string())?,
+    );
     if let Some(tools) = build_openai_tools(&request.tools) {
         body.insert("tools".to_string(), Value::Array(tools));
     }
@@ -55,7 +64,12 @@ fn build_openai_tools(tools: &Option<Vec<ResponseTool>>) -> Option<Vec<Value>> {
             let description = tool
                 .description
                 .clone()
-                .or_else(|| function.and_then(|f| f.get("description")).and_then(Value::as_str).map(ToOwned::to_owned))
+                .or_else(|| {
+                    function
+                        .and_then(|f| f.get("description"))
+                        .and_then(Value::as_str)
+                        .map(ToOwned::to_owned)
+                })
                 .unwrap_or_default();
             let mut parameters = tool
                 .parameters
@@ -87,7 +101,10 @@ fn map_openai_tool_choice(tool_choice: Option<&Value>) -> Option<Value> {
             if choice_type == "function" {
                 let name = map
                     .get("name")
-                    .or_else(|| map.get("function").and_then(|function| function.get("name")))
+                    .or_else(|| {
+                        map.get("function")
+                            .and_then(|function| function.get("name"))
+                    })
                     .and_then(Value::as_str)
                     .unwrap_or("");
                 if !name.is_empty() {
@@ -105,21 +122,48 @@ fn map_openai_tool_choice(tool_choice: Option<&Value>) -> Option<Value> {
 
 pub fn chat_completions_to_responses(model: &str, chat: &Value) -> ResponsesResponse {
     let usage = chat.get("usage").map(|usage| ResponsesUsage {
-        input_tokens: usage.get("prompt_tokens").and_then(Value::as_u64).unwrap_or(0) as u32,
-        output_tokens: usage.get("completion_tokens").and_then(Value::as_u64).unwrap_or(0) as u32,
-        total_tokens: usage.get("total_tokens").and_then(Value::as_u64).unwrap_or(0) as u32,
+        input_tokens: usage
+            .get("prompt_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as u32,
+        output_tokens: usage
+            .get("completion_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as u32,
+        total_tokens: usage
+            .get("total_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as u32,
     });
 
     let mut output = Vec::new();
-    if let Some(message) = chat.get("choices").and_then(Value::as_array).and_then(|choices| choices.first()).and_then(|choice| choice.get("message")) {
+    if let Some(message) = chat
+        .get("choices")
+        .and_then(Value::as_array)
+        .and_then(|choices| choices.first())
+        .and_then(|choice| choice.get("message"))
+    {
         if let Some(tool_calls) = message.get("tool_calls").and_then(Value::as_array) {
             for tool_call in tool_calls {
-                let call_id = tool_call.get("id").and_then(Value::as_str).map(ToOwned::to_owned).unwrap_or_else(|| format!("call_{}", Uuid::new_v4().simple()));
-                let name = tool_call.get("function").and_then(|function| function.get("name")).and_then(Value::as_str).map(ToOwned::to_owned).unwrap_or_else(|| "unknown".to_string());
-                let arguments = tool_call.get("function").and_then(|function| function.get("arguments")).map(|value| match value {
-                    Value::String(text) => text.clone(),
-                    other => other.to_string(),
-                }).unwrap_or_else(|| "{}".to_string());
+                let call_id = tool_call
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned)
+                    .unwrap_or_else(|| format!("call_{}", Uuid::new_v4().simple()));
+                let name = tool_call
+                    .get("function")
+                    .and_then(|function| function.get("name"))
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned)
+                    .unwrap_or_else(|| "unknown".to_string());
+                let arguments = tool_call
+                    .get("function")
+                    .and_then(|function| function.get("arguments"))
+                    .map(|value| match value {
+                        Value::String(text) => text.clone(),
+                        other => other.to_string(),
+                    })
+                    .unwrap_or_else(|| "{}".to_string());
                 output.push(ResponseOutputItem {
                     id: format!("fc_{}", Uuid::new_v4().simple()),
                     item_type: "function_call".to_string(),
@@ -131,13 +175,20 @@ pub fn chat_completions_to_responses(model: &str, chat: &Value) -> ResponsesResp
                 });
             }
         }
-        let text = message.get("content").and_then(Value::as_str).unwrap_or("").to_string();
+        let text = message
+            .get("content")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
         if !text.is_empty() {
             output.push(ResponseOutputItem {
                 id: format!("msg_{}", Uuid::new_v4().simple()),
                 item_type: "message".to_string(),
                 role: Some("assistant".to_string()),
-                content: Some(vec![ResponseOutputContent { content_type: "output_text".to_string(), text }]),
+                content: Some(vec![ResponseOutputContent {
+                    content_type: "output_text".to_string(),
+                    text,
+                }]),
                 call_id: None,
                 name: None,
                 arguments: None,
@@ -146,9 +197,16 @@ pub fn chat_completions_to_responses(model: &str, chat: &Value) -> ResponsesResp
     }
 
     ResponsesResponse {
-        id: chat.get("id").and_then(Value::as_str).map(ToOwned::to_owned).unwrap_or_else(|| format!("resp_{}", Uuid::new_v4().simple())),
+        id: chat
+            .get("id")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| format!("resp_{}", Uuid::new_v4().simple())),
         object: "response".to_string(),
-        created_at: chat.get("created").and_then(Value::as_u64).unwrap_or_else(now_unix),
+        created_at: chat
+            .get("created")
+            .and_then(Value::as_u64)
+            .unwrap_or_else(now_unix),
         status: "completed".to_string(),
         model: model.to_string(),
         output,
@@ -157,5 +215,8 @@ pub fn chat_completions_to_responses(model: &str, chat: &Value) -> ResponsesResp
 }
 
 fn now_unix() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
