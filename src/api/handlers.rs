@@ -1,18 +1,18 @@
 use crate::{
-    account_pool::AccountPool,
+    adapters::responses::{
+        chat_completions_to_responses, gemini_to_responses, request_with_model,
+        responses_to_chat_completions, responses_to_gemini, responses_to_openai_private,
+        wrap_v1internal,
+    },
     auth::OAuthClient,
     config::Config,
-    mapper::{
-        chat_completions_to_responses, gemini_to_responses, responses_to_chat_completions,
-        responses_to_gemini, wrap_v1internal,
-    },
     models::{
-        AccountRecord, ApiProviderRecord, CreateApiProviderRequest, ModelListItem,
-        ModelListResponse, PROVIDER_GOOGLE_PROXY, PROVIDER_OPENAI_PROXY, ProviderAuthMode,
-        ResponsesRequest, ResponsesResponse, RouteSelection, UpdateRouteRequest,
+        AccountRecord, ApiProviderRecord, CreateApiProviderRequest, EgressProtocol,
+        IngressProtocol, ModelListItem, ModelListResponse, PROVIDER_GOOGLE_PROXY,
+        PROVIDER_OPENAI_PROXY, ProviderAuthMode, ResponsesRequest, ResponsesResponse,
+        RouteSelection, UpdateRouteRequest,
     },
-    provider_store::ProviderStore,
-    route_store::RouteStore,
+    store::{AccountPool, ProviderStore, RouteStore},
     upstream::UpstreamClient,
 };
 use async_stream::stream;
@@ -232,7 +232,7 @@ pub async fn list_models(
             .ok_or_else(|| AppError::bad_request(format!("unknown provider: {}", provider.name)))?;
         let raw = state
             .upstream
-            .fetch_native_models(
+            .fetch_openai_models_upstream(
                 &format!("models_{}", Uuid::new_v4().simple()),
                 &native_provider.base_url,
                 &native_provider.api_key,
@@ -287,267 +287,6 @@ pub async fn set_route(
     Ok(Json(json!({ "selected_provider": route_payload(route) })))
 }
 
-const OPENAI_CODEX_DEFAULT_INSTRUCTIONS: &str = "You are Codex.";
-
-fn sanitize_openai_codex_request_body(body: &mut Value) {
-    let Some(object) = body.as_object_mut() else {
-        return;
-    };
-
-    if object
-        .get("instructions")
-        .is_none_or(|value| value.is_null() || value.as_str().is_some_and(str::is_empty))
-    {
-        object.insert(
-            "instructions".to_string(),
-            Value::String(OPENAI_CODEX_DEFAULT_INSTRUCTIONS.to_string()),
-        );
-    }
-
-    object.insert("store".to_string(), Value::Bool(false));
-
-    // ChatGPT Codex backend-api accepts a narrower payload than the public
-    // Responses API, so strip fields that it rejects instead of surfacing
-    // avoidable 400s to callers.
-    for key in ["max_output_tokens", "max_tokens", "temperature", "top_p"] {
-        object.remove(key);
-    }
-
-    if let Some(tools) = object.get_mut("tools") {
-        normalize_openai_codex_tools(tools);
-    }
-    if let Some(tool_choice) = object.get_mut("tool_choice") {
-        normalize_openai_codex_tool_choice(tool_choice);
-    }
-
-    if let Some(input) = object.get_mut("input") {
-        normalize_openai_codex_input(input);
-    }
-}
-
-fn normalize_openai_codex_input(input: &mut Value) {
-    let Some(items) = input.as_array_mut() else {
-        return;
-    };
-
-    let mut rewritten = Vec::with_capacity(items.len());
-    for item in items.drain(..) {
-        let Some(item_obj) = item.as_object() else {
-            rewritten.push(item);
-            continue;
-        };
-
-        let item_type = item_obj
-            .get("type")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-
-        match item_type {
-            "function_call" => {
-                rewritten.push(json!({
-                    "type": "function_call",
-                    "call_id": item_obj.get("call_id").cloned().unwrap_or(Value::Null),
-                    "name": item_obj.get("name").cloned().unwrap_or(Value::Null),
-                    "arguments": item_obj.get("arguments").cloned().unwrap_or(Value::String("{}".to_string())),
-                }));
-                continue;
-            }
-            "function_call_output" | "custom_tool_call_output" => {
-                rewritten.push(json!({
-                    "type": "function_call_output",
-                    "call_id": item_obj.get("call_id").cloned().unwrap_or(Value::Null),
-                    "output": stringify_openai_codex_output(item_obj.get("output").cloned()),
-                }));
-                continue;
-            }
-            "input_text" | "input_image" => {
-                rewritten.push(json!({
-                    "type": "message",
-                    "role": "user",
-                    "content": [normalize_openai_codex_content_part(item.clone())],
-                }));
-                continue;
-            }
-            _ => {}
-        }
-
-        let role = item_obj
-            .get("role")
-            .and_then(Value::as_str)
-            .unwrap_or("user")
-            .to_string();
-        let content = normalize_openai_codex_message_content(item_obj.get("content").cloned());
-        if let Some(content) = content {
-            rewritten.push(json!({
-                "type": "message",
-                "role": role,
-                "content": content,
-            }));
-        }
-
-        if let Some(tool_calls) = item_obj.get("tool_calls").and_then(Value::as_array) {
-            for tool_call in tool_calls {
-                if let Some(tool_call_obj) = tool_call.as_object() {
-                    rewritten.push(json!({
-                        "type": "function_call",
-                        "call_id": tool_call_obj.get("call_id").cloned().unwrap_or(Value::Null),
-                        "name": tool_call_obj.get("name").cloned().unwrap_or(Value::Null),
-                        "arguments": tool_call_obj.get("arguments").cloned().unwrap_or(Value::String("{}".to_string())),
-                    }));
-                }
-            }
-        }
-    }
-
-    *items = rewritten;
-}
-
-fn normalize_openai_codex_message_content(content: Option<Value>) -> Option<Value> {
-    let content = content?;
-
-    if let Some(text) = content.as_str() {
-        return Some(json!([{ "type": "input_text", "text": text }]));
-    }
-
-    let Some(parts) = content.as_array() else {
-        return None;
-    };
-
-    let mut normalized = Vec::with_capacity(parts.len());
-    for part in parts {
-        normalized.push(normalize_openai_codex_content_part(part.clone()));
-    }
-
-    if normalized.is_empty() {
-        None
-    } else {
-        Some(Value::Array(normalized))
-    }
-}
-
-fn normalize_openai_codex_content_part(part: Value) -> Value {
-    let Some(part_obj) = part.as_object() else {
-        return json!({
-            "type": "input_text",
-            "text": part,
-        });
-    };
-
-    let part_type = part_obj
-        .get("type")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    let is_text_like = matches!(
-        part_type,
-        "text" | "input_text" | "output_text" | "summary_text"
-    ) || part_obj.get("text").is_some();
-
-    if is_text_like {
-        return json!({
-            "type": "input_text",
-            "text": part_obj.get("text").cloned().unwrap_or(Value::String(String::new())),
-        });
-    }
-
-    if part_type == "input_image" {
-        if let Some(url) = part_obj.get("image_url").and_then(Value::as_str) {
-            return json!({
-                "type": "input_image",
-                "source": {
-                    "type": "url",
-                    "url": url,
-                }
-            });
-        }
-    }
-
-    part
-}
-
-fn stringify_openai_codex_output(value: Option<Value>) -> String {
-    match value {
-        Some(Value::String(text)) => text,
-        Some(other) => other.to_string(),
-        None => String::new(),
-    }
-}
-
-fn normalize_openai_codex_tools(tools: &mut Value) {
-    let Some(tool_items) = tools.as_array_mut() else {
-        return;
-    };
-
-    let mut normalized = Vec::with_capacity(tool_items.len());
-    for tool in tool_items.drain(..) {
-        let Some(tool_obj) = tool.as_object() else {
-            continue;
-        };
-
-        let tool_type = tool_obj
-            .get("type")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-
-        if tool_type != "function" {
-            let mut preserved = serde_json::Map::new();
-            for (key, value) in tool_obj {
-                if key == "function" || value.is_null() {
-                    continue;
-                }
-                preserved.insert(key.clone(), value.clone());
-            }
-            if !preserved.is_empty() {
-                normalized.push(Value::Object(preserved));
-            }
-            continue;
-        }
-
-        let function_obj = tool_obj.get("function").and_then(Value::as_object);
-        let name = tool_obj
-            .get("name")
-            .cloned()
-            .or_else(|| function_obj.and_then(|f| f.get("name").cloned()));
-        let description = tool_obj
-            .get("description")
-            .cloned()
-            .or_else(|| function_obj.and_then(|f| f.get("description").cloned()));
-        let parameters = tool_obj
-            .get("parameters")
-            .cloned()
-            .or_else(|| function_obj.and_then(|f| f.get("parameters").cloned()));
-        let strict = function_obj.and_then(|f| f.get("strict").cloned());
-
-        if name.as_ref().and_then(Value::as_str).is_none() {
-            continue;
-        }
-
-        normalized.push(json!({
-            "type": "function",
-            "name": name.unwrap_or(Value::String(String::new())),
-            "description": description.unwrap_or(Value::Null),
-            "parameters": parameters.unwrap_or_else(|| json!({"type":"object","properties":{}})),
-            "strict": strict.unwrap_or(Value::Null),
-        }));
-    }
-
-    *tool_items = normalized;
-}
-
-fn normalize_openai_codex_tool_choice(tool_choice: &mut Value) {
-    let Some(tool_choice_obj) = tool_choice.as_object() else {
-        return;
-    };
-
-    if tool_choice_obj.get("type").and_then(Value::as_str) == Some("tool") {
-        if let Some(name) = tool_choice_obj.get("name").cloned() {
-            *tool_choice = json!({
-                "type": "function",
-                "function": { "name": name }
-            });
-        }
-    }
-}
-
 pub async fn responses(
     State(state): State<AppState>,
     Json(request): Json<ResponsesRequest>,
@@ -557,6 +296,7 @@ pub async fn responses(
     let provider = resolve_selected_provider(&state).await?;
     info!(
         request_id = %request_id,
+        ingress = IngressProtocol::OpenAiResponses.as_str(),
         provider = %provider.name,
         body = %json_for_log(&request),
         "received /openai/v1/responses request"
@@ -564,9 +304,8 @@ pub async fn responses(
 
     if provider.auth_mode == ProviderAuthMode::Account && provider.name == PROVIDER_OPENAI_PROXY {
         let account = resolve_account_for_provider(&state, &provider).await?;
-        let mut request_body =
-            serde_json::to_value(&request).map_err(|err| AppError::internal(err.to_string()))?;
-        sanitize_openai_codex_request_body(&mut request_body);
+        let request_body =
+            responses_to_openai_private(&request).map_err(|err| AppError::internal(err.to_string()))?;
         let upstream = state
             .upstream
             .call_openai_responses(
@@ -586,6 +325,7 @@ pub async fn responses(
                 elapsed_ms = started_at.elapsed().as_millis(),
                 email = %account.email,
                 provider = %provider.name,
+                egress = %EgressProtocol::OpenAiPrivateResponses.as_str(),
                 response_body = %json_value_for_log(&response_body),
                 "returning OpenAI /openai/v1/responses body"
             );
@@ -647,6 +387,7 @@ pub async fn responses(
             stream = request.stream,
             email = %account.email,
             project_id = %project_id,
+            egress = %EgressProtocol::GoogleV1Internal.as_str(),
             gemini_request = %json_for_log(&gemini_request),
             upstream_request = %json_value_for_log(&request_body),
             "proxying request to Gemini upstream"
@@ -1069,7 +810,7 @@ pub async fn responses(
             .map_err(AppError::bad_request)?;
         let upstream = state
             .upstream
-            .call_native_chat_completions(
+            .call_openai_chat_upstream(
                 &request_id,
                 &native_provider.base_url,
                 &native_provider.api_key,
@@ -1085,6 +826,7 @@ pub async fn responses(
                 request_id = %request_id,
                 elapsed_ms = started_at.elapsed().as_millis(),
                 provider = %provider.name,
+                egress = %native_target.egress.as_str(),
                 upstream_model = %native_target.upstream_model,
                 response_body = %json_for_log(&response),
                 "returning chat-completions-adapted /openai/v1/responses body"
@@ -1123,7 +865,7 @@ pub async fn responses(
     .map_err(|err| AppError::internal(err.to_string()))?;
     let upstream = state
         .upstream
-        .call_native_responses(
+        .call_openai_responses_upstream(
             &request_id,
             &native_provider.base_url,
             &native_provider.api_key,
@@ -1139,6 +881,7 @@ pub async fn responses(
             request_id = %request_id,
             elapsed_ms = started_at.elapsed().as_millis(),
             provider = %provider.name,
+            egress = %native_target.egress.as_str(),
             upstream_model = %native_target.upstream_model,
             response_body = %json_value_for_log(&response_body),
             "returning native provider /openai/v1/responses body"
@@ -1358,11 +1101,12 @@ async fn resolve_account_for_provider(
 #[derive(Clone, Debug)]
 struct NativeTarget {
     upstream_model: String,
+    egress: EgressProtocol,
     uses_chat_completions: bool,
 }
 
 fn resolve_native_target(
-    provider: &crate::models::ApiProviderRecord,
+    provider: &ApiProviderRecord,
     requested_model: &str,
 ) -> NativeTarget {
     let name = provider.name.as_str();
@@ -1371,6 +1115,7 @@ fn resolve_native_target(
     if name == "bytedance-coding-plan" || base_url.contains("/api/coding/v3") {
         return NativeTarget {
             upstream_model: map_bytedance_coding_model(requested_model),
+            egress: EgressProtocol::NativeChatCompletions,
             uses_chat_completions: true,
         };
     }
@@ -1378,12 +1123,14 @@ fn resolve_native_target(
     if name == "bytedance" || base_url.contains("volces.com/api/v3") {
         return NativeTarget {
             upstream_model: map_bytedance_model(requested_model),
+            egress: EgressProtocol::NativeResponses,
             uses_chat_completions: false,
         };
     }
 
     NativeTarget {
         upstream_model: requested_model.to_string(),
+        egress: EgressProtocol::NativeResponses,
         uses_chat_completions: false,
     }
 }
@@ -1410,254 +1157,6 @@ fn is_codex_style_model(model: &str) -> bool {
         || model.starts_with("o3")
         || model.starts_with("o4")
         || model.starts_with("codex-")
-}
-
-fn request_with_model(
-    request: &ResponsesRequest,
-    model: &str,
-    provider_name: &str,
-) -> Result<Value, serde_json::Error> {
-    let mut body = serde_json::to_value(request)?;
-    if let Some(object) = body.as_object_mut() {
-        object.insert("model".to_string(), Value::String(model.to_string()));
-    }
-    strip_null_fields(&mut body);
-    normalize_native_responses_request(&mut body, provider_name);
-    Ok(body)
-}
-
-fn strip_null_fields(value: &mut Value) {
-    match value {
-        Value::Object(map) => {
-            map.retain(|_, nested| {
-                strip_null_fields(nested);
-                !nested.is_null()
-            });
-        }
-        Value::Array(items) => {
-            for item in items {
-                strip_null_fields(item);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn normalize_native_responses_request(body: &mut Value, provider_name: &str) {
-    let Some(object) = body.as_object_mut() else {
-        return;
-    };
-
-    if let Some(input) = object.get_mut("input") {
-        normalize_native_responses_input(input, provider_name);
-    }
-    if provider_name == "bytedance" {
-        if let Some(tools) = object.get_mut("tools") {
-            normalize_bytedance_responses_tools(tools);
-        }
-        if let Some(tool_choice) = object.get_mut("tool_choice") {
-            normalize_bytedance_responses_tool_choice(tool_choice);
-        }
-    }
-}
-
-fn normalize_native_responses_input(input: &mut Value, provider_name: &str) {
-    let Some(items) = input.as_array_mut() else {
-        rewrite_input_value_types(input);
-        return;
-    };
-
-    for item in items {
-        normalize_native_responses_input_item(item, provider_name);
-    }
-}
-
-fn normalize_native_responses_input_item(item: &mut Value, provider_name: &str) {
-    let Some(object) = item.as_object_mut() else {
-        rewrite_input_value_types(item);
-        return;
-    };
-
-    if provider_name == "bytedance" {
-        let item_type = object
-            .get("type")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-
-        match item_type {
-            "custom_tool_call_output" => {
-                *item = json!({
-                    "type": "function_call_output",
-                    "call_id": object.get("call_id").cloned().unwrap_or(Value::Null),
-                    "output": stringify_openai_codex_output(object.get("output").cloned()),
-                });
-                return;
-            }
-            "local_shell_call" => {
-                let call_id = object
-                    .get("call_id")
-                    .cloned()
-                    .or_else(|| object.get("id").cloned())
-                    .unwrap_or_else(|| Value::String(format!("call_{}", Uuid::new_v4().simple())));
-                let arguments = build_shell_call_arguments(object.get("action"));
-                *item = json!({
-                    "type": "function_call",
-                    "call_id": call_id,
-                    "name": "shell",
-                    "arguments": Value::Object(arguments).to_string(),
-                });
-                return;
-            }
-            "web_search_call" => {
-                let call_id = object
-                    .get("call_id")
-                    .cloned()
-                    .or_else(|| object.get("id").cloned())
-                    .unwrap_or_else(|| Value::String(format!("call_{}", Uuid::new_v4().simple())));
-                let arguments = build_web_search_arguments(object.get("action"));
-                *item = json!({
-                    "type": "function_call",
-                    "call_id": call_id,
-                    "name": "google_search",
-                    "arguments": Value::Object(arguments).to_string(),
-                });
-                return;
-            }
-            _ => {}
-        }
-    }
-
-    rewrite_input_value_types(item);
-}
-
-fn build_shell_call_arguments(action: Option<&Value>) -> serde_json::Map<String, Value> {
-    let mut args = serde_json::Map::new();
-    let Some(exec) = action.and_then(|value| value.get("exec")) else {
-        return args;
-    };
-
-    if let Some(command) = exec.get("command") {
-        let command_value = if command.is_string() {
-            json!([command])
-        } else {
-            command.clone()
-        };
-        args.insert("command".to_string(), command_value);
-    }
-    if let Some(workdir) = exec
-        .get("working_directory")
-        .or_else(|| exec.get("workdir"))
-    {
-        args.insert("workdir".to_string(), workdir.clone());
-    }
-
-    args
-}
-
-fn build_web_search_arguments(action: Option<&Value>) -> serde_json::Map<String, Value> {
-    let mut args = serde_json::Map::new();
-    if let Some(query) = action.and_then(|value| value.get("query")) {
-        args.insert("query".to_string(), query.clone());
-    }
-    args
-}
-
-fn normalize_bytedance_responses_tools(tools: &mut Value) {
-    let Some(tool_items) = tools.as_array_mut() else {
-        return;
-    };
-
-    let mut normalized = Vec::with_capacity(tool_items.len());
-    for tool in tool_items.drain(..) {
-        let Some(tool_obj) = tool.as_object() else {
-            continue;
-        };
-
-        let function_obj = tool_obj.get("function").and_then(Value::as_object);
-        let name = tool_obj
-            .get("name")
-            .cloned()
-            .or_else(|| function_obj.and_then(|f| f.get("name").cloned()));
-        let description = tool_obj
-            .get("description")
-            .cloned()
-            .or_else(|| function_obj.and_then(|f| f.get("description").cloned()));
-        let parameters = tool_obj
-            .get("parameters")
-            .cloned()
-            .or_else(|| function_obj.and_then(|f| f.get("parameters").cloned()));
-        let strict = function_obj.and_then(|f| f.get("strict").cloned());
-
-        if name.as_ref().and_then(Value::as_str).is_none() {
-            continue;
-        }
-
-        normalized.push(json!({
-            "type": "function",
-            "name": name.unwrap_or(Value::String(String::new())),
-            "description": description.unwrap_or(Value::Null),
-            "parameters": parameters.unwrap_or_else(|| json!({"type":"object","properties":{}})),
-            "strict": strict.unwrap_or(Value::Null),
-        }));
-    }
-
-    *tool_items = normalized;
-}
-
-fn normalize_bytedance_responses_tool_choice(tool_choice: &mut Value) {
-    let Some(tool_choice_obj) = tool_choice.as_object() else {
-        return;
-    };
-
-    let choice_type = tool_choice_obj
-        .get("type")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    if choice_type != "tool" && choice_type != "function" {
-        return;
-    }
-
-    if let Some(name) = tool_choice_obj.get("name").cloned().or_else(|| {
-        tool_choice_obj
-            .get("function")
-            .and_then(|function| function.get("name"))
-            .cloned()
-    }) {
-        *tool_choice = json!({
-            "type": "function",
-            "name": name,
-        });
-    }
-}
-
-fn rewrite_input_value_types(value: &mut Value) {
-    match value {
-        Value::Object(map) => {
-            if let Some(item_type) = map.get_mut("type") {
-                if let Some(type_name) = item_type.as_str() {
-                    let rewritten = match type_name {
-                        "text" => Some("input_text"),
-                        "image_url" => Some("input_image"),
-                        "custom_tool_call_output" => Some("function_call_output"),
-                        _ => None,
-                    };
-                    if let Some(next) = rewritten {
-                        *item_type = Value::String(next.to_string());
-                    }
-                }
-            }
-
-            for nested in map.values_mut() {
-                rewrite_input_value_types(nested);
-            }
-        }
-        Value::Array(items) => {
-            for item in items {
-                rewrite_input_value_types(item);
-            }
-        }
-        _ => {}
-    }
 }
 
 fn synthesized_responses_stream(

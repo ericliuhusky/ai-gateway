@@ -1,27 +1,16 @@
-mod account_pool;
+mod adapters;
+mod api;
 mod auth;
 mod config;
-mod handlers;
-mod mapper;
 mod models;
-mod provider_store;
-mod route_store;
+mod store;
 mod upstream;
 
-use account_pool::AccountPool;
+use api::{AppState, build_router};
 use auth::OAuthClient;
-use axum::{
-    Router,
-    routing::{get, post},
-};
 use config::Config;
-use handlers::{
-    AppState, add_provider, auth_google_callback, auth_google_start, auth_openai_callback,
-    auth_openai_start, get_route, healthz, list_models, list_providers, responses, set_route,
-};
-use provider_store::ProviderStore;
 use reqwest::Client;
-use route_store::RouteStore;
+use store::{AccountPool, ProviderStore, RouteStore};
 use std::sync::Arc;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use upstream::UpstreamClient;
@@ -64,18 +53,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         upstream,
     };
 
-    let app = Router::new()
-        .route("/healthz", get(healthz))
-        .route("/auth/google/start", get(auth_google_start))
-        .route("/auth/google/callback", get(auth_google_callback))
-        .route("/auth/openai/start", get(auth_openai_start))
-        .route("/auth/callback", get(auth_openai_callback))
-        .route("/auth/openai/callback", get(auth_openai_callback))
-        .route("/providers", get(list_providers).post(add_provider))
-        .route("/selected-provider", get(get_route).put(set_route))
-        .route("/openai/v1/models", get(list_models))
-        .route("/openai/v1/responses", post(responses))
-        .with_state(state);
+    let app = build_router(state);
 
     let listener = tokio::net::TcpListener::bind(config.bind_addr()).await?;
     let openai_callback_listener =

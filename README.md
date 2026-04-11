@@ -1,5 +1,24 @@
 # ai-gateway
 
+## 架构词汇
+
+- `Ingress`: 网关对外暴露的入口协议。当前只有 `OpenAI Responses`
+- `Egress`: 网关对上游发起请求时使用的出口协议。当前固定 4 种：
+  - `OpenAI private responses`
+  - `Google v1internal`
+  - `Native responses`
+  - `Native chat completions`
+- `Provider`: 具体供应商实例，例如 `openai-proxy`、`google-proxy`、`bytedance`
+- `Route`: 当前把入口请求转发到哪个 provider
+- `Adapter`: 从统一 `Responses` 入口适配到具体出口协议的转换层
+
+当前实现遵循“单一入口、多个出口”的结构：
+
+- 所有推理请求统一从 `POST /openai/v1/responses` 进入
+- 路由层根据当前选中的 provider 决定出口协议
+- adapter 层负责把入口 `Responses` 适配到对应的出口协议
+- upstream 层只负责调用真实上游接口
+
 参考 [`Antigravity-Manager`](https://github.com/lbjlaq/Antigravity-Manager) 的代理实现：
 
 - 用户通过 Google OAuth 登录
