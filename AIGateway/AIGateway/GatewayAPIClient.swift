@@ -37,6 +37,24 @@ struct GatewayAPIClient: Sendable {
         return response.codexConfig
     }
 
+    func fetchLogs(limit: Int = 100) async throws -> [GatewayLogSummary] {
+        let response: GatewayLogListResponse = try await request(
+            path: "/logs",
+            queryItems: [URLQueryItem(name: "limit", value: String(limit))]
+        )
+        return response.logs
+    }
+
+    func fetchLogDetail(requestID: String) async throws -> GatewayLogDetail {
+        let response: GatewayLogDetailResponse = try await request(path: "/logs/\(requestID)")
+        return response.log
+    }
+
+    func fetchLoggingSettings() async throws -> GatewayLoggingSettings {
+        let response: GatewayLoggingSettingsResponse = try await request(path: "/logs/settings")
+        return response.logging
+    }
+
     func createProvider(_ payload: CreateAPIProviderRequest) async throws {
         _ = try await requestWithoutBody(
             path: "/providers",
@@ -63,6 +81,19 @@ struct GatewayAPIClient: Sendable {
         return response.codexConfig
     }
 
+    func setLoggingEnabled(_ enabled: Bool) async throws -> GatewayLoggingSettings {
+        let response: GatewayLoggingSettingsResponse = try await requestWithBody(
+            path: "/logs/settings",
+            method: "PUT",
+            body: UpdateGatewayLoggingSettingsRequest(enabled: enabled)
+        )
+        return response.logging
+    }
+
+    func clearLogs() async throws {
+        _ = try await request(path: "/logs", method: "DELETE") as [String: Bool]
+    }
+
     func loginURL(for provider: AccountLoginProvider) -> URL {
         switch provider {
         case .google:
@@ -72,8 +103,12 @@ struct GatewayAPIClient: Sendable {
         }
     }
 
-    private func request<T: Decodable>(path: String, method: String = "GET") async throws -> T {
-        var request = URLRequest(url: baseURL.appending(path: path))
+    private func request<T: Decodable>(
+        path: String,
+        method: String = "GET",
+        queryItems: [URLQueryItem] = []
+    ) async throws -> T {
+        var request = URLRequest(url: try endpointURL(path: path, queryItems: queryItems))
         request.httpMethod = method
         let (data, response) = try await URLSession.shared.data(for: request)
         try validate(response: response, data: data)
@@ -85,7 +120,7 @@ struct GatewayAPIClient: Sendable {
         method: String,
         body: T
     ) async throws -> Data {
-        var request = URLRequest(url: baseURL.appending(path: path))
+        var request = URLRequest(url: try endpointURL(path: path))
         request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode(body)
@@ -94,12 +129,51 @@ struct GatewayAPIClient: Sendable {
         return data
     }
 
+    private func requestWithBody<T: Encodable, U: Decodable>(
+        path: String,
+        method: String,
+        body: T
+    ) async throws -> U {
+        var request = URLRequest(url: try endpointURL(path: path))
+        request.httpMethod = method
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(body)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(U.self, from: data)
+    }
+
+    private func endpointURL(
+        path: String,
+        queryItems: [URLQueryItem] = []
+    ) throws -> URL {
+        let baseWithPath = baseURL.appending(path: path)
+        guard var components = URLComponents(url: baseWithPath, resolvingAgainstBaseURL: false) else {
+            throw GatewayAPIError.invalidResponse
+        }
+        if !queryItems.isEmpty {
+            components.queryItems = queryItems
+        }
+        guard let url = components.url else {
+            throw GatewayAPIError.invalidResponse
+        }
+        return url
+    }
+
     private func validate(response: URLResponse, data: Data) throws {
         guard let http = response as? HTTPURLResponse else {
             throw GatewayAPIError.invalidResponse
         }
 
         guard (200 ..< 300).contains(http.statusCode) else {
+            if
+                let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                let error = object["error"] as? [String: Any],
+                let message = error["message"] as? String
+            {
+                throw GatewayAPIError.server(message)
+            }
+
             if
                 let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                 let error = object["error"] as? String

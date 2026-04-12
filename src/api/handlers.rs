@@ -8,11 +8,13 @@ use crate::{
     config::Config,
     models::{
         AccountRecord, ApiProviderRecord, ApiProviderSummary, CodexConfigStatus,
-        CreateApiProviderRequest, EgressProtocol, IngressProtocol, ModelListItem,
-        ModelListResponse, PROVIDER_GOOGLE_PROXY, PROVIDER_OPENAI_PROXY, ProviderAuthMode,
-        ProviderQuotaCredits, ProviderQuotaResponse, ProviderQuotaSnapshot, ProviderQuotaSummary,
-        ProviderQuotaWindow, QuotaSource, QuotaSupportStatus, ResponsesRequest, ResponsesResponse,
-        SelectedProvider, UpdateSelectedProviderRequest, UpstreamRateLimitStatusDetails,
+        CreateApiProviderRequest, EgressProtocol, GatewayLogDetail, GatewayLogDetailResponse,
+        GatewayLogListResponse, GatewayLogSettings, GatewayLogSettingsResponse, IngressProtocol,
+        ModelListItem, ModelListResponse, PROVIDER_GOOGLE_PROXY, PROVIDER_OPENAI_PROXY,
+        ProviderAuthMode, ProviderQuotaCredits, ProviderQuotaResponse, ProviderQuotaSnapshot,
+        ProviderQuotaSummary, ProviderQuotaWindow, QuotaSource, QuotaSupportStatus,
+        ResponsesRequest, ResponsesResponse, SelectedProvider, UpdateGatewayLogSettingsRequest,
+        UpdateSelectedProviderRequest, UpstreamRateLimitStatusDetails,
         UpstreamRateLimitStatusPayload, UpstreamRateLimitWindowSnapshot,
     },
     store::{AccountPool, LogEvent, LogStage, LogStore, ProviderStore, RouteStore},
@@ -398,6 +400,68 @@ pub async fn restore_codex_config(State(state): State<AppState>) -> Result<Json<
     Ok(Json(
         json!({ "codex_config": codex_config_status(&state)? }),
     ))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LogsQuery {
+    pub limit: Option<usize>,
+}
+
+pub async fn get_logs(
+    State(state): State<AppState>,
+    Query(query): Query<LogsQuery>,
+) -> Result<Json<GatewayLogListResponse>, AppError> {
+    let limit = query.limit.unwrap_or(100).clamp(1, 500);
+    let logs = state
+        .logs
+        .list_request_summaries(limit)
+        .map_err(AppError::internal)?;
+    Ok(Json(GatewayLogListResponse { logs }))
+}
+
+pub async fn get_log_detail(
+    State(state): State<AppState>,
+    AxumPath(request_id): AxumPath<String>,
+) -> Result<Json<GatewayLogDetailResponse>, AppError> {
+    let events = state
+        .logs
+        .load_request(&request_id)
+        .map_err(AppError::internal)?;
+    if events.is_empty() {
+        return Err(AppError::bad_request(format!(
+            "log request_id not found: {request_id}"
+        )));
+    }
+    Ok(Json(GatewayLogDetailResponse {
+        log: GatewayLogDetail { request_id, events },
+    }))
+}
+
+pub async fn get_log_settings(State(state): State<AppState>) -> Json<GatewayLogSettingsResponse> {
+    Json(GatewayLogSettingsResponse {
+        logging: GatewayLogSettings {
+            enabled: state.logs.is_enabled(),
+        },
+    })
+}
+
+pub async fn set_log_settings(
+    State(state): State<AppState>,
+    Json(request): Json<UpdateGatewayLogSettingsRequest>,
+) -> Result<Json<GatewayLogSettingsResponse>, AppError> {
+    let enabled = state
+        .logs
+        .set_enabled(request.enabled)
+        .await
+        .map_err(AppError::internal)?;
+    Ok(Json(GatewayLogSettingsResponse {
+        logging: GatewayLogSettings { enabled },
+    }))
+}
+
+pub async fn clear_logs(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
+    state.logs.clear().await.map_err(AppError::internal)?;
+    Ok(Json(json!({ "cleared": true })))
 }
 
 pub async fn responses(

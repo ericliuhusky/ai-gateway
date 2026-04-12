@@ -285,3 +285,95 @@ impl AccountRecord {
         self.upstream_account_id.as_deref()
     }
 }
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GatewayLogSummary {
+    pub request_id: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_email: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    pub stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status_code: Option<u16>,
+    pub has_error: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ingress_protocol: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub egress_protocol: Option<String>,
+    pub event_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GatewayLogEvent {
+    pub id: i64,
+    pub request_id: String,
+    pub stage: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status_code: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ingress_protocol: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub egress_protocol: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_email: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    pub stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub method: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
+    pub body_truncated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_message: Option<String>,
+    pub error_truncated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub elapsed_ms: Option<i64>,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GatewayLogDetail {
+    pub request_id: String,
+    pub events: Vec<GatewayLogEvent>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GatewayLogListResponse {
+    pub logs: Vec<GatewayLogSummary>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GatewayLogDetailResponse {
+    pub log: GatewayLogDetail,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GatewayLogSettings {
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GatewayLogSettingsResponse {
+    pub logging: GatewayLogSettings,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpdateGatewayLogSettingsRequest {
+    pub enabled: bool,
+}

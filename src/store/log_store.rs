@@ -1,9 +1,15 @@
-use crate::config::Config;
-use rusqlite::{Connection, params};
+use crate::{
+    config::Config,
+    models::{GatewayLogEvent, GatewayLogSummary},
+};
+use rusqlite::{Connection, OptionalExtension, params};
 use std::{
     fs,
     path::PathBuf,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 use tokio::sync::Mutex;
@@ -62,6 +68,7 @@ pub struct LogStore {
     body_limit_chars: usize,
     error_limit_chars: usize,
     write_guard: Arc<Mutex<()>>,
+    enabled: Arc<AtomicBool>,
 }
 
 impl LogStore {
@@ -94,8 +101,12 @@ impl LogStore {
             body_limit_chars,
             error_limit_chars,
             write_guard: Arc::new(Mutex::new(())),
+            enabled: Arc::new(AtomicBool::new(true)),
         };
         store.init()?;
+        store
+            .enabled
+            .store(store.load_enabled_setting()?, Ordering::Relaxed);
         Ok(store)
     }
 
@@ -107,8 +118,20 @@ impl LogStore {
         self.max_rows
     }
 
+    pub fn is_enabled(&self) -> bool {
+        self.enabled.load(Ordering::Relaxed)
+    }
+
     pub async fn record(&self, event: LogEvent) -> Result<(), String> {
+        if !self.is_enabled() {
+            return Ok(());
+        }
+
         let _guard = self.write_guard.lock().await;
+        if !self.is_enabled() {
+            return Ok(());
+        }
+
         let conn = self.connect()?;
         let (body, body_truncated) =
             truncate_optional(event.body.as_deref(), self.body_limit_chars);
@@ -165,11 +188,202 @@ impl LogStore {
         Ok(())
     }
 
+    pub fn list_request_summaries(&self, limit: usize) -> Result<Vec<GatewayLogSummary>, String> {
+        let conn = self.connect()?;
+        let mut stmt = conn
+            .prepare(
+                "
+                SELECT
+                    gl.request_id,
+                    MIN(gl.created_at) AS created_at,
+                    MAX(gl.created_at) AS updated_at,
+                    COALESCE((
+                        SELECT provider_name
+                        FROM gateway_logs latest
+                        WHERE latest.request_id = gl.request_id
+                            AND latest.provider_name IS NOT NULL
+                        ORDER BY latest.id DESC
+                        LIMIT 1
+                    ), NULL) AS provider_name,
+                    COALESCE((
+                        SELECT account_email
+                        FROM gateway_logs latest
+                        WHERE latest.request_id = gl.request_id
+                            AND latest.account_email IS NOT NULL
+                        ORDER BY latest.id DESC
+                        LIMIT 1
+                    ), NULL) AS account_email,
+                    COALESCE((
+                        SELECT model
+                        FROM gateway_logs latest
+                        WHERE latest.request_id = gl.request_id
+                            AND latest.model IS NOT NULL
+                        ORDER BY latest.id DESC
+                        LIMIT 1
+                    ), NULL) AS model,
+                    MAX(gl.stream) AS stream,
+                    COALESCE((
+                        SELECT status_code
+                        FROM gateway_logs latest
+                        WHERE latest.request_id = gl.request_id
+                            AND latest.status_code IS NOT NULL
+                        ORDER BY latest.id DESC
+                        LIMIT 1
+                    ), NULL) AS status_code,
+                    MAX(CASE WHEN gl.stage = 'error' THEN 1 ELSE 0 END) AS has_error,
+                    COALESCE((
+                        SELECT error_message
+                        FROM gateway_logs latest
+                        WHERE latest.request_id = gl.request_id
+                            AND latest.error_message IS NOT NULL
+                        ORDER BY latest.id DESC
+                        LIMIT 1
+                    ), NULL) AS error_message,
+                    COALESCE((
+                        SELECT ingress_protocol
+                        FROM gateway_logs latest
+                        WHERE latest.request_id = gl.request_id
+                            AND latest.ingress_protocol IS NOT NULL
+                        ORDER BY latest.id DESC
+                        LIMIT 1
+                    ), NULL) AS ingress_protocol,
+                    COALESCE((
+                        SELECT egress_protocol
+                        FROM gateway_logs latest
+                        WHERE latest.request_id = gl.request_id
+                            AND latest.egress_protocol IS NOT NULL
+                        ORDER BY latest.id DESC
+                        LIMIT 1
+                    ), NULL) AS egress_protocol,
+                    COUNT(*) AS event_count,
+                    MAX(gl.id) AS latest_id
+                FROM gateway_logs gl
+                GROUP BY gl.request_id
+                ORDER BY latest_id DESC
+                LIMIT ?1
+                ",
+            )
+            .map_err(|err| format!("prepare log summaries query failed: {err}"))?;
+
+        let rows = stmt
+            .query_map(params![limit as i64], |row| {
+                Ok(GatewayLogSummary {
+                    request_id: row.get(0)?,
+                    created_at: row.get(1)?,
+                    updated_at: row.get(2)?,
+                    provider_name: row.get(3)?,
+                    account_email: row.get(4)?,
+                    model: row.get(5)?,
+                    stream: row.get::<_, i64>(6)? != 0,
+                    status_code: row.get::<_, Option<i64>>(7)?.map(|value| value as u16),
+                    has_error: row.get::<_, i64>(8)? != 0,
+                    error_message: row.get(9)?,
+                    ingress_protocol: row.get(10)?,
+                    egress_protocol: row.get(11)?,
+                    event_count: row.get::<_, i64>(12)? as usize,
+                })
+            })
+            .map_err(|err| format!("query log summaries failed: {err}"))?;
+
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|err| format!("read log summaries failed: {err}"))
+    }
+
+    pub fn load_request(&self, request_id: &str) -> Result<Vec<GatewayLogEvent>, String> {
+        let conn = self.connect()?;
+        let mut stmt = conn
+            .prepare(
+                "
+                SELECT
+                    id,
+                    request_id,
+                    stage,
+                    status_code,
+                    ingress_protocol,
+                    egress_protocol,
+                    provider_name,
+                    account_id,
+                    account_email,
+                    model,
+                    stream,
+                    method,
+                    path,
+                    url,
+                    body,
+                    body_truncated,
+                    error_message,
+                    error_truncated,
+                    elapsed_ms,
+                    created_at
+                FROM gateway_logs
+                WHERE request_id = ?1
+                ORDER BY id ASC
+                ",
+            )
+            .map_err(|err| format!("prepare request log query failed: {err}"))?;
+        let rows = stmt
+            .query_map(params![request_id], |row| {
+                Ok(GatewayLogEvent {
+                    id: row.get(0)?,
+                    request_id: row.get(1)?,
+                    stage: row.get(2)?,
+                    status_code: row.get::<_, Option<i64>>(3)?.map(|value| value as u16),
+                    ingress_protocol: row.get(4)?,
+                    egress_protocol: row.get(5)?,
+                    provider_name: row.get(6)?,
+                    account_id: row.get(7)?,
+                    account_email: row.get(8)?,
+                    model: row.get(9)?,
+                    stream: row.get::<_, i64>(10)? != 0,
+                    method: row.get(11)?,
+                    path: row.get(12)?,
+                    url: row.get(13)?,
+                    body: row.get(14)?,
+                    body_truncated: row.get::<_, i64>(15)? != 0,
+                    error_message: row.get(16)?,
+                    error_truncated: row.get::<_, i64>(17)? != 0,
+                    elapsed_ms: row.get(18)?,
+                    created_at: row.get(19)?,
+                })
+            })
+            .map_err(|err| format!("query request logs failed: {err}"))?;
+
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|err| format!("read request logs failed: {err}"))
+    }
+
+    pub async fn set_enabled(&self, enabled: bool) -> Result<bool, String> {
+        let _guard = self.write_guard.lock().await;
+        let conn = self.connect()?;
+        conn.execute(
+            "INSERT INTO log_settings (id, enabled)
+             VALUES (1, ?1)
+             ON CONFLICT(id) DO UPDATE SET enabled = excluded.enabled",
+            params![if enabled { 1_i64 } else { 0_i64 }],
+        )
+        .map_err(|err| format!("update log enabled setting failed: {err}"))?;
+        self.enabled.store(enabled, Ordering::Relaxed);
+        Ok(enabled)
+    }
+
+    pub async fn clear(&self) -> Result<(), String> {
+        let _guard = self.write_guard.lock().await;
+        let conn = self.connect()?;
+        conn.execute("DELETE FROM gateway_logs", [])
+            .map_err(|err| format!("clear gateway logs failed: {err}"))?;
+        Ok(())
+    }
+
     fn init(&self) -> Result<(), String> {
         let conn = self.connect()?;
         conn.execute_batch(
             "
             PRAGMA journal_mode = WAL;
+
+            CREATE TABLE IF NOT EXISTS log_settings (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                enabled INTEGER NOT NULL
+            );
 
             CREATE TABLE IF NOT EXISTS gateway_logs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -201,6 +415,13 @@ impl LogStore {
             ",
         )
         .map_err(|err| format!("initialize log sqlite schema failed: {err}"))?;
+        conn.execute(
+            "INSERT INTO log_settings (id, enabled)
+             VALUES (1, 1)
+             ON CONFLICT(id) DO NOTHING",
+            [],
+        )
+        .map_err(|err| format!("initialize log setting failed: {err}"))?;
         Ok(())
     }
 
@@ -236,6 +457,18 @@ impl LogStore {
                 self.db_path.display()
             )
         })
+    }
+
+    fn load_enabled_setting(&self) -> Result<bool, String> {
+        let conn = self.connect()?;
+        let enabled = conn
+            .query_row("SELECT enabled FROM log_settings WHERE id = 1", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .optional()
+            .map_err(|err| format!("load log enabled setting failed: {err}"))?
+            .unwrap_or(1);
+        Ok(enabled != 0)
     }
 }
 
@@ -360,6 +593,97 @@ mod tests {
         assert_eq!(body_truncated, 1);
         assert_eq!(error_message, "12345678...<truncated>");
         assert_eq!(error_truncated, 1);
+
+        let _ = fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn skips_recording_when_disabled() {
+        let db_path = unique_test_db_path("disabled");
+        let store =
+            LogStore::with_options(db_path.clone(), 10, 8, 128, 128).expect("create log store");
+
+        store.set_enabled(false).await.expect("disable log store");
+        store
+            .record(LogEvent {
+                request_id: "req_disabled".to_string(),
+                stage: LogStage::IngressRequest,
+                status_code: None,
+                ingress_protocol: Some("openai-responses".to_string()),
+                egress_protocol: None,
+                provider_name: None,
+                account_id: None,
+                account_email: None,
+                model: Some("gpt-5.4".to_string()),
+                stream: false,
+                method: Some("POST".to_string()),
+                path: Some("/openai/v1/responses".to_string()),
+                url: None,
+                body: Some("body".to_string()),
+                error_message: None,
+                elapsed_ms: None,
+            })
+            .await
+            .expect("skip write while disabled");
+
+        let conn = rusqlite::Connection::open(&db_path).expect("open test db");
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM gateway_logs", [], |row| row.get(0))
+            .expect("count rows");
+        assert_eq!(count, 0);
+
+        let enabled: i64 = conn
+            .query_row("SELECT enabled FROM log_settings WHERE id = 1", [], |row| {
+                row.get(0)
+            })
+            .expect("load enabled flag");
+        assert_eq!(enabled, 0);
+
+        let _ = fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn clears_logs_without_changing_enabled_setting() {
+        let db_path = unique_test_db_path("clear");
+        let store =
+            LogStore::with_options(db_path.clone(), 10, 8, 128, 128).expect("create log store");
+
+        store
+            .record(LogEvent {
+                request_id: "req_clear".to_string(),
+                stage: LogStage::IngressRequest,
+                status_code: None,
+                ingress_protocol: Some("openai-responses".to_string()),
+                egress_protocol: None,
+                provider_name: None,
+                account_id: None,
+                account_email: None,
+                model: Some("gpt-5.4".to_string()),
+                stream: false,
+                method: Some("POST".to_string()),
+                path: Some("/openai/v1/responses".to_string()),
+                url: None,
+                body: Some("body".to_string()),
+                error_message: None,
+                elapsed_ms: None,
+            })
+            .await
+            .expect("insert log row");
+
+        store.clear().await.expect("clear logs");
+
+        let conn = rusqlite::Connection::open(&db_path).expect("open test db");
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM gateway_logs", [], |row| row.get(0))
+            .expect("count rows");
+        assert_eq!(count, 0);
+
+        let enabled: i64 = conn
+            .query_row("SELECT enabled FROM log_settings WHERE id = 1", [], |row| {
+                row.get(0)
+            })
+            .expect("load enabled flag");
+        assert_eq!(enabled, 1);
 
         let _ = fs::remove_file(db_path);
     }

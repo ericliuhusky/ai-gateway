@@ -17,31 +17,41 @@ struct ContentView: View {
     ]
 
     var body: some View {
-        NavigationStack {
-            VStack(spacing: 18) {
-                header
-                providerGrid
-                footer
-            }
-            .padding(24)
-            .background(background)
-            .navigationTitle("AI Gateway")
-            .sheet(isPresented: $showingAddProvider) {
-                AddProviderSheet(viewModel: viewModel)
-            }
-            .sheet(isPresented: $showingCodexConfigSheet) {
-                CodexConfigSheet(viewModel: viewModel)
-            }
-            .task {
-                await viewModel.refresh()
-            }
-            .alert("Request Failed", isPresented: errorPresented) {
-                Button("OK") {
-                    viewModel.dismissError()
+        TabView {
+            NavigationStack {
+                VStack(spacing: 18) {
+                    header
+                    providerGrid
+                    footer
                 }
-            } message: {
-                Text(viewModel.errorMessage ?? "Unknown error")
+                .padding(24)
+                .background(background)
+                .navigationTitle("AI Gateway")
             }
+            .tabItem {
+                Label("供应商", systemImage: "square.grid.2x2")
+            }
+
+            LogsTabView(viewModel: viewModel)
+                .tabItem {
+                    Label("日志", systemImage: "text.document")
+                }
+        }
+        .sheet(isPresented: $showingAddProvider) {
+            AddProviderSheet(viewModel: viewModel)
+        }
+        .sheet(isPresented: $showingCodexConfigSheet) {
+            CodexConfigSheet(viewModel: viewModel)
+        }
+        .task {
+            await viewModel.refresh()
+        }
+        .alert("Request Failed", isPresented: errorPresented) {
+            Button("OK") {
+                viewModel.dismissError()
+            }
+        } message: {
+            Text(viewModel.errorMessage ?? "Unknown error")
         }
         .frame(minWidth: 980, minHeight: 680)
     }
