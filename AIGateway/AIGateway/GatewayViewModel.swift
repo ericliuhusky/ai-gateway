@@ -5,6 +5,9 @@ import Foundation
 @MainActor
 final class GatewayViewModel: ObservableObject {
     @Published var providers: [GatewayProvider] = []
+    @Published var providerQuotas: [String: ProviderQuotaSummary] = [:]
+    @Published var quotaErrors: [String: String] = [:]
+    @Published var quotaLoadingProviderIDs: Set<String> = []
     @Published var selectedProviderID: String?
     @Published var codexConfigStatus: CodexConfigStatus?
     @Published var isLoading = false
@@ -22,6 +25,18 @@ final class GatewayViewModel: ObservableObject {
         providers.first(where: { $0.id == selectedProviderID })?.name
     }
 
+    func quotaSummary(for providerID: String) -> ProviderQuotaSummary? {
+        providerQuotas[providerID]
+    }
+
+    func quotaErrorMessage(for providerID: String) -> String? {
+        quotaErrors[providerID]
+    }
+
+    func isLoadingQuota(for providerID: String) -> Bool {
+        quotaLoadingProviderIDs.contains(providerID)
+    }
+
     func refresh() async {
         isLoading = true
         defer { isLoading = false }
@@ -32,9 +47,11 @@ final class GatewayViewModel: ObservableObject {
             async let codexConfigTask = client.fetchCodexConfigStatus()
 
             let (providers, selected, codexConfig) = try await (providersTask, selectedTask, codexConfigTask)
-            self.providers = providers.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+            let sortedProviders = providers.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+            self.providers = sortedProviders
             self.selectedProviderID = selected.providerID
             self.codexConfigStatus = codexConfig
+            await refreshProviderQuotas(for: sortedProviders)
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -108,5 +125,47 @@ final class GatewayViewModel: ObservableObject {
 
     func dismissError() {
         errorMessage = nil
+    }
+
+    private func refreshProviderQuotas(for providers: [GatewayProvider]) async {
+        let providerIDs = Set(providers.map(\.id))
+        providerQuotas = providerQuotas.filter { providerIDs.contains($0.key) }
+        quotaErrors = [:]
+        quotaLoadingProviderIDs = providerIDs
+
+        guard !providers.isEmpty else {
+            quotaLoadingProviderIDs = []
+            return
+        }
+
+        let client = self.client
+        var nextQuotas: [String: ProviderQuotaSummary] = [:]
+        var nextErrors: [String: String] = [:]
+
+        await withTaskGroup(of: (String, Result<ProviderQuotaSummary, Error>).self) { group in
+            for provider in providers {
+                let providerID = provider.id
+                group.addTask {
+                    do {
+                        return (providerID, .success(try await client.fetchProviderQuota(providerID: providerID)))
+                    } catch {
+                        return (providerID, .failure(error))
+                    }
+                }
+            }
+
+            for await (providerID, result) in group {
+                switch result {
+                case .success(let quota):
+                    nextQuotas[providerID] = quota
+                case .failure(let error):
+                    nextErrors[providerID] = error.localizedDescription
+                }
+            }
+        }
+
+        providerQuotas = nextQuotas
+        quotaErrors = nextErrors
+        quotaLoadingProviderIDs = []
     }
 }

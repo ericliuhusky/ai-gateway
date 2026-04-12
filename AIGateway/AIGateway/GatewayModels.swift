@@ -51,6 +51,104 @@ struct ProvidersResponse: Codable {
     let providers: [GatewayProvider]
 }
 
+enum QuotaSupportStatus: String, Codable {
+    case supported
+    case unsupported
+}
+
+struct ProviderQuotaWindow: Codable, Hashable {
+    let usedPercent: Double
+    let windowMinutes: Int?
+    let resetsAt: Int64?
+
+    enum CodingKeys: String, CodingKey {
+        case usedPercent = "used_percent"
+        case windowMinutes = "window_minutes"
+        case resetsAt = "resets_at"
+    }
+
+    var remainingPercent: Double {
+        min(max(100 - usedPercent, 0), 100)
+    }
+
+    var resetDate: Date? {
+        guard let resetsAt else { return nil }
+        return Date(timeIntervalSince1970: TimeInterval(resetsAt))
+    }
+}
+
+struct ProviderQuotaCredits: Codable, Hashable {
+    let hasCredits: Bool
+    let unlimited: Bool
+    let balance: String?
+
+    enum CodingKeys: String, CodingKey {
+        case hasCredits = "has_credits"
+        case unlimited
+        case balance
+    }
+}
+
+struct ProviderQuotaSnapshot: Codable, Hashable {
+    let limitID: String?
+    let limitName: String?
+    let primary: ProviderQuotaWindow?
+    let secondary: ProviderQuotaWindow?
+    let credits: ProviderQuotaCredits?
+    let planType: String?
+
+    enum CodingKeys: String, CodingKey {
+        case limitID = "limit_id"
+        case limitName = "limit_name"
+        case primary
+        case secondary
+        case credits
+        case planType = "plan_type"
+    }
+}
+
+struct ProviderQuotaSummary: Codable, Hashable {
+    let status: QuotaSupportStatus
+    let snapshot: ProviderQuotaSnapshot?
+    let additionalSnapshots: [ProviderQuotaSnapshot]
+    let message: String?
+
+    enum CodingKeys: String, CodingKey {
+        case status
+        case snapshot
+        case additionalSnapshots = "additional_snapshots"
+        case message
+    }
+
+    var snapshots: [ProviderQuotaSnapshot] {
+        let primarySnapshot = snapshot.map { [$0] } ?? []
+        return primarySnapshot + additionalSnapshots
+    }
+
+    var primaryWindow: ProviderQuotaWindow? {
+        snapshot?.primary
+            ?? snapshot?.secondary
+            ?? additionalSnapshots.lazy.compactMap(\.primary).first
+            ?? additionalSnapshots.lazy.compactMap(\.secondary).first
+    }
+
+    var secondaryWindow: ProviderQuotaWindow? {
+        snapshot?.secondary
+    }
+
+    var creditBalance: String? {
+        snapshots.compactMap { $0.credits?.balance }.first
+    }
+
+    var hasUnlimitedCredits: Bool {
+        snapshots.contains { $0.credits?.unlimited == true }
+    }
+}
+
+struct ProviderQuotaResponse: Codable {
+    let quota: ProviderQuotaSummary
+}
+
 struct SelectedProviderPayload: Codable {
     let providerID: String?
     let updatedAt: Int64

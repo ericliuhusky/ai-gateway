@@ -14,12 +14,17 @@ enum GatewayAPIError: LocalizedError {
     }
 }
 
-struct GatewayAPIClient {
+struct GatewayAPIClient: Sendable {
     let baseURL: URL
 
     func fetchProviders() async throws -> [GatewayProvider] {
         let response: ProvidersResponse = try await request(path: "/providers")
         return response.providers
+    }
+
+    func fetchProviderQuota(providerID: String) async throws -> ProviderQuotaSummary {
+        let response: ProviderQuotaResponse = try await request(path: "/providers/\(providerID)/quota")
+        return response.quota
     }
 
     func fetchSelectedProvider() async throws -> SelectedProviderPayload {

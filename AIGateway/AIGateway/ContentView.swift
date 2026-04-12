@@ -190,9 +190,10 @@ struct ContentView: View {
                 )
             }
 
+            providerQuotaSection(for: provider)
         }
         .padding(20)
-        .frame(maxWidth: .infinity, minHeight: 170, alignment: .topLeading)
+        .frame(maxWidth: .infinity, minHeight: 245, alignment: .topLeading)
         .background(cardBackground(isSelected: isSelected))
         .overlay(
             RoundedRectangle(cornerRadius: 24, style: .continuous)
@@ -230,6 +231,48 @@ struct ContentView: View {
         }
     }
 
+    private func providerQuotaSection(for provider: GatewayProvider) -> some View {
+        let display = quotaDisplay(for: provider)
+
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("剩余额度")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(.secondary)
+
+                Spacer()
+
+                Text(display.headline)
+                    .font(.system(size: 13, weight: .bold, design: .rounded))
+                    .foregroundStyle(display.tint)
+            }
+
+            ProgressView(value: display.fraction, total: 1)
+                .progressViewStyle(.linear)
+                .tint(display.tint)
+                .scaleEffect(x: 1, y: 1.25, anchor: .center)
+                .animation(.easeInOut(duration: 0.2), value: display.fraction)
+
+            Text(display.detail)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+
+            if let footnote = display.footnote {
+                Text(footnote)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(quotaPanelBackground)
+        )
+    }
+
     private func cardBackground(isSelected: Bool) -> some View {
         RoundedRectangle(cornerRadius: 24, style: .continuous)
             .fill(
@@ -259,6 +302,12 @@ struct ContentView: View {
             endPoint: .bottomTrailing
         )
         .ignoresSafeArea()
+    }
+
+    private var quotaPanelBackground: Color {
+        colorScheme == .dark
+            ? Color.white.opacity(0.06)
+            : Color.black.opacity(0.04)
     }
 
     private var errorPresented: Binding<Bool> {
@@ -338,6 +387,136 @@ struct ContentView: View {
         .black
     }
 
+    private func quotaDisplay(for provider: GatewayProvider) -> ProviderQuotaDisplay {
+        if viewModel.isLoadingQuota(for: provider.id) {
+            return ProviderQuotaDisplay(
+                fraction: 1,
+                headline: "同步中",
+                detail: "正在读取当前供应商的额度快照",
+                footnote: nil,
+                tint: .secondary
+            )
+        }
+
+        if let error = viewModel.quotaErrorMessage(for: provider.id) {
+            return ProviderQuotaDisplay(
+                fraction: 1,
+                headline: "读取失败",
+                detail: error,
+                footnote: nil,
+                tint: .red
+            )
+        }
+
+        guard let summary = viewModel.quotaSummary(for: provider.id) else {
+            return ProviderQuotaDisplay(
+                fraction: 1,
+                headline: "暂无数据",
+                detail: "还没有拿到额度信息",
+                footnote: nil,
+                tint: .secondary
+            )
+        }
+
+        if summary.status == .unsupported {
+            return ProviderQuotaDisplay(
+                fraction: 1,
+                headline: "暂不支持",
+                detail: summary.message ?? "当前供应商暂不支持额度快照",
+                footnote: nil,
+                tint: .secondary
+            )
+        }
+
+        if let window = summary.primaryWindow {
+            let remaining = Int(window.remainingPercent.rounded())
+            var footnotes: [String] = []
+
+            if let secondaryWindow = summary.secondaryWindow, secondaryWindow != window {
+                footnotes.append("长窗口剩余 \(Int(secondaryWindow.remainingPercent.rounded()))%")
+            }
+
+            if summary.hasUnlimitedCredits {
+                footnotes.append("账户余额无限")
+            } else if let balance = summary.creditBalance {
+                footnotes.append("余额 \(balance)")
+            }
+
+            return ProviderQuotaDisplay(
+                fraction: max(window.remainingPercent / 100, 0.02),
+                headline: "\(remaining)%",
+                detail: quotaPrimaryDetail(for: window),
+                footnote: footnotes.isEmpty ? nil : footnotes.joined(separator: " · "),
+                tint: quotaTint(forRemainingPercent: window.remainingPercent)
+            )
+        }
+
+        if summary.hasUnlimitedCredits {
+            return ProviderQuotaDisplay(
+                fraction: 1,
+                headline: "无限",
+                detail: "当前账户没有 credits 上限",
+                footnote: nil,
+                tint: selectionAccent
+            )
+        }
+
+        if let balance = summary.creditBalance {
+            return ProviderQuotaDisplay(
+                fraction: 1,
+                headline: balance,
+                detail: "当前账户剩余余额",
+                footnote: nil,
+                tint: apiAccent
+            )
+        }
+
+        return ProviderQuotaDisplay(
+            fraction: 1,
+            headline: "可用",
+            detail: "额度接口已接通，但当前没有可视化窗口数据",
+            footnote: nil,
+            tint: selectionAccent
+        )
+    }
+
+    private func quotaPrimaryDetail(for window: ProviderQuotaWindow) -> String {
+        var parts: [String] = [quotaWindowDescription(minutes: window.windowMinutes)]
+
+        if let resetDate = window.resetDate {
+            parts.append("\(resetDate.formatted(.dateTime.month().day().hour().minute())) 重置")
+        }
+
+        return parts.joined(separator: " · ")
+    }
+
+    private func quotaWindowDescription(minutes: Int?) -> String {
+        guard let minutes else {
+            return "当前窗口"
+        }
+
+        if minutes % (60 * 24) == 0 {
+            return "\(minutes / (60 * 24)) 天窗口"
+        }
+
+        if minutes % 60 == 0 {
+            return "\(minutes / 60) 小时窗口"
+        }
+
+        return "\(minutes) 分钟窗口"
+    }
+
+    private func quotaTint(forRemainingPercent remainingPercent: Double) -> Color {
+        switch remainingPercent {
+        case 60...:
+            return selectionAccent
+        case 30..<60:
+            return Color(red: 0.94, green: 0.59, blue: 0.18)
+        default:
+            return Color(red: 0.86, green: 0.24, blue: 0.24)
+        }
+    }
+
     private func billingBadgeBackground(for provider: GatewayProvider) -> Color {
         switch provider.billingMode {
         case .metered:
@@ -363,6 +542,14 @@ struct ContentView: View {
                 : apiAccent
         }
     }
+}
+
+private struct ProviderQuotaDisplay {
+    let fraction: Double
+    let headline: String
+    let detail: String
+    let footnote: String?
+    let tint: Color
 }
 
 #Preview {
