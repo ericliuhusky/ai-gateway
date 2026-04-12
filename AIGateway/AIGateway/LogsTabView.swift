@@ -2,6 +2,7 @@ import SwiftUI
 
 struct LogsTabView: View {
     @ObservedObject var viewModel: GatewayViewModel
+    @Environment(\.colorScheme) private var colorScheme
     @State private var showingClearConfirmation = false
 
     var body: some View {
@@ -126,6 +127,7 @@ struct LogsTabView: View {
         .frame(minWidth: 360, maxWidth: 420, maxHeight: .infinity, alignment: .topLeading)
         .background(panelBackground)
         .overlay(panelBorder)
+        .shadow(color: panelShadow, radius: 18, x: 0, y: 10)
     }
 
     private var logDetailPanel: some View {
@@ -188,6 +190,7 @@ struct LogsTabView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(panelBackground)
         .overlay(panelBorder)
+        .shadow(color: panelShadow, radius: 18, x: 0, y: 10)
     }
 
     private func logRow(_ log: GatewayLogSummary) -> some View {
@@ -271,7 +274,7 @@ struct LogsTabView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .fill(Color.primary.opacity(0.045))
+                .fill(sectionBackground)
         )
     }
 
@@ -347,11 +350,11 @@ struct LogsTabView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .fill(Color.primary.opacity(0.04))
+                .fill(sectionBackground)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .stroke(Color.white.opacity(0.06), lineWidth: 1)
+                .stroke(sectionBorder, lineWidth: 1)
         )
     }
 
@@ -383,7 +386,7 @@ struct LogsTabView: View {
             .padding(12)
             .background(
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(tint.opacity(0.08))
+                    .fill(codeBlockBackground(tint: tint))
             )
         }
     }
@@ -466,23 +469,31 @@ struct LogsTabView: View {
 
     private func rowBackground(for log: GatewayLogSummary) -> Color {
         if log.requestID == viewModel.selectedLogRequestID {
-            return activeTint.opacity(0.14)
+            return colorScheme == .dark ? activeTint.opacity(0.24) : activeTint.opacity(0.14)
         }
-        return Color.primary.opacity(0.035)
+        return colorScheme == .dark
+            ? Color.white.opacity(0.045)
+            : Color.primary.opacity(0.035)
     }
 
     private func rowBorder(for log: GatewayLogSummary) -> Color {
         if log.requestID == viewModel.selectedLogRequestID {
-            return activeTint.opacity(0.55)
+            return colorScheme == .dark ? activeTint.opacity(0.72) : activeTint.opacity(0.55)
         }
-        return Color.white.opacity(0.05)
+        return colorScheme == .dark
+            ? Color.white.opacity(0.08)
+            : Color.white.opacity(0.05)
     }
 
     private var background: some View {
         LinearGradient(
             colors: [
-                Color(red: 0.95, green: 0.97, blue: 0.99),
-                Color(red: 0.91, green: 0.95, blue: 0.94)
+                colorScheme == .dark
+                    ? Color(red: 0.08, green: 0.10, blue: 0.13)
+                    : Color(red: 0.95, green: 0.97, blue: 0.99),
+                colorScheme == .dark
+                    ? Color(red: 0.06, green: 0.13, blue: 0.11)
+                    : Color(red: 0.91, green: 0.95, blue: 0.94)
             ],
             startPoint: .topLeading,
             endPoint: .bottomTrailing
@@ -492,28 +503,64 @@ struct LogsTabView: View {
 
     private var panelBackground: some View {
         RoundedRectangle(cornerRadius: 28, style: .continuous)
-            .fill(Color.white.opacity(0.84))
+            .fill(
+                colorScheme == .dark
+                    ? Color(red: 0.11, green: 0.14, blue: 0.17).opacity(0.94)
+                    : Color.white.opacity(0.84)
+            )
     }
 
     private var panelBorder: some View {
         RoundedRectangle(cornerRadius: 28, style: .continuous)
-            .stroke(Color.white.opacity(0.7), lineWidth: 1)
+            .stroke(
+                colorScheme == .dark
+                    ? Color.white.opacity(0.10)
+                    : Color.white.opacity(0.7),
+                lineWidth: 1
+            )
+    }
+
+    private var panelShadow: Color {
+        colorScheme == .dark ? .black.opacity(0.28) : .black.opacity(0.08)
+    }
+
+    private var sectionBackground: Color {
+        colorScheme == .dark
+            ? Color.white.opacity(0.05)
+            : Color.primary.opacity(0.045)
+    }
+
+    private var sectionBorder: Color {
+        colorScheme == .dark
+            ? Color.white.opacity(0.08)
+            : Color.white.opacity(0.06)
+    }
+
+    private func codeBlockBackground(tint: Color) -> Color {
+        colorScheme == .dark ? tint.opacity(0.14) : tint.opacity(0.08)
     }
 
     private var activeTint: Color {
-        Color(red: 0.15, green: 0.63, blue: 0.38)
+        colorScheme == .dark
+            ? Color(red: 0.33, green: 0.78, blue: 0.52)
+            : Color(red: 0.15, green: 0.63, blue: 0.38)
     }
 
     private var pausedTint: Color {
-        Color(red: 0.86, green: 0.48, blue: 0.16)
+        colorScheme == .dark
+            ? Color(red: 0.95, green: 0.68, blue: 0.28)
+            : Color(red: 0.86, green: 0.48, blue: 0.16)
     }
 
     private var secondaryTint: Color {
-        Color(red: 0.33, green: 0.42, blue: 0.55)
+        colorScheme == .dark
+            ? Color(red: 0.67, green: 0.75, blue: 0.86)
+            : Color(red: 0.33, green: 0.42, blue: 0.55)
     }
 
     private var modelTint: Color {
-        Color(red: 0.18, green: 0.45, blue: 0.88)
+        colorScheme == .dark
+            ? Color(red: 0.45, green: 0.66, blue: 1.00)
+            : Color(red: 0.18, green: 0.45, blue: 0.88)
     }
 }
-
