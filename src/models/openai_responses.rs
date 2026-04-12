@@ -40,6 +40,7 @@ pub enum ResponsesInputItem {
     WebSearchCall(ResponseWebSearchCallItem),
     FunctionCallOutput(ResponseFunctionCallOutputItem),
     CustomToolCallOutput(ResponseCustomToolCallOutputItem),
+    Raw(Value),
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -78,6 +79,7 @@ pub struct ResponseFunctionCallItem {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ResponseLocalShellCallItem {
     #[serde(rename = "type")]
     #[allow(dead_code)]
@@ -91,6 +93,7 @@ pub struct ResponseLocalShellCallItem {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ResponseWebSearchCallItem {
     #[serde(rename = "type")]
     #[allow(dead_code)]

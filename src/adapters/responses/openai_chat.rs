@@ -46,17 +46,13 @@ fn build_openai_tools(tools: &Option<Vec<ResponseTool>>) -> Option<Vec<Value>> {
     let mapped: Vec<Value> = tools
         .iter()
         .filter_map(|tool| {
-            if tool.tool_type != "function" {
-                return None;
-            }
-
             let function = tool.function.as_ref();
-            let name = tool
-                .name
-                .as_deref()
-                .or_else(|| function.and_then(|f| f.get("name")).and_then(Value::as_str))
-                .unwrap_or("")
-                .trim();
+            let name = normalized_tool_name(
+                &tool.tool_type,
+                tool.name
+                    .as_deref()
+                    .or_else(|| function.and_then(|f| f.get("name")).and_then(Value::as_str)),
+            );
             if name.is_empty() {
                 return None;
             }
@@ -70,11 +66,13 @@ fn build_openai_tools(tools: &Option<Vec<ResponseTool>>) -> Option<Vec<Value>> {
                         .and_then(Value::as_str)
                         .map(ToOwned::to_owned)
                 })
+                .or_else(|| generated_tool_description(&tool.tool_type))
                 .unwrap_or_default();
             let mut parameters = tool
                 .parameters
                 .clone()
                 .or_else(|| function.and_then(|f| f.get("parameters")).cloned())
+                .or_else(|| generated_tool_schema(&tool.tool_type))
                 .unwrap_or_else(|| json!({"type":"object","properties":{},"required":[]}));
             clean_tool_schema(&mut parameters);
 
@@ -90,6 +88,67 @@ fn build_openai_tools(tools: &Option<Vec<ResponseTool>>) -> Option<Vec<Value>> {
         .collect();
 
     (!mapped.is_empty()).then_some(mapped)
+}
+
+fn normalized_tool_name(tool_type: &str, fallback_name: Option<&str>) -> String {
+    match tool_type {
+        "local_shell" | "shell_command" => "shell".to_string(),
+        "web_search" => "google_search".to_string(),
+        other => fallback_name
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or(other)
+            .to_string(),
+    }
+}
+
+fn generated_tool_description(tool_type: &str) -> Option<String> {
+    let description = match tool_type {
+        "local_shell" | "shell_command" => "Execute a local shell command.",
+        "web_search" => "Search the web for current information.",
+        "apply_patch" => "Apply a unified patch to local files.",
+        "view_image" => "Inspect a local image file.",
+        "function" => return None,
+        _ => "Execute a tool call.",
+    };
+    Some(description.to_string())
+}
+
+fn generated_tool_schema(tool_type: &str) -> Option<Value> {
+    match tool_type {
+        "local_shell" | "shell_command" => Some(json!({
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type": "array",
+                    "items": { "type": "string" }
+                },
+                "workdir": { "type": "string" }
+            },
+            "required": ["command"]
+        })),
+        "web_search" => Some(json!({
+            "type": "object",
+            "properties": {
+                "query": { "type": "string" }
+            },
+            "required": ["query"]
+        })),
+        "apply_patch" => Some(json!({
+            "type": "object",
+            "properties": {
+                "patch": { "type": "string" }
+            },
+            "required": ["patch"]
+        })),
+        "view_image" => Some(json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string" }
+            },
+            "required": ["path"]
+        })),
+        _ => None,
+    }
 }
 
 fn map_openai_tool_choice(tool_choice: Option<&Value>) -> Option<Value> {
