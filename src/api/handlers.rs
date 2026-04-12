@@ -15,8 +15,8 @@ use crate::{
         SelectedProvider, UpdateSelectedProviderRequest, UpstreamRateLimitStatusDetails,
         UpstreamRateLimitStatusPayload, UpstreamRateLimitWindowSnapshot,
     },
-    store::{AccountPool, ProviderStore, RouteStore},
-    upstream::UpstreamClient,
+    store::{AccountPool, LogEvent, LogStage, LogStore, ProviderStore, RouteStore},
+    upstream::{UpstreamClient, chat_completions_api_url, responses_api_url},
 };
 use async_stream::stream;
 use axum::{
@@ -36,6 +36,9 @@ use uuid::Uuid;
 
 const BUNDLED_CODEX_CONFIG: &str = include_str!("../../assets/codex-config.toml");
 const MISSING_FILE_SENTINEL: &str = "__AI_GATEWAY_MISSING__";
+const RESPONSES_PATH: &str = "/openai/v1/responses";
+const OPENAI_PRIVATE_RESPONSES_URL: &str = "https://chatgpt.com/backend-api/codex/responses";
+const STREAM_LOG_CHAR_LIMIT: usize = 16_000;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -46,6 +49,7 @@ pub struct AppState {
     pub providers: ProviderStore,
     pub routes: RouteStore,
     pub upstream: UpstreamClient,
+    pub logs: LogStore,
 }
 
 pub async fn healthz() -> &'static str {
@@ -402,6 +406,85 @@ pub async fn responses(
 ) -> Result<Response, AppError> {
     let request_id = format!("req_{}", Uuid::new_v4().simple());
     let started_at = Instant::now();
+    log_http_event(
+        &state.logs,
+        &request_id,
+        LogStage::IngressRequest,
+        None,
+        Some(IngressProtocol::OpenAiResponses.as_str()),
+        None,
+        None,
+        None,
+        None,
+        Some(&request.model),
+        request.stream,
+        Some("POST"),
+        Some(RESPONSES_PATH),
+        None,
+        Some(json_for_storage(&request)),
+        None,
+        None,
+    )
+    .await;
+
+    let model = request.model.clone();
+    let stream = request.stream;
+    match responses_inner(state.clone(), request, request_id.clone(), started_at).await {
+        Ok(response) => Ok(response),
+        Err(err) => {
+            let error_body = gateway_error_payload(&err.message);
+            let elapsed = elapsed_ms(started_at);
+            log_http_event(
+                &state.logs,
+                &request_id,
+                LogStage::Error,
+                Some(err.status),
+                Some(IngressProtocol::OpenAiResponses.as_str()),
+                None,
+                None,
+                None,
+                None,
+                Some(&model),
+                stream,
+                Some("POST"),
+                Some(RESPONSES_PATH),
+                None,
+                Some(json_value_for_storage(&error_body)),
+                Some(err.message.clone()),
+                Some(elapsed),
+            )
+            .await;
+            log_http_event(
+                &state.logs,
+                &request_id,
+                LogStage::EgressResponse,
+                Some(err.status),
+                Some(IngressProtocol::OpenAiResponses.as_str()),
+                None,
+                None,
+                None,
+                None,
+                Some(&model),
+                stream,
+                Some("POST"),
+                Some(RESPONSES_PATH),
+                None,
+                Some(json_value_for_storage(&error_body)),
+                Some(err.message.clone()),
+                Some(elapsed),
+            )
+            .await;
+            Err(err)
+        }
+    }
+}
+
+async fn responses_inner(
+    state: AppState,
+    request: ResponsesRequest,
+    request_id: String,
+    started_at: Instant,
+) -> Result<Response, AppError> {
     let provider = resolve_selected_provider(&state).await?;
     info!(
         request_id = %request_id,
@@ -415,6 +498,28 @@ pub async fn responses(
         let account = resolve_account_for_provider(&state, &provider).await?;
         let request_body = responses_to_openai_private(&request)
             .map_err(|err| AppError::internal(err.to_string()))?;
+
+        log_http_event(
+            &state.logs,
+            &request_id,
+            LogStage::EgressRequest,
+            None,
+            Some(IngressProtocol::OpenAiResponses.as_str()),
+            Some(EgressProtocol::OpenAiPrivateResponses.as_str()),
+            Some(&provider.name),
+            Some(&account.id),
+            Some(&account.email),
+            Some(&request.model),
+            request.stream,
+            Some("POST"),
+            None,
+            Some(OPENAI_PRIVATE_RESPONSES_URL),
+            Some(json_value_for_storage(&request_body)),
+            None,
+            None,
+        )
+        .await;
+
         let upstream = state
             .upstream
             .call_openai_responses(
@@ -426,18 +531,61 @@ pub async fn responses(
             )
             .await
             .map_err(AppError::upstream_message)?;
+        let upstream_status = upstream.status();
 
         if !request.stream {
             let response_body: Value = upstream.json().await.map_err(AppError::upstream)?;
+            let elapsed = elapsed_ms(started_at);
+            let stored_body = json_value_for_storage(&response_body);
             info!(
                 request_id = %request_id,
-                elapsed_ms = started_at.elapsed().as_millis(),
+                elapsed_ms = elapsed,
                 email = %account.email,
                 provider = %provider.name,
                 egress = %EgressProtocol::OpenAiPrivateResponses.as_str(),
                 response_body = %json_value_for_log(&response_body),
                 "returning OpenAI /openai/v1/responses body"
             );
+            log_http_event(
+                &state.logs,
+                &request_id,
+                LogStage::IngressResponse,
+                Some(upstream_status),
+                Some(IngressProtocol::OpenAiResponses.as_str()),
+                Some(EgressProtocol::OpenAiPrivateResponses.as_str()),
+                Some(&provider.name),
+                Some(&account.id),
+                Some(&account.email),
+                Some(&request.model),
+                false,
+                Some("POST"),
+                None,
+                Some(OPENAI_PRIVATE_RESPONSES_URL),
+                Some(stored_body.clone()),
+                None,
+                Some(elapsed),
+            )
+            .await;
+            log_http_event(
+                &state.logs,
+                &request_id,
+                LogStage::EgressResponse,
+                Some(StatusCode::OK),
+                Some(IngressProtocol::OpenAiResponses.as_str()),
+                None,
+                Some(&provider.name),
+                Some(&account.id),
+                Some(&account.email),
+                Some(&request.model),
+                false,
+                Some("POST"),
+                Some(RESPONSES_PATH),
+                None,
+                Some(stored_body),
+                None,
+                Some(elapsed),
+            )
+            .await;
             return Ok((
                 StatusCode::OK,
                 [
@@ -449,9 +597,92 @@ pub async fn responses(
                 .into_response());
         }
 
-        let output = upstream
-            .bytes_stream()
-            .map(|result| result.map(Bytes::from).map_err(std::io::Error::other));
+        let logs = state.logs.clone();
+        let request_id_for_stream = request_id.clone();
+        let provider_name = provider.name.clone();
+        let account_id = account.id.clone();
+        let account_email = account.email.clone();
+        let model = request.model.clone();
+        let output = stream! {
+            let mut stream = upstream.bytes_stream();
+            let mut response_body = String::new();
+
+            while let Some(result) = stream.next().await {
+                match result {
+                    Ok(chunk) => {
+                        append_to_log_buffer(&mut response_body, &String::from_utf8_lossy(&chunk), STREAM_LOG_CHAR_LIMIT);
+                        yield Ok::<Bytes, std::io::Error>(chunk);
+                    }
+                    Err(err) => {
+                        let error_message = err.to_string();
+                        log_http_event(
+                            &logs,
+                            &request_id_for_stream,
+                            LogStage::Error,
+                            Some(StatusCode::BAD_GATEWAY),
+                            Some(IngressProtocol::OpenAiResponses.as_str()),
+                            Some(EgressProtocol::OpenAiPrivateResponses.as_str()),
+                            Some(&provider_name),
+                            Some(&account_id),
+                            Some(&account_email),
+                            Some(&model),
+                            true,
+                            Some("POST"),
+                            Some(RESPONSES_PATH),
+                            Some(OPENAI_PRIVATE_RESPONSES_URL),
+                            Some(response_body.clone()),
+                            Some(error_message.clone()),
+                            Some(elapsed_ms(started_at)),
+                        )
+                        .await;
+                        yield Err(std::io::Error::other(err));
+                        return;
+                    }
+                }
+            }
+
+            let elapsed = elapsed_ms(started_at);
+            log_http_event(
+                &logs,
+                &request_id_for_stream,
+                LogStage::IngressResponse,
+                Some(upstream_status),
+                Some(IngressProtocol::OpenAiResponses.as_str()),
+                Some(EgressProtocol::OpenAiPrivateResponses.as_str()),
+                Some(&provider_name),
+                Some(&account_id),
+                Some(&account_email),
+                Some(&model),
+                true,
+                Some("POST"),
+                None,
+                Some(OPENAI_PRIVATE_RESPONSES_URL),
+                Some(response_body.clone()),
+                None,
+                Some(elapsed),
+            )
+            .await;
+            log_http_event(
+                &logs,
+                &request_id_for_stream,
+                LogStage::EgressResponse,
+                Some(StatusCode::OK),
+                Some(IngressProtocol::OpenAiResponses.as_str()),
+                None,
+                Some(&provider_name),
+                Some(&account_id),
+                Some(&account_email),
+                Some(&model),
+                true,
+                Some("POST"),
+                Some(RESPONSES_PATH),
+                None,
+                Some(response_body),
+                None,
+                Some(elapsed),
+            )
+            .await;
+        };
 
         return Ok(Response::builder()
             .status(StatusCode::OK)
@@ -489,6 +720,12 @@ pub async fn responses(
             &request.model,
             &account.id,
         );
+        let method = if request.stream {
+            "streamGenerateContent"
+        } else {
+            "generateContent"
+        };
+        let upstream_url = google_v1internal_url_label(method, request.stream);
 
         info!(
             request_id = %request_id,
@@ -502,14 +739,31 @@ pub async fn responses(
             "proxying request to Gemini upstream"
         );
 
+        log_http_event(
+            &state.logs,
+            &request_id,
+            LogStage::EgressRequest,
+            None,
+            Some(IngressProtocol::OpenAiResponses.as_str()),
+            Some(EgressProtocol::GoogleV1Internal.as_str()),
+            Some(&provider.name),
+            Some(&account.id),
+            Some(&account.email),
+            Some(&request.model),
+            request.stream,
+            Some("POST"),
+            None,
+            Some(&upstream_url),
+            Some(json_value_for_storage(&request_body)),
+            None,
+            None,
+        )
+        .await;
+
         let upstream = state
             .upstream
             .call_v1internal(
-                if request.stream {
-                    "streamGenerateContent"
-                } else {
-                    "generateContent"
-                },
+                method,
                 &request_id,
                 account.access_token(),
                 request_body,
@@ -517,23 +771,67 @@ pub async fn responses(
             )
             .await
             .map_err(AppError::upstream_message)?;
+        let upstream_status = upstream.status();
 
         if !request.stream {
             let gemini_body: Value = upstream.json().await.map_err(AppError::upstream)?;
+            let response = gemini_to_responses(&request.model, &gemini_body);
+            let elapsed = elapsed_ms(started_at);
+            let upstream_body = json_value_for_storage(&gemini_body);
+            let response_body = json_for_storage(&response);
             info!(
                 request_id = %request_id,
-                elapsed_ms = started_at.elapsed().as_millis(),
+                elapsed_ms = elapsed,
                 upstream_response = %json_value_for_log(&gemini_body),
                 "received non-stream Gemini response"
             );
-            let response = gemini_to_responses(&request.model, &gemini_body);
             info!(
                 request_id = %request_id,
-                elapsed_ms = started_at.elapsed().as_millis(),
+                elapsed_ms = elapsed,
                 output_items = response.output.len(),
                 response_body = %json_for_log(&response),
                 "returning non-stream /openai/v1/responses body"
             );
+            log_http_event(
+                &state.logs,
+                &request_id,
+                LogStage::IngressResponse,
+                Some(upstream_status),
+                Some(IngressProtocol::OpenAiResponses.as_str()),
+                Some(EgressProtocol::GoogleV1Internal.as_str()),
+                Some(&provider.name),
+                Some(&account.id),
+                Some(&account.email),
+                Some(&request.model),
+                false,
+                Some("POST"),
+                None,
+                Some(&upstream_url),
+                Some(upstream_body),
+                None,
+                Some(elapsed),
+            )
+            .await;
+            log_http_event(
+                &state.logs,
+                &request_id,
+                LogStage::EgressResponse,
+                Some(StatusCode::OK),
+                Some(IngressProtocol::OpenAiResponses.as_str()),
+                None,
+                Some(&provider.name),
+                Some(&account.id),
+                Some(&account.email),
+                Some(&request.model),
+                false,
+                Some("POST"),
+                Some(RESPONSES_PATH),
+                None,
+                Some(response_body),
+                None,
+                Some(elapsed),
+            )
+            .await;
             return Ok((
                 StatusCode::OK,
                 [
@@ -546,338 +844,440 @@ pub async fn responses(
         }
 
         let model = request.model.clone();
-        let stream = upstream.bytes_stream();
         let request_id_for_stream = request_id.clone();
+        let provider_name = provider.name.clone();
+        let account_id = account.id.clone();
+        let account_email = account.email.clone();
+        let logs = state.logs.clone();
         let output = stream! {
-        let encode_event = |value: &Value| -> Result<String, std::io::Error> {
-            serde_json::to_string(value)
-                .map(|body| format!("data: {body}\n\n"))
-                .map_err(std::io::Error::other)
-        };
-        let mut buffer = String::new();
-        let response_id = format!("resp_{}", Uuid::new_v4().simple());
-        let message_item_id = format!("msg_{}", Uuid::new_v4().simple());
-        let mut message_item_started = false;
-        let mut accumulated_text = String::new();
-        let mut completed_output_items: Vec<Value> = Vec::new();
-        let mut emitted_tool_calls = std::collections::HashSet::new();
-        let mut upstream_chunk_count = 0usize;
-        let mut emitted_event_count = 0usize;
+            let encode_event = |value: &Value| -> Result<String, std::io::Error> {
+                serde_json::to_string(value)
+                    .map(|body| format!("data: {body}\n\n"))
+                    .map_err(std::io::Error::other)
+            };
+            let mut stream = upstream.bytes_stream();
+            let mut buffer = String::new();
+            let mut upstream_body = String::new();
+            let mut client_body = String::new();
+            let response_id = format!("resp_{}", Uuid::new_v4().simple());
+            let message_item_id = format!("msg_{}", Uuid::new_v4().simple());
+            let mut message_item_started = false;
+            let mut accumulated_text = String::new();
+            let mut completed_output_items: Vec<Value> = Vec::new();
+            let mut emitted_tool_calls = std::collections::HashSet::new();
+            let mut upstream_chunk_count = 0usize;
+            let mut emitted_event_count = 0usize;
 
-        let created = json!({
-            "type": "response.created",
-            "response": {
-                "id": &response_id,
-                "object": "response",
-                "status": "in_progress",
-                "output": []
-            }
-        });
-        match encode_event(&created) {
-            Ok(event) => {
-                emitted_event_count += 1;
-                yield Ok::<String, std::io::Error>(event)
-            },
-            Err(err) => {
-                yield Err(err);
-                return;
-            }
-        }
-
-        for await chunk in stream {
-            let chunk = match chunk {
-                Ok(chunk) => chunk,
+            let created = json!({
+                "type": "response.created",
+                "response": {
+                    "id": &response_id,
+                    "object": "response",
+                    "status": "in_progress",
+                    "output": []
+                }
+            });
+            match encode_event(&created) {
+                Ok(event) => {
+                    append_to_log_buffer(&mut client_body, &event, STREAM_LOG_CHAR_LIMIT);
+                    emitted_event_count += 1;
+                    yield Ok::<Bytes, std::io::Error>(Bytes::from(event));
+                }
                 Err(err) => {
-                    yield Err(std::io::Error::other(err));
+                    let error_message = err.to_string();
+                    log_http_event(
+                        &logs,
+                        &request_id_for_stream,
+                        LogStage::Error,
+                        Some(StatusCode::INTERNAL_SERVER_ERROR),
+                        Some(IngressProtocol::OpenAiResponses.as_str()),
+                        Some(EgressProtocol::GoogleV1Internal.as_str()),
+                        Some(&provider_name),
+                        Some(&account_id),
+                        Some(&account_email),
+                        Some(&model),
+                        true,
+                        Some("POST"),
+                        Some(RESPONSES_PATH),
+                        Some(&upstream_url),
+                        Some(client_body.clone()),
+                        Some(error_message),
+                        Some(elapsed_ms(started_at)),
+                    )
+                    .await;
+                    yield Err(err);
                     return;
                 }
-            };
-            buffer.push_str(&String::from_utf8_lossy(&chunk));
+            }
 
-            while let Some(line_end) = buffer.find('\n') {
-                let line: String = buffer.drain(..=line_end).collect();
-                let line = line.trim();
-                if !line.starts_with("data: ") {
-                    continue;
-                }
-
-                let payload = &line[6..];
-                if payload == "[DONE]" {
-                    continue;
-                }
-
-                upstream_chunk_count += 1;
-                info!(
-                    request_id = %request_id_for_stream,
-                    chunk_index = upstream_chunk_count,
-                    upstream_chunk = %truncate_for_log(payload, 3000),
-                    "received upstream SSE chunk"
-                );
-
-                let gemini_event: Value = match serde_json::from_str(payload) {
-                    Ok(value) => value,
+            while let Some(result) = stream.next().await {
+                let chunk = match result {
+                    Ok(chunk) => chunk,
                     Err(err) => {
-                        warn!(
-                            request_id = %request_id_for_stream,
-                            chunk_index = upstream_chunk_count,
-                            error = %err,
-                            "failed to parse upstream SSE chunk"
-                        );
-                        continue;
+                        let error_message = err.to_string();
+                        log_http_event(
+                            &logs,
+                            &request_id_for_stream,
+                            LogStage::Error,
+                            Some(StatusCode::BAD_GATEWAY),
+                            Some(IngressProtocol::OpenAiResponses.as_str()),
+                            Some(EgressProtocol::GoogleV1Internal.as_str()),
+                            Some(&provider_name),
+                            Some(&account_id),
+                            Some(&account_email),
+                            Some(&model),
+                            true,
+                            Some("POST"),
+                            Some(RESPONSES_PATH),
+                            Some(&upstream_url),
+                            Some(upstream_body.clone()),
+                            Some(error_message),
+                            Some(elapsed_ms(started_at)),
+                        )
+                        .await;
+                        yield Err(std::io::Error::other(err));
+                        return;
                     }
                 };
 
-                let raw = gemini_event.get("response").unwrap_or(&gemini_event);
-                let candidate = raw
-                    .get("candidates")
-                    .and_then(Value::as_array)
-                    .and_then(|candidates| candidates.first());
+                let chunk_text = String::from_utf8_lossy(&chunk);
+                append_to_log_buffer(&mut upstream_body, &chunk_text, STREAM_LOG_CHAR_LIMIT);
+                buffer.push_str(&chunk_text);
 
-                if let Some(parts) = candidate
-                    .and_then(|candidate| candidate.get("content"))
-                    .and_then(|content| content.get("parts"))
-                    .and_then(Value::as_array)
-                {
-                    for part in parts {
-                        if let Some(text) = part.get("text").and_then(Value::as_str) {
-                            if !text.is_empty() {
-                                if !message_item_started {
-                                    let output_item_added = json!({
-                                        "type": "response.output_item.added",
-                                        "output_index": 0,
-                                        "item": {
-                                            "id": &message_item_id,
-                                            "type": "message",
-                                            "role": "assistant",
-                                            "status": "in_progress",
-                                            "content": []
+                while let Some(line_end) = buffer.find('\n') {
+                    let line: String = buffer.drain(..=line_end).collect();
+                    let line = line.trim();
+                    if !line.starts_with("data: ") {
+                        continue;
+                    }
+
+                    let payload = &line[6..];
+                    if payload == "[DONE]" {
+                        continue;
+                    }
+
+                    upstream_chunk_count += 1;
+                    info!(
+                        request_id = %request_id_for_stream,
+                        chunk_index = upstream_chunk_count,
+                        upstream_chunk = %truncate_for_log(payload, 3000),
+                        "received upstream SSE chunk"
+                    );
+
+                    let gemini_event: Value = match serde_json::from_str(payload) {
+                        Ok(value) => value,
+                        Err(err) => {
+                            warn!(
+                                request_id = %request_id_for_stream,
+                                chunk_index = upstream_chunk_count,
+                                error = %err,
+                                "failed to parse upstream SSE chunk"
+                            );
+                            continue;
+                        }
+                    };
+
+                    let raw = gemini_event.get("response").unwrap_or(&gemini_event);
+                    let candidate = raw
+                        .get("candidates")
+                        .and_then(Value::as_array)
+                        .and_then(|candidates| candidates.first());
+
+                    if let Some(parts) = candidate
+                        .and_then(|candidate| candidate.get("content"))
+                        .and_then(|content| content.get("parts"))
+                        .and_then(Value::as_array)
+                    {
+                        for part in parts {
+                            if let Some(text) = part.get("text").and_then(Value::as_str) {
+                                if !text.is_empty() {
+                                    if !message_item_started {
+                                        let output_item_added = json!({
+                                            "type": "response.output_item.added",
+                                            "output_index": 0,
+                                            "item": {
+                                                "id": &message_item_id,
+                                                "type": "message",
+                                                "role": "assistant",
+                                                "status": "in_progress",
+                                                "content": []
+                                            }
+                                        });
+                                        match encode_event(&output_item_added) {
+                                            Ok(event) => {
+                                                append_to_log_buffer(&mut client_body, &event, STREAM_LOG_CHAR_LIMIT);
+                                                emitted_event_count += 1;
+                                                yield Ok(Bytes::from(event));
+                                            }
+                                            Err(err) => {
+                                                yield Err(err);
+                                                return;
+                                            }
                                         }
-                                    });
-                                    match encode_event(&output_item_added) {
-                                        Ok(event) => {
-                                            emitted_event_count += 1;
-                                            yield Ok(event)
-                                        },
-                                        Err(err) => {
-                                            yield Err(err);
-                                            return;
+
+                                        let content_part_added = json!({
+                                            "type": "response.content_part.added",
+                                            "item_id": &message_item_id,
+                                            "output_index": 0,
+                                            "content_index": 0,
+                                            "part": {
+                                                "type": "output_text",
+                                                "text": ""
+                                            }
+                                        });
+                                        match encode_event(&content_part_added) {
+                                            Ok(event) => {
+                                                append_to_log_buffer(&mut client_body, &event, STREAM_LOG_CHAR_LIMIT);
+                                                emitted_event_count += 1;
+                                                yield Ok(Bytes::from(event));
+                                            }
+                                            Err(err) => {
+                                                yield Err(err);
+                                                return;
+                                            }
                                         }
+                                        message_item_started = true;
                                     }
 
-                                    let content_part_added = json!({
-                                        "type": "response.content_part.added",
+                                    accumulated_text.push_str(text);
+                                    let delta = json!({
+                                        "type": "response.output_text.delta",
                                         "item_id": &message_item_id,
                                         "output_index": 0,
                                         "content_index": 0,
-                                        "part": {
-                                            "type": "output_text",
-                                            "text": ""
-                                        }
+                                        "delta": text
                                     });
-                                    match encode_event(&content_part_added) {
+                                    match encode_event(&delta) {
                                         Ok(event) => {
+                                            append_to_log_buffer(&mut client_body, &event, STREAM_LOG_CHAR_LIMIT);
                                             emitted_event_count += 1;
-                                            yield Ok(event)
-                                        },
+                                            yield Ok(Bytes::from(event));
+                                        }
                                         Err(err) => {
                                             yield Err(err);
                                             return;
                                         }
-                                    }
-                                    message_item_started = true;
-                                }
-
-                                accumulated_text.push_str(text);
-                                let delta = json!({
-                                    "type": "response.output_text.delta",
-                                    "item_id": &message_item_id,
-                                    "output_index": 0,
-                                    "content_index": 0,
-                                    "delta": text
-                                });
-                                match encode_event(&delta) {
-                                    Ok(event) => {
-                                        emitted_event_count += 1;
-                                        yield Ok(event)
-                                    },
-                                    Err(err) => {
-                                        yield Err(err);
-                                        return;
                                     }
                                 }
                             }
-                        }
 
-                        if let Some(function_call) = part.get("functionCall") {
-                            let call_key = function_call
-                                .get("id")
-                                .and_then(Value::as_str)
-                                .map(ToOwned::to_owned)
-                                .unwrap_or_else(|| function_call.to_string());
-
-                            if emitted_tool_calls.insert(call_key.clone()) {
-                                let call_id = function_call
+                            if let Some(function_call) = part.get("functionCall") {
+                                let call_key = function_call
                                     .get("id")
                                     .and_then(Value::as_str)
                                     .map(ToOwned::to_owned)
-                                    .unwrap_or_else(|| format!("call_{}", Uuid::new_v4().simple()));
-                                let tool_item = json!({
-                                    "id": format!("fc_{}", Uuid::new_v4().simple()),
-                                    "type": "function_call",
-                                    "call_id": call_id,
-                                    "name": function_call
-                                        .get("name")
+                                    .unwrap_or_else(|| function_call.to_string());
+
+                                if emitted_tool_calls.insert(call_key.clone()) {
+                                    let call_id = function_call
+                                        .get("id")
                                         .and_then(Value::as_str)
-                                        .unwrap_or("unknown"),
-                                    "arguments": function_call
-                                        .get("args")
-                                        .map(Value::to_string)
-                                        .unwrap_or_else(|| "{}".to_string()),
-                                    "status": "completed"
-                                });
-                                let added = json!({
-                                    "type": "response.output_item.added",
-                                    "output_index": completed_output_items.len(),
-                                    "item": tool_item
-                                });
-                                match encode_event(&added) {
-                                    Ok(event) => {
-                                        emitted_event_count += 1;
-                                        yield Ok(event)
-                                    },
+                                        .map(ToOwned::to_owned)
+                                        .unwrap_or_else(|| format!("call_{}", Uuid::new_v4().simple()));
+                                    let tool_item = json!({
+                                        "id": format!("fc_{}", Uuid::new_v4().simple()),
+                                        "type": "function_call",
+                                        "call_id": call_id,
+                                        "name": function_call
+                                            .get("name")
+                                            .and_then(Value::as_str)
+                                            .unwrap_or("unknown"),
+                                        "arguments": function_call
+                                            .get("args")
+                                            .map(Value::to_string)
+                                            .unwrap_or_else(|| "{}".to_string()),
+                                        "status": "completed"
+                                    });
+                                    let added = json!({
+                                        "type": "response.output_item.added",
+                                        "output_index": completed_output_items.len(),
+                                        "item": tool_item
+                                    });
+                                    match encode_event(&added) {
+                                        Ok(event) => {
+                                            append_to_log_buffer(&mut client_body, &event, STREAM_LOG_CHAR_LIMIT);
+                                            emitted_event_count += 1;
+                                            yield Ok(Bytes::from(event));
+                                        }
                                         Err(err) => {
                                             yield Err(err);
                                             return;
+                                        }
                                     }
-                                }
 
-                                let done = json!({
-                                    "type": "response.output_item.done",
-                                    "output_index": completed_output_items.len(),
-                                    "item": added["item"].clone()
-                                });
-                                match encode_event(&done) {
-                                    Ok(event) => {
-                                        emitted_event_count += 1;
-                                        yield Ok(event)
-                                    },
-                                    Err(err) => {
-                                        yield Err(err);
-                                        return;
+                                    let done = json!({
+                                        "type": "response.output_item.done",
+                                        "output_index": completed_output_items.len(),
+                                        "item": added["item"].clone()
+                                    });
+                                    match encode_event(&done) {
+                                        Ok(event) => {
+                                            append_to_log_buffer(&mut client_body, &event, STREAM_LOG_CHAR_LIMIT);
+                                            emitted_event_count += 1;
+                                            yield Ok(Bytes::from(event));
+                                        }
+                                        Err(err) => {
+                                            yield Err(err);
+                                            return;
+                                        }
                                     }
+                                    completed_output_items.push(added["item"].clone());
                                 }
-                                completed_output_items.push(added["item"].clone());
                             }
                         }
                     }
                 }
-
-            }
-        }
-
-        if message_item_started {
-            let text_done = json!({
-                "type": "response.output_text.done",
-                "item_id": &message_item_id,
-                "output_index": 0,
-                "content_index": 0,
-                "text": &accumulated_text
-            });
-            match encode_event(&text_done) {
-                Ok(event) => {
-                    emitted_event_count += 1;
-                    yield Ok(event)
-                },
-                Err(err) => {
-                    yield Err(err);
-                    return;
-                }
             }
 
-            let content_part_done = json!({
-                "type": "response.content_part.done",
-                "item_id": &message_item_id,
-                "output_index": 0,
-                "content_index": 0,
-                "part": {
-                    "type": "output_text",
+            if message_item_started {
+                let text_done = json!({
+                    "type": "response.output_text.done",
+                    "item_id": &message_item_id,
+                    "output_index": 0,
+                    "content_index": 0,
                     "text": &accumulated_text
+                });
+                match encode_event(&text_done) {
+                    Ok(event) => {
+                        append_to_log_buffer(&mut client_body, &event, STREAM_LOG_CHAR_LIMIT);
+                        emitted_event_count += 1;
+                        yield Ok(Bytes::from(event));
+                    }
+                    Err(err) => {
+                        yield Err(err);
+                        return;
+                    }
+                }
+
+                let content_part_done = json!({
+                    "type": "response.content_part.done",
+                    "item_id": &message_item_id,
+                    "output_index": 0,
+                    "content_index": 0,
+                    "part": {
+                        "type": "output_text",
+                        "text": &accumulated_text
+                    }
+                });
+                match encode_event(&content_part_done) {
+                    Ok(event) => {
+                        append_to_log_buffer(&mut client_body, &event, STREAM_LOG_CHAR_LIMIT);
+                        emitted_event_count += 1;
+                        yield Ok(Bytes::from(event));
+                    }
+                    Err(err) => {
+                        yield Err(err);
+                        return;
+                    }
+                }
+
+                let message_item = json!({
+                    "id": &message_item_id,
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [{
+                        "type": "output_text",
+                        "text": &accumulated_text
+                    }]
+                });
+                let output_index = completed_output_items.len();
+                let output_item_done = json!({
+                    "type": "response.output_item.done",
+                    "output_index": output_index,
+                    "item": message_item
+                });
+                match encode_event(&output_item_done) {
+                    Ok(event) => {
+                        append_to_log_buffer(&mut client_body, &event, STREAM_LOG_CHAR_LIMIT);
+                        emitted_event_count += 1;
+                        yield Ok(Bytes::from(event));
+                    }
+                    Err(err) => {
+                        yield Err(err);
+                        return;
+                    }
+                }
+                completed_output_items.push(message_item);
+            }
+
+            let completed = json!({
+                "type": "response.completed",
+                "response": {
+                    "id": &response_id,
+                    "object": "response",
+                    "status": "completed",
+                    "model": &model,
+                    "output": completed_output_items
                 }
             });
-            match encode_event(&content_part_done) {
+            match encode_event(&completed) {
                 Ok(event) => {
+                    append_to_log_buffer(&mut client_body, &event, STREAM_LOG_CHAR_LIMIT);
                     emitted_event_count += 1;
-                    yield Ok(event)
-                },
+                    yield Ok(Bytes::from(event));
+                }
                 Err(err) => {
                     yield Err(err);
                     return;
                 }
             }
 
-            let message_item = json!({
-                "id": &message_item_id,
-                "type": "message",
-                "role": "assistant",
-                "status": "completed",
-                "content": [{
-                    "type": "output_text",
-                    "text": &accumulated_text
-                }]
-            });
-            let output_index = completed_output_items.len();
-            let output_item_done = json!({
-                "type": "response.output_item.done",
-                "output_index": output_index,
-                "item": message_item
-            });
-            match encode_event(&output_item_done) {
-                Ok(event) => {
-                    emitted_event_count += 1;
-                    yield Ok(event)
-                },
-                Err(err) => {
-                    yield Err(err);
-                    return;
-                }
-            }
-            completed_output_items.push(message_item);
-        }
+            info!(
+                request_id = %request_id_for_stream,
+                elapsed_ms = started_at.elapsed().as_millis(),
+                upstream_chunks = upstream_chunk_count,
+                emitted_events = emitted_event_count,
+                output_items = completed_output_items.len(),
+                text_len = accumulated_text.len(),
+                "completed streaming /openai/v1/responses request"
+            );
 
-        let completed = json!({
-            "type": "response.completed",
-            "response": {
-                "id": &response_id,
-                "object": "response",
-                "status": "completed",
-                "model": &model,
-                "output": completed_output_items
-            }
-        });
-        match encode_event(&completed) {
-            Ok(event) => {
-                emitted_event_count += 1;
-                yield Ok(event)
-            },
-            Err(err) => {
-                yield Err(err);
-                return;
-            }
-        }
-
-        info!(
-            request_id = %request_id_for_stream,
-            elapsed_ms = started_at.elapsed().as_millis(),
-            upstream_chunks = upstream_chunk_count,
-            emitted_events = emitted_event_count,
-            output_items = completed_output_items.len(),
-            text_len = accumulated_text.len(),
-            "completed streaming /openai/v1/responses request"
-        );
-
-        yield Ok("data: [DONE]\n\n".to_string());
-        }
-        .map(|result| result.map(Bytes::from));
+            let done = "data: [DONE]\n\n".to_string();
+            append_to_log_buffer(&mut client_body, &done, STREAM_LOG_CHAR_LIMIT);
+            let elapsed = elapsed_ms(started_at);
+            log_http_event(
+                &logs,
+                &request_id_for_stream,
+                LogStage::IngressResponse,
+                Some(upstream_status),
+                Some(IngressProtocol::OpenAiResponses.as_str()),
+                Some(EgressProtocol::GoogleV1Internal.as_str()),
+                Some(&provider_name),
+                Some(&account_id),
+                Some(&account_email),
+                Some(&model),
+                true,
+                Some("POST"),
+                None,
+                Some(&upstream_url),
+                Some(upstream_body),
+                None,
+                Some(elapsed),
+            )
+            .await;
+            log_http_event(
+                &logs,
+                &request_id_for_stream,
+                LogStage::EgressResponse,
+                Some(StatusCode::OK),
+                Some(IngressProtocol::OpenAiResponses.as_str()),
+                None,
+                Some(&provider_name),
+                Some(&account_id),
+                Some(&account_email),
+                Some(&model),
+                true,
+                Some("POST"),
+                Some(RESPONSES_PATH),
+                None,
+                Some(client_body),
+                None,
+                Some(elapsed),
+            )
+            .await;
+            yield Ok(Bytes::from(done));
+        };
 
         return Ok(Response::builder()
             .status(StatusCode::OK)
@@ -917,6 +1317,28 @@ pub async fn responses(
     if native_target.uses_chat_completions {
         let request_body = responses_to_chat_completions(&request, &native_target.upstream_model)
             .map_err(AppError::bad_request)?;
+        let upstream_url = chat_completions_api_url(&native_provider.base_url);
+        log_http_event(
+            &state.logs,
+            &request_id,
+            LogStage::EgressRequest,
+            None,
+            Some(IngressProtocol::OpenAiResponses.as_str()),
+            Some(native_target.egress.as_str()),
+            Some(&provider.name),
+            None,
+            None,
+            Some(&request.model),
+            request.stream,
+            Some("POST"),
+            None,
+            Some(&upstream_url),
+            Some(json_value_for_storage(&request_body)),
+            None,
+            None,
+        )
+        .await;
+
         let upstream = state
             .upstream
             .call_openai_chat_upstream(
@@ -927,19 +1349,64 @@ pub async fn responses(
             )
             .await
             .map_err(AppError::upstream_message)?;
+        let upstream_status = upstream.status();
         let chat_body: Value = upstream.json().await.map_err(AppError::upstream)?;
         let response = chat_completions_to_responses(&request.model, &chat_body);
+        let elapsed = elapsed_ms(started_at);
+        let upstream_body = json_value_for_storage(&chat_body);
+
+        log_http_event(
+            &state.logs,
+            &request_id,
+            LogStage::IngressResponse,
+            Some(upstream_status),
+            Some(IngressProtocol::OpenAiResponses.as_str()),
+            Some(native_target.egress.as_str()),
+            Some(&provider.name),
+            None,
+            None,
+            Some(&request.model),
+            request.stream,
+            Some("POST"),
+            None,
+            Some(&upstream_url),
+            Some(upstream_body),
+            None,
+            Some(elapsed),
+        )
+        .await;
 
         if !request.stream {
+            let response_body = json_for_storage(&response);
             info!(
                 request_id = %request_id,
-                elapsed_ms = started_at.elapsed().as_millis(),
+                elapsed_ms = elapsed,
                 provider = %provider.name,
                 egress = %native_target.egress.as_str(),
                 upstream_model = %native_target.upstream_model,
                 response_body = %json_for_log(&response),
                 "returning chat-completions-adapted /openai/v1/responses body"
             );
+            log_http_event(
+                &state.logs,
+                &request_id,
+                LogStage::EgressResponse,
+                Some(StatusCode::OK),
+                Some(IngressProtocol::OpenAiResponses.as_str()),
+                None,
+                Some(&provider.name),
+                None,
+                None,
+                Some(&request.model),
+                false,
+                Some("POST"),
+                Some(RESPONSES_PATH),
+                None,
+                Some(response_body),
+                None,
+                Some(elapsed),
+            )
+            .await;
             return Ok((
                 StatusCode::OK,
                 [("x-provider", provider.name.as_str())],
@@ -948,7 +1415,72 @@ pub async fn responses(
                 .into_response());
         }
 
-        let output = synthesized_responses_stream(response).map(|result| result.map(Bytes::from));
+        let logs = state.logs.clone();
+        let request_id_for_stream = request_id.clone();
+        let provider_name = provider.name.clone();
+        let model = request.model.clone();
+        let egress_protocol = native_target.egress.as_str().to_string();
+        let upstream_url_for_stream = upstream_url.clone();
+        let output = stream! {
+            let stream = synthesized_responses_stream(response);
+            futures_util::pin_mut!(stream);
+            let mut response_body = String::new();
+
+            while let Some(result) = stream.next().await {
+                match result {
+                    Ok(event) => {
+                        append_to_log_buffer(&mut response_body, &event, STREAM_LOG_CHAR_LIMIT);
+                        yield Ok::<Bytes, std::io::Error>(Bytes::from(event));
+                    }
+                    Err(err) => {
+                        log_http_event(
+                            &logs,
+                            &request_id_for_stream,
+                            LogStage::Error,
+                            Some(StatusCode::INTERNAL_SERVER_ERROR),
+                            Some(IngressProtocol::OpenAiResponses.as_str()),
+                            Some(&egress_protocol),
+                            Some(&provider_name),
+                            None,
+                            None,
+                            Some(&model),
+                            true,
+                            Some("POST"),
+                            Some(RESPONSES_PATH),
+                            Some(&upstream_url_for_stream),
+                            Some(response_body.clone()),
+                            Some(err.to_string()),
+                            Some(elapsed_ms(started_at)),
+                        )
+                        .await;
+                        yield Err(err);
+                        return;
+                    }
+                }
+            }
+
+            log_http_event(
+                &logs,
+                &request_id_for_stream,
+                LogStage::EgressResponse,
+                Some(StatusCode::OK),
+                Some(IngressProtocol::OpenAiResponses.as_str()),
+                None,
+                Some(&provider_name),
+                None,
+                None,
+                Some(&model),
+                true,
+                Some("POST"),
+                Some(RESPONSES_PATH),
+                None,
+                Some(response_body),
+                None,
+                Some(elapsed_ms(started_at)),
+            )
+            .await;
+        };
+
         return Ok(Response::builder()
             .status(StatusCode::OK)
             .header(
@@ -972,6 +1504,28 @@ pub async fn responses(
         &native_provider.name,
     )
     .map_err(|err| AppError::internal(err.to_string()))?;
+    let upstream_url = responses_api_url(&native_provider.base_url);
+    log_http_event(
+        &state.logs,
+        &request_id,
+        LogStage::EgressRequest,
+        None,
+        Some(IngressProtocol::OpenAiResponses.as_str()),
+        Some(native_target.egress.as_str()),
+        Some(&provider.name),
+        None,
+        None,
+        Some(&request.model),
+        request.stream,
+        Some("POST"),
+        None,
+        Some(&upstream_url),
+        Some(json_value_for_storage(&request_body)),
+        None,
+        None,
+    )
+    .await;
+
     let upstream = state
         .upstream
         .call_openai_responses_upstream(
@@ -983,18 +1537,61 @@ pub async fn responses(
         )
         .await
         .map_err(AppError::upstream_message)?;
+    let upstream_status = upstream.status();
 
     if !request.stream {
         let response_body: Value = upstream.json().await.map_err(AppError::upstream)?;
+        let elapsed = elapsed_ms(started_at);
+        let stored_body = json_value_for_storage(&response_body);
         info!(
             request_id = %request_id,
-            elapsed_ms = started_at.elapsed().as_millis(),
+            elapsed_ms = elapsed,
             provider = %provider.name,
             egress = %native_target.egress.as_str(),
             upstream_model = %native_target.upstream_model,
             response_body = %json_value_for_log(&response_body),
             "returning native provider /openai/v1/responses body"
         );
+        log_http_event(
+            &state.logs,
+            &request_id,
+            LogStage::IngressResponse,
+            Some(upstream_status),
+            Some(IngressProtocol::OpenAiResponses.as_str()),
+            Some(native_target.egress.as_str()),
+            Some(&provider.name),
+            None,
+            None,
+            Some(&request.model),
+            false,
+            Some("POST"),
+            None,
+            Some(&upstream_url),
+            Some(stored_body.clone()),
+            None,
+            Some(elapsed),
+        )
+        .await;
+        log_http_event(
+            &state.logs,
+            &request_id,
+            LogStage::EgressResponse,
+            Some(StatusCode::OK),
+            Some(IngressProtocol::OpenAiResponses.as_str()),
+            None,
+            Some(&provider.name),
+            None,
+            None,
+            Some(&request.model),
+            false,
+            Some("POST"),
+            Some(RESPONSES_PATH),
+            None,
+            Some(stored_body),
+            None,
+            Some(elapsed),
+        )
+        .await;
         return Ok((
             StatusCode::OK,
             [("x-provider", provider.name.as_str())],
@@ -1003,9 +1600,89 @@ pub async fn responses(
             .into_response());
     }
 
-    let output = upstream
-        .bytes_stream()
-        .map(|result| result.map(Bytes::from).map_err(std::io::Error::other));
+    let logs = state.logs.clone();
+    let request_id_for_stream = request_id.clone();
+    let provider_name = provider.name.clone();
+    let model = request.model.clone();
+    let output = stream! {
+        let mut stream = upstream.bytes_stream();
+        let mut response_body = String::new();
+
+        while let Some(result) = stream.next().await {
+            match result {
+                Ok(chunk) => {
+                    append_to_log_buffer(&mut response_body, &String::from_utf8_lossy(&chunk), STREAM_LOG_CHAR_LIMIT);
+                    yield Ok::<Bytes, std::io::Error>(chunk);
+                }
+                Err(err) => {
+                    log_http_event(
+                        &logs,
+                        &request_id_for_stream,
+                        LogStage::Error,
+                        Some(StatusCode::BAD_GATEWAY),
+                        Some(IngressProtocol::OpenAiResponses.as_str()),
+                        Some(native_target.egress.as_str()),
+                        Some(&provider_name),
+                        None,
+                        None,
+                        Some(&model),
+                        true,
+                        Some("POST"),
+                        Some(RESPONSES_PATH),
+                        Some(&upstream_url),
+                        Some(response_body.clone()),
+                        Some(err.to_string()),
+                        Some(elapsed_ms(started_at)),
+                    )
+                    .await;
+                    yield Err(std::io::Error::other(err));
+                    return;
+                }
+            }
+        }
+
+        let elapsed = elapsed_ms(started_at);
+        log_http_event(
+            &logs,
+            &request_id_for_stream,
+            LogStage::IngressResponse,
+            Some(upstream_status),
+            Some(IngressProtocol::OpenAiResponses.as_str()),
+            Some(native_target.egress.as_str()),
+            Some(&provider_name),
+            None,
+            None,
+            Some(&model),
+            true,
+            Some("POST"),
+            None,
+            Some(&upstream_url),
+            Some(response_body.clone()),
+            None,
+            Some(elapsed),
+        )
+        .await;
+        log_http_event(
+            &logs,
+            &request_id_for_stream,
+            LogStage::EgressResponse,
+            Some(StatusCode::OK),
+            Some(IngressProtocol::OpenAiResponses.as_str()),
+            None,
+            Some(&provider_name),
+            None,
+            None,
+            Some(&model),
+            true,
+            Some("POST"),
+            Some(RESPONSES_PATH),
+            None,
+            Some(response_body),
+            None,
+            Some(elapsed),
+        )
+        .await;
+    };
 
     Ok(Response::builder()
         .status(StatusCode::OK)
@@ -1510,6 +2187,112 @@ fn synthesized_responses_stream(
         })));
         yield Ok("data: [DONE]\n\n".to_string());
     }
+}
+
+async fn log_http_event(
+    logs: &LogStore,
+    request_id: &str,
+    stage: LogStage,
+    status_code: Option<StatusCode>,
+    ingress_protocol: Option<&str>,
+    egress_protocol: Option<&str>,
+    provider_name: Option<&str>,
+    account_id: Option<&str>,
+    account_email: Option<&str>,
+    model: Option<&str>,
+    stream: bool,
+    method: Option<&str>,
+    path: Option<&str>,
+    url: Option<&str>,
+    body: Option<String>,
+    error_message: Option<String>,
+    elapsed_ms: Option<i64>,
+) {
+    let stage_name = stage.as_str().to_string();
+    if let Err(err) = logs
+        .record(LogEvent {
+            request_id: request_id.to_string(),
+            stage,
+            status_code: status_code.map(|status| status.as_u16()),
+            ingress_protocol: ingress_protocol.map(ToOwned::to_owned),
+            egress_protocol: egress_protocol.map(ToOwned::to_owned),
+            provider_name: provider_name.map(ToOwned::to_owned),
+            account_id: account_id.map(ToOwned::to_owned),
+            account_email: account_email.map(ToOwned::to_owned),
+            model: model.map(ToOwned::to_owned),
+            stream,
+            method: method.map(ToOwned::to_owned),
+            path: path.map(ToOwned::to_owned),
+            url: url.map(ToOwned::to_owned),
+            body,
+            error_message,
+            elapsed_ms,
+        })
+        .await
+    {
+        warn!(
+            request_id = %request_id,
+            stage = %stage_name,
+            error = %err,
+            "failed to persist gateway log"
+        );
+    }
+}
+
+fn gateway_error_payload(message: &str) -> Value {
+    json!({
+        "error": {
+            "message": message,
+            "type": "proxy_error"
+        }
+    })
+}
+
+fn json_for_storage<T: serde::Serialize>(value: &T) -> String {
+    match serde_json::to_string(value) {
+        Ok(body) => body,
+        Err(err) => format!("<serialize error: {err}>"),
+    }
+}
+
+fn json_value_for_storage(value: &Value) -> String {
+    value.to_string()
+}
+
+fn google_v1internal_url_label(method: &str, stream: bool) -> String {
+    if stream {
+        format!("google-v1internal:{method}?alt=sse")
+    } else {
+        format!("google-v1internal:{method}")
+    }
+}
+
+fn elapsed_ms(started_at: Instant) -> i64 {
+    started_at.elapsed().as_millis().min(i64::MAX as u128) as i64
+}
+
+fn append_to_log_buffer(buffer: &mut String, chunk: &str, limit: usize) {
+    const TRUNCATED_MARKER: &str = "...<truncated>";
+
+    if buffer.ends_with(TRUNCATED_MARKER) {
+        return;
+    }
+
+    let current_len = buffer.chars().count();
+    if current_len >= limit {
+        buffer.push_str(TRUNCATED_MARKER);
+        return;
+    }
+
+    let remaining = limit - current_len;
+    let chunk_len = chunk.chars().count();
+    if chunk_len <= remaining {
+        buffer.push_str(chunk);
+        return;
+    }
+
+    buffer.extend(chunk.chars().take(remaining));
+    buffer.push_str(TRUNCATED_MARKER);
 }
 
 fn json_for_log<T: serde::Serialize>(value: &T) -> String {

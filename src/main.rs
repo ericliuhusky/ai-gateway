@@ -11,7 +11,7 @@ use auth::OAuthClient;
 use config::Config;
 use reqwest::Client;
 use std::sync::Arc;
-use store::{AccountPool, ProviderStore, RouteStore};
+use store::{AccountPool, LogStore, ProviderStore, RouteStore};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use upstream::UpstreamClient;
 
@@ -34,13 +34,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let route = routes.load().await?;
     let oauth = OAuthClient::new(config.clone());
     let upstream = UpstreamClient::new();
+    let logs = LogStore::new(config.clone())?;
 
     tracing::info!(
-        "loaded {} account(s), {} provider(s), current route {:?} from {:?}",
+        "loaded {} account(s), {} provider(s), current route {:?} from {:?}, logs at {:?} (max {} rows)",
         loaded,
         provider_count,
         route.provider_id,
-        config.sqlite_path()
+        config.sqlite_path(),
+        logs.db_path(),
+        logs.max_rows()
     );
 
     let state = AppState {
@@ -51,6 +54,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         providers,
         routes,
         upstream,
+        logs,
     };
 
     let app = build_router(state);
