@@ -41,7 +41,6 @@ const BUNDLED_CODEX_CONFIG: &str = include_str!("../../assets/codex-config.toml"
 const MISSING_FILE_SENTINEL: &str = "__AI_GATEWAY_MISSING__";
 const RESPONSES_PATH: &str = "/openai/v1/responses";
 const OPENAI_PRIVATE_RESPONSES_URL: &str = "https://chatgpt.com/backend-api/codex/responses";
-const STREAM_LOG_CHAR_LIMIT: usize = 16_000;
 const NEW_API_QUOTA_EXTENSION: &str = "new_api_quota";
 
 #[derive(Clone)]
@@ -714,7 +713,7 @@ async fn responses_inner(
             while let Some(result) = stream.next().await {
                 match result {
                     Ok(chunk) => {
-                        append_to_log_buffer(&mut response_body, &String::from_utf8_lossy(&chunk), STREAM_LOG_CHAR_LIMIT);
+                        append_to_log_buffer(&mut response_body, &String::from_utf8_lossy(&chunk));
                         yield Ok::<Bytes, std::io::Error>(chunk);
                     }
                     Err(err) => {
@@ -983,7 +982,7 @@ async fn responses_inner(
             });
             match encode_event(&created) {
                 Ok(event) => {
-                    append_to_log_buffer(&mut client_body, &event, STREAM_LOG_CHAR_LIMIT);
+                    append_to_log_buffer(&mut client_body, &event);
                     emitted_event_count += 1;
                     yield Ok::<Bytes, std::io::Error>(Bytes::from(event));
                 }
@@ -1045,7 +1044,7 @@ async fn responses_inner(
                 };
 
                 let chunk_text = String::from_utf8_lossy(&chunk);
-                append_to_log_buffer(&mut upstream_body, &chunk_text, STREAM_LOG_CHAR_LIMIT);
+                append_to_log_buffer(&mut upstream_body, &chunk_text);
                 buffer.push_str(&chunk_text);
 
                 while let Some(line_end) = buffer.find('\n') {
@@ -1109,7 +1108,7 @@ async fn responses_inner(
                                         });
                                         match encode_event(&output_item_added) {
                                             Ok(event) => {
-                                                append_to_log_buffer(&mut client_body, &event, STREAM_LOG_CHAR_LIMIT);
+                                                append_to_log_buffer(&mut client_body, &event);
                                                 emitted_event_count += 1;
                                                 yield Ok(Bytes::from(event));
                                             }
@@ -1131,7 +1130,7 @@ async fn responses_inner(
                                         });
                                         match encode_event(&content_part_added) {
                                             Ok(event) => {
-                                                append_to_log_buffer(&mut client_body, &event, STREAM_LOG_CHAR_LIMIT);
+                                                append_to_log_buffer(&mut client_body, &event);
                                                 emitted_event_count += 1;
                                                 yield Ok(Bytes::from(event));
                                             }
@@ -1153,7 +1152,7 @@ async fn responses_inner(
                                     });
                                     match encode_event(&delta) {
                                         Ok(event) => {
-                                            append_to_log_buffer(&mut client_body, &event, STREAM_LOG_CHAR_LIMIT);
+                                            append_to_log_buffer(&mut client_body, &event);
                                             emitted_event_count += 1;
                                             yield Ok(Bytes::from(event));
                                         }
@@ -1199,7 +1198,7 @@ async fn responses_inner(
                                     });
                                     match encode_event(&added) {
                                         Ok(event) => {
-                                            append_to_log_buffer(&mut client_body, &event, STREAM_LOG_CHAR_LIMIT);
+                                            append_to_log_buffer(&mut client_body, &event);
                                             emitted_event_count += 1;
                                             yield Ok(Bytes::from(event));
                                         }
@@ -1216,7 +1215,7 @@ async fn responses_inner(
                                     });
                                     match encode_event(&done) {
                                         Ok(event) => {
-                                            append_to_log_buffer(&mut client_body, &event, STREAM_LOG_CHAR_LIMIT);
+                                            append_to_log_buffer(&mut client_body, &event);
                                             emitted_event_count += 1;
                                             yield Ok(Bytes::from(event));
                                         }
@@ -1243,7 +1242,7 @@ async fn responses_inner(
                 });
                 match encode_event(&text_done) {
                     Ok(event) => {
-                        append_to_log_buffer(&mut client_body, &event, STREAM_LOG_CHAR_LIMIT);
+                        append_to_log_buffer(&mut client_body, &event);
                         emitted_event_count += 1;
                         yield Ok(Bytes::from(event));
                     }
@@ -1265,7 +1264,7 @@ async fn responses_inner(
                 });
                 match encode_event(&content_part_done) {
                     Ok(event) => {
-                        append_to_log_buffer(&mut client_body, &event, STREAM_LOG_CHAR_LIMIT);
+                        append_to_log_buffer(&mut client_body, &event);
                         emitted_event_count += 1;
                         yield Ok(Bytes::from(event));
                     }
@@ -1293,7 +1292,7 @@ async fn responses_inner(
                 });
                 match encode_event(&output_item_done) {
                     Ok(event) => {
-                        append_to_log_buffer(&mut client_body, &event, STREAM_LOG_CHAR_LIMIT);
+                        append_to_log_buffer(&mut client_body, &event);
                         emitted_event_count += 1;
                         yield Ok(Bytes::from(event));
                     }
@@ -1317,7 +1316,7 @@ async fn responses_inner(
             });
             match encode_event(&completed) {
                 Ok(event) => {
-                    append_to_log_buffer(&mut client_body, &event, STREAM_LOG_CHAR_LIMIT);
+                    append_to_log_buffer(&mut client_body, &event);
                     emitted_event_count += 1;
                     yield Ok(Bytes::from(event));
                 }
@@ -1338,7 +1337,7 @@ async fn responses_inner(
             );
 
             let done = "data: [DONE]\n\n".to_string();
-            append_to_log_buffer(&mut client_body, &done, STREAM_LOG_CHAR_LIMIT);
+            append_to_log_buffer(&mut client_body, &done);
             let elapsed = elapsed_ms(started_at);
             log_http_event(
                 &logs,
@@ -1533,7 +1532,7 @@ async fn responses_inner(
             while let Some(result) = stream.next().await {
                 match result {
                     Ok(event) => {
-                        append_to_log_buffer(&mut response_body, &event, STREAM_LOG_CHAR_LIMIT);
+                        append_to_log_buffer(&mut response_body, &event);
                         yield Ok::<Bytes, std::io::Error>(Bytes::from(event));
                     }
                     Err(err) => {
@@ -1715,7 +1714,7 @@ async fn responses_inner(
         while let Some(result) = stream.next().await {
             match result {
                 Ok(chunk) => {
-                    append_to_log_buffer(&mut response_body, &String::from_utf8_lossy(&chunk), STREAM_LOG_CHAR_LIMIT);
+                    append_to_log_buffer(&mut response_body, &String::from_utf8_lossy(&chunk));
                     yield Ok::<Bytes, std::io::Error>(chunk);
                 }
                 Err(err) => {
@@ -2455,28 +2454,8 @@ fn elapsed_ms(started_at: Instant) -> i64 {
     started_at.elapsed().as_millis().min(i64::MAX as u128) as i64
 }
 
-fn append_to_log_buffer(buffer: &mut String, chunk: &str, limit: usize) {
-    const TRUNCATED_MARKER: &str = "...<truncated>";
-
-    if buffer.ends_with(TRUNCATED_MARKER) {
-        return;
-    }
-
-    let current_len = buffer.chars().count();
-    if current_len >= limit {
-        buffer.push_str(TRUNCATED_MARKER);
-        return;
-    }
-
-    let remaining = limit - current_len;
-    let chunk_len = chunk.chars().count();
-    if chunk_len <= remaining {
-        buffer.push_str(chunk);
-        return;
-    }
-
-    buffer.extend(chunk.chars().take(remaining));
-    buffer.push_str(TRUNCATED_MARKER);
+fn append_to_log_buffer(buffer: &mut String, chunk: &str) {
+    buffer.push_str(chunk);
 }
 
 fn json_for_log<T: serde::Serialize>(value: &T) -> String {

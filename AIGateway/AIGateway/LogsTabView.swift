@@ -376,18 +376,29 @@ struct LogsTabView: View {
             Text(title)
                 .font(.system(size: 11, weight: .bold))
                 .foregroundStyle(tint)
-            ScrollView(.horizontal) {
-                Text(text)
-                    .font(.system(size: 12, weight: .medium, design: .monospaced))
-                    .textSelection(.enabled)
+
+            if let jsonValue = JSONTreeValue.parse(from: text) {
+                JSONTreeView(root: jsonValue, tint: tint)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12)
+                    .background(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .fill(codeBlockBackground(tint: tint))
+                    )
+            } else {
+                ScrollView(.horizontal) {
+                    Text(text)
+                        .font(.system(size: 12, weight: .medium, design: .monospaced))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                .padding(12)
+                .background(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(codeBlockBackground(tint: tint))
+                )
             }
-            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-            .padding(12)
-            .background(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(codeBlockBackground(tint: tint))
-            )
         }
     }
 
@@ -562,5 +573,199 @@ struct LogsTabView: View {
         colorScheme == .dark
             ? Color(red: 0.45, green: 0.66, blue: 1.00)
             : Color(red: 0.18, green: 0.45, blue: 0.88)
+    }
+}
+
+private struct JSONTreeView: View {
+    let root: JSONTreeValue
+    let tint: Color
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            JSONTreeNodeView(label: nil, value: root, tint: tint, level: 0)
+        }
+    }
+}
+
+private struct JSONTreeNodeView: View {
+    let label: String?
+    let value: JSONTreeValue
+    let tint: Color
+    let level: Int
+
+    @State private var isExpanded = true
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if value.isContainer {
+                DisclosureGroup(isExpanded: $isExpanded) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(value.children) { child in
+                            JSONTreeNodeView(
+                                label: child.label,
+                                value: child.value,
+                                tint: tint,
+                                level: level + 1
+                            )
+                        }
+                    }
+                    .padding(.top, 6)
+                } label: {
+                    headerRow
+                }
+                .tint(tint)
+            } else {
+                leafRow
+            }
+        }
+        .padding(.leading, CGFloat(level) * 14)
+    }
+
+    private var headerRow: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            if let label {
+                Text(label)
+                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(.primary)
+                    .textSelection(.enabled)
+            }
+
+            Text(value.containerSummary)
+                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var leafRow: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            if let label {
+                Text(label)
+                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(.primary)
+                    .textSelection(.enabled)
+            }
+
+            Text(value.renderedValue)
+                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                .foregroundStyle(value.foregroundStyle)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct JSONTreeChild: Identifiable {
+    let id: String
+    let label: String
+    let value: JSONTreeValue
+}
+
+private enum JSONTreeValue {
+    case object([(String, JSONTreeValue)])
+    case array([JSONTreeValue])
+    case string(String)
+    case number(String)
+    case bool(Bool)
+    case null
+
+    static func parse(from text: String) -> JSONTreeValue? {
+        guard let data = text.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) else {
+            return nil
+        }
+        return make(from: object)
+    }
+
+    private static func make(from raw: Any) -> JSONTreeValue? {
+        switch raw {
+        case let dictionary as [String: Any]:
+            let entries = dictionary.keys.sorted().map { key in
+                (key, make(from: dictionary[key] ?? NSNull()) ?? .null)
+            }
+            return .object(entries)
+        case let array as [Any]:
+            return .array(array.map { make(from: $0) ?? .null })
+        case let string as String:
+            return .string(string)
+        case let bool as Bool:
+            return .bool(bool)
+        case let number as NSNumber:
+            if CFGetTypeID(number) == CFBooleanGetTypeID() {
+                return .bool(number.boolValue)
+            }
+            return .number(number.stringValue)
+        case _ as NSNull:
+            return .null
+        default:
+            return nil
+        }
+    }
+
+    var isContainer: Bool {
+        switch self {
+        case .object, .array:
+            return true
+        case .string, .number, .bool, .null:
+            return false
+        }
+    }
+
+    var children: [JSONTreeChild] {
+        switch self {
+        case .object(let entries):
+            return entries.map { key, value in
+                JSONTreeChild(id: key, label: key, value: value)
+            }
+        case .array(let values):
+            return values.enumerated().map { index, value in
+                JSONTreeChild(id: "[\(index)]", label: "[\(index)]", value: value)
+            }
+        case .string, .number, .bool, .null:
+            return []
+        }
+    }
+
+    var containerSummary: String {
+        switch self {
+        case .object(let entries):
+            return "{\(entries.count) fields}"
+        case .array(let values):
+            return "[\(values.count) items]"
+        case .string, .number, .bool, .null:
+            return renderedValue
+        }
+    }
+
+    var renderedValue: String {
+        switch self {
+        case .string(let value):
+            return "\"\(value)\""
+        case .number(let value):
+            return value
+        case .bool(let value):
+            return value ? "true" : "false"
+        case .null:
+            return "null"
+        case .object:
+            return "{}"
+        case .array:
+            return "[]"
+        }
+    }
+
+    var foregroundStyle: Color {
+        switch self {
+        case .string:
+            return .primary
+        case .number:
+            return .blue
+        case .bool:
+            return .orange
+        case .null:
+            return .secondary
+        case .object, .array:
+            return .secondary
+        }
     }
 }

@@ -16,7 +16,6 @@ use tokio::sync::Mutex;
 
 const DEFAULT_MAX_LOG_ROWS: usize = 20_000;
 const DEFAULT_PRUNE_TO_ROWS: usize = 18_000;
-const DEFAULT_BODY_LIMIT_CHARS: usize = 16_000;
 const DEFAULT_ERROR_LIMIT_CHARS: usize = 4_000;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -65,7 +64,6 @@ pub struct LogStore {
     db_path: PathBuf,
     max_rows: usize,
     prune_to_rows: usize,
-    body_limit_chars: usize,
     error_limit_chars: usize,
     write_guard: Arc<Mutex<()>>,
     enabled: Arc<AtomicBool>,
@@ -77,7 +75,6 @@ impl LogStore {
             config.log_sqlite_path(),
             DEFAULT_MAX_LOG_ROWS,
             DEFAULT_PRUNE_TO_ROWS,
-            DEFAULT_BODY_LIMIT_CHARS,
             DEFAULT_ERROR_LIMIT_CHARS,
         )
     }
@@ -86,7 +83,6 @@ impl LogStore {
         db_path: PathBuf,
         max_rows: usize,
         prune_to_rows: usize,
-        body_limit_chars: usize,
         error_limit_chars: usize,
     ) -> Result<Self, String> {
         if let Some(parent) = db_path.parent() {
@@ -98,7 +94,6 @@ impl LogStore {
             db_path,
             max_rows,
             prune_to_rows: prune_to_rows.min(max_rows),
-            body_limit_chars,
             error_limit_chars,
             write_guard: Arc::new(Mutex::new(())),
             enabled: Arc::new(AtomicBool::new(true)),
@@ -133,8 +128,6 @@ impl LogStore {
         }
 
         let conn = self.connect()?;
-        let (body, body_truncated) =
-            truncate_optional(event.body.as_deref(), self.body_limit_chars);
         let (error_message, error_truncated) =
             truncate_optional(event.error_message.as_deref(), self.error_limit_chars);
 
@@ -174,8 +167,8 @@ impl LogStore {
                 event.method,
                 event.path,
                 event.url,
-                body,
-                if body_truncated { 1_i64 } else { 0_i64 },
+                event.body,
+                0_i64,
                 error_message,
                 if error_truncated { 1_i64 } else { 0_i64 },
                 event.elapsed_ms,
@@ -506,8 +499,7 @@ mod tests {
     #[tokio::test]
     async fn prunes_oldest_rows_after_limit() {
         let db_path = unique_test_db_path("prune");
-        let store =
-            LogStore::with_options(db_path.clone(), 3, 2, 128, 128).expect("create log store");
+        let store = LogStore::with_options(db_path.clone(), 3, 2, 128).expect("create log store");
 
         for idx in 0..4 {
             store
@@ -552,9 +544,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn truncates_large_bodies() {
+    async fn stores_full_body_and_truncates_error_message() {
         let db_path = unique_test_db_path("truncate");
-        let store = LogStore::with_options(db_path.clone(), 10, 8, 8, 8).expect("create log store");
+        let store = LogStore::with_options(db_path.clone(), 10, 8, 8).expect("create log store");
 
         store
             .record(LogEvent {
@@ -589,8 +581,8 @@ mod tests {
             )
             .expect("load truncated row");
 
-        assert_eq!(body, "abcdefgh...<truncated>");
-        assert_eq!(body_truncated, 1);
+        assert_eq!(body, "abcdefghijklmnopqrstuvwxyz");
+        assert_eq!(body_truncated, 0);
         assert_eq!(error_message, "12345678...<truncated>");
         assert_eq!(error_truncated, 1);
 
@@ -600,8 +592,7 @@ mod tests {
     #[tokio::test]
     async fn skips_recording_when_disabled() {
         let db_path = unique_test_db_path("disabled");
-        let store =
-            LogStore::with_options(db_path.clone(), 10, 8, 128, 128).expect("create log store");
+        let store = LogStore::with_options(db_path.clone(), 10, 8, 128).expect("create log store");
 
         store.set_enabled(false).await.expect("disable log store");
         store
@@ -645,8 +636,7 @@ mod tests {
     #[tokio::test]
     async fn clears_logs_without_changing_enabled_setting() {
         let db_path = unique_test_db_path("clear");
-        let store =
-            LogStore::with_options(db_path.clone(), 10, 8, 128, 128).expect("create log store");
+        let store = LogStore::with_options(db_path.clone(), 10, 8, 128).expect("create log store");
 
         store
             .record(LogEvent {
