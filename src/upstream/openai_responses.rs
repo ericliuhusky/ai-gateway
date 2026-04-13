@@ -139,6 +139,18 @@ mod tests {
     }
 
     #[test]
+    fn appends_models_to_explicit_v1_base_url() {
+        assert_eq!(
+            models_api_url("https://api.xcode.best/v1"),
+            "https://api.xcode.best/v1/models"
+        );
+        assert_eq!(
+            responses_api_url("https://api.xcode.best/v1"),
+            "https://api.xcode.best/v1/responses"
+        );
+    }
+
+    #[test]
     fn preserves_existing_responses_and_models_paths() {
         assert_eq!(
             responses_api_url("https://example.com/v1/responses"),

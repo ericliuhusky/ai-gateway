@@ -1,5 +1,6 @@
 use crate::upstream::{
     google_v1internal::GoogleV1InternalClient, openai_chat::OpenAiChatClient,
+    new_api_site::NewApiSiteClient,
     openai_private::OpenAiPrivateClient, openai_responses::OpenAiResponsesClient,
     shared::build_http_client,
 };
@@ -9,6 +10,7 @@ use serde_json::Value;
 #[derive(Clone, Debug)]
 pub struct UpstreamClient {
     google_v1internal: GoogleV1InternalClient,
+    new_api_site: NewApiSiteClient,
     openai_private: OpenAiPrivateClient,
     openai_responses: OpenAiResponsesClient,
     openai_chat: OpenAiChatClient,
@@ -19,10 +21,33 @@ impl UpstreamClient {
         let http = build_http_client();
         Self {
             google_v1internal: GoogleV1InternalClient::new(http.clone()),
+            new_api_site: NewApiSiteClient::new(http.clone()),
             openai_private: OpenAiPrivateClient::new(http.clone()),
             openai_responses: OpenAiResponsesClient::new(http.clone()),
             openai_chat: OpenAiChatClient::new(http),
         }
+    }
+
+    pub async fn fetch_new_api_user_self(
+        &self,
+        request_id: &str,
+        token: &str,
+        user_id: &str,
+    ) -> Result<Value, String> {
+        self.new_api_site
+            .fetch_user_self(request_id, token, user_id)
+            .await
+    }
+
+    pub async fn fetch_new_api_subscription_self(
+        &self,
+        request_id: &str,
+        token: &str,
+        user_id: &str,
+    ) -> Result<Value, String> {
+        self.new_api_site
+            .fetch_subscription_self(request_id, token, user_id)
+            .await
     }
 
     pub async fn fetch_project_id(&self, access_token: &str) -> Result<String, String> {

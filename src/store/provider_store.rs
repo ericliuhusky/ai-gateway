@@ -2,7 +2,7 @@ use crate::{
     config::Config,
     models::{
         ApiProviderBillingMode, ApiProviderRecord, ApiProviderSummary, CreateApiProviderRequest,
-        ProviderAuthMode,
+        ProviderAuthMode, ProviderExtensionRecord,
     },
     store::sqlite::SqliteStore,
 };
@@ -14,6 +14,7 @@ use uuid::Uuid;
 pub struct ProviderStore {
     sqlite: SqliteStore,
     providers: Arc<Mutex<Vec<ApiProviderRecord>>>,
+    extensions: Arc<Mutex<Vec<ProviderExtensionRecord>>>,
 }
 
 impl ProviderStore {
@@ -21,13 +22,16 @@ impl ProviderStore {
         let store = Self {
             sqlite: SqliteStore::new(config.clone())?,
             providers: Arc::new(Mutex::new(Vec::new())),
+            extensions: Arc::new(Mutex::new(Vec::new())),
         };
         Ok(store)
     }
 
     pub async fn load(&self) -> Result<usize, String> {
         let loaded = self.sqlite.load_providers()?;
+        let extensions = self.sqlite.load_provider_extensions()?;
         *self.providers.lock().await = loaded;
+        *self.extensions.lock().await = extensions;
         Ok(self.providers.lock().await.len())
     }
 
@@ -134,6 +138,38 @@ impl ProviderStore {
 
         self.persist_provider(&provider)?;
         Ok(provider)
+    }
+
+    pub async fn find_extension(
+        &self,
+        provider_id: &str,
+        extension_type: &str,
+    ) -> Option<ProviderExtensionRecord> {
+        self.extensions
+            .lock()
+            .await
+            .iter()
+            .find(|extension| {
+                extension.provider_id == provider_id && extension.extension_type == extension_type
+            })
+            .cloned()
+    }
+
+    pub async fn upsert_extension(
+        &self,
+        extension: ProviderExtensionRecord,
+    ) -> Result<(), String> {
+        self.sqlite.upsert_provider_extension(&extension)?;
+        let mut extensions = self.extensions.lock().await;
+        if let Some(existing) = extensions.iter_mut().find(|existing| {
+            existing.provider_id == extension.provider_id
+                && existing.extension_type == extension.extension_type
+        }) {
+            *existing = extension;
+        } else {
+            extensions.push(extension);
+        }
+        Ok(())
     }
 
     fn persist_provider(&self, provider: &ApiProviderRecord) -> Result<(), String> {

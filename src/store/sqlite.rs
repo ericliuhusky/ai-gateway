@@ -1,8 +1,8 @@
 use crate::{
     config::Config,
     models::{
-        AccountRecord, AccountType, ApiProviderBillingMode, ApiProviderRecord, ProviderAuthMode,
-        SelectedProvider,
+        AccountRecord, AccountType, ApiProviderBillingMode, ApiProviderRecord,
+        ProviderAuthMode, ProviderExtensionRecord, SelectedProvider,
     },
 };
 use rusqlite::{Connection, OptionalExtension, params};
@@ -94,6 +94,50 @@ impl SqliteStore {
         upsert_provider_record(&conn, provider)
     }
 
+    pub fn load_provider_extensions(&self) -> Result<Vec<ProviderExtensionRecord>, String> {
+        let conn = self.connect()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT provider_id, extension_type, user_id, access_token
+                 FROM provider_extensions
+                 ORDER BY rowid ASC",
+            )
+            .map_err(|err| format!("prepare provider extensions query failed: {err}"))?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(ProviderExtensionRecord {
+                    provider_id: row.get(0)?,
+                    extension_type: row.get(1)?,
+                    user_id: row.get(2)?,
+                    access_token: row.get(3)?,
+                })
+            })
+            .map_err(|err| format!("query provider extensions failed: {err}"))?;
+
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|err| format!("read provider extensions failed: {err}"))
+    }
+
+    pub fn upsert_provider_extension(&self, extension: &ProviderExtensionRecord) -> Result<(), String> {
+        let conn = self.connect()?;
+        conn.execute(
+            "INSERT INTO provider_extensions (
+                provider_id, extension_type, user_id, access_token
+             ) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(provider_id, extension_type) DO UPDATE SET
+                user_id = excluded.user_id,
+                access_token = excluded.access_token",
+            params![
+                extension.provider_id,
+                extension.extension_type,
+                extension.user_id,
+                extension.access_token,
+            ],
+        )
+        .map_err(|err| format!("upsert provider extension failed: {err}"))?;
+        Ok(())
+    }
+
     pub fn load_route(&self) -> Result<SelectedProvider, String> {
         let conn = self.connect()?;
         conn.query_row(
@@ -149,6 +193,14 @@ impl SqliteStore {
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 provider_id TEXT,
                 updated_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS provider_extensions (
+                provider_id TEXT NOT NULL,
+                extension_type TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                access_token TEXT NOT NULL,
+                PRIMARY KEY (provider_id, extension_type)
             );
             ",
         )

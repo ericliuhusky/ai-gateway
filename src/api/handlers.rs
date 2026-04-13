@@ -16,6 +16,7 @@ use crate::{
         ResponsesRequest, ResponsesResponse, SelectedProvider, UpdateGatewayLogSettingsRequest,
         UpdateSelectedProviderRequest, UpstreamRateLimitStatusDetails,
         UpstreamRateLimitStatusPayload, UpstreamRateLimitWindowSnapshot,
+        NewApiSubscriptionEnvelope, NewApiUserSelfEnvelope,
     },
     store::{AccountPool, LogEvent, LogStage, LogStore, ProviderStore, RouteStore},
     upstream::{UpstreamClient, chat_completions_api_url, responses_api_url},
@@ -41,6 +42,7 @@ const MISSING_FILE_SENTINEL: &str = "__AI_GATEWAY_MISSING__";
 const RESPONSES_PATH: &str = "/openai/v1/responses";
 const OPENAI_PRIVATE_RESPONSES_URL: &str = "https://chatgpt.com/backend-api/codex/responses";
 const STREAM_LOG_CHAR_LIMIT: usize = 16_000;
+const NEW_API_QUOTA_EXTENSION: &str = "new_api_quota";
 
 #[derive(Clone)]
 pub struct AppState {
@@ -217,7 +219,7 @@ pub async fn get_provider_quota(
     let provider_summary = provider_summary_for_resolved(&state, &provider).await?;
 
     let quota = if provider.auth_mode == ProviderAuthMode::Account {
-        if provider.name == PROVIDER_OPENAI_PROXY {
+        if provider_uses_openai_account(&provider) {
             let account = resolve_account_for_provider(&state, &provider).await?;
             let raw = state
                 .upstream
@@ -237,11 +239,49 @@ pub async fn get_provider_quota(
                 provider.name
             ))
         }
+    } else if provider.name == "xcode-best" {
+        if let Some(extension) = state
+            .providers
+            .find_extension(&provider_id, NEW_API_QUOTA_EXTENSION)
+            .await
+        {
+            let user_raw = state
+                .upstream
+                .fetch_new_api_user_self(
+                    &format!("quota_new_api_user_{}", Uuid::new_v4().simple()),
+                    &extension.access_token,
+                    &extension.user_id,
+                )
+                .await;
+            let subscription_raw = state
+                .upstream
+                .fetch_new_api_subscription_self(
+                    &format!("quota_new_api_subscription_{}", Uuid::new_v4().simple()),
+                    &extension.access_token,
+                    &extension.user_id,
+                )
+                .await;
+
+            match (user_raw, subscription_raw) {
+                (Ok(user_raw), Ok(subscription_raw)) => {
+                    let user: NewApiUserSelfEnvelope = serde_json::from_value(user_raw)
+                        .map_err(|err| AppError::upstream_message(err.to_string()))?;
+                    let subscription: NewApiSubscriptionEnvelope =
+                        serde_json::from_value(subscription_raw)
+                            .map_err(|err| AppError::upstream_message(err.to_string()))?;
+                    quota_from_new_api_extension(user, subscription)
+                }
+                _ => unsupported_quota_summary(
+                    "new-api quota extension is unavailable".to_string(),
+                ),
+            }
+        } else {
+            unsupported_quota_summary(
+                "new-api quota extension is not configured for this provider".to_string(),
+            )
+        }
     } else {
-        unsupported_quota_summary(format!(
-            "official quota snapshot is not supported yet for api_key provider `{}`",
-            provider.name
-        ))
+        unsupported_quota_summary(format!("missing provider record for `{}`", provider.name))
     };
 
     Ok(Json(ProviderQuotaResponse {
@@ -558,7 +598,7 @@ async fn responses_inner(
         "received /openai/v1/responses request"
     );
 
-    if provider.auth_mode == ProviderAuthMode::Account && provider.name == PROVIDER_OPENAI_PROXY {
+    if provider.auth_mode == ProviderAuthMode::Account && provider_uses_openai_account(&provider) {
         let account = resolve_account_for_provider(&state, &provider).await?;
         let request_body = responses_to_openai_private(&request)
             .map_err(|err| AppError::internal(err.to_string()))?;
@@ -1985,6 +2025,11 @@ async fn resolve_account_for_provider(
         .map_err(AppError::bad_request)
 }
 
+fn provider_uses_openai_account(provider: &ResolvedProvider) -> bool {
+    provider.record.as_ref().and_then(|record| record.account_id.as_ref()).is_some()
+        && provider.name != PROVIDER_GOOGLE_PROXY
+}
+
 async fn hydrated_provider_summaries(state: &AppState) -> Vec<ApiProviderSummary> {
     let mut providers = state.providers.list().await;
     for provider in &mut providers {
@@ -2077,6 +2122,73 @@ fn quota_from_openai_usage(payload: UpstreamRateLimitStatusPayload) -> ProviderQ
     }
 }
 
+fn quota_from_new_api_extension(
+    user: NewApiUserSelfEnvelope,
+    subscription: NewApiSubscriptionEnvelope,
+) -> ProviderQuotaSummary {
+    let active = subscription
+        .data
+        .subscriptions
+        .iter()
+        .find(|entry| entry.subscription.status == "active")
+        .map(|entry| &entry.subscription);
+
+    let snapshot = active.map(|active| {
+        let total = quota_units_to_usd(active.amount_total);
+        let used = quota_units_to_usd(active.amount_used);
+        let used_percent = if total > 0.0 {
+            ((used / total) * 100.0).clamp(0.0, 100.0)
+        } else {
+            0.0
+        };
+
+        ProviderQuotaSnapshot {
+            limit_id: Some(format!("subscription_{}", active.id)),
+            limit_name: Some("new-api active subscription".to_string()),
+            primary: Some(ProviderQuotaWindow {
+                used_percent,
+                window_minutes: None,
+                resets_at: Some(active.end_time),
+            }),
+            secondary: None,
+            credits: Some(ProviderQuotaCredits {
+                has_credits: true,
+                unlimited: false,
+                balance: Some(format_usd_value((total - used).max(0.0))),
+            }),
+            plan_type: Some(active.status.clone()),
+        }
+    });
+
+    let additional_snapshots = active
+        .map(|active| {
+            vec![ProviderQuotaSnapshot {
+                limit_id: Some("new_api_user_totals".to_string()),
+                limit_name: Some("new-api user totals".to_string()),
+                primary: None,
+                secondary: None,
+                credits: Some(ProviderQuotaCredits {
+                    has_credits: true,
+                    unlimited: false,
+                    balance: Some(format_usd_value(quota_units_to_usd(user.data.used_quota))),
+                }),
+                plan_type: Some(format!("{}:{}", user.data.group, active.purchase_currency)),
+            }]
+        })
+        .unwrap_or_default();
+
+    ProviderQuotaSummary {
+        source: QuotaSource::NewApiExtension,
+        status: QuotaSupportStatus::Supported,
+        snapshot,
+        additional_snapshots,
+        message: Some(format!(
+            "Using new-api extension data for xcode-best user {} ({})",
+            user.data.username, user.data.id
+        )),
+    }
+}
+
 fn rate_limit_snapshot_from_payload(
     limit_id: Option<String>,
     limit_name: Option<String>,
@@ -2115,6 +2227,14 @@ fn rate_limit_window_from_payload(
         window_minutes: Some(i64::from(window.limit_window_seconds) / 60),
         resets_at: Some(window.reset_at),
     })
+}
+
+fn format_usd_value(value: f64) -> String {
+    format!("{value:.2}")
+}
+
+fn quota_units_to_usd(value: i64) -> f64 {
+    value as f64 / 500_000.0
 }
 
 #[derive(Clone, Debug)]
@@ -2433,7 +2553,11 @@ impl IntoResponse for AppError {
 
 #[cfg(test)]
 mod tests {
-    use super::{openai_models_response, quota_from_openai_usage};
+    use super::{
+        openai_models_response, provider_uses_openai_account, quota_from_new_api_extension,
+        quota_from_openai_usage, ResolvedProvider,
+    };
+    use crate::models::{ApiProviderBillingMode, ApiProviderRecord, ProviderAuthMode};
     use serde_json::json;
 
     #[test]
@@ -2538,6 +2662,82 @@ mod tests {
         assert_eq!(
             quota.additional_snapshots[0].limit_id.as_deref(),
             Some("codex_other")
+        );
+    }
+
+    #[test]
+    fn treats_named_openai_account_alias_as_openai_provider() {
+        let provider = ResolvedProvider {
+            name: "xcode-best".to_string(),
+            auth_mode: ProviderAuthMode::Account,
+            account_id: Some("account-123".to_string()),
+            record: Some(ApiProviderRecord {
+                id: "provider-123".to_string(),
+                name: "xcode-best".to_string(),
+                auth_mode: ProviderAuthMode::Account,
+                base_url: String::new(),
+                api_key: String::new(),
+                account_id: Some("account-123".to_string()),
+                billing_mode: ApiProviderBillingMode::Subscription,
+            }),
+        };
+
+        assert!(provider_uses_openai_account(&provider));
+    }
+
+    #[test]
+    fn maps_new_api_extension_to_gateway_quota_snapshot() {
+        let user = serde_json::from_value(json!({
+            "data": {
+                "id": 7431,
+                "username": "zihao.liu",
+                "display_name": "zihao.liu",
+                "group": "codex-only",
+                "quota": -1663,
+                "used_quota": 101371716
+            },
+            "success": true
+        }))
+        .expect("user should parse");
+        let subscription = serde_json::from_value(json!({
+            "data": {
+                "subscriptions": [{
+                    "subscription": {
+                        "id": 11404,
+                        "user_id": 7431,
+                        "amount_total": 50000000,
+                        "amount_used": 8317340,
+                        "purchase_price_amount": 2.68,
+                        "purchase_currency": "USD",
+                        "start_time": 1776051743,
+                        "end_time": 1776138143,
+                        "status": "active"
+                    }
+                }]
+            },
+            "success": true
+        }))
+        .expect("subscription should parse");
+
+        let quota = quota_from_new_api_extension(user, subscription);
+
+        assert_eq!(quota.source, crate::models::QuotaSource::NewApiExtension);
+        assert_eq!(quota.status, crate::models::QuotaSupportStatus::Supported);
+        assert_eq!(
+            quota
+                .snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.primary.as_ref())
+                .map(|window| window.used_percent.round() as i64),
+            Some(17)
+        );
+        assert_eq!(
+            quota
+                .snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.credits.as_ref())
+                .and_then(|credits| credits.balance.as_deref()),
+            Some("83.37")
         );
     }
 }
