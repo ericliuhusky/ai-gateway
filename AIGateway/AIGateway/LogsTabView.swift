@@ -377,7 +377,7 @@ struct LogsTabView: View {
                 .font(.system(size: 11, weight: .bold))
                 .foregroundStyle(tint)
 
-            if let jsonValue = JSONTreeValue.parse(from: text) {
+            if let jsonValue = JSONTreeCache.shared.value(for: text) {
                 JSONTreeView(root: jsonValue, tint: tint)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(12)
@@ -593,7 +593,15 @@ private struct JSONTreeNodeView: View {
     let tint: Color
     let level: Int
 
-    @State private var isExpanded = true
+    @State private var isExpanded: Bool
+
+    init(label: String?, value: JSONTreeValue, tint: Color, level: Int) {
+        self.label = label
+        self.value = value
+        self.tint = tint
+        self.level = level
+        _isExpanded = State(initialValue: value.shouldAutoExpand(at: level))
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -766,6 +774,53 @@ private enum JSONTreeValue {
             return .secondary
         case .object, .array:
             return .secondary
+        }
+    }
+
+    var childCount: Int {
+        switch self {
+        case .object(let entries):
+            return entries.count
+        case .array(let values):
+            return values.count
+        case .string, .number, .bool, .null:
+            return 0
+        }
+    }
+
+    func shouldAutoExpand(at level: Int) -> Bool {
+        guard isContainer else { return false }
+        if level == 0 { return true }
+        if level == 1 { return childCount <= 12 }
+        return false
+    }
+}
+
+private final class JSONTreeCache {
+    static let shared = JSONTreeCache()
+
+    private let cache = NSCache<NSString, Box>()
+
+    private init() {
+        cache.countLimit = 96
+    }
+
+    func value(for text: String) -> JSONTreeValue? {
+        let key = text as NSString
+        if let cached = cache.object(forKey: key) {
+            return cached.value
+        }
+
+        let parsed = JSONTreeValue.parse(from: text)
+        cache.setObject(Box(value: parsed), forKey: key)
+        return parsed
+    }
+
+    private final class Box: NSObject {
+        let value: JSONTreeValue?
+
+        init(value: JSONTreeValue?) {
+            self.value = value
         }
     }
 }
