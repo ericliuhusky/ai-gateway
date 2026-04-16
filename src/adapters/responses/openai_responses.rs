@@ -289,12 +289,13 @@ fn rewrite_input_value_types_for_role(value: &mut Value, role: Option<&str>) {
             let next_role = map
                 .get("role")
                 .and_then(Value::as_str)
-                .or(role);
+                .map(str::to_owned)
+                .or_else(|| role.map(str::to_owned));
 
             if let Some(item_type) = map.get_mut("type") {
                 if let Some(type_name) = item_type.as_str() {
                     let rewritten = match type_name {
-                        "text" => Some(match next_role {
+                        "text" => Some(match next_role.as_deref() {
                             Some("assistant") => "output_text",
                             _ => "input_text",
                         }),
@@ -308,7 +309,7 @@ fn rewrite_input_value_types_for_role(value: &mut Value, role: Option<&str>) {
                 }
             }
             for nested in map.values_mut() {
-                rewrite_input_value_types_for_role(nested, next_role);
+                rewrite_input_value_types_for_role(nested, next_role.as_deref());
             }
         }
         Value::Array(items) => {
