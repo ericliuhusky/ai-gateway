@@ -82,8 +82,8 @@ enum JsonDiffNode {
         after: Option<Value>,
     },
     Summary {
-        ingress_state: SummaryPresence,
-        egress_state: SummaryPresence,
+        ingress_value: Option<Value>,
+        egress_value: Option<Value>,
         count: usize,
     },
 }
@@ -105,13 +105,6 @@ enum JsonDiffChange {
     Added(Value),
     Removed(Value),
     Modified(JsonDiffNode),
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum SummaryPresence {
-    Missing,
-    Present,
-    Changed,
 }
 
 pub fn render_debug_page(data: DebugPageData) -> String {
@@ -234,7 +227,7 @@ fn DebugApp(data: DebugPageData) -> impl IntoView {
                                                 </span>
                                             </div>
                                             <div class="tag-row">
-                                                <span class="tag">{if log.stream { "SSE" } else { "JSON" }}</span>
+                                                <span class="tag">{if log.stream { "流式" } else { "非流式" }}</span>
                                                 <span class="tag">{log.model.clone().unwrap_or_else(|| "未知模型".to_string())}</span>
                                             </div>
                                             <div class="meta-grid">
@@ -675,19 +668,19 @@ fn JsonDiffNodeView(label: Option<String>, node: JsonDiffNode) -> impl IntoView 
         }
         .into_any(),
         JsonDiffNode::Summary {
-            ingress_state,
-            egress_state,
+            ingress_value,
+            egress_value,
             count,
         } => {
-            let ingress_label = summary_state_label(ingress_state);
-            let egress_label = summary_state_label(egress_state);
+            let ingress_state_class = summary_value_state_class(ingress_value.as_ref(), egress_value.as_ref(), true);
+            let egress_state_class = summary_value_state_class(ingress_value.as_ref(), egress_value.as_ref(), false);
             view! {
                 <div class="json-diff-leaf">
                     {label.map(|label| view! { <span class="json-key">{label}</span> })}
                     <span class="json-punct">{": "}</span>
                     <div class="json-diff-scalar">
-                        <JsonSideValueRow side=DiffSide::Ingress state_class=summary_state_class(ingress_state) value=Some(Value::String(ingress_label.to_string()))/>
-                        <JsonSideValueRow side=DiffSide::Egress state_class=summary_state_class(egress_state) value=Some(Value::String(egress_label.to_string()))/>
+                        <JsonSideValueRow side=DiffSide::Ingress state_class=ingress_state_class value=ingress_value/>
+                        <JsonSideValueRow side=DiffSide::Egress state_class=egress_state_class value=egress_value/>
                         {if count > 1 {
                             view! {
                                 <div class="json-diff-summary-count">{format!("共 {} 处", count)}</div>
@@ -769,19 +762,18 @@ fn JsonSideValueRow(
     }
 }
 
-fn summary_state_label(state: SummaryPresence) -> &'static str {
-    match state {
-        SummaryPresence::Missing => "没有",
-        SummaryPresence::Present => "有",
-        SummaryPresence::Changed => "值不同",
-    }
-}
-
-fn summary_state_class(state: SummaryPresence) -> &'static str {
-    match state {
-        SummaryPresence::Missing => "missing",
-        SummaryPresence::Present => "present",
-        SummaryPresence::Changed => "compare",
+fn summary_value_state_class(
+    ingress_value: Option<&Value>,
+    egress_value: Option<&Value>,
+    is_ingress: bool,
+) -> &'static str {
+    match (ingress_value.is_some(), egress_value.is_some(), is_ingress) {
+        (true, true, _) => "compare",
+        (true, false, true) => "present",
+        (true, false, false) => "missing",
+        (false, true, true) => "missing",
+        (false, true, false) => "present",
+        (false, false, _) => "compare",
     }
 }
 
@@ -1096,33 +1088,63 @@ fn summarize_text_diff(
 }
 
 fn build_json_diff_summary(node: &JsonDiffNode) -> Option<JsonDiffNode> {
-    let mut counts = BTreeMap::<(String, SummaryPresence, SummaryPresence), usize>::new();
-    collect_json_diff_summary(node, String::new(), &mut counts);
-    if counts.is_empty() {
+    let mut summaries = BTreeMap::<String, SummaryLeaf>::new();
+    collect_json_diff_summary(node, String::new(), &mut summaries);
+    if summaries.is_empty() {
         return None;
     }
 
     Some(JsonDiffNode::Object(
-        counts
+        summaries
             .into_iter()
-            .map(
-                |((path, ingress_state, egress_state), count)| JsonDiffField {
-                    key: path,
-                    change: JsonDiffChange::Modified(JsonDiffNode::Summary {
-                        ingress_state,
-                        egress_state,
-                        count,
-                    }),
-                },
-            )
+            .map(|(path, summary)| JsonDiffField {
+                key: path,
+                change: JsonDiffChange::Modified(JsonDiffNode::Summary {
+                    ingress_value: summary.into_value(true),
+                    egress_value: summary.into_value(false),
+                    count: summary.count,
+                }),
+            })
             .collect(),
     ))
+}
+
+#[derive(Default)]
+struct SummaryLeaf {
+    ingress_values: Vec<Value>,
+    egress_values: Vec<Value>,
+    count: usize,
+}
+
+impl SummaryLeaf {
+    fn push(&mut self, ingress_value: Option<Value>, egress_value: Option<Value>) {
+        if let Some(value) = ingress_value {
+            self.ingress_values.push(value);
+        }
+        if let Some(value) = egress_value {
+            self.egress_values.push(value);
+        }
+        self.count += 1;
+    }
+
+    fn into_value(&self, is_ingress: bool) -> Option<Value> {
+        let values = if is_ingress {
+            &self.ingress_values
+        } else {
+            &self.egress_values
+        };
+        match values.len() {
+            0 => None,
+            1 => values.first().cloned(),
+            _ => Some(Value::Array(values.clone())),
+        }
+    }
 }
 
 fn collect_json_diff_summary(
     node: &JsonDiffNode,
     path: String,
-    counts: &mut BTreeMap<(String, SummaryPresence, SummaryPresence), usize>,
+    summaries: &mut BTreeMap<String, SummaryLeaf>,
 ) {
     match node {
         JsonDiffNode::Object(fields) => {
@@ -1132,7 +1154,7 @@ fn collect_json_diff_summary(
                 } else {
                     format!("{path}.{}", field.key)
                 };
-                collect_json_change_summary(&field.change, next_path, counts);
+                collect_json_change_summary(&field.change, next_path, summaries);
             }
         }
         JsonDiffNode::Array(items) => {
@@ -1142,18 +1164,14 @@ fn collect_json_diff_summary(
                 } else {
                     format!("{path}[]")
                 };
-                collect_json_change_summary(&item.change, next_path, counts);
+                collect_json_change_summary(&item.change, next_path, summaries);
             }
         }
         JsonDiffNode::Scalar { before, after } => {
-            let states = if before.is_some() && after.is_some() {
-                (SummaryPresence::Changed, SummaryPresence::Changed)
-            } else if before.is_some() {
-                (SummaryPresence::Present, SummaryPresence::Missing)
-            } else {
-                (SummaryPresence::Missing, SummaryPresence::Present)
-            };
-            *counts.entry((path, states.0, states.1)).or_insert(0) += 1;
+            summaries
+                .entry(path)
+                .or_default()
+                .push(before.clone(), after.clone());
         }
         JsonDiffNode::Summary { .. } => {}
     }
@@ -1162,20 +1180,26 @@ fn collect_json_diff_summary(
 fn collect_json_change_summary(
     change: &JsonDiffChange,
     path: String,
-    counts: &mut BTreeMap<(String, SummaryPresence, SummaryPresence), usize>,
+    summaries: &mut BTreeMap<String, SummaryLeaf>,
 ) {
     match change {
         JsonDiffChange::Added(_) => {
-            *counts
-                .entry((path, SummaryPresence::Missing, SummaryPresence::Present))
-                .or_insert(0) += 1;
+            if let JsonDiffChange::Added(value) = change {
+                summaries
+                    .entry(path)
+                    .or_default()
+                    .push(None, Some(value.clone()));
+            }
         }
         JsonDiffChange::Removed(_) => {
-            *counts
-                .entry((path, SummaryPresence::Present, SummaryPresence::Missing))
-                .or_insert(0) += 1;
+            if let JsonDiffChange::Removed(value) = change {
+                summaries
+                    .entry(path)
+                    .or_default()
+                    .push(Some(value.clone()), None);
+            }
         }
-        JsonDiffChange::Modified(node) => collect_json_diff_summary(node, path, counts),
+        JsonDiffChange::Modified(node) => collect_json_diff_summary(node, path, summaries),
     }
 }
 
