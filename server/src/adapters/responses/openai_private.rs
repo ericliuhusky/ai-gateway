@@ -73,7 +73,7 @@ fn normalize_openai_codex_input(input: &mut Value) {
                 rewritten.push(json!({
                     "type": "message",
                     "role": "user",
-                    "content": [normalize_content_part(item.clone())],
+                    "content": [normalize_content_part(item.clone(), "user")],
                 }));
                 continue;
             }
@@ -84,7 +84,7 @@ fn normalize_openai_codex_input(input: &mut Value) {
             .and_then(Value::as_str)
             .unwrap_or("user")
             .to_string();
-        let content = normalize_message_content(item_obj.get("content").cloned());
+        let content = normalize_message_content(item_obj.get("content").cloned(), &role);
         if let Some(content) = content {
             rewritten.push(json!({ "type": "message", "role": role, "content": content }));
         }
@@ -104,38 +104,51 @@ fn normalize_openai_codex_input(input: &mut Value) {
     *items = rewritten;
 }
 
-fn normalize_message_content(content: Option<Value>) -> Option<Value> {
+fn normalize_message_content(content: Option<Value>, role: &str) -> Option<Value> {
     let content = content?;
     if let Some(text) = content.as_str() {
-        return Some(json!([{ "type": "input_text", "text": text }]));
+        return Some(json!([normalize_text_part(text, role)]));
     }
     let Some(parts) = content.as_array() else {
         return None;
     };
     let normalized = parts
         .iter()
-        .map(|part| normalize_content_part(part.clone()))
+        .map(|part| normalize_content_part(part.clone(), role))
         .collect::<Vec<_>>();
     (!normalized.is_empty()).then_some(Value::Array(normalized))
 }
 
-fn normalize_content_part(part: Value) -> Value {
+fn normalize_content_part(part: Value, role: &str) -> Value {
     let Some(part_obj) = part.as_object() else {
-        return json!({ "type": "input_text", "text": part });
+        return normalize_text_part(&part.to_string(), role);
     };
     let part_type = part_obj
         .get("type")
         .and_then(Value::as_str)
         .unwrap_or_default();
+    if role == "assistant" && part_type == "refusal" {
+        return json!({
+            "type": "refusal",
+            "refusal": part_obj
+                .get("refusal")
+                .cloned()
+                .or_else(|| part_obj.get("text").cloned())
+                .unwrap_or(Value::String(String::new())),
+        });
+    }
     let is_text_like = matches!(
         part_type,
         "text" | "input_text" | "output_text" | "summary_text"
     ) || part_obj.get("text").is_some();
     if is_text_like {
-        return json!({
-            "type": "input_text",
-            "text": part_obj.get("text").cloned().unwrap_or(Value::String(String::new())),
-        });
+        return normalize_text_value(
+            part_obj
+                .get("text")
+                .cloned()
+                .unwrap_or(Value::String(String::new())),
+            role,
+        );
     }
     if part_type == "input_image" {
         if let Some(url) = part_obj.get("image_url").and_then(Value::as_str) {
@@ -143,6 +156,22 @@ fn normalize_content_part(part: Value) -> Value {
         }
     }
     part
+}
+
+fn normalize_text_part(text: &str, role: &str) -> Value {
+    normalize_text_value(Value::String(text.to_string()), role)
+}
+
+fn normalize_text_value(text: Value, role: &str) -> Value {
+    let text_type = if role == "assistant" {
+        "output_text"
+    } else {
+        "input_text"
+    };
+    json!({
+        "type": text_type,
+        "text": text,
+    })
 }
 
 fn stringify_output(value: Option<Value>) -> String {
