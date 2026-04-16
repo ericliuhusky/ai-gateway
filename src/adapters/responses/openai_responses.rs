@@ -280,12 +280,24 @@ fn generated_tool_schema(tool_type: &str) -> Option<Value> {
 }
 
 fn rewrite_input_value_types(value: &mut Value) {
+    rewrite_input_value_types_for_role(value, None);
+}
+
+fn rewrite_input_value_types_for_role(value: &mut Value, role: Option<&str>) {
     match value {
         Value::Object(map) => {
+            let next_role = map
+                .get("role")
+                .and_then(Value::as_str)
+                .or(role);
+
             if let Some(item_type) = map.get_mut("type") {
                 if let Some(type_name) = item_type.as_str() {
                     let rewritten = match type_name {
-                        "text" => Some("input_text"),
+                        "text" => Some(match next_role {
+                            Some("assistant") => "output_text",
+                            _ => "input_text",
+                        }),
                         "image_url" => Some("input_image"),
                         "custom_tool_call_output" => Some("function_call_output"),
                         _ => None,
@@ -296,12 +308,12 @@ fn rewrite_input_value_types(value: &mut Value) {
                 }
             }
             for nested in map.values_mut() {
-                rewrite_input_value_types(nested);
+                rewrite_input_value_types_for_role(nested, next_role);
             }
         }
         Value::Array(items) => {
             for item in items {
-                rewrite_input_value_types(item);
+                rewrite_input_value_types_for_role(item, role);
             }
         }
         _ => {}
@@ -404,5 +416,37 @@ mod tests {
         assert_eq!(body["input"][0]["role"], "assistant");
         assert!(body["input"][0].get("phase").is_none());
         assert_eq!(body["input"][0]["content"][0]["type"], "output_text");
+    }
+
+    #[test]
+    fn rewrites_text_parts_by_message_role() {
+        let request: ResponsesRequest = serde_json::from_value(json!({
+            "model": "gpt-5.4",
+            "input": [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{
+                        "type": "text",
+                        "text": "question"
+                    }]
+                },
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{
+                        "type": "text",
+                        "text": "answer"
+                    }]
+                }
+            ]
+        }))
+        .expect("request should parse");
+
+        let body = request_with_model(&request, "gpt-5.4", "xcode-best")
+            .expect("request should normalize");
+
+        assert_eq!(body["input"][0]["content"][0]["type"], "input_text");
+        assert_eq!(body["input"][1]["content"][0]["type"], "output_text");
     }
 }
