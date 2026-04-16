@@ -1,4 +1,5 @@
 use leptos::prelude::*;
+use serde_json::Value;
 
 #[derive(Clone, Debug)]
 pub struct DebugPageData {
@@ -241,7 +242,7 @@ fn DebugApp(data: DebugPageData) -> impl IntoView {
                                                     "错误"
                                                     {if event.error_truncated { "（已截断）" } else { "" }}
                                                 </div>
-                                                <pre>{message.clone()}</pre>
+                                                <JsonBlock content=message.clone() root_label="error"/>
                                             </div>
                                         })}
                                         {event.body.as_ref().map(|body| view! {
@@ -250,7 +251,7 @@ fn DebugApp(data: DebugPageData) -> impl IntoView {
                                                     "Body"
                                                     {if event.body_truncated { "（已截断）" } else { "" }}
                                                 </div>
-                                                <pre>{body.clone()}</pre>
+                                                <JsonBlock content=body.clone() root_label="body"/>
                                             </div>
                                         })}
                                     </article>
@@ -287,6 +288,102 @@ fn KeyValue(label: &'static str, value: Option<String>) -> impl IntoView {
             <dt>{label}</dt>
             <dd>{value.unwrap_or_else(|| "-".to_string())}</dd>
         </div>
+    }
+}
+
+#[component]
+fn JsonBlock(content: String, root_label: &'static str) -> impl IntoView {
+    match serde_json::from_str::<Value>(&content) {
+        Ok(value) => view! {
+            <div class="json-tree-shell">
+                <JsonNode label=Some(root_label.to_string()) value=value depth=0/>
+            </div>
+        }
+        .into_any(),
+        Err(_) => view! { <pre>{content}</pre> }.into_any(),
+    }
+}
+
+#[component]
+fn JsonNode(label: Option<String>, value: Value, depth: usize) -> impl IntoView {
+    match value {
+        Value::Object(map) => {
+            let item_count = map.len();
+            let summary = format!("{{{item_count}}}");
+            view! {
+                <details class="json-node">
+                    <summary>
+                        {label.clone().map(|label| view! { <span class="json-key">{label}</span> })}
+                        <span class="json-punct">{": "}</span>
+                        <span class="json-summary">{summary}</span>
+                    </summary>
+                    <div class="json-children">
+                        {map
+                            .into_iter()
+                            .map(|(child_label, child_value)| view! {
+                                <JsonNode label=Some(child_label) value=child_value depth=depth + 1/>
+                            })
+                            .collect_view()}
+                    </div>
+                </details>
+            }
+            .into_any()
+        }
+        Value::Array(items) => {
+            let item_count = items.len();
+            let summary = format!("[{item_count}]");
+            view! {
+                <details class="json-node">
+                    <summary>
+                        {label.clone().map(|label| view! { <span class="json-key">{label}</span> })}
+                        <span class="json-punct">{": "}</span>
+                        <span class="json-summary">{summary}</span>
+                    </summary>
+                    <div class="json-children">
+                        {items
+                            .into_iter()
+                            .enumerate()
+                            .map(|(index, child_value)| view! {
+                                <JsonNode label=Some(index.to_string()) value=child_value depth=depth + 1/>
+                            })
+                            .collect_view()}
+                    </div>
+                </details>
+            }
+            .into_any()
+        }
+        Value::String(text) => view! {
+            <div class="json-leaf">
+                {label.map(|label| view! { <span class="json-key">{label}</span> })}
+                <span class="json-punct">{": "}</span>
+                <span class="json-string">{"\""}{text}{"\""}</span>
+            </div>
+        }
+        .into_any(),
+        Value::Number(number) => view! {
+            <div class="json-leaf">
+                {label.map(|label| view! { <span class="json-key">{label}</span> })}
+                <span class="json-punct">{": "}</span>
+                <span class="json-number">{number.to_string()}</span>
+            </div>
+        }
+        .into_any(),
+        Value::Bool(boolean) => view! {
+            <div class="json-leaf">
+                {label.map(|label| view! { <span class="json-key">{label}</span> })}
+                <span class="json-punct">{": "}</span>
+                <span class="json-bool">{boolean.to_string()}</span>
+            </div>
+        }
+        .into_any(),
+        Value::Null => view! {
+            <div class="json-leaf">
+                {label.map(|label| view! { <span class="json-key">{label}</span> })}
+                <span class="json-punct">{": "}</span>
+                <span class="json-null">"null"</span>
+            </div>
+        }
+        .into_any(),
     }
 }
 
@@ -557,6 +654,69 @@ pre {
   font-size: 12px;
   line-height: 1.55;
 }
+
+.json-tree-shell {
+  padding: 12px 14px;
+  border-radius: 18px;
+  background: #1e2430;
+  color: #eef2f5;
+  overflow-x: auto;
+  font-family: "SF Mono", "Menlo", monospace;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.json-node {
+  margin-left: 0;
+}
+
+.json-node + .json-node,
+.json-leaf + .json-node,
+.json-node + .json-leaf,
+.json-leaf + .json-leaf {
+  margin-top: 4px;
+}
+
+.json-node summary {
+  list-style: none;
+  cursor: pointer;
+}
+
+.json-node summary::-webkit-details-marker {
+  display: none;
+}
+
+.json-node summary::before {
+  content: "▸";
+  display: inline-block;
+  width: 12px;
+  margin-right: 6px;
+  color: #8cb9ff;
+}
+
+.json-node[open] > summary::before {
+  content: "▾";
+}
+
+.json-children {
+  margin-left: 18px;
+  margin-top: 4px;
+  padding-left: 10px;
+  border-left: 1px solid rgba(140, 185, 255, 0.22);
+}
+
+.json-leaf {
+  padding-left: 18px;
+  overflow-wrap: anywhere;
+}
+
+.json-key { color: #ffcf8b; }
+.json-punct { color: #7d8696; }
+.json-summary { color: #8cb9ff; }
+.json-string { color: #9be28f; }
+.json-number { color: #ffd479; }
+.json-bool { color: #ff9f7f; }
+.json-null { color: #c6a7ff; }
 
 .empty-state {
   display: grid;
