@@ -28,6 +28,7 @@ use axum::{
     http::{HeaderMap, HeaderValue, StatusCode},
     response::{Html, IntoResponse, Json, Redirect, Response},
 };
+use chrono::{Local, TimeZone};
 use debug_web::{
     DebugLogDetail as DebugWebLogDetail, DebugLogSummary as DebugWebLogSummary, DebugPageData,
 };
@@ -723,7 +724,11 @@ fn map_debug_log_detail(log: GatewayLogDetail) -> DebugWebLogDetail {
 }
 
 fn format_timestamp(timestamp: i64) -> String {
-    timestamp.to_string()
+    Local
+        .timestamp_opt(timestamp, 0)
+        .single()
+        .map(|dt| dt.format("%Y年%-m月%-d日 %H:%M").to_string())
+        .unwrap_or_else(|| timestamp.to_string())
 }
 
 fn build_debug_redirect_url(
