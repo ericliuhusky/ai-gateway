@@ -689,6 +689,8 @@ fn map_debug_log_summary(log: GatewayLogSummary) -> DebugWebLogSummary {
         error_message: log.error_message,
         ingress_protocol: log.ingress_protocol,
         egress_protocol: log.egress_protocol,
+        user_input: log.user_input,
+        model_output: log.model_output,
     }
 }
 
@@ -720,6 +722,8 @@ fn map_debug_log_detail(log: GatewayLogDetail) -> DebugWebLogDetail {
         error_message: log.error_message,
         error_truncated: log.error_truncated,
         elapsed_ms: log.elapsed_ms,
+        user_input: log.user_input,
+        model_output: log.model_output,
     }
 }
 

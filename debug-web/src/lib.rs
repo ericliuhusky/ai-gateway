@@ -29,6 +29,8 @@ pub struct DebugLogSummary {
     pub error_message: Option<String>,
     pub ingress_protocol: Option<String>,
     pub egress_protocol: Option<String>,
+    pub user_input: Option<String>,
+    pub model_output: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -59,6 +61,8 @@ pub struct DebugLogDetail {
     pub error_message: Option<String>,
     pub error_truncated: bool,
     pub elapsed_ms: Option<i64>,
+    pub user_input: Option<String>,
+    pub model_output: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -233,6 +237,12 @@ fn DebugApp(data: DebugPageData) -> impl IntoView {
                                             <div class="meta-grid">
                                                 <span>{log.updated_at_label.clone()}</span>
                                             </div>
+                                            {log.user_input.as_ref().map(|text| view! {
+                                                <p class="preview-copy">
+                                                    <span class="preview-label">"用户输入"</span>
+                                                    <span>{truncate_preview(text, 30)}</span>
+                                                </p>
+                                            })}
                                             {log.error_message.as_ref().map(|message| view! {
                                                 <p class="error-copy">{message.clone()}</p>
                                             })}
@@ -295,6 +305,12 @@ fn DebugApp(data: DebugPageData) -> impl IntoView {
                                                 <KeyValue label="路径" value=detail.path.clone()/>
                                                 <KeyValue label="上游地址" value=detail.egress_request_url.clone()/>
                                             </dl>
+                                            {detail.user_input.as_ref().map(|text| view! {
+                                                <FoldedTextBlock title="用户输入" text=text.clone() class_name="json-string"/>
+                                            })}
+                                            {detail.model_output.as_ref().map(|text| view! {
+                                                <FoldedTextBlock title="模型回复" text=text.clone() class_name="json-inline-blob"/>
+                                            })}
                                             {detail.error_message.as_ref().map(|message| view! {
                                                 <div class="block error-block">
                                                     <div class="block-title">
@@ -553,7 +569,8 @@ fn JsonDiffBlock(
 ) -> impl IntoView {
     let diff = diff_json_values(&left_value, &right_value);
     let summary = diff.as_ref().and_then(build_json_diff_summary);
-    let left_copy = serde_json::to_string_pretty(&left_value).unwrap_or_else(|_| left_value.to_string());
+    let left_copy =
+        serde_json::to_string_pretty(&left_value).unwrap_or_else(|_| left_value.to_string());
     let right_copy =
         serde_json::to_string_pretty(&right_value).unwrap_or_else(|_| right_value.to_string());
 
@@ -864,6 +881,28 @@ fn JsonBlock(content: String, root_label: &'static str) -> impl IntoView {
 }
 
 #[component]
+fn FoldedTextBlock(title: &'static str, text: String, class_name: &'static str) -> impl IntoView {
+    view! {
+        <div class="block folded-text-block">
+            <details class="folded-text-toggle">
+                <summary>
+                    <span class="block-title">{title}</span>
+                    <span class="folded-text-summary">{truncate_preview(&text, 30)}</span>
+                </summary>
+                <div class="copyable-block folded-text-content">
+                    <div class="copy-actions block-copy-actions">
+                        <CopyButton label="复制".to_string() text=text.clone()/>
+                    </div>
+                    <div class="plain-text-block">
+                        <LongTextBlock text=text quoted=false class_name=class_name/>
+                    </div>
+                </div>
+            </details>
+        </div>
+    }
+}
+
+#[component]
 fn JsonNode(label: Option<String>, value: Value) -> impl IntoView {
     match value {
         Value::Object(map) => {
@@ -986,6 +1025,20 @@ fn LongTextBlock(text: String, quoted: bool, class_name: &'static str) -> impl I
     .into_any()
 }
 
+fn truncate_preview(text: &str, limit: usize) -> String {
+    let mut preview = String::new();
+    let mut count = 0usize;
+    for ch in text.chars() {
+        if count == limit {
+            preview.push_str("...");
+            return preview;
+        }
+        preview.push(ch);
+        count += 1;
+    }
+    preview
+}
+
 #[component]
 fn CopyButton(label: String, text: String) -> impl IntoView {
     let onclick = copy_button_onclick(&text);
@@ -1023,7 +1076,9 @@ fn compact_repeated_array_display(value: &Value) -> Option<String> {
 
 fn compact_scalar_or_json(value: &Value) -> String {
     match value {
-        Value::String(text) => serde_json::to_string(text).unwrap_or_else(|_| format!("\"{text}\"")),
+        Value::String(text) => {
+            serde_json::to_string(text).unwrap_or_else(|_| format!("\"{text}\""))
+        }
         _ => serde_json::to_string(value).unwrap_or_else(|_| value.to_string()),
     }
 }
@@ -1592,6 +1647,25 @@ form {
   font-size: 13px;
 }
 
+.preview-copy {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(15, 23, 42, 0.04);
+  color: #374151;
+  font-size: 12px;
+}
+
+.preview-label {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #6b7280;
+}
+
 .detail-header {
   display: flex;
   gap: 12px;
@@ -2005,6 +2079,46 @@ form {
   font-size: 12px;
   font-weight: 700;
   color: var(--muted);
+}
+
+.folded-text-toggle {
+  display: grid;
+  gap: 8px;
+}
+
+.folded-text-toggle summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.folded-text-toggle summary::-webkit-details-marker {
+  display: none;
+}
+
+.folded-text-toggle summary::before {
+  content: "▸";
+  display: inline-block;
+  margin-right: 6px;
+  color: #8cb9ff;
+}
+
+.folded-text-toggle[open] > summary::before {
+  content: "▾";
+}
+
+.folded-text-summary {
+  color: #6b7280;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
+.folded-text-content {
+  margin-top: 2px;
 }
 
 .error-block .block-title {

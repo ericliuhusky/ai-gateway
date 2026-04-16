@@ -3,6 +3,7 @@ use crate::{
     models::{GatewayLogDetail, GatewayLogSummary},
 };
 use rusqlite::{Connection, OptionalExtension, params};
+use serde_json::Value;
 use std::{
     fs,
     path::PathBuf,
@@ -379,7 +380,10 @@ impl LogStore {
                     CASE WHEN error_message IS NOT NULL THEN 1 ELSE 0 END AS has_error,
                     error_message,
                     ingress_protocol,
-                    egress_protocol
+                    egress_protocol,
+                    ingress_request_body,
+                    ingress_response_body,
+                    egress_response_body
                 FROM gateway_logs
                 ORDER BY updated_at DESC
                 LIMIT ?1
@@ -389,6 +393,9 @@ impl LogStore {
 
         let rows = stmt
             .query_map(params![limit as i64], |row| {
+                let ingress_request_body = row.get::<_, Option<String>>(12)?;
+                let ingress_response_body = row.get::<_, Option<String>>(13)?;
+                let egress_response_body = row.get::<_, Option<String>>(14)?;
                 Ok(GatewayLogSummary {
                     id: row.get(0)?,
                     created_at: row.get(1)?,
@@ -402,6 +409,17 @@ impl LogStore {
                     error_message: row.get(9)?,
                     ingress_protocol: row.get(10)?,
                     egress_protocol: row.get(11)?,
+                    user_input: ingress_request_body
+                        .as_deref()
+                        .and_then(extract_user_input_from_body),
+                    model_output: ingress_response_body
+                        .as_deref()
+                        .and_then(extract_model_output_from_body)
+                        .or_else(|| {
+                            egress_response_body
+                                .as_deref()
+                                .and_then(extract_model_output_from_body)
+                        }),
                 })
             })
             .map_err(|err| format!("query log summaries failed: {err}"))?;
@@ -446,6 +464,9 @@ impl LogStore {
             ",
             params![id],
             |row| {
+                let ingress_request_body = row.get::<_, Option<String>>(13)?;
+                let ingress_response_body = row.get::<_, Option<String>>(18)?;
+                let egress_response_body = row.get::<_, Option<String>>(21)?;
                 Ok(GatewayLogDetail {
                     id: row.get(0)?,
                     created_at: row.get(1)?,
@@ -460,23 +481,34 @@ impl LogStore {
                     method: row.get(10)?,
                     path: row.get(11)?,
                     egress_request_url: row.get(12)?,
-                    ingress_request_body: row.get(13)?,
+                    ingress_request_body: ingress_request_body.clone(),
                     ingress_request_body_truncated: row.get::<_, i64>(14)? != 0,
                     egress_request_body: row.get(15)?,
                     egress_request_body_truncated: row.get::<_, i64>(16)? != 0,
                     ingress_response_status_code: row
                         .get::<_, Option<i64>>(17)?
                         .map(|value| value as u16),
-                    ingress_response_body: row.get(18)?,
+                    ingress_response_body: ingress_response_body.clone(),
                     ingress_response_body_truncated: row.get::<_, i64>(19)? != 0,
                     egress_response_status_code: row
                         .get::<_, Option<i64>>(20)?
                         .map(|value| value as u16),
-                    egress_response_body: row.get(21)?,
+                    egress_response_body: egress_response_body.clone(),
                     egress_response_body_truncated: row.get::<_, i64>(22)? != 0,
                     error_message: row.get(23)?,
                     error_truncated: row.get::<_, i64>(24)? != 0,
                     elapsed_ms: row.get(25)?,
+                    user_input: ingress_request_body
+                        .as_deref()
+                        .and_then(extract_user_input_from_body),
+                    model_output: ingress_response_body
+                        .as_deref()
+                        .and_then(extract_model_output_from_body)
+                        .or_else(|| {
+                            egress_response_body
+                                .as_deref()
+                                .and_then(extract_model_output_from_body)
+                        }),
                 })
             },
         )
@@ -605,6 +637,152 @@ impl LogStore {
             .map_err(|err| format!("load log enabled setting failed: {err}"))?
             .unwrap_or(1);
         Ok(enabled != 0)
+    }
+}
+
+fn extract_user_input_from_body(body: &str) -> Option<String> {
+    let value = serde_json::from_str::<Value>(body).ok()?;
+    extract_user_input_from_value(&value)
+}
+
+fn extract_user_input_from_value(value: &Value) -> Option<String> {
+    if let Some(input) = value.get("input") {
+        return extract_user_input_from_input(input);
+    }
+    extract_text_candidate(value)
+}
+
+fn extract_user_input_from_input(input: &Value) -> Option<String> {
+    match input {
+        Value::String(text) => normalize_extracted_text(text),
+        Value::Array(items) => items
+            .iter()
+            .rev()
+            .find_map(extract_user_text_from_message_item)
+            .or_else(|| {
+                items
+                    .iter()
+                    .rev()
+                    .find_map(|item| extract_user_input_from_message_item(item, false))
+            })
+            .or_else(|| items.iter().rev().find_map(extract_text_candidate)),
+        Value::Object(_) => extract_user_input_from_message_item(input, true)
+            .or_else(|| extract_text_candidate(input)),
+        _ => None,
+    }
+}
+
+fn extract_user_text_from_message_item(value: &Value) -> Option<String> {
+    let object = value.as_object()?;
+    if object.get("role").and_then(Value::as_str) != Some("user") {
+        return None;
+    }
+    object
+        .get("content")
+        .and_then(extract_content_text)
+        .or_else(|| extract_text_candidate(value))
+}
+
+fn extract_user_input_from_message_item(value: &Value, prefer_user_role: bool) -> Option<String> {
+    let object = value.as_object()?;
+    let role = object.get("role").and_then(Value::as_str);
+    if prefer_user_role && role == Some("user") {
+        return object
+            .get("content")
+            .and_then(extract_content_text)
+            .or_else(|| extract_text_candidate(value));
+    }
+
+    object
+        .get("content")
+        .and_then(extract_content_text)
+        .or_else(|| extract_text_candidate(value))
+}
+
+fn extract_model_output_from_body(body: &str) -> Option<String> {
+    let value = serde_json::from_str::<Value>(body).ok()?;
+    extract_model_output_from_value(&value)
+}
+
+fn extract_model_output_from_value(value: &Value) -> Option<String> {
+    value
+        .get("output")
+        .and_then(extract_output_text)
+        .or_else(|| value.get("content").and_then(extract_content_text))
+        .or_else(|| {
+            value
+                .get("response")
+                .and_then(extract_model_output_from_value)
+        })
+        .or_else(|| extract_text_candidate(value))
+}
+
+fn extract_output_text(value: &Value) -> Option<String> {
+    match value {
+        Value::Array(items) => items
+            .iter()
+            .find_map(|item| {
+                item.get("content")
+                    .and_then(extract_content_text)
+                    .or_else(|| extract_text_candidate(item))
+            })
+            .or_else(|| items.iter().find_map(extract_text_candidate)),
+        _ => extract_content_text(value).or_else(|| extract_text_candidate(value)),
+    }
+}
+
+fn extract_content_text(value: &Value) -> Option<String> {
+    match value {
+        Value::String(text) => normalize_extracted_text(text),
+        Value::Array(items) => items.iter().find_map(|item| {
+            item.get("text")
+                .and_then(Value::as_str)
+                .and_then(normalize_extracted_text)
+                .or_else(|| {
+                    item.get("content")
+                        .and_then(extract_content_text)
+                        .or_else(|| extract_text_candidate(item))
+                })
+        }),
+        Value::Object(object) => object
+            .get("text")
+            .and_then(Value::as_str)
+            .and_then(normalize_extracted_text)
+            .or_else(|| object.get("content").and_then(extract_content_text)),
+        _ => None,
+    }
+}
+
+fn extract_text_candidate(value: &Value) -> Option<String> {
+    match value {
+        Value::String(text) => normalize_extracted_text(text),
+        Value::Array(items) => items.iter().find_map(extract_text_candidate),
+        Value::Object(object) => {
+            for key in [
+                "text",
+                "output_text",
+                "input_text",
+                "content",
+                "message",
+                "summary",
+                "arguments",
+            ] {
+                if let Some(text) = object.get(key).and_then(extract_content_text) {
+                    return Some(text);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn normalize_extracted_text(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
     }
 }
 

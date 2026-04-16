@@ -284,7 +284,6 @@ pub struct NewApiSubscription {
     pub status: String,
 }
 
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccountRecord {
     #[serde(default)]
@@ -369,6 +368,10 @@ pub struct GatewayLogSummary {
     pub ingress_protocol: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub egress_protocol: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_input: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_output: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -416,6 +419,10 @@ pub struct GatewayLogDetail {
     pub error_truncated: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub elapsed_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_input: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_output: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
