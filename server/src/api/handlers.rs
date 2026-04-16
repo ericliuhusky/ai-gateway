@@ -9,15 +9,14 @@ use crate::{
     models::{
         AccountRecord, ApiProviderRecord, ApiProviderSummary, CodexConfigStatus,
         CreateApiProviderRequest, EgressProtocol, GatewayLogDetail, GatewayLogDetailResponse,
-        GatewayLogListResponse, GatewayLogSettings, GatewayLogSettingsResponse,
-        GatewayLogSummary, IngressProtocol, ModelListItem, ModelListResponse,
-        NewApiSubscriptionEnvelope, NewApiUserSelfEnvelope, PROVIDER_GOOGLE_PROXY,
-        PROVIDER_OPENAI_PROXY, ProviderAuthMode, ProviderQuotaCredits,
-        ProviderQuotaResponse, ProviderQuotaSnapshot, ProviderQuotaSummary,
-        ProviderQuotaWindow, QuotaSource, QuotaSupportStatus, ResponsesRequest,
-        ResponsesResponse, SelectedProvider, UpdateGatewayLogSettingsRequest,
-        UpdateSelectedProviderRequest, UpstreamRateLimitStatusDetails,
-        UpstreamRateLimitStatusPayload, UpstreamRateLimitWindowSnapshot,
+        GatewayLogListResponse, GatewayLogSettings, GatewayLogSettingsResponse, GatewayLogSummary,
+        IngressProtocol, ModelListItem, ModelListResponse, NewApiSubscriptionEnvelope,
+        NewApiUserSelfEnvelope, PROVIDER_GOOGLE_PROXY, PROVIDER_OPENAI_PROXY, ProviderAuthMode,
+        ProviderQuotaCredits, ProviderQuotaResponse, ProviderQuotaSnapshot, ProviderQuotaSummary,
+        ProviderQuotaWindow, QuotaSource, QuotaSupportStatus, ResponsesRequest, ResponsesResponse,
+        SelectedProvider, UpdateGatewayLogSettingsRequest, UpdateSelectedProviderRequest,
+        UpstreamRateLimitStatusDetails, UpstreamRateLimitStatusPayload,
+        UpstreamRateLimitWindowSnapshot,
     },
     store::{AccountPool, LogEvent, LogStage, LogStore, ProviderStore, RouteStore},
     upstream::{UpstreamClient, chat_completions_api_url, responses_api_url},
@@ -29,7 +28,9 @@ use axum::{
     http::{HeaderMap, HeaderValue, StatusCode},
     response::{Html, IntoResponse, Json, Redirect, Response},
 };
-use debug_web::{DebugLogDetail as DebugWebLogDetail, DebugLogSummary as DebugWebLogSummary, DebugPageData};
+use debug_web::{
+    DebugLogDetail as DebugWebLogDetail, DebugLogSummary as DebugWebLogSummary, DebugPageData,
+};
 use futures_util::StreamExt;
 use reqwest::Client;
 use serde::Deserialize;
@@ -272,9 +273,9 @@ pub async fn get_provider_quota(
                             .map_err(|err| AppError::upstream_message(err.to_string()))?;
                     quota_from_new_api_extension(user, subscription)
                 }
-                _ => unsupported_quota_summary(
-                    "new-api quota extension is unavailable".to_string(),
-                ),
+                _ => {
+                    unsupported_quota_summary("new-api quota extension is unavailable".to_string())
+                }
             }
         } else {
             unsupported_quota_summary(
@@ -484,10 +485,7 @@ pub async fn get_log_detail(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<String>,
 ) -> Result<Json<GatewayLogDetailResponse>, AppError> {
-    let detail = state
-        .logs
-        .load_request(&id)
-        .map_err(AppError::internal)?;
+    let detail = state.logs.load_request(&id).map_err(AppError::internal)?;
     let Some(log) = detail else {
         return Err(AppError::bad_request(format!("log id not found: {id}")));
     };
@@ -875,11 +873,19 @@ async fn responses_inner(
         let output = stream! {
             let mut stream = upstream.bytes_stream();
             let mut response_body = String::new();
+            let mut final_response_sse_buffer = String::new();
+            let mut final_response_body: Option<String> = None;
 
             while let Some(result) = stream.next().await {
                 match result {
                     Ok(chunk) => {
-                        append_to_log_buffer(&mut response_body, &String::from_utf8_lossy(&chunk));
+                        let chunk_text = String::from_utf8_lossy(&chunk);
+                        append_to_log_buffer(&mut response_body, &chunk_text);
+                        capture_final_response_from_sse_chunk(
+                            &mut final_response_sse_buffer,
+                            &chunk_text,
+                            &mut final_response_body,
+                        );
                         yield Ok::<Bytes, std::io::Error>(chunk);
                     }
                     Err(err) => {
@@ -926,7 +932,7 @@ async fn responses_inner(
                 Some("POST"),
                 None,
                 Some(OPENAI_PRIVATE_RESPONSES_URL),
-                Some(response_body.clone()),
+                Some(final_response_body.clone().unwrap_or_else(|| response_body.clone())),
                 None,
                 Some(elapsed),
             )
@@ -946,7 +952,7 @@ async fn responses_inner(
                 Some("POST"),
                 Some(RESPONSES_PATH),
                 None,
-                Some(response_body),
+                Some(final_response_body.unwrap_or(response_body)),
                 None,
                 Some(elapsed),
             )
@@ -1127,6 +1133,7 @@ async fn responses_inner(
             let mut stream = upstream.bytes_stream();
             let mut buffer = String::new();
             let mut upstream_body = String::new();
+            let mut final_upstream_body: Option<String> = None;
             let mut client_body = String::new();
             let response_id = format!("resp_{}", Uuid::new_v4().simple());
             let message_item_id = format!("msg_{}", Uuid::new_v4().simple());
@@ -1245,6 +1252,7 @@ async fn responses_inner(
                             continue;
                         }
                     };
+                    final_upstream_body = Some(json_value_for_storage(&gemini_event));
 
                     let raw = gemini_event.get("response").unwrap_or(&gemini_event);
                     let candidate = raw
@@ -1480,6 +1488,10 @@ async fn responses_inner(
                     "output": completed_output_items
                 }
             });
+            let final_client_body = completed
+                .get("response")
+                .map(json_value_for_storage)
+                .unwrap_or_else(|| client_body.clone());
             match encode_event(&completed) {
                 Ok(event) => {
                     append_to_log_buffer(&mut client_body, &event);
@@ -1520,7 +1532,7 @@ async fn responses_inner(
                 Some("POST"),
                 None,
                 Some(&upstream_url),
-                Some(upstream_body),
+                Some(final_upstream_body.unwrap_or(upstream_body)),
                 None,
                 Some(elapsed),
             )
@@ -1540,7 +1552,7 @@ async fn responses_inner(
                 Some("POST"),
                 Some(RESPONSES_PATH),
                 None,
-                Some(client_body),
+                Some(final_client_body),
                 None,
                 Some(elapsed),
             )
@@ -1690,6 +1702,7 @@ async fn responses_inner(
         let model = request.model.clone();
         let egress_protocol = native_target.egress.as_str().to_string();
         let upstream_url_for_stream = upstream_url.clone();
+        let final_response_body = json_for_storage(&response);
         let output = stream! {
             let stream = synthesized_responses_stream(response);
             futures_util::pin_mut!(stream);
@@ -1743,7 +1756,7 @@ async fn responses_inner(
                 Some("POST"),
                 Some(RESPONSES_PATH),
                 None,
-                Some(response_body),
+                Some(final_response_body),
                 None,
                 Some(elapsed_ms(started_at)),
             )
@@ -1876,11 +1889,19 @@ async fn responses_inner(
     let output = stream! {
         let mut stream = upstream.bytes_stream();
         let mut response_body = String::new();
+        let mut final_response_sse_buffer = String::new();
+        let mut final_response_body: Option<String> = None;
 
         while let Some(result) = stream.next().await {
             match result {
                 Ok(chunk) => {
-                    append_to_log_buffer(&mut response_body, &String::from_utf8_lossy(&chunk));
+                    let chunk_text = String::from_utf8_lossy(&chunk);
+                    append_to_log_buffer(&mut response_body, &chunk_text);
+                    capture_final_response_from_sse_chunk(
+                        &mut final_response_sse_buffer,
+                        &chunk_text,
+                        &mut final_response_body,
+                    );
                     yield Ok::<Bytes, std::io::Error>(chunk);
                 }
                 Err(err) => {
@@ -1926,7 +1947,7 @@ async fn responses_inner(
             Some("POST"),
             None,
             Some(&upstream_url),
-            Some(response_body.clone()),
+            Some(final_response_body.clone().unwrap_or_else(|| response_body.clone())),
             None,
             Some(elapsed),
         )
@@ -1946,7 +1967,7 @@ async fn responses_inner(
             Some("POST"),
             Some(RESPONSES_PATH),
             None,
-            Some(response_body),
+            Some(final_response_body.unwrap_or(response_body)),
             None,
             Some(elapsed),
         )
@@ -2191,7 +2212,11 @@ async fn resolve_account_for_provider(
 }
 
 fn provider_uses_openai_account(provider: &ResolvedProvider) -> bool {
-    provider.record.as_ref().and_then(|record| record.account_id.as_ref()).is_some()
+    provider
+        .record
+        .as_ref()
+        .and_then(|record| record.account_id.as_ref())
+        .is_some()
         && provider.name != PROVIDER_GOOGLE_PROXY
 }
 
@@ -2608,6 +2633,43 @@ fn json_value_for_storage(value: &Value) -> String {
     value.to_string()
 }
 
+fn capture_final_response_from_sse_chunk(
+    buffer: &mut String,
+    chunk: &str,
+    final_response_body: &mut Option<String>,
+) {
+    buffer.push_str(chunk);
+
+    while let Some(line_end) = buffer.find('\n') {
+        let line: String = buffer.drain(..=line_end).collect();
+        capture_final_response_from_sse_line(line.trim_end(), final_response_body);
+    }
+}
+
+fn capture_final_response_from_sse_line(line: &str, final_response_body: &mut Option<String>) {
+    let Some(payload) = line.strip_prefix("data: ") else {
+        return;
+    };
+    if payload == "[DONE]" {
+        return;
+    }
+
+    let Ok(event) = serde_json::from_str::<Value>(payload) else {
+        return;
+    };
+    let Some(event_type) = event.get("type").and_then(Value::as_str) else {
+        return;
+    };
+    if matches!(
+        event_type,
+        "response.completed" | "response.failed" | "response.incomplete"
+    ) {
+        if let Some(response) = event.get("response") {
+            *final_response_body = Some(json_value_for_storage(response));
+        }
+    }
+}
+
 fn google_v1internal_url_label(method: &str, stream: bool) -> String {
     if stream {
         format!("google-v1internal:{method}?alt=sse")
@@ -2699,8 +2761,8 @@ impl IntoResponse for AppError {
 #[cfg(test)]
 mod tests {
     use super::{
-        openai_models_response, provider_uses_openai_account, quota_from_new_api_extension,
-        quota_from_openai_usage, ResolvedProvider,
+        ResolvedProvider, capture_final_response_from_sse_chunk, openai_models_response,
+        provider_uses_openai_account, quota_from_new_api_extension, quota_from_openai_usage,
     };
     use crate::models::{ApiProviderBillingMode, ApiProviderRecord, ProviderAuthMode};
     use serde_json::json;
@@ -2883,6 +2945,71 @@ mod tests {
                 .and_then(|snapshot| snapshot.credits.as_ref())
                 .and_then(|credits| credits.balance.as_deref()),
             Some("83.37")
+        );
+    }
+
+    #[test]
+    fn captures_completed_response_from_sse_for_log_storage() {
+        let mut buffer = String::new();
+        let mut final_response = None;
+
+        capture_final_response_from_sse_chunk(
+            &mut buffer,
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n",
+            &mut final_response,
+        );
+        assert!(final_response.is_none());
+
+        capture_final_response_from_sse_chunk(
+            &mut buffer,
+            "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"status\":\"completed\",\"output\":[]}}\n\ndata: [DONE]\n\n",
+            &mut final_response,
+        );
+
+        assert_eq!(
+            final_response.as_deref(),
+            Some("{\"id\":\"resp_1\",\"output\":[],\"status\":\"completed\"}")
+        );
+    }
+
+    #[test]
+    fn captures_failed_response_from_sse_for_log_storage() {
+        let mut buffer = String::new();
+        let mut final_response = None;
+
+        capture_final_response_from_sse_chunk(
+            &mut buffer,
+            "data: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp_1\",\"status\":\"failed\",\"error\":{\"message\":\"boom\"}}}\n\n",
+            &mut final_response,
+        );
+
+        assert_eq!(
+            final_response.as_deref(),
+            Some("{\"error\":{\"message\":\"boom\"},\"id\":\"resp_1\",\"status\":\"failed\"}")
+        );
+    }
+
+    #[test]
+    fn captures_completed_response_from_split_sse_chunk_for_log_storage() {
+        let mut buffer = String::new();
+        let mut final_response = None;
+
+        capture_final_response_from_sse_chunk(
+            &mut buffer,
+            "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_",
+            &mut final_response,
+        );
+        assert!(final_response.is_none());
+
+        capture_final_response_from_sse_chunk(
+            &mut buffer,
+            "split\",\"status\":\"completed\",\"output\":[]}}\n\n",
+            &mut final_response,
+        );
+
+        assert_eq!(
+            final_response.as_deref(),
+            Some("{\"id\":\"resp_split\",\"output\":[],\"status\":\"completed\"}")
         );
     }
 }

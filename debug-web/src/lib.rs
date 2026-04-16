@@ -1,5 +1,5 @@
 use leptos::prelude::*;
-use serde_json::Value;
+use serde_json::{Map, Value};
 use similar::{ChangeTag, TextDiff};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -128,7 +128,11 @@ pub fn render_debug_page(data: DebugPageData) -> String {
 
 #[component]
 fn DebugApp(data: DebugPageData) -> impl IntoView {
-    let toggle_enabled_value = if data.logging_enabled { "false" } else { "true" };
+    let toggle_enabled_value = if data.logging_enabled {
+        "false"
+    } else {
+        "true"
+    };
     let toggle_label = if data.logging_enabled {
         "暂停日志"
     } else {
@@ -728,8 +732,16 @@ fn JsonSideValueRow(
     value: Option<Value>,
 ) -> impl IntoView {
     let (label, dot_class, row_class) = match side {
-        DiffSide::Ingress => ("入口", "side-dot ingress", format!("json-diff-value ingress {state_class}")),
-        DiffSide::Egress => ("出口", "side-dot egress", format!("json-diff-value egress {state_class}")),
+        DiffSide::Ingress => (
+            "入口",
+            "side-dot ingress",
+            format!("json-diff-value ingress {state_class}"),
+        ),
+        DiffSide::Egress => (
+            "出口",
+            "side-dot egress",
+            format!("json-diff-value egress {state_class}"),
+        ),
     };
 
     view! {
@@ -753,7 +765,8 @@ fn JsonInlineValue(value: Value) -> impl IntoView {
     match value {
         Value::Object(_) | Value::Array(_) => {
             let pretty = serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string());
-            view! { <LongTextBlock text=pretty quoted=false class_name="json-inline-blob"/> }.into_any()
+            view! { <LongTextBlock text=pretty quoted=false class_name="json-inline-blob"/> }
+                .into_any()
         }
         Value::String(text) => {
             view! { <LongTextBlock text=text quoted=true class_name="json-string"/> }.into_any()
@@ -764,9 +777,7 @@ fn JsonInlineValue(value: Value) -> impl IntoView {
         Value::Bool(boolean) => {
             view! { <span class="json-bool">{boolean.to_string()}</span> }.into_any()
         }
-        Value::Null => {
-            view! { <span class="json-null">"null"</span> }.into_any()
-        }
+        Value::Null => view! { <span class="json-null">"null"</span> }.into_any(),
     }
 }
 
@@ -792,7 +803,7 @@ fn KeyValue(label: &'static str, value: Option<String>) -> impl IntoView {
 
 #[component]
 fn JsonBlock(content: String, root_label: &'static str) -> impl IntoView {
-    match serde_json::from_str::<Value>(&content) {
+    match parse_structured_content(&content) {
         Ok(value) => view! {
             <div class="json-tree-shell">
                 <JsonNode label=Some(root_label.to_string()) value=value/>
@@ -930,14 +941,92 @@ fn LongTextBlock(text: String, quoted: bool, class_name: &'static str) -> impl I
 }
 
 fn prepare_diff_content(content: &str) -> String {
-    match serde_json::from_str::<Value>(content) {
+    match parse_structured_content(content) {
         Ok(value) => serde_json::to_string_pretty(&value).unwrap_or_else(|_| content.to_string()),
         Err(_) => content.to_string(),
     }
 }
 
 fn parse_json_content(content: &str) -> Option<Value> {
-    serde_json::from_str(content).ok()
+    parse_structured_content(content).ok()
+}
+
+fn parse_structured_content(content: &str) -> Result<Value, serde_json::Error> {
+    match serde_json::from_str::<Value>(content) {
+        Ok(value) => Ok(value),
+        Err(json_error) => parse_sse_content(content).ok_or(json_error),
+    }
+}
+
+fn parse_sse_content(content: &str) -> Option<Value> {
+    let mut events = Vec::new();
+    let mut event_name = None;
+    let mut data_lines = Vec::new();
+    let mut saw_sse_field = false;
+
+    for line in content.lines() {
+        if line.is_empty() {
+            push_sse_event(&mut events, &mut event_name, &mut data_lines);
+            continue;
+        }
+
+        if line.starts_with(':') {
+            saw_sse_field = true;
+            continue;
+        }
+
+        let Some((field, value)) = line.split_once(':') else {
+            return None;
+        };
+        let value = value.strip_prefix(' ').unwrap_or(value);
+        match field {
+            "event" => {
+                saw_sse_field = true;
+                event_name = Some(value.to_string());
+            }
+            "data" => {
+                saw_sse_field = true;
+                data_lines.push(value.to_string());
+            }
+            "id" | "retry" => {
+                saw_sse_field = true;
+            }
+            _ => return None,
+        }
+    }
+
+    push_sse_event(&mut events, &mut event_name, &mut data_lines);
+
+    if saw_sse_field && !events.is_empty() {
+        Some(Value::Array(events))
+    } else {
+        None
+    }
+}
+
+fn push_sse_event(
+    events: &mut Vec<Value>,
+    event_name: &mut Option<String>,
+    data_lines: &mut Vec<String>,
+) {
+    if event_name.is_none() && data_lines.is_empty() {
+        return;
+    }
+
+    let mut event = Map::new();
+    if let Some(name) = event_name.take() {
+        event.insert("event".to_string(), Value::String(name));
+    }
+
+    if !data_lines.is_empty() {
+        let data = data_lines.join("\n");
+        let data_value =
+            serde_json::from_str::<Value>(&data).unwrap_or_else(|_| Value::String(data));
+        event.insert("data".to_string(), data_value);
+        data_lines.clear();
+    }
+
+    events.push(Value::Object(event));
 }
 
 fn summarize_text_diff(
@@ -1001,12 +1090,14 @@ fn summarize_json_diff(node: &JsonDiffNode) -> Vec<DiffSummaryItem> {
     collect_json_diff_summary(node, String::new(), &mut counts);
     counts
         .into_iter()
-        .map(|((path, ingress_state, egress_state), count)| DiffSummaryItem {
-            path,
-            ingress_state,
-            egress_state,
-            count,
-        })
+        .map(
+            |((path, ingress_state, egress_state), count)| DiffSummaryItem {
+                path,
+                ingress_state,
+                egress_state,
+                count,
+            },
+        )
         .collect()
 }
 
@@ -1959,3 +2050,49 @@ pre {
   }
 }
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::parse_structured_content;
+    use serde_json::json;
+
+    #[test]
+    fn parses_plain_json_body() {
+        let parsed = parse_structured_content(r#"{"model":"gpt-5.4","stream":false}"#)
+            .expect("plain json should parse");
+
+        assert_eq!(
+            parsed,
+            json!({
+                "model": "gpt-5.4",
+                "stream": false
+            })
+        );
+    }
+
+    #[test]
+    fn parses_sse_json_data_as_structured_body() {
+        let parsed = parse_structured_content(
+            "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\"}}\n\ndata: [DONE]\n\n",
+        )
+        .expect("sse json data should parse");
+
+        assert_eq!(
+            parsed,
+            json!([
+                {
+                    "event": "response.created",
+                    "data": {
+                        "type": "response.created",
+                        "response": {
+                            "id": "resp_1"
+                        }
+                    }
+                },
+                {
+                    "data": "[DONE]"
+                }
+            ])
+        );
+    }
+}

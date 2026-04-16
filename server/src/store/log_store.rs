@@ -134,7 +134,8 @@ impl LogStore {
 
         let conn = self.connect()?;
         let created_at = now_unix() as i64;
-        let (body, body_truncated) = truncate_optional(event.body.as_deref(), self.body_limit_chars);
+        let (body, body_truncated) =
+            truncate_optional(event.body.as_deref(), self.body_limit_chars);
         let (error_message, error_truncated) =
             truncate_optional(event.error_message.as_deref(), self.error_limit_chars);
 
@@ -166,8 +167,8 @@ impl LogStore {
         )
         .map_err(|err| format!("insert gateway log failed: {err}"))?;
 
-        let update_sql = match event.stage {
-            LogStage::IngressRequest => {
+        match event.stage {
+            LogStage::IngressRequest => conn.execute(
                 "UPDATE gateway_logs
                  SET updated_at = ?2,
                      provider_name = COALESCE(?3, provider_name),
@@ -182,9 +183,25 @@ impl LogStore {
                      ingress_request_body_truncated = ?12,
                      error_message = COALESCE(?13, error_message),
                      error_truncated = ?14
-                 WHERE id = ?1"
-            }
-            LogStage::EgressRequest => {
+                 WHERE id = ?1",
+                params![
+                    event.id,
+                    created_at,
+                    event.provider_name,
+                    event.account_id,
+                    event.account_email,
+                    event.model,
+                    if event.stream { 1_i64 } else { 0_i64 },
+                    event.ingress_protocol,
+                    event.method,
+                    event.path,
+                    body,
+                    if body_truncated { 1_i64 } else { 0_i64 },
+                    error_message,
+                    if error_truncated { 1_i64 } else { 0_i64 },
+                ],
+            ),
+            LogStage::EgressRequest => conn.execute(
                 "UPDATE gateway_logs
                  SET updated_at = ?2,
                      provider_name = COALESCE(?3, provider_name),
@@ -201,9 +218,27 @@ impl LogStore {
                      egress_request_body_truncated = ?12,
                      error_message = COALESCE(?13, error_message),
                      error_truncated = ?14
-                 WHERE id = ?1"
-            }
-            LogStage::IngressResponse => {
+                 WHERE id = ?1",
+                params![
+                    event.id,
+                    created_at,
+                    event.provider_name,
+                    event.account_id,
+                    event.account_email,
+                    event.model,
+                    if event.stream { 1_i64 } else { 0_i64 },
+                    event.ingress_protocol,
+                    event.method,
+                    event.path,
+                    body,
+                    if body_truncated { 1_i64 } else { 0_i64 },
+                    error_message,
+                    if error_truncated { 1_i64 } else { 0_i64 },
+                    event.egress_protocol,
+                    event.url,
+                ],
+            ),
+            LogStage::IngressResponse => conn.execute(
                 "UPDATE gateway_logs
                  SET updated_at = ?2,
                      provider_name = COALESCE(?3, provider_name),
@@ -220,9 +255,29 @@ impl LogStore {
                      elapsed_ms = COALESCE(?18, elapsed_ms),
                      error_message = COALESCE(?13, error_message),
                      error_truncated = ?14
-                 WHERE id = ?1"
-            }
-            LogStage::EgressResponse => {
+                 WHERE id = ?1",
+                params![
+                    event.id,
+                    created_at,
+                    event.provider_name,
+                    event.account_id,
+                    event.account_email,
+                    event.model,
+                    if event.stream { 1_i64 } else { 0_i64 },
+                    event.ingress_protocol,
+                    event.method,
+                    event.path,
+                    body,
+                    if body_truncated { 1_i64 } else { 0_i64 },
+                    error_message,
+                    if error_truncated { 1_i64 } else { 0_i64 },
+                    event.egress_protocol,
+                    event.url,
+                    event.status_code.map(i64::from),
+                    event.elapsed_ms,
+                ],
+            ),
+            LogStage::EgressResponse => conn.execute(
                 "UPDATE gateway_logs
                  SET updated_at = ?2,
                      provider_name = COALESCE(?3, provider_name),
@@ -240,9 +295,29 @@ impl LogStore {
                      elapsed_ms = COALESCE(?18, elapsed_ms),
                      error_message = COALESCE(?13, error_message),
                      error_truncated = ?14
-                 WHERE id = ?1"
-            }
-            LogStage::Error => {
+                 WHERE id = ?1",
+                params![
+                    event.id,
+                    created_at,
+                    event.provider_name,
+                    event.account_id,
+                    event.account_email,
+                    event.model,
+                    if event.stream { 1_i64 } else { 0_i64 },
+                    event.ingress_protocol,
+                    event.method,
+                    event.path,
+                    body,
+                    if body_truncated { 1_i64 } else { 0_i64 },
+                    error_message,
+                    if error_truncated { 1_i64 } else { 0_i64 },
+                    event.egress_protocol,
+                    event.url,
+                    event.status_code.map(i64::from),
+                    event.elapsed_ms,
+                ],
+            ),
+            LogStage::Error => conn.execute(
                 "UPDATE gateway_logs
                  SET updated_at = ?2,
                      provider_name = COALESCE(?3, provider_name),
@@ -258,33 +333,29 @@ impl LogStore {
                      error_message = COALESCE(?13, error_message),
                      error_truncated = ?14,
                      elapsed_ms = COALESCE(?18, elapsed_ms)
-                 WHERE id = ?1"
-            }
-        };
-
-        conn.execute(
-            update_sql,
-            params![
-                event.id,
-                created_at,
-                event.provider_name,
-                event.account_id,
-                event.account_email,
-                event.model,
-                if event.stream { 1_i64 } else { 0_i64 },
-                event.ingress_protocol,
-                event.method,
-                event.path,
-                body,
-                if body_truncated { 1_i64 } else { 0_i64 },
-                error_message,
-                if error_truncated { 1_i64 } else { 0_i64 },
-                event.egress_protocol,
-                event.url,
-                event.status_code.map(i64::from),
-                event.elapsed_ms,
-            ],
-        )
+                 WHERE id = ?1",
+                params![
+                    event.id,
+                    created_at,
+                    event.provider_name,
+                    event.account_id,
+                    event.account_email,
+                    event.model,
+                    if event.stream { 1_i64 } else { 0_i64 },
+                    event.ingress_protocol,
+                    event.method,
+                    event.path,
+                    body,
+                    if body_truncated { 1_i64 } else { 0_i64 },
+                    error_message,
+                    if error_truncated { 1_i64 } else { 0_i64 },
+                    event.egress_protocol,
+                    event.url,
+                    event.status_code.map(i64::from),
+                    event.elapsed_ms,
+                ],
+            ),
+        }
         .map_err(|err| format!("update gateway log failed: {err}"))?;
 
         self.prune_if_needed(&conn)?;
@@ -393,10 +464,14 @@ impl LogStore {
                     ingress_request_body_truncated: row.get::<_, i64>(14)? != 0,
                     egress_request_body: row.get(15)?,
                     egress_request_body_truncated: row.get::<_, i64>(16)? != 0,
-                    ingress_response_status_code: row.get::<_, Option<i64>>(17)?.map(|value| value as u16),
+                    ingress_response_status_code: row
+                        .get::<_, Option<i64>>(17)?
+                        .map(|value| value as u16),
                     ingress_response_body: row.get(18)?,
                     ingress_response_body_truncated: row.get::<_, i64>(19)? != 0,
-                    egress_response_status_code: row.get::<_, Option<i64>>(20)?.map(|value| value as u16),
+                    egress_response_status_code: row
+                        .get::<_, Option<i64>>(20)?
+                        .map(|value| value as u16),
                     egress_response_body: row.get(21)?,
                     egress_response_body_truncated: row.get::<_, i64>(22)? != 0,
                     error_message: row.get(23)?,
@@ -567,7 +642,8 @@ mod tests {
     #[tokio::test]
     async fn prunes_oldest_rows_after_limit() {
         let db_path = unique_test_db_path("prune");
-        let store = LogStore::with_options(db_path.clone(), 3, 2, 128, 1024).expect("create log store");
+        let store =
+            LogStore::with_options(db_path.clone(), 3, 2, 128, 1024).expect("create log store");
 
         for idx in 0..4 {
             store
@@ -614,7 +690,8 @@ mod tests {
     #[tokio::test]
     async fn merges_request_and_response_into_single_row() {
         let db_path = unique_test_db_path("merge");
-        let store = LogStore::with_options(db_path.clone(), 10, 8, 8, 1024).expect("create log store");
+        let store =
+            LogStore::with_options(db_path.clone(), 10, 8, 8, 1024).expect("create log store");
 
         store
             .record(LogEvent {
@@ -684,7 +761,8 @@ mod tests {
     #[tokio::test]
     async fn truncates_error_message() {
         let db_path = unique_test_db_path("truncate");
-        let store = LogStore::with_options(db_path.clone(), 10, 8, 8, 1024).expect("create log store");
+        let store =
+            LogStore::with_options(db_path.clone(), 10, 8, 8, 1024).expect("create log store");
 
         store
             .record(LogEvent {
@@ -730,7 +808,8 @@ mod tests {
     #[tokio::test]
     async fn skips_recording_when_disabled() {
         let db_path = unique_test_db_path("disabled");
-        let store = LogStore::with_options(db_path.clone(), 10, 8, 128, 1024).expect("create log store");
+        let store =
+            LogStore::with_options(db_path.clone(), 10, 8, 128, 1024).expect("create log store");
 
         store.set_enabled(false).await.expect("disable log store");
         store
@@ -762,7 +841,9 @@ mod tests {
         assert_eq!(count, 0);
 
         let enabled: i64 = conn
-            .query_row("SELECT enabled FROM log_settings WHERE id = 1", [], |row| row.get(0))
+            .query_row("SELECT enabled FROM log_settings WHERE id = 1", [], |row| {
+                row.get(0)
+            })
             .expect("load enabled flag");
         assert_eq!(enabled, 0);
 
@@ -772,7 +853,8 @@ mod tests {
     #[tokio::test]
     async fn clears_logs_without_changing_enabled_setting() {
         let db_path = unique_test_db_path("clear");
-        let store = LogStore::with_options(db_path.clone(), 10, 8, 128, 1024).expect("create log store");
+        let store =
+            LogStore::with_options(db_path.clone(), 10, 8, 128, 1024).expect("create log store");
 
         store
             .record(LogEvent {
@@ -805,7 +887,9 @@ mod tests {
         assert_eq!(count, 0);
 
         let enabled: i64 = conn
-            .query_row("SELECT enabled FROM log_settings WHERE id = 1", [], |row| row.get(0))
+            .query_row("SELECT enabled FROM log_settings WHERE id = 1", [], |row| {
+                row.get(0)
+            })
             .expect("load enabled flag");
         assert_eq!(enabled, 1);
 
