@@ -1281,24 +1281,24 @@ fn diff_json_values(left: &Value, right: &Value) -> Option<JsonDiffNode> {
 
 const STYLE: &str = r#"
 :root {
-  --bg-0: #020403;
-  --bg-1: #07110b;
-  --bg-2: #0a1810;
-  --panel: rgba(6, 18, 11, 0.88);
-  --panel-strong: rgba(8, 24, 14, 0.94);
-  --panel-soft: rgba(7, 20, 12, 0.78);
-  --line: rgba(73, 255, 144, 0.18);
-  --line-strong: rgba(73, 255, 144, 0.38);
-  --text: #d6ffe7;
-  --muted: #7fcf9e;
-  --muted-2: #4e8c63;
-  --accent: #49ff90;
-  --accent-soft: rgba(73, 255, 144, 0.12);
-  --accent-strong: rgba(73, 255, 144, 0.22);
-  --danger: #ff6262;
-  --warn: #ffd166;
-  --cyan: #5ef2ff;
-  --shadow: 0 0 0 1px rgba(73, 255, 144, 0.08), 0 0 24px rgba(73, 255, 144, 0.08);
+  --bg-0: #ffffff;
+  --bg-1: #fbfbfc;
+  --bg-2: #f3f4f6;
+  --panel: rgba(255, 255, 255, 0.94);
+  --panel-strong: rgba(255, 255, 255, 0.98);
+  --panel-soft: rgba(249, 250, 251, 0.94);
+  --line: rgba(15, 23, 42, 0.08);
+  --line-strong: rgba(15, 23, 42, 0.14);
+  --text: #111827;
+  --muted: #6b7280;
+  --muted-2: #9ca3af;
+  --accent: #111827;
+  --accent-soft: rgba(15, 23, 42, 0.06);
+  --accent-strong: rgba(15, 23, 42, 0.10);
+  --danger: #c2410c;
+  --warn: #b45309;
+  --cyan: #1f2937;
+  --shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 12px 36px rgba(15, 23, 42, 0.06);
 }
 
 * {
@@ -1307,11 +1307,11 @@ const STYLE: &str = r#"
 
 body {
   margin: 0;
-  font-family: "IBM Plex Mono", "JetBrains Mono", "SF Mono", "Menlo", monospace;
+  font-family: "Inter", "SF Pro Display", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
   background:
-    radial-gradient(circle at top left, rgba(73, 255, 144, 0.14), transparent 24%),
-    radial-gradient(circle at top right, rgba(94, 242, 255, 0.08), transparent 20%),
-    linear-gradient(180deg, #061009 0%, #020403 100%);
+    radial-gradient(circle at top left, rgba(15, 23, 42, 0.03), transparent 24%),
+    radial-gradient(circle at top right, rgba(15, 23, 42, 0.02), transparent 20%),
+    linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
   color: var(--text);
   min-height: 100vh;
   position: relative;
@@ -1322,11 +1322,8 @@ body::before {
   position: fixed;
   inset: 0;
   pointer-events: none;
-  background:
-    linear-gradient(rgba(73, 255, 144, 0.05) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(73, 255, 144, 0.04) 1px, transparent 1px);
-  background-size: 100% 32px, 32px 100%;
-  opacity: 0.26;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0), rgba(15, 23, 42, 0.015));
+  opacity: 1;
 }
 
 body::after {
@@ -1334,9 +1331,8 @@ body::after {
   position: fixed;
   inset: 0;
   pointer-events: none;
-  background: linear-gradient(180deg, transparent 0%, rgba(73, 255, 144, 0.04) 48%, transparent 100%);
-  mix-blend-mode: screen;
-  opacity: 0.35;
+  background: none;
+  opacity: 0;
 }
 
 .debug-shell {
@@ -1357,10 +1353,10 @@ body::after {
   justify-content: space-between;
   gap: 24px;
   padding: 28px;
-  border-radius: 18px;
+  border-radius: 24px;
   background:
-    linear-gradient(180deg, rgba(8, 23, 14, 0.96), rgba(4, 12, 8, 0.96)),
-    linear-gradient(90deg, rgba(73, 255, 144, 0.06), transparent 36%);
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(249, 250, 251, 0.98)),
+    linear-gradient(90deg, rgba(15, 23, 42, 0.02), transparent 36%);
   position: relative;
   overflow: hidden;
 }
@@ -1374,8 +1370,8 @@ body::after {
   position: absolute;
   inset: 0;
   pointer-events: none;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent 18%, transparent 82%, rgba(73, 255, 144, 0.03));
-  opacity: 0.65;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.45), transparent 18%, transparent 82%, rgba(15, 23, 42, 0.015));
+  opacity: 1;
 }
 
 .eyebrow {
@@ -1383,8 +1379,8 @@ body::after {
   text-transform: uppercase;
   letter-spacing: 0.18em;
   font-size: 12px;
-  color: var(--accent);
-  text-shadow: 0 0 10px rgba(73, 255, 144, 0.45);
+  color: var(--muted);
+  text-shadow: none;
 }
 
 h1, h2, p {
@@ -1393,10 +1389,10 @@ h1, h2, p {
 
 h1 {
   font-size: clamp(32px, 4vw, 52px);
-  line-height: 1;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  text-shadow: 0 0 18px rgba(73, 255, 144, 0.18);
+  line-height: 1.02;
+  letter-spacing: -0.03em;
+  text-transform: none;
+  text-shadow: none;
 }
 
 .hero-copy, .panel-header p, .empty-state p, .subtle {
@@ -1436,14 +1432,14 @@ form {
   cursor: pointer;
   font: inherit;
   font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  box-shadow: inset 0 0 0 1px rgba(73, 255, 144, 0.06);
+  text-transform: none;
+  letter-spacing: 0;
+  box-shadow: none;
 }
 
-.button.primary { background: rgba(73, 255, 144, 0.16); color: var(--accent); }
-.button.secondary { background: rgba(94, 242, 255, 0.08); color: var(--cyan); }
-.button.danger { background: rgba(255, 98, 98, 0.14); color: #ff9a9a; border-color: rgba(255, 98, 98, 0.22); }
+.button.primary { background: #111827; color: #ffffff; border-color: #111827; }
+.button.secondary { background: #ffffff; color: #111827; }
+.button.danger { background: #fff7ed; color: #c2410c; border-color: rgba(194, 65, 12, 0.14); }
 
 .status-row {
   margin: 18px 0 14px;
@@ -1457,24 +1453,24 @@ form {
   font-size: 12px;
   font-weight: 700;
   border: 1px solid var(--line);
-  box-shadow: inset 0 0 0 1px rgba(73, 255, 144, 0.03);
+  box-shadow: none;
 }
 
-.pill.live { background: rgba(73, 255, 144, 0.14); color: var(--accent); }
-.pill.paused { background: rgba(255, 98, 98, 0.12); color: #ff9a9a; border-color: rgba(255, 98, 98, 0.18); }
-.pill.neutral, .tag { background: rgba(73, 255, 144, 0.08); color: var(--muted); }
-.badge.ok { background: rgba(94, 242, 255, 0.10); color: var(--cyan); border-color: rgba(94, 242, 255, 0.22); }
-.badge.error { background: rgba(255, 98, 98, 0.14); color: #ff9a9a; border-color: rgba(255, 98, 98, 0.22); }
+.pill.live { background: #f3f4f6; color: #111827; }
+.pill.paused { background: #fff7ed; color: #c2410c; border-color: rgba(194, 65, 12, 0.14); }
+.pill.neutral, .tag { background: #f9fafb; color: var(--muted); }
+.badge.ok { background: #f3f4f6; color: #111827; }
+.badge.error { background: #fff7ed; color: #c2410c; border-color: rgba(194, 65, 12, 0.14); }
 
 .banner {
   margin-bottom: 14px;
   padding: 14px 18px;
-  border-radius: 14px;
+  border-radius: 18px;
   background: var(--panel-soft);
 }
 
 .banner.notice { border-color: var(--line-strong); }
-.banner.error { border-color: rgba(255, 98, 98, 0.24); color: #ffb0b0; }
+.banner.error { border-color: rgba(194, 65, 12, 0.18); color: #c2410c; }
 
 .grid {
   display: grid;
@@ -1485,7 +1481,7 @@ form {
 .panel {
   min-height: 68vh;
   padding: 22px;
-  border-radius: 18px;
+  border-radius: 24px;
   background: var(--panel);
   position: relative;
 }
@@ -1503,9 +1499,9 @@ form {
   display: grid;
   gap: 12px;
   padding: 16px;
-  border: 1px solid rgba(73, 255, 144, 0.14);
-  border-radius: 14px;
-  background: rgba(7, 20, 12, 0.84);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.98);
   color: inherit;
   text-decoration: none;
   position: relative;
@@ -1514,13 +1510,13 @@ form {
 
 .log-row.selected {
   border-color: var(--line-strong);
-  background: rgba(9, 28, 16, 0.92);
-  box-shadow: 0 0 0 1px rgba(73, 255, 144, 0.1), 0 0 28px rgba(73, 255, 144, 0.12);
+  background: #ffffff;
+  box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.04), 0 10px 30px rgba(15, 23, 42, 0.06);
 }
 
 .log-row:hover {
   transform: translateY(-1px);
-  border-color: rgba(73, 255, 144, 0.28);
+  border-color: rgba(15, 23, 42, 0.14);
 }
 
 .row-top {
@@ -1537,7 +1533,7 @@ form {
   font-family: "SF Mono", "Menlo", monospace;
   font-size: 12px;
   overflow-wrap: anywhere;
-  color: var(--accent);
+  color: #374151;
 }
 
 .meta-grid, .kv-grid {
@@ -1553,7 +1549,7 @@ form {
 
 .error-copy {
   margin: 0;
-  color: #ff9a9a;
+  color: #c2410c;
   font-size: 13px;
 }
 
@@ -1578,7 +1574,7 @@ form {
   gap: 8px;
   padding: 6px;
   border-radius: 999px;
-  background: rgba(73, 255, 144, 0.06);
+  background: #f3f4f6;
   border: 1px solid var(--line);
   width: fit-content;
 }
@@ -1594,8 +1590,8 @@ form {
   font-size: 13px;
   font-weight: 700;
   color: var(--muted);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
+  text-transform: none;
+  letter-spacing: 0;
 }
 
 .detail-tab-panel {
@@ -1604,9 +1600,9 @@ form {
 
 #tab-detail:checked ~ .detail-tab-bar label[for="tab-detail"],
 #tab-diff:checked ~ .detail-tab-bar label[for="tab-diff"] {
-  background: rgba(73, 255, 144, 0.14);
-  color: var(--accent);
-  box-shadow: inset 0 0 0 1px rgba(73, 255, 144, 0.16), 0 0 14px rgba(73, 255, 144, 0.14);
+  background: #ffffff;
+  color: #111827;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
 }
 
 #tab-detail:checked ~ .detail-panel-main,
@@ -1619,9 +1615,9 @@ form {
   gap: 12px;
   margin-bottom: 18px;
   padding: 16px;
-  border-radius: 16px;
-  background: rgba(7, 20, 12, 0.84);
-  border: 1px solid rgba(73, 255, 144, 0.14);
+  border-radius: 18px;
+  background: rgba(249, 250, 251, 0.9);
+  border: 1px solid var(--line);
   position: relative;
 }
 
@@ -1646,9 +1642,9 @@ form {
   display: grid;
   gap: 8px;
   padding: 12px 14px;
-  border-radius: 14px;
-  background: rgba(4, 14, 8, 0.82);
-  border: 1px solid rgba(73, 255, 144, 0.12);
+  border-radius: 16px;
+  background: #ffffff;
+  border: 1px solid var(--line);
 }
 
 .diff-summary-title {
@@ -1668,8 +1664,8 @@ form {
   display: block;
   padding: 10px 12px;
   border-radius: 14px;
-  background: rgba(8, 24, 14, 0.88);
-  border: 1px solid rgba(73, 255, 144, 0.12);
+  background: #f9fafb;
+  border: 1px solid rgba(15, 23, 42, 0.06);
   font-size: 13px;
   color: var(--text);
   overflow-wrap: anywhere;
@@ -1680,8 +1676,8 @@ form {
   align-items: center;
   border-radius: 999px;
   padding: 4px 8px;
-  background: rgba(73, 255, 144, 0.10);
-  color: var(--accent);
+  background: #f3f4f6;
+  color: #374151;
   font-size: 11px;
   font-weight: 800;
 }
@@ -1709,27 +1705,27 @@ form {
 }
 
 .diff-side.before {
-  background: rgba(94, 242, 255, 0.12);
-  color: var(--cyan);
-  border: 1px solid rgba(94, 242, 255, 0.2);
+  background: #eff6ff;
+  color: #1d4ed8;
+  border: 1px solid rgba(29, 78, 216, 0.10);
 }
 
 .diff-side.after {
-  background: rgba(73, 255, 144, 0.12);
-  color: var(--accent);
-  border: 1px solid rgba(73, 255, 144, 0.18);
+  background: #f9fafb;
+  color: #111827;
+  border: 1px solid rgba(15, 23, 42, 0.08);
 }
 
 .diff-side.present {
-  background: rgba(73, 255, 144, 0.12);
-  color: var(--accent);
-  border: 1px solid rgba(73, 255, 144, 0.18);
+  background: #f9fafb;
+  color: #111827;
+  border: 1px solid rgba(15, 23, 42, 0.08);
 }
 
 .diff-side.missing {
-  background: rgba(255, 98, 98, 0.14);
-  color: #ff9a9a;
-  border: 1px solid rgba(255, 98, 98, 0.2);
+  background: #fff7ed;
+  color: #c2410c;
+  border: 1px solid rgba(194, 65, 12, 0.12);
 }
 
 .side-dot {
@@ -1741,35 +1737,35 @@ form {
 }
 
 .side-dot.ingress {
-  background: var(--cyan);
+  background: #2563eb;
 }
 
 .side-dot.egress {
-  background: var(--accent);
+  background: #111827;
 }
 
 .diff-shell {
-  border-radius: 14px;
+  border-radius: 16px;
   overflow: hidden;
-  border: 1px solid rgba(73, 255, 144, 0.16);
-  background: #030806;
+  border: 1px solid var(--line);
+  background: #ffffff;
   font-family: "SF Mono", "Menlo", monospace;
   font-size: 12px;
   line-height: 1.55;
-  box-shadow: inset 0 0 18px rgba(73, 255, 144, 0.05);
+  box-shadow: none;
 }
 
 .json-diff-shell {
-  border-radius: 14px;
+  border-radius: 16px;
   overflow: hidden;
-  border: 1px solid rgba(73, 255, 144, 0.16);
-  background: #030806;
+  border: 1px solid var(--line);
+  background: #ffffff;
   color: var(--text);
   padding: 12px 14px;
   font-family: "SF Mono", "Menlo", monospace;
   font-size: 12px;
   line-height: 1.6;
-  box-shadow: inset 0 0 18px rgba(73, 255, 144, 0.05);
+  box-shadow: none;
 }
 
 .diff-summary-shell {
@@ -1800,7 +1796,7 @@ form {
   display: inline-block;
   width: 12px;
   margin-right: 6px;
-  color: var(--accent);
+  color: #6b7280;
 }
 
 .diff-detail-toggle[open] > summary::before {
@@ -1818,18 +1814,18 @@ form {
 }
 
 .diff-line.equal {
-  background: rgba(73, 255, 144, 0.03);
+  background: #ffffff;
   color: var(--text);
 }
 
 .diff-line.delete {
-  background: rgba(255, 98, 98, 0.12);
-  color: #ffd1d1;
+  background: #fff7ed;
+  color: #9a3412;
 }
 
 .diff-line.insert {
-  background: rgba(73, 255, 144, 0.10);
-  color: #d8ffe8;
+  background: #f9fafb;
+  color: #111827;
 }
 
 .diff-prefix,
@@ -1841,8 +1837,8 @@ form {
 
 .diff-prefix {
   text-align: center;
-  color: rgba(214, 255, 231, 0.72);
-  border-right: 1px solid rgba(73, 255, 144, 0.12);
+  color: #9ca3af;
+  border-right: 1px solid rgba(15, 23, 42, 0.06);
 }
 
 .diff-hidden {
@@ -1857,9 +1853,9 @@ form {
   display: grid;
   gap: 14px;
   padding: 18px;
-  border-radius: 16px;
-  background: rgba(7, 20, 12, 0.9);
-  border: 1px solid rgba(73, 255, 144, 0.14);
+  border-radius: 18px;
+  background: #ffffff;
+  border: 1px solid var(--line);
   position: relative;
 }
 
@@ -1915,14 +1911,14 @@ form {
 }
 
 .error-block .block-title {
-  color: #ff9a9a;
+  color: #c2410c;
 }
 
 pre {
   margin: 0;
   padding: 14px;
-  border-radius: 14px;
-  background: #030806;
+  border-radius: 16px;
+  background: #f9fafb;
   color: var(--text);
   overflow-x: auto;
   white-space: pre-wrap;
@@ -1930,14 +1926,14 @@ pre {
   font-family: "SF Mono", "Menlo", monospace;
   font-size: 12px;
   line-height: 1.55;
-  border: 1px solid rgba(73, 255, 144, 0.14);
+  border: 1px solid rgba(15, 23, 42, 0.06);
 }
 
 .plain-text-block {
   display: block;
   padding: 14px;
-  border-radius: 14px;
-  background: #030806;
+  border-radius: 16px;
+  background: #f9fafb;
   color: var(--text);
   overflow-x: auto;
   white-space: pre-wrap;
@@ -1945,19 +1941,19 @@ pre {
   font-family: "SF Mono", "Menlo", monospace;
   font-size: 12px;
   line-height: 1.55;
-  border: 1px solid rgba(73, 255, 144, 0.14);
+  border: 1px solid rgba(15, 23, 42, 0.06);
 }
 
 .json-tree-shell {
   padding: 12px 14px;
-  border-radius: 14px;
-  background: #030806;
+  border-radius: 16px;
+  background: #f9fafb;
   color: var(--text);
   overflow-x: auto;
   font-family: "SF Mono", "Menlo", monospace;
   font-size: 12px;
   line-height: 1.6;
-  border: 1px solid rgba(73, 255, 144, 0.14);
+  border: 1px solid rgba(15, 23, 42, 0.06);
 }
 
 .json-node {
@@ -1985,7 +1981,7 @@ pre {
   display: inline-block;
   width: 12px;
   margin-right: 6px;
-  color: var(--accent);
+  color: #6b7280;
 }
 
 .json-node[open] > summary::before {
@@ -1996,7 +1992,7 @@ pre {
   margin-left: 18px;
   margin-top: 4px;
   padding-left: 10px;
-  border-left: 1px solid rgba(73, 255, 144, 0.18);
+  border-left: 1px solid rgba(15, 23, 42, 0.08);
 }
 
 .json-diff-node {
@@ -2024,7 +2020,7 @@ pre {
   display: inline-block;
   width: 12px;
   margin-right: 6px;
-  color: var(--accent);
+  color: #6b7280;
 }
 
 .json-diff-node:not([open]) > summary::before {
@@ -2035,7 +2031,7 @@ pre {
   margin-left: 18px;
   margin-top: 6px;
   padding-left: 10px;
-  border-left: 1px solid rgba(73, 255, 144, 0.18);
+  border-left: 1px solid rgba(15, 23, 42, 0.08);
 }
 
 .json-diff-leaf {
@@ -2058,23 +2054,23 @@ pre {
 }
 
 .json-diff-value.present {
-  background: rgba(73, 255, 144, 0.12);
-  color: #d8ffe8;
+  background: #f9fafb;
+  color: #111827;
 }
 
 .json-diff-value.missing {
-  background: rgba(255, 98, 98, 0.12);
-  color: #ffd1d1;
+  background: #fff7ed;
+  color: #9a3412;
 }
 
 .json-diff-value.ingress.compare {
-  background: rgba(94, 242, 255, 0.10);
-  color: #d7fbff;
+  background: #eff6ff;
+  color: #1e3a8a;
 }
 
 .json-diff-value.egress.compare {
-  background: rgba(73, 255, 144, 0.10);
-  color: #d8ffe8;
+  background: #f9fafb;
+  color: #111827;
 }
 
 .json-diff-side-label,
@@ -2088,7 +2084,7 @@ pre {
   gap: 0;
   font-size: 11px;
   font-weight: 700;
-  border-right: 1px solid rgba(73, 255, 144, 0.12);
+  border-right: 1px solid rgba(15, 23, 42, 0.06);
 }
 
 .json-diff-side-value {
@@ -2107,13 +2103,13 @@ pre {
 }
 
 .json-diff-value.added {
-  background: rgba(73, 255, 144, 0.12);
-  color: #d8ffe8;
+  background: #f9fafb;
+  color: #111827;
 }
 
 .json-diff-value.removed {
-  background: rgba(255, 98, 98, 0.12);
-  color: #ffd1d1;
+  background: #fff7ed;
+  color: #9a3412;
 }
 
 .json-leaf {
@@ -2158,19 +2154,19 @@ pre {
 
 .long-text-hint {
   margin-left: 8px;
-  color: var(--accent);
+  color: #6b7280;
   font-size: 11px;
   font-weight: 700;
 }
 
-.json-key { color: #91ffb7; }
-.json-punct { color: #4e8c63; }
-.json-summary { color: var(--cyan); }
-.json-string { color: #d6ffe7; }
-.json-inline-blob { color: #a9f6c6; }
+.json-key { color: #374151; }
+.json-punct { color: #9ca3af; }
+.json-summary { color: #6b7280; }
+.json-string { color: #111827; }
+.json-inline-blob { color: #374151; }
 .json-number { color: var(--warn); }
-.json-bool { color: var(--cyan); }
-.json-null { color: #83b292; }
+.json-bool { color: #1d4ed8; }
+.json-null { color: #9ca3af; }
 
 .empty-state {
   display: grid;
