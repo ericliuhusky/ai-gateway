@@ -37,7 +37,7 @@ use std::{fs, path::Path, sync::Arc};
 use tracing::{info, warn};
 use uuid::Uuid;
 
-const BUNDLED_CODEX_CONFIG: &str = include_str!("../../assets/codex-config.toml");
+const BUNDLED_CODEX_CONFIG: &str = include_str!("../../../assets/codex-config.toml");
 const MISSING_FILE_SENTINEL: &str = "__AI_GATEWAY_MISSING__";
 const RESPONSES_PATH: &str = "/openai/v1/responses";
 const OPENAI_PRIVATE_RESPONSES_URL: &str = "https://chatgpt.com/backend-api/codex/responses";
