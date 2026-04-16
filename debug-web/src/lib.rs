@@ -1314,33 +1314,12 @@ body {
     linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
   color: var(--text);
   min-height: 100vh;
-  position: relative;
-}
-
-body::before {
-  content: "";
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0), rgba(15, 23, 42, 0.015));
-  opacity: 1;
-}
-
-body::after {
-  content: "";
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  background: none;
-  opacity: 0;
 }
 
 .debug-shell {
   max-width: 1440px;
   margin: 0 auto;
   padding: 32px 24px 40px;
-  position: relative;
-  z-index: 1;
 }
 
 .hero, .panel, .banner {
@@ -1357,21 +1336,6 @@ body::after {
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(249, 250, 251, 0.98)),
     linear-gradient(90deg, rgba(15, 23, 42, 0.02), transparent 36%);
-  position: relative;
-  overflow: hidden;
-}
-
-.hero::after,
-.panel::after,
-.log-row::after,
-.event-card::after,
-.compare-section::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.45), transparent 18%, transparent 82%, rgba(15, 23, 42, 0.015));
-  opacity: 1;
 }
 
 .eyebrow {
@@ -1483,7 +1447,6 @@ form {
   padding: 22px;
   border-radius: 24px;
   background: var(--panel);
-  position: relative;
 }
 
 .panel-header {
@@ -1504,14 +1467,19 @@ form {
   background: rgba(255, 255, 255, 0.98);
   color: inherit;
   text-decoration: none;
-  position: relative;
   transition: transform 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
 }
 
 .log-row.selected {
-  border-color: var(--line-strong);
-  background: #ffffff;
-  box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.04), 0 10px 30px rgba(15, 23, 42, 0.06);
+  border-color: rgba(29, 78, 216, 0.34);
+  background:
+    linear-gradient(180deg, rgba(239, 246, 255, 0.92), rgba(255, 255, 255, 0.98)),
+    #ffffff;
+  box-shadow:
+    inset 4px 0 0 #2563eb,
+    0 0 0 1px rgba(37, 99, 235, 0.06),
+    0 12px 30px rgba(37, 99, 235, 0.12);
+  transform: translateY(-1px);
 }
 
 .log-row:hover {
@@ -1602,7 +1570,9 @@ form {
 #tab-diff:checked ~ .detail-tab-bar label[for="tab-diff"] {
   background: #ffffff;
   color: #111827;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
+  box-shadow:
+    0 0 0 1px rgba(37, 99, 235, 0.16),
+    0 8px 18px rgba(37, 99, 235, 0.10);
 }
 
 #tab-detail:checked ~ .detail-panel-main,
@@ -1618,7 +1588,6 @@ form {
   border-radius: 18px;
   background: rgba(249, 250, 251, 0.9);
   border: 1px solid var(--line);
-  position: relative;
 }
 
 .compare-header {
@@ -1705,27 +1674,27 @@ form {
 }
 
 .diff-side.before {
-  background: #eff6ff;
-  color: #1d4ed8;
-  border: 1px solid rgba(29, 78, 216, 0.10);
+  background: rgba(31, 117, 220, 0.12);
+  color: #1d5ea8;
+  border: 1px solid rgba(31, 117, 220, 0.16);
 }
 
 .diff-side.after {
-  background: #f9fafb;
-  color: #111827;
-  border: 1px solid rgba(15, 23, 42, 0.08);
+  background: rgba(224, 122, 47, 0.16);
+  color: #9a4f17;
+  border: 1px solid rgba(224, 122, 47, 0.18);
 }
 
 .diff-side.present {
-  background: #f9fafb;
-  color: #111827;
-  border: 1px solid rgba(15, 23, 42, 0.08);
+  background: rgba(33, 150, 83, 0.14);
+  color: #20643a;
+  border: 1px solid rgba(33, 150, 83, 0.16);
 }
 
 .diff-side.missing {
-  background: #fff7ed;
-  color: #c2410c;
-  border: 1px solid rgba(194, 65, 12, 0.12);
+  background: rgba(180, 63, 50, 0.14);
+  color: #8f352b;
+  border: 1px solid rgba(180, 63, 50, 0.18);
 }
 
 .side-dot {
@@ -1741,31 +1710,31 @@ form {
 }
 
 .side-dot.egress {
-  background: #111827;
+  background: #e07a2f;
 }
 
 .diff-shell {
   border-radius: 16px;
   overflow: hidden;
   border: 1px solid var(--line);
-  background: #ffffff;
+  background: #1e2430;
   font-family: "SF Mono", "Menlo", monospace;
   font-size: 12px;
   line-height: 1.55;
-  box-shadow: none;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.10);
 }
 
 .json-diff-shell {
   border-radius: 16px;
   overflow: hidden;
   border: 1px solid var(--line);
-  background: #ffffff;
-  color: var(--text);
+  background: #1e2430;
+  color: #eef2f5;
   padding: 12px 14px;
   font-family: "SF Mono", "Menlo", monospace;
   font-size: 12px;
   line-height: 1.6;
-  box-shadow: none;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.10);
 }
 
 .diff-summary-shell {
@@ -1796,7 +1765,7 @@ form {
   display: inline-block;
   width: 12px;
   margin-right: 6px;
-  color: #6b7280;
+  color: #8cb9ff;
 }
 
 .diff-detail-toggle[open] > summary::before {
@@ -1814,18 +1783,18 @@ form {
 }
 
 .diff-line.equal {
-  background: #ffffff;
-  color: var(--text);
+  background: rgba(255, 255, 255, 0.02);
+  color: #d7dde5;
 }
 
 .diff-line.delete {
-  background: #fff7ed;
-  color: #9a3412;
+  background: rgba(180, 63, 50, 0.16);
+  color: #ffd7d1;
 }
 
 .diff-line.insert {
-  background: #f9fafb;
-  color: #111827;
+  background: rgba(33, 150, 83, 0.16);
+  color: #d7ffe1;
 }
 
 .diff-prefix,
@@ -1837,13 +1806,13 @@ form {
 
 .diff-prefix {
   text-align: center;
-  color: #9ca3af;
-  border-right: 1px solid rgba(15, 23, 42, 0.06);
+  color: rgba(255, 255, 255, 0.72);
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
 }
 
 .diff-hidden {
   padding: 8px 12px;
-  color: var(--muted-2);
+  color: #8f99aa;
   font-size: 11px;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -1856,7 +1825,6 @@ form {
   border-radius: 18px;
   background: #ffffff;
   border: 1px solid var(--line);
-  position: relative;
 }
 
 .event-top {
@@ -1918,42 +1886,43 @@ pre {
   margin: 0;
   padding: 14px;
   border-radius: 16px;
-  background: #f9fafb;
-  color: var(--text);
+  background: #1e2430;
+  color: #eef2f5;
   overflow-x: auto;
   white-space: pre-wrap;
   word-break: break-word;
   font-family: "SF Mono", "Menlo", monospace;
   font-size: 12px;
   line-height: 1.55;
-  border: 1px solid rgba(15, 23, 42, 0.06);
+  border: 1px solid rgba(15, 23, 42, 0.12);
 }
 
 .plain-text-block {
   display: block;
   padding: 14px;
   border-radius: 16px;
-  background: #f9fafb;
-  color: var(--text);
+  background: #1e2430;
+  color: #eef2f5;
   overflow-x: auto;
   white-space: pre-wrap;
   word-break: break-word;
   font-family: "SF Mono", "Menlo", monospace;
   font-size: 12px;
   line-height: 1.55;
-  border: 1px solid rgba(15, 23, 42, 0.06);
+  border: 1px solid rgba(15, 23, 42, 0.12);
 }
 
 .json-tree-shell {
   padding: 12px 14px;
   border-radius: 16px;
-  background: #f9fafb;
-  color: var(--text);
+  background: #1e2430;
+  color: #eef2f5;
   overflow-x: auto;
   font-family: "SF Mono", "Menlo", monospace;
   font-size: 12px;
   line-height: 1.6;
-  border: 1px solid rgba(15, 23, 42, 0.06);
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.10);
 }
 
 .json-node {
@@ -1981,7 +1950,7 @@ pre {
   display: inline-block;
   width: 12px;
   margin-right: 6px;
-  color: #6b7280;
+  color: #8cb9ff;
 }
 
 .json-node[open] > summary::before {
@@ -1992,7 +1961,7 @@ pre {
   margin-left: 18px;
   margin-top: 4px;
   padding-left: 10px;
-  border-left: 1px solid rgba(15, 23, 42, 0.08);
+  border-left: 1px solid rgba(140, 185, 255, 0.22);
 }
 
 .json-diff-node {
@@ -2020,7 +1989,7 @@ pre {
   display: inline-block;
   width: 12px;
   margin-right: 6px;
-  color: #6b7280;
+  color: #8cb9ff;
 }
 
 .json-diff-node:not([open]) > summary::before {
@@ -2031,7 +2000,7 @@ pre {
   margin-left: 18px;
   margin-top: 6px;
   padding-left: 10px;
-  border-left: 1px solid rgba(15, 23, 42, 0.08);
+  border-left: 1px solid rgba(140, 185, 255, 0.22);
 }
 
 .json-diff-leaf {
@@ -2054,23 +2023,23 @@ pre {
 }
 
 .json-diff-value.present {
-  background: #f9fafb;
-  color: #111827;
+  background: rgba(33, 150, 83, 0.16);
+  color: #d7ffe1;
 }
 
 .json-diff-value.missing {
-  background: #fff7ed;
-  color: #9a3412;
+  background: rgba(180, 63, 50, 0.16);
+  color: #ffd7d1;
 }
 
 .json-diff-value.ingress.compare {
-  background: #eff6ff;
-  color: #1e3a8a;
+  background: rgba(31, 117, 220, 0.16);
+  color: #d9ebff;
 }
 
 .json-diff-value.egress.compare {
-  background: #f9fafb;
-  color: #111827;
+  background: rgba(224, 122, 47, 0.18);
+  color: #ffe6d5;
 }
 
 .json-diff-side-label,
@@ -2084,7 +2053,7 @@ pre {
   gap: 0;
   font-size: 11px;
   font-weight: 700;
-  border-right: 1px solid rgba(15, 23, 42, 0.06);
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
 }
 
 .json-diff-side-value {
@@ -2099,17 +2068,17 @@ pre {
 .json-diff-summary-count {
   padding-left: 4px;
   font-size: 11px;
-  color: var(--muted-2);
+  color: #8f99aa;
 }
 
 .json-diff-value.added {
-  background: #f9fafb;
-  color: #111827;
+  background: rgba(33, 150, 83, 0.16);
+  color: #d7ffe1;
 }
 
 .json-diff-value.removed {
-  background: #fff7ed;
-  color: #9a3412;
+  background: rgba(180, 63, 50, 0.16);
+  color: #ffd7d1;
 }
 
 .json-leaf {
@@ -2154,19 +2123,19 @@ pre {
 
 .long-text-hint {
   margin-left: 8px;
-  color: #6b7280;
+  color: #8cb9ff;
   font-size: 11px;
   font-weight: 700;
 }
 
-.json-key { color: #374151; }
-.json-punct { color: #9ca3af; }
-.json-summary { color: #6b7280; }
-.json-string { color: #111827; }
-.json-inline-blob { color: #374151; }
-.json-number { color: var(--warn); }
-.json-bool { color: #1d4ed8; }
-.json-null { color: #9ca3af; }
+.json-key { color: #ffcf8b; }
+.json-punct { color: #7d8696; }
+.json-summary { color: #8cb9ff; }
+.json-string { color: #9be28f; }
+.json-inline-blob { color: #d7dde5; }
+.json-number { color: #ffd479; }
+.json-bool { color: #ff9f7f; }
+.json-null { color: #c6a7ff; }
 
 .empty-state {
   display: grid;
