@@ -37,6 +37,8 @@ cargo run
 
 默认固定监听 `127.0.0.1:10100`。
 
+在 macOS 上，网关启动时会主动读取 `scutil --proxy` 返回的系统 `HTTP/HTTPS` 代理，并显式用于上游请求；`localhost` / `127.0.0.1` / `::1` 保持直连，不会被套进上游代理。
+
 账号、provider 和路由状态固定保存在 `~/.ai-gateway/db.sqlite`。
 
 ## 登录
