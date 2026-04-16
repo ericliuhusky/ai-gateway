@@ -1,7 +1,7 @@
 use leptos::prelude::*;
 use serde_json::Value;
 use similar::{ChangeTag, TextDiff};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 const LONG_VALUE_PREVIEW_CHARS: usize = 500;
 
@@ -253,56 +253,68 @@ fn DebugApp(data: DebugPageData) -> impl IntoView {
                                 <span class="mono">{detail.request_id.clone()}</span>
                                 <span class="pill neutral">{format!("{} 个事件", detail.events.len())}</span>
                             </div>
-                            <ComparisonSection detail=detail.clone() kind=ComparisonKind::Request/>
-                            <ComparisonSection detail=detail.clone() kind=ComparisonKind::Response/>
-                            <div class="event-list">
-                                {detail.events.iter().map(|event| view! {
-                                    <article class="event-card">
-                                        <div class="event-top">
-                                            <div>
-                                                <strong>{event.stage.clone()}</strong>
-                                                <span class="subtle">{event.created_at_label.clone()}</span>
-                                            </div>
-                                            <div class="event-meta">
-                                                {event.status_code.map(|code| view! {
-                                                    <span class="badge ok">{code.to_string()}</span>
-                                                })}
-                                                {event.elapsed_ms.map(|elapsed| view! {
-                                                    <span class="pill neutral">{format!("{} ms", elapsed)}</span>
-                                                })}
-                                            </div>
-                                        </div>
-                                        <dl class="kv-grid">
-                                            <KeyValue label="Provider" value=event.provider_name.clone()/>
-                                            <KeyValue label="Account" value=event.account_email.clone().or(event.account_id.clone())/>
-                                            <KeyValue label="Model" value=event.model.clone()/>
-                                            <KeyValue label="Stream" value=Some(if event.stream { "true".to_string() } else { "false".to_string() })/>
-                                            <KeyValue label="Ingress" value=event.ingress_protocol.clone()/>
-                                            <KeyValue label="Egress" value=event.egress_protocol.clone()/>
-                                            <KeyValue label="Method" value=event.method.clone()/>
-                                            <KeyValue label="Path" value=event.path.clone()/>
-                                            <KeyValue label="URL" value=event.url.clone()/>
-                                        </dl>
-                                        {event.error_message.as_ref().map(|message| view! {
-                                            <div class="block error-block">
-                                                <div class="block-title">
-                                                    "错误"
-                                                    {if event.error_truncated { "（已截断）" } else { "" }}
+                            <div class="detail-tabs">
+                                <input class="detail-tab-input" type="radio" id="tab-detail" name="detail-tab" checked/>
+                                <input class="detail-tab-input" type="radio" id="tab-diff" name="detail-tab"/>
+                                <div class="detail-tab-bar">
+                                    <label class="detail-tab-label" for="tab-detail">"详情"</label>
+                                    <label class="detail-tab-label" for="tab-diff">"Diff"</label>
+                                </div>
+                                <div class="detail-tab-panel detail-panel-main">
+                                    <div class="event-list">
+                                        {detail.events.iter().map(|event| view! {
+                                            <article class="event-card">
+                                                <div class="event-top">
+                                                    <div>
+                                                        <strong>{event.stage.clone()}</strong>
+                                                        <span class="subtle">{event.created_at_label.clone()}</span>
+                                                    </div>
+                                                    <div class="event-meta">
+                                                        {event.status_code.map(|code| view! {
+                                                            <span class="badge ok">{code.to_string()}</span>
+                                                        })}
+                                                        {event.elapsed_ms.map(|elapsed| view! {
+                                                            <span class="pill neutral">{format!("{} ms", elapsed)}</span>
+                                                        })}
+                                                    </div>
                                                 </div>
-                                                <JsonBlock content=message.clone() root_label="error"/>
-                                            </div>
-                                        })}
-                                        {event.body.as_ref().map(|body| view! {
-                                            <div class="block">
-                                                <div class="block-title">
-                                                    "Body"
-                                                    {if event.body_truncated { "（已截断）" } else { "" }}
-                                                </div>
-                                                <JsonBlock content=body.clone() root_label="body"/>
-                                            </div>
-                                        })}
-                                    </article>
-                                }).collect_view()}
+                                                <dl class="kv-grid">
+                                                    <KeyValue label="Provider" value=event.provider_name.clone()/>
+                                                    <KeyValue label="Account" value=event.account_email.clone().or(event.account_id.clone())/>
+                                                    <KeyValue label="Model" value=event.model.clone()/>
+                                                    <KeyValue label="Stream" value=Some(if event.stream { "true".to_string() } else { "false".to_string() })/>
+                                                    <KeyValue label="Ingress" value=event.ingress_protocol.clone()/>
+                                                    <KeyValue label="Egress" value=event.egress_protocol.clone()/>
+                                                    <KeyValue label="Method" value=event.method.clone()/>
+                                                    <KeyValue label="Path" value=event.path.clone()/>
+                                                    <KeyValue label="URL" value=event.url.clone()/>
+                                                </dl>
+                                                {event.error_message.as_ref().map(|message| view! {
+                                                    <div class="block error-block">
+                                                        <div class="block-title">
+                                                            "错误"
+                                                            {if event.error_truncated { "（已截断）" } else { "" }}
+                                                        </div>
+                                                        <JsonBlock content=message.clone() root_label="error"/>
+                                                    </div>
+                                                })}
+                                                {event.body.as_ref().map(|body| view! {
+                                                    <div class="block">
+                                                        <div class="block-title">
+                                                            "Body"
+                                                            {if event.body_truncated { "（已截断）" } else { "" }}
+                                                        </div>
+                                                        <JsonBlock content=body.clone() root_label="body"/>
+                                                    </div>
+                                                })}
+                                            </article>
+                                        }).collect_view()}
+                                    </div>
+                                </div>
+                                <div class="detail-tab-panel diff-panel-main">
+                                    <ComparisonSection detail=detail.clone() kind=ComparisonKind::Request/>
+                                    <ComparisonSection detail=detail.clone() kind=ComparisonKind::Response/>
+                                </div>
                             </div>
                         }.into_any(),
                         None => view! {
@@ -459,6 +471,7 @@ fn DiffBlock(
                 .any(|change| change.tag() != ChangeTag::Equal)
         })
     });
+    let summary = summarize_text_diff(&diff, &grouped_ops);
 
     view! {
         <div class="diff-block">
@@ -469,6 +482,7 @@ fn DiffBlock(
                     <span class="diff-side after">{right_label}</span>
                 </div>
             </div>
+            <DiffSummary items=summary/>
             <div class="diff-shell">
                 {if has_changes {
                     grouped_ops
@@ -571,6 +585,10 @@ fn JsonDiffBlock(
     right_value: Value,
 ) -> impl IntoView {
     let diff = diff_json_values(&left_value, &right_value);
+    let summary = diff
+        .as_ref()
+        .map(summarize_json_diff)
+        .unwrap_or_default();
 
     view! {
         <div class="diff-block">
@@ -583,6 +601,7 @@ fn JsonDiffBlock(
                     <span class="diff-side missing">"红色=缺失"</span>
                 </div>
             </div>
+            <DiffSummary items=summary/>
             <div class="json-diff-shell">
                 {match diff {
                     Some(node) => view! { <JsonDiffNodeView label=None node=node/> }.into_any(),
@@ -597,6 +616,22 @@ fn JsonDiffBlock(
             </div>
         </div>
     }
+}
+
+#[component]
+fn DiffSummary(items: Vec<String>) -> impl IntoView {
+    if items.is_empty() {
+        return ().into_any();
+    }
+    view! {
+        <div class="diff-summary">
+            <div class="diff-summary-title">"差异总结"</div>
+            <ul class="diff-summary-list">
+                {items.into_iter().map(|item| view! { <li>{item}</li> }).collect_view()}
+            </ul>
+        </div>
+    }
+    .into_any()
 }
 
 #[component]
@@ -907,6 +942,117 @@ fn parse_json_content(content: &str) -> Option<Value> {
     serde_json::from_str(content).ok()
 }
 
+fn summarize_text_diff(
+    diff: &TextDiff<'_, '_, '_, str>,
+    grouped_ops: &[Vec<similar::DiffOp>],
+) -> Vec<String> {
+    let mut removed = 0usize;
+    let mut added = 0usize;
+    let mut groups = 0usize;
+    for group in grouped_ops {
+        let mut group_has_change = false;
+        for op in group {
+            for change in diff.iter_changes(op) {
+                match change.tag() {
+                    ChangeTag::Delete => {
+                        removed += 1;
+                        group_has_change = true;
+                    }
+                    ChangeTag::Insert => {
+                        added += 1;
+                        group_has_change = true;
+                    }
+                    ChangeTag::Equal => {}
+                }
+            }
+        }
+        if group_has_change {
+            groups += 1;
+        }
+    }
+    let mut items = Vec::new();
+    if groups > 0 {
+        items.push(format!("{groups} 个变更块，已隐藏未变化的大段内容"));
+    }
+    if removed > 0 {
+        items.push(format!("入口侧独有/被删除的行数：{removed}"));
+    }
+    if added > 0 {
+        items.push(format!("出口侧新增的行数：{added}"));
+    }
+    items
+}
+
+fn summarize_json_diff(node: &JsonDiffNode) -> Vec<String> {
+    let mut counts = BTreeMap::<String, usize>::new();
+    collect_json_diff_summary(node, String::new(), &mut counts);
+    counts
+        .into_iter()
+        .map(|(label, count)| {
+            if count > 1 {
+                format!("{label} x{count}")
+            } else {
+                label
+            }
+        })
+        .collect()
+}
+
+fn collect_json_diff_summary(
+    node: &JsonDiffNode,
+    path: String,
+    counts: &mut BTreeMap<String, usize>,
+) {
+    match node {
+        JsonDiffNode::Object(fields) => {
+            for field in fields {
+                let next_path = if path.is_empty() {
+                    field.key.clone()
+                } else {
+                    format!("{path}.{}", field.key)
+                };
+                collect_json_change_summary(&field.change, next_path, counts);
+            }
+        }
+        JsonDiffNode::Array(items) => {
+            for item in items {
+                let next_path = if path.is_empty() {
+                    "[]".to_string()
+                } else {
+                    format!("{path}[]")
+                };
+                collect_json_change_summary(&item.change, next_path, counts);
+            }
+        }
+        JsonDiffNode::Scalar { before, after } => {
+            let label = if before.is_some() && after.is_some() {
+                format!("{path} 的入口值与出口值不同")
+            } else if before.is_some() {
+                format!("{path} 仅入口存在")
+            } else {
+                format!("{path} 仅出口存在")
+            };
+            *counts.entry(label).or_insert(0) += 1;
+        }
+    }
+}
+
+fn collect_json_change_summary(
+    change: &JsonDiffChange,
+    path: String,
+    counts: &mut BTreeMap<String, usize>,
+) {
+    match change {
+        JsonDiffChange::Added(_) => {
+            *counts.entry(format!("{path} 仅出口存在")).or_insert(0) += 1;
+        }
+        JsonDiffChange::Removed(_) => {
+            *counts.entry(format!("{path} 仅入口存在")).or_insert(0) += 1;
+        }
+        JsonDiffChange::Modified(node) => collect_json_diff_summary(node, path, counts),
+    }
+}
+
 fn diff_json_values(left: &Value, right: &Value) -> Option<JsonDiffNode> {
     match (left, right) {
         (Value::Object(left_map), Value::Object(right_map)) => {
@@ -1181,6 +1327,52 @@ form {
   margin-bottom: 16px;
 }
 
+.detail-tabs {
+  display: grid;
+  gap: 14px;
+}
+
+.detail-tab-input {
+  display: none;
+}
+
+.detail-tab-bar {
+  display: inline-flex;
+  gap: 8px;
+  padding: 6px;
+  border-radius: 999px;
+  background: rgba(31, 36, 48, 0.06);
+  width: fit-content;
+}
+
+.detail-tab-label {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 88px;
+  padding: 10px 16px;
+  border-radius: 999px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 700;
+  color: #5d6472;
+}
+
+.detail-tab-panel {
+  display: none;
+}
+
+#tab-detail:checked ~ .detail-tab-bar label[for="tab-detail"],
+#tab-diff:checked ~ .detail-tab-bar label[for="tab-diff"] {
+  background: #1f6f78;
+  color: #fff;
+}
+
+#tab-detail:checked ~ .detail-panel-main,
+#tab-diff:checked ~ .diff-panel-main {
+  display: block;
+}
+
 .compare-section {
   display: grid;
   gap: 12px;
@@ -1239,6 +1431,35 @@ form {
 .diff-block {
   display: grid;
   gap: 10px;
+}
+
+.diff-summary {
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: rgba(31, 36, 48, 0.05);
+  border: 1px solid rgba(48, 54, 61, 0.08);
+}
+
+.diff-summary-title {
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #6b7280;
+}
+
+.diff-summary-list {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 6px;
+}
+
+.diff-summary-list li {
+  color: #2b3340;
+  font-size: 13px;
 }
 
 .diff-head {
