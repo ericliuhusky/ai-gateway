@@ -117,24 +117,29 @@ impl ProviderStore {
         account_id: &str,
     ) -> Result<ApiProviderRecord, String> {
         let mut providers = self.providers.lock().await;
-        let provider =
-            if let Some(existing) = providers.iter_mut().find(|provider| provider.name == name) {
-                existing.auth_mode = ProviderAuthMode::Account;
-                existing.account_id = Some(account_id.to_string());
-                existing.clone()
-            } else {
-                let provider = ApiProviderRecord {
-                    id: Uuid::new_v4().to_string(),
-                    name: name.to_string(),
-                    auth_mode: ProviderAuthMode::Account,
-                    base_url: String::new(),
-                    api_key: String::new(),
-                    account_id: Some(account_id.to_string()),
-                    billing_mode: ApiProviderBillingMode::Metered,
-                };
-                providers.push(provider.clone());
-                provider
+        let provider = if let Some(existing) = providers
+            .iter_mut()
+            .find(|provider| provider.account_id.as_deref() == Some(account_id))
+        {
+            existing.name = name.to_string();
+            existing.auth_mode = ProviderAuthMode::Account;
+            existing.base_url.clear();
+            existing.api_key.clear();
+            existing.account_id = Some(account_id.to_string());
+            existing.clone()
+        } else {
+            let provider = ApiProviderRecord {
+                id: Uuid::new_v4().to_string(),
+                name: name.to_string(),
+                auth_mode: ProviderAuthMode::Account,
+                base_url: String::new(),
+                api_key: String::new(),
+                account_id: Some(account_id.to_string()),
+                billing_mode: ApiProviderBillingMode::Metered,
             };
+            providers.push(provider.clone());
+            provider
+        };
 
         self.persist_provider(&provider)?;
         Ok(provider)
@@ -185,4 +190,91 @@ fn mask_api_key(api_key: &str) -> String {
     let prefix = &api_key[..4];
     let suffix = &api_key[api_key.len().saturating_sub(4)..];
     format!("{prefix}...{suffix}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ProviderStore;
+    use crate::{
+        models::{PROVIDER_GOOGLE_PROXY, PROVIDER_OPENAI_PROXY, ProviderAuthMode},
+        store::sqlite::SqliteStore,
+    };
+    use std::{
+        path::PathBuf,
+        sync::Arc,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+    use tokio::sync::Mutex;
+
+    #[tokio::test]
+    async fn bind_account_provider_creates_one_provider_per_account() {
+        let sqlite = test_sqlite_store("multi-account-providers");
+        let store = ProviderStore {
+            sqlite,
+            providers: Arc::new(Mutex::new(Vec::new())),
+            extensions: Arc::new(Mutex::new(Vec::new())),
+        };
+
+        let first = store
+            .bind_account_provider(PROVIDER_OPENAI_PROXY, "account_1")
+            .await
+            .expect("bind first account");
+        let second = store
+            .bind_account_provider(PROVIDER_OPENAI_PROXY, "account_2")
+            .await
+            .expect("bind second account");
+
+        assert_ne!(first.id, second.id);
+        assert_eq!(first.name, PROVIDER_OPENAI_PROXY);
+        assert_eq!(second.name, PROVIDER_OPENAI_PROXY);
+        assert_eq!(first.account_id.as_deref(), Some("account_1"));
+        assert_eq!(second.account_id.as_deref(), Some("account_2"));
+
+        let providers = store.list().await;
+        assert_eq!(providers.len(), 2);
+        assert_eq!(
+            providers
+                .iter()
+                .filter(|provider| provider.name == PROVIDER_OPENAI_PROXY)
+                .count(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn bind_account_provider_reuses_existing_provider_for_same_account() {
+        let sqlite = test_sqlite_store("same-account-provider");
+        let store = ProviderStore {
+            sqlite,
+            providers: Arc::new(Mutex::new(Vec::new())),
+            extensions: Arc::new(Mutex::new(Vec::new())),
+        };
+
+        let first = store
+            .bind_account_provider(PROVIDER_GOOGLE_PROXY, "account_1")
+            .await
+            .expect("bind first time");
+        let second = store
+            .bind_account_provider(PROVIDER_GOOGLE_PROXY, "account_1")
+            .await
+            .expect("bind second time");
+
+        assert_eq!(first.id, second.id);
+        assert_eq!(second.account_id.as_deref(), Some("account_1"));
+        assert_eq!(second.auth_mode, ProviderAuthMode::Account);
+        assert_eq!(store.list().await.len(), 1);
+    }
+
+    fn test_sqlite_store(prefix: &str) -> SqliteStore {
+        let db_path = unique_test_db_path(prefix);
+        SqliteStore::for_test(db_path).expect("create sqlite store")
+    }
+
+    fn unique_test_db_path(prefix: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        std::env::temp_dir().join(format!("ai_gateway_{prefix}_{unique}.sqlite"))
+    }
 }

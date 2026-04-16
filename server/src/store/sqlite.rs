@@ -25,6 +25,17 @@ impl SqliteStore {
         Ok(store)
     }
 
+    #[cfg(test)]
+    pub fn for_test(db_path: PathBuf) -> Result<Self, String> {
+        if let Some(parent) = db_path.parent() {
+            fs::create_dir_all(parent).map_err(|err| format!("create test data dir failed: {err}"))?;
+        }
+
+        let store = Self { db_path };
+        store.init()?;
+        Ok(store)
+    }
+
     pub fn load_accounts(&self) -> Result<Vec<AccountRecord>, String> {
         let conn = self.connect()?;
         let mut stmt = conn
@@ -205,6 +216,7 @@ impl SqliteStore {
             ",
         )
         .map_err(|err| format!("initialize sqlite schema failed: {err}"))?;
+        migrate_providers_table_if_needed(&conn)?;
         Ok(())
     }
 
@@ -245,6 +257,50 @@ fn upsert_account_record(conn: &Connection, account: &AccountRecord) -> Result<(
         ],
     )
     .map_err(|err| format!("upsert account failed: {err}"))?;
+    Ok(())
+}
+
+fn migrate_providers_table_if_needed(conn: &Connection) -> Result<(), String> {
+    let create_sql = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'providers'",
+            [],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()
+        .map_err(|err| format!("inspect providers table failed: {err}"))?
+        .flatten();
+
+    let Some(create_sql) = create_sql else {
+        return Ok(());
+    };
+
+    if !create_sql.contains("name TEXT NOT NULL UNIQUE") {
+        return Ok(());
+    }
+
+    conn.execute_batch(
+        "
+        BEGIN IMMEDIATE;
+        CREATE TABLE providers_v2 (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            auth_mode TEXT NOT NULL,
+            base_url TEXT NOT NULL,
+            api_key TEXT NOT NULL,
+            account_id TEXT,
+            billing_mode TEXT NOT NULL
+        );
+        INSERT INTO providers_v2 (id, name, auth_mode, base_url, api_key, account_id, billing_mode)
+        SELECT id, name, auth_mode, base_url, api_key, account_id, billing_mode
+        FROM providers;
+        DROP TABLE providers;
+        ALTER TABLE providers_v2 RENAME TO providers;
+        COMMIT;
+        ",
+    )
+    .map_err(|err| format!("migrate providers table failed: {err}"))?;
+
     Ok(())
 }
 
