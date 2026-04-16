@@ -1,6 +1,7 @@
 use crate::api::handlers::{
     add_provider, apply_codex_config, auth_google_callback, auth_google_start,
-    auth_openai_callback, auth_openai_start, clear_logs, get_codex_config_status, get_log_detail,
+    auth_openai_callback, auth_openai_start, clear_logs, debug_clear_logs,
+    debug_dashboard, debug_set_log_settings, get_codex_config_status, get_log_detail,
     get_log_settings, get_logs, get_provider_quota, get_route, healthz, list_models,
     list_providers, responses, restore_codex_config, set_log_settings, set_route,
 };
@@ -34,6 +35,9 @@ pub fn build_router(state: AppState) -> Router {
             get(get_log_settings).put(set_log_settings),
         )
         .route("/logs/:request_id", get(get_log_detail))
+        .route("/debug", get(debug_dashboard))
+        .route("/debug/logging", post(debug_set_log_settings))
+        .route("/debug/clear", post(debug_clear_logs))
         .route("/openai/v1/models", get(list_models))
         .route("/openai/v1/responses", post(responses))
         .with_state(state)

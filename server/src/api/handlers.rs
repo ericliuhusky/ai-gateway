@@ -9,14 +9,15 @@ use crate::{
     models::{
         AccountRecord, ApiProviderRecord, ApiProviderSummary, CodexConfigStatus,
         CreateApiProviderRequest, EgressProtocol, GatewayLogDetail, GatewayLogDetailResponse,
-        GatewayLogListResponse, GatewayLogSettings, GatewayLogSettingsResponse, IngressProtocol,
-        ModelListItem, ModelListResponse, PROVIDER_GOOGLE_PROXY, PROVIDER_OPENAI_PROXY,
-        ProviderAuthMode, ProviderQuotaCredits, ProviderQuotaResponse, ProviderQuotaSnapshot,
-        ProviderQuotaSummary, ProviderQuotaWindow, QuotaSource, QuotaSupportStatus,
-        ResponsesRequest, ResponsesResponse, SelectedProvider, UpdateGatewayLogSettingsRequest,
+        GatewayLogListResponse, GatewayLogSettings, GatewayLogSettingsResponse,
+        GatewayLogSummary, IngressProtocol, ModelListItem, ModelListResponse,
+        NewApiSubscriptionEnvelope, NewApiUserSelfEnvelope, PROVIDER_GOOGLE_PROXY,
+        PROVIDER_OPENAI_PROXY, ProviderAuthMode, ProviderQuotaCredits,
+        ProviderQuotaResponse, ProviderQuotaSnapshot, ProviderQuotaSummary,
+        ProviderQuotaWindow, QuotaSource, QuotaSupportStatus, ResponsesRequest,
+        ResponsesResponse, SelectedProvider, UpdateGatewayLogSettingsRequest,
         UpdateSelectedProviderRequest, UpstreamRateLimitStatusDetails,
         UpstreamRateLimitStatusPayload, UpstreamRateLimitWindowSnapshot,
-        NewApiSubscriptionEnvelope, NewApiUserSelfEnvelope,
     },
     store::{AccountPool, LogEvent, LogStage, LogStore, ProviderStore, RouteStore},
     upstream::{UpstreamClient, chat_completions_api_url, responses_api_url},
@@ -24,10 +25,11 @@ use crate::{
 use async_stream::stream;
 use axum::{
     body::{Body, Bytes},
-    extract::{Host, Path as AxumPath, Query, State},
+    extract::{Form, Host, Path as AxumPath, Query, State},
     http::{HeaderMap, HeaderValue, StatusCode},
     response::{Html, IntoResponse, Json, Redirect, Response},
 };
+use debug_web::{DebugLogDetail as DebugWebLogDetail, DebugLogEvent as DebugWebLogEvent, DebugLogSummary as DebugWebLogSummary, DebugPageData};
 use futures_util::StreamExt;
 use reqwest::Client;
 use serde::Deserialize;
@@ -446,6 +448,26 @@ pub struct LogsQuery {
     pub limit: Option<usize>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct DebugDashboardQuery {
+    pub request_id: Option<String>,
+    pub limit: Option<usize>,
+    pub notice: Option<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DebugLogSettingsForm {
+    pub enabled: bool,
+    pub request_id: Option<String>,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DebugClearLogsForm {
+    pub limit: Option<usize>,
+}
+
 pub async fn get_logs(
     State(state): State<AppState>,
     Query(query): Query<LogsQuery>,
@@ -501,6 +523,90 @@ pub async fn set_log_settings(
 pub async fn clear_logs(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
     state.logs.clear().await.map_err(AppError::internal)?;
     Ok(Json(json!({ "cleared": true })))
+}
+
+pub async fn debug_dashboard(
+    State(state): State<AppState>,
+    Query(query): Query<DebugDashboardQuery>,
+) -> Result<Html<String>, AppError> {
+    let limit = query.limit.unwrap_or(100).clamp(1, 500);
+    let logs = state
+        .logs
+        .list_request_summaries(limit)
+        .map_err(AppError::internal)?;
+    let selected_request_id = query
+        .request_id
+        .clone()
+        .or_else(|| logs.first().map(|log| log.request_id.clone()));
+
+    let selected_detail = if let Some(request_id) = selected_request_id.as_ref() {
+        let events = state
+            .logs
+            .load_request(request_id)
+            .map_err(AppError::internal)?;
+        if events.is_empty() {
+            None
+        } else {
+            Some(DebugWebLogDetail {
+                request_id: request_id.clone(),
+                events: events.into_iter().map(map_debug_log_event).collect(),
+            })
+        }
+    } else {
+        None
+    };
+
+    let invalid_selection_error = if query.request_id.is_some() && selected_detail.is_none() {
+        Some("指定的 request_id 不存在或已经被清空。".to_string())
+    } else {
+        None
+    };
+
+    let document = debug_web::render_debug_page(DebugPageData {
+        logging_enabled: state.logs.is_enabled(),
+        logs: logs.into_iter().map(map_debug_log_summary).collect(),
+        selected_request_id,
+        selected_detail,
+        limit,
+        notice: query.notice,
+        error: query.error.or(invalid_selection_error),
+    });
+    Ok(Html(document))
+}
+
+pub async fn debug_set_log_settings(
+    State(state): State<AppState>,
+    Form(form): Form<DebugLogSettingsForm>,
+) -> Result<Redirect, AppError> {
+    let enabled = state
+        .logs
+        .set_enabled(form.enabled)
+        .await
+        .map_err(AppError::internal)?;
+    let notice = if enabled {
+        "日志记录已开启"
+    } else {
+        "日志记录已暂停"
+    };
+    Ok(Redirect::to(&build_debug_redirect_url(
+        form.limit.unwrap_or(100),
+        form.request_id.as_deref(),
+        Some(notice),
+        None,
+    )))
+}
+
+pub async fn debug_clear_logs(
+    State(state): State<AppState>,
+    Form(form): Form<DebugClearLogsForm>,
+) -> Result<Redirect, AppError> {
+    state.logs.clear().await.map_err(AppError::internal)?;
+    Ok(Redirect::to(&build_debug_redirect_url(
+        form.limit.unwrap_or(100),
+        None,
+        Some("日志已清空"),
+        None,
+    )))
 }
 
 pub async fn responses(
@@ -580,6 +686,71 @@ pub async fn responses(
             Err(err)
         }
     }
+}
+
+fn map_debug_log_summary(log: GatewayLogSummary) -> DebugWebLogSummary {
+    DebugWebLogSummary {
+        request_id: log.request_id,
+        updated_at_label: format_timestamp(log.updated_at),
+        provider_name: log.provider_name,
+        account_email: log.account_email,
+        model: log.model,
+        stream: log.stream,
+        status_code: log.status_code,
+        has_error: log.has_error,
+        error_message: log.error_message,
+        ingress_protocol: log.ingress_protocol,
+        egress_protocol: log.egress_protocol,
+        event_count: log.event_count,
+    }
+}
+
+fn map_debug_log_event(event: crate::models::GatewayLogEvent) -> DebugWebLogEvent {
+    DebugWebLogEvent {
+        id: event.id,
+        stage: event.stage,
+        created_at_label: format_timestamp(event.created_at),
+        status_code: event.status_code,
+        ingress_protocol: event.ingress_protocol,
+        egress_protocol: event.egress_protocol,
+        provider_name: event.provider_name,
+        account_id: event.account_id,
+        account_email: event.account_email,
+        model: event.model,
+        stream: event.stream,
+        method: event.method,
+        path: event.path,
+        url: event.url,
+        body: event.body,
+        body_truncated: event.body_truncated,
+        error_message: event.error_message,
+        error_truncated: event.error_truncated,
+        elapsed_ms: event.elapsed_ms,
+    }
+}
+
+fn format_timestamp(timestamp: i64) -> String {
+    timestamp.to_string()
+}
+
+fn build_debug_redirect_url(
+    limit: usize,
+    request_id: Option<&str>,
+    notice: Option<&str>,
+    error: Option<&str>,
+) -> String {
+    let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+    serializer.append_pair("limit", &limit.clamp(1, 500).to_string());
+    if let Some(request_id) = request_id {
+        serializer.append_pair("request_id", request_id);
+    }
+    if let Some(notice) = notice {
+        serializer.append_pair("notice", notice);
+    }
+    if let Some(error) = error {
+        serializer.append_pair("error", error);
+    }
+    format!("/debug?{}", serializer.finish())
 }
 
 async fn responses_inner(

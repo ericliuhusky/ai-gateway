@@ -17,25 +17,15 @@ struct ContentView: View {
     ]
 
     var body: some View {
-        TabView {
-            NavigationStack {
-                VStack(spacing: 18) {
-                    header
-                    providerGrid
-                    footer
-                }
-                .padding(24)
-                .background(background)
-                .navigationTitle("AI Gateway")
+        NavigationStack {
+            VStack(spacing: 18) {
+                header
+                providerGrid
+                footer
             }
-            .tabItem {
-                Label("供应商", systemImage: "square.grid.2x2")
-            }
-
-            LogsTabView(viewModel: viewModel)
-                .tabItem {
-                    Label("日志", systemImage: "text.document")
-                }
+            .padding(24)
+            .background(background)
+            .navigationTitle("AI Gateway")
         }
         .sheet(isPresented: $showingAddProvider) {
             AddProviderSheet(viewModel: viewModel)

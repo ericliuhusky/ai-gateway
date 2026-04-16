@@ -37,24 +37,6 @@ struct GatewayAPIClient: Sendable {
         return response.codexConfig
     }
 
-    func fetchLogs(limit: Int = 100) async throws -> [GatewayLogSummary] {
-        let response: GatewayLogListResponse = try await request(
-            path: "/logs",
-            queryItems: [URLQueryItem(name: "limit", value: String(limit))]
-        )
-        return response.logs
-    }
-
-    func fetchLogDetail(requestID: String) async throws -> GatewayLogDetail {
-        let response: GatewayLogDetailResponse = try await request(path: "/logs/\(requestID)")
-        return response.log
-    }
-
-    func fetchLoggingSettings() async throws -> GatewayLoggingSettings {
-        let response: GatewayLoggingSettingsResponse = try await request(path: "/logs/settings")
-        return response.logging
-    }
-
     func createProvider(_ payload: CreateAPIProviderRequest) async throws {
         _ = try await requestWithoutBody(
             path: "/providers",
@@ -79,19 +61,6 @@ struct GatewayAPIClient: Sendable {
     func restoreCodexConfig() async throws -> CodexConfigStatus {
         let response: CodexConfigStatusResponse = try await request(path: "/codex-config", method: "DELETE")
         return response.codexConfig
-    }
-
-    func setLoggingEnabled(_ enabled: Bool) async throws -> GatewayLoggingSettings {
-        let response: GatewayLoggingSettingsResponse = try await requestWithBody(
-            path: "/logs/settings",
-            method: "PUT",
-            body: UpdateGatewayLoggingSettingsRequest(enabled: enabled)
-        )
-        return response.logging
-    }
-
-    func clearLogs() async throws {
-        _ = try await request(path: "/logs", method: "DELETE") as [String: Bool]
     }
 
     func loginURL(for provider: AccountLoginProvider) -> URL {
