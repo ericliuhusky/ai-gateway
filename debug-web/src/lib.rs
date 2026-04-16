@@ -224,7 +224,7 @@ fn DebugApp(data: DebugPageData) -> impl IntoView {
                                             <div class="row-top">
                                                 <div>
                                                     <strong>{log.provider_name.clone().unwrap_or_else(|| "未知供应商".to_string())}</strong>
-                                                    <span class="mono">{log.id.clone()}</span>
+                                                    <span>{log.account_email.clone().unwrap_or_else(|| "未绑定账户".to_string())}</span>
                                                 </div>
                                                 <span class=if log.has_error { "badge error" } else { "badge ok" }>
                                                     {match log.status_code {
@@ -236,12 +236,8 @@ fn DebugApp(data: DebugPageData) -> impl IntoView {
                                             <div class="tag-row">
                                                 <span class="tag">{if log.stream { "SSE" } else { "JSON" }}</span>
                                                 <span class="tag">{log.model.clone().unwrap_or_else(|| "未知模型".to_string())}</span>
-                                                <span class="tag">{log.id.clone()}</span>
                                             </div>
                                             <div class="meta-grid">
-                                                <span>{format!("入口 {}", log.ingress_protocol.clone().unwrap_or_else(|| "-".to_string()))}</span>
-                                                <span>{format!("出口 {}", log.egress_protocol.clone().unwrap_or_else(|| "-".to_string()))}</span>
-                                                <span>{log.account_email.clone().unwrap_or_default()}</span>
                                                 <span>{log.updated_at_label.clone()}</span>
                                             </div>
                                             {log.error_message.as_ref().map(|message| view! {
@@ -265,24 +261,28 @@ fn DebugApp(data: DebugPageData) -> impl IntoView {
                     </div>
                     {match data.selected_detail.clone() {
                         Some(detail) => view! {
-                            <div class="detail-header">
-                                <span class="mono">{detail.id.clone()}</span>
-                                <span class="pill neutral">{detail.updated_at_label.clone()}</span>
-                            </div>
                             <div class="detail-tabs">
                                 <input class="detail-tab-input" type="radio" id="tab-detail" name="detail-tab" checked/>
                                 <input class="detail-tab-input" type="radio" id="tab-diff" name="detail-tab"/>
                                 <div class="detail-tab-bar">
                                     <label class="detail-tab-label" for="tab-detail">"详情"</label>
-                                    <label class="detail-tab-label" for="tab-diff">"Diff"</label>
+                                    <label class="detail-tab-label" for="tab-diff">"对比"</label>
                                 </div>
                                 <div class="detail-tab-panel detail-panel-main">
                                     <div class="event-list">
                                         <article class="event-card">
                                             <div class="event-top">
                                                 <div>
-                                                    <strong>"聚合日志"</strong>
+                                                    <strong class="mono">{detail.id.clone()}</strong>
                                                     <span class="subtle">{detail.created_at_label.clone()}</span>
+                                                    <div class="detail-chip-row">
+                                                        <span class="pill neutral">
+                                                            {if detail.stream { "流式" } else { "非流式" }}
+                                                        </span>
+                                                        {detail.model.as_ref().map(|model| view! {
+                                                            <span class="pill neutral">{model.clone()}</span>
+                                                        })}
+                                                    </div>
                                                 </div>
                                                 <div class="event-meta">
                                                     {detail.egress_response_status_code.or(detail.ingress_response_status_code).map(|code| view! {
@@ -294,15 +294,13 @@ fn DebugApp(data: DebugPageData) -> impl IntoView {
                                                 </div>
                                             </div>
                                             <dl class="kv-grid">
-                                                <KeyValue label="Provider" value=detail.provider_name.clone()/>
-                                                <KeyValue label="Account" value=detail.account_email.clone().or(detail.account_id.clone())/>
-                                                <KeyValue label="Model" value=detail.model.clone()/>
-                                                <KeyValue label="Stream" value=Some(if detail.stream { "true".to_string() } else { "false".to_string() })/>
-                                                <KeyValue label="Ingress" value=detail.ingress_protocol.clone()/>
-                                                <KeyValue label="Egress" value=detail.egress_protocol.clone()/>
-                                                <KeyValue label="Method" value=detail.method.clone()/>
-                                                <KeyValue label="Path" value=detail.path.clone()/>
-                                                <KeyValue label="Upstream URL" value=detail.egress_request_url.clone()/>
+                                                <KeyValue label="供应商" value=detail.provider_name.clone()/>
+                                                <KeyValue label="账户" value=detail.account_email.clone().or(detail.account_id.clone())/>
+                                                <KeyValue label="入口协议" value=detail.ingress_protocol.clone()/>
+                                                <KeyValue label="出口协议" value=detail.egress_protocol.clone()/>
+                                                <KeyValue label="请求方法" value=detail.method.clone()/>
+                                                <KeyValue label="路径" value=detail.path.clone()/>
+                                                <KeyValue label="上游地址" value=detail.egress_request_url.clone()/>
                                             </dl>
                                             {detail.error_message.as_ref().map(|message| view! {
                                                 <div class="block error-block">
@@ -398,7 +396,6 @@ fn ComparisonSection(detail: DebugLogDetail, kind: ComparisonKind) -> impl IntoV
         <section class="compare-section">
             <div class="compare-header">
                 <h3>{title}</h3>
-                <span class="pill neutral">{detail.id}</span>
             </div>
             <BodyDiffBlock
                 title="Body Diff"
@@ -1751,6 +1748,13 @@ form {
 .event-top > div:first-child {
   display: grid;
   gap: 4px;
+}
+
+.detail-chip-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 4px;
 }
 
 .kv-grid {
