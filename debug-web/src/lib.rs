@@ -437,6 +437,14 @@ fn DiffBlock(
                     <span class="diff-side before">{left_label}</span>
                     <span class="diff-side after">{right_label}</span>
                 </div>
+                <div class="copy-actions">
+                    {left_content.as_ref().map(|content| view! {
+                        <CopyButton label=format!("复制{left_label}") text=content.clone()/>
+                    })}
+                    {right_content.as_ref().map(|content| view! {
+                        <CopyButton label=format!("复制{right_label}") text=content.clone()/>
+                    })}
+                </div>
             </div>
             <DiffSummaryText items=summary/>
             <details class="diff-detail-toggle">
@@ -545,6 +553,9 @@ fn JsonDiffBlock(
 ) -> impl IntoView {
     let diff = diff_json_values(&left_value, &right_value);
     let summary = diff.as_ref().and_then(build_json_diff_summary);
+    let left_copy = serde_json::to_string_pretty(&left_value).unwrap_or_else(|_| left_value.to_string());
+    let right_copy =
+        serde_json::to_string_pretty(&right_value).unwrap_or_else(|_| right_value.to_string());
 
     view! {
         <div class="diff-block">
@@ -555,6 +566,10 @@ fn JsonDiffBlock(
                     <span class="diff-side after"><span class="side-dot egress"></span>{right_label}</span>
                     <span class="diff-side present">"绿色=存在"</span>
                     <span class="diff-side missing">"红色=缺失"</span>
+                </div>
+                <div class="copy-actions">
+                    <CopyButton label=format!("复制{left_label}") text=left_copy/>
+                    <CopyButton label=format!("复制{right_label}") text=right_copy/>
                 </div>
             </div>
             <DiffSummaryJson node=summary/>
@@ -779,6 +794,10 @@ fn summary_value_state_class(
 
 #[component]
 fn JsonInlineValue(value: Value) -> impl IntoView {
+    if let Some(compact) = compact_repeated_array_display(&value) {
+        return view! { <span class="json-inline-blob">{compact}</span> }.into_any();
+    }
+
     match value {
         Value::Object(_) | Value::Array(_) => {
             let pretty = serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string());
@@ -822,13 +841,23 @@ fn KeyValue(label: &'static str, value: Option<String>) -> impl IntoView {
 fn JsonBlock(content: String, root_label: &'static str) -> impl IntoView {
     match parse_structured_content(&content) {
         Ok(value) => view! {
-            <div class="json-tree-shell">
-                <JsonNode label=Some(root_label.to_string()) value=value/>
+            <div class="copyable-block">
+                <div class="copy-actions block-copy-actions">
+                    <CopyButton label="复制".to_string() text=content.clone()/>
+                </div>
+                <div class="json-tree-shell">
+                    <JsonNode label=Some(root_label.to_string()) value=value/>
+                </div>
             </div>
         }
         .into_any(),
         Err(_) => view! {
-            <LongTextBlock text=content quoted=false class_name="plain-text-block"/>
+            <div class="copyable-block">
+                <div class="copy-actions block-copy-actions">
+                    <CopyButton label="复制".to_string() text=content.clone()/>
+                </div>
+                <LongTextBlock text=content quoted=false class_name="plain-text-block"/>
+            </div>
         }
         .into_any(),
     }
@@ -955,6 +984,48 @@ fn LongTextBlock(text: String, quoted: bool, class_name: &'static str) -> impl I
         </details>
     }
     .into_any()
+}
+
+#[component]
+fn CopyButton(label: String, text: String) -> impl IntoView {
+    let onclick = copy_button_onclick(&text);
+
+    view! {
+        <button class="copy-button" type="button" attr:onclick=onclick>
+            <span class="copy-button-idle">{label}</span>
+            <span class="copy-button-done">"已复制"</span>
+        </button>
+    }
+}
+
+fn copy_button_onclick(text: &str) -> String {
+    let serialized = serde_json::to_string(text).unwrap_or_else(|_| "\"\"".to_string());
+    format!(
+        "(()=>{{const text={serialized};const done=()=>{{this.dataset.copied='1';clearTimeout(this._copyTimer);this._copyTimer=setTimeout(()=>this.dataset.copied='0',1200);}};if(navigator.clipboard&&window.isSecureContext){{navigator.clipboard.writeText(text).then(done);return;}}const area=document.createElement('textarea');area.value=text;area.setAttribute('readonly','');area.style.position='fixed';area.style.opacity='0';document.body.appendChild(area);area.select();try{{document.execCommand('copy');done();}}finally{{document.body.removeChild(area);}}}})()"
+    )
+}
+
+fn compact_repeated_array_display(value: &Value) -> Option<String> {
+    let Value::Array(items) = value else {
+        return None;
+    };
+    let first = items.first()?;
+    if items.len() <= 1 || items.iter().any(|item| item != first) {
+        return None;
+    }
+
+    Some(format!(
+        "{} * {}",
+        compact_scalar_or_json(first),
+        items.len()
+    ))
+}
+
+fn compact_scalar_or_json(value: &Value) -> String {
+    match value {
+        Value::String(text) => serde_json::to_string(text).unwrap_or_else(|_| format!("\"{text}\"")),
+        _ => serde_json::to_string(value).unwrap_or_else(|_| value.to_string()),
+    }
 }
 
 fn prepare_diff_content(content: &str) -> String {
@@ -1656,12 +1727,70 @@ form {
   gap: 12px;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
 }
 
 .diff-legend {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.copyable-block {
+  display: grid;
+  gap: 8px;
+}
+
+.copy-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.block-copy-actions {
+  margin-bottom: 2px;
+}
+
+.copy-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 30px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(37, 99, 235, 0.16);
+  background: rgba(239, 246, 255, 0.9);
+  color: #1d4ed8;
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
+}
+
+.copy-button:hover {
+  background: rgba(219, 234, 254, 0.95);
+  border-color: rgba(37, 99, 235, 0.24);
+}
+
+.copy-button-done {
+  display: none;
+}
+
+.copy-button[data-copied="1"] {
+  background: rgba(33, 150, 83, 0.14);
+  border-color: rgba(33, 150, 83, 0.18);
+  color: #20643a;
+}
+
+.copy-button[data-copied="1"] .copy-button-idle {
+  display: none;
+}
+
+.copy-button[data-copied="1"] .copy-button-done {
+  display: inline;
 }
 
 .diff-side {
@@ -2168,7 +2297,7 @@ pre {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_structured_content;
+    use super::{compact_repeated_array_display, parse_structured_content};
     use serde_json::json;
 
     #[test]
@@ -2209,5 +2338,20 @@ mod tests {
                 }
             ])
         );
+    }
+
+    #[test]
+    fn compacts_repeated_array_values() {
+        let compact = compact_repeated_array_display(&json!(["text", "text", "text", "text"]))
+            .expect("repeated array should compact");
+
+        assert_eq!(compact, "\"text\" * 4");
+    }
+
+    #[test]
+    fn keeps_mixed_array_values_expanded() {
+        let compact = compact_repeated_array_display(&json!(["text", "text", "other"]));
+
+        assert_eq!(compact, None);
     }
 }
