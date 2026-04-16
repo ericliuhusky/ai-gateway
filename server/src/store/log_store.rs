@@ -21,6 +21,12 @@ const DEFAULT_ERROR_LIMIT_CHARS: usize = 4_000;
 const DEFAULT_BODY_LIMIT_CHARS: usize = 200_000;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+struct ExtractedText {
+    text: String,
+    path: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LogStage {
     IngressRequest,
     EgressRequest,
@@ -396,6 +402,17 @@ impl LogStore {
                 let ingress_request_body = row.get::<_, Option<String>>(12)?;
                 let ingress_response_body = row.get::<_, Option<String>>(13)?;
                 let egress_response_body = row.get::<_, Option<String>>(14)?;
+                let user_input = ingress_request_body
+                    .as_deref()
+                    .and_then(extract_user_input_field_from_body);
+                let model_output = ingress_response_body
+                    .as_deref()
+                    .and_then(extract_model_output_field_from_body)
+                    .or_else(|| {
+                        egress_response_body
+                            .as_deref()
+                            .and_then(extract_model_output_field_from_body)
+                    });
                 Ok(GatewayLogSummary {
                     id: row.get(0)?,
                     created_at: row.get(1)?,
@@ -409,17 +426,8 @@ impl LogStore {
                     error_message: row.get(9)?,
                     ingress_protocol: row.get(10)?,
                     egress_protocol: row.get(11)?,
-                    user_input: ingress_request_body
-                        .as_deref()
-                        .and_then(extract_user_input_from_body),
-                    model_output: ingress_response_body
-                        .as_deref()
-                        .and_then(extract_model_output_from_body)
-                        .or_else(|| {
-                            egress_response_body
-                                .as_deref()
-                                .and_then(extract_model_output_from_body)
-                        }),
+                    user_input: user_input.as_ref().map(|value| value.text.clone()),
+                    model_output: model_output.as_ref().map(|value| value.text.clone()),
                 })
             })
             .map_err(|err| format!("query log summaries failed: {err}"))?;
@@ -467,6 +475,17 @@ impl LogStore {
                 let ingress_request_body = row.get::<_, Option<String>>(13)?;
                 let ingress_response_body = row.get::<_, Option<String>>(18)?;
                 let egress_response_body = row.get::<_, Option<String>>(21)?;
+                let user_input = ingress_request_body
+                    .as_deref()
+                    .and_then(extract_user_input_field_from_body);
+                let model_output = ingress_response_body
+                    .as_deref()
+                    .and_then(extract_model_output_field_from_body)
+                    .or_else(|| {
+                        egress_response_body
+                            .as_deref()
+                            .and_then(extract_model_output_field_from_body)
+                    });
                 Ok(GatewayLogDetail {
                     id: row.get(0)?,
                     created_at: row.get(1)?,
@@ -498,17 +517,10 @@ impl LogStore {
                     error_message: row.get(23)?,
                     error_truncated: row.get::<_, i64>(24)? != 0,
                     elapsed_ms: row.get(25)?,
-                    user_input: ingress_request_body
-                        .as_deref()
-                        .and_then(extract_user_input_from_body),
-                    model_output: ingress_response_body
-                        .as_deref()
-                        .and_then(extract_model_output_from_body)
-                        .or_else(|| {
-                            egress_response_body
-                                .as_deref()
-                                .and_then(extract_model_output_from_body)
-                        }),
+                    user_input: user_input.as_ref().map(|value| value.text.clone()),
+                    user_input_path: user_input.as_ref().map(|value| value.path.clone()),
+                    model_output: model_output.as_ref().map(|value| value.text.clone()),
+                    model_output_path: model_output.as_ref().map(|value| value.path.clone()),
                 })
             },
         )
@@ -640,169 +652,247 @@ impl LogStore {
     }
 }
 
-fn extract_user_input_from_body(body: &str) -> Option<String> {
+fn extract_user_input_field_from_body(body: &str) -> Option<ExtractedText> {
     let value = serde_json::from_str::<Value>(body).ok()?;
-    extract_user_input_from_value(&value)
+    extract_user_input_from_value(&value, &[])
 }
 
-fn extract_user_input_from_value(value: &Value) -> Option<String> {
+fn extract_user_input_from_value(value: &Value, path: &[String]) -> Option<ExtractedText> {
     if let Some(input) = value.get("input") {
-        return extract_user_input_from_input(input);
+        return extract_user_input_from_input(input, &child_path(path, "input"));
     }
-    extract_text_candidate(value)
+    extract_text_candidate(value, path)
 }
 
-fn extract_user_input_from_input(input: &Value) -> Option<String> {
+fn extract_user_input_from_input(input: &Value, path: &[String]) -> Option<ExtractedText> {
     match input {
-        Value::String(text) => normalize_extracted_text(text),
+        Value::String(text) => extracted_text(text, path),
         Value::Array(items) => items
             .iter()
+            .enumerate()
             .rev()
-            .find_map(extract_user_text_from_message_item)
-            .or_else(|| {
-                items
-                    .iter()
-                    .rev()
-                    .find_map(|item| extract_user_input_from_message_item(item, false))
+            .find_map(|(index, item)| {
+                let item_path = child_index_path(path, index);
+                extract_user_text_from_message_item(item, &item_path)
             })
-            .or_else(|| items.iter().rev().find_map(extract_text_candidate)),
-        Value::Object(_) => extract_user_input_from_message_item(input, true)
-            .or_else(|| extract_text_candidate(input)),
+            .or_else(|| {
+                items.iter().enumerate().rev().find_map(|(index, item)| {
+                    let item_path = child_index_path(path, index);
+                    extract_user_input_from_message_item(item, &item_path, false)
+                })
+            })
+            .or_else(|| {
+                items.iter().enumerate().rev().find_map(|(index, item)| {
+                    extract_text_candidate(item, &child_index_path(path, index))
+                })
+            }),
+        Value::Object(_) => extract_user_input_from_message_item(input, path, true)
+            .or_else(|| extract_text_candidate(input, path)),
         _ => None,
     }
 }
 
-fn extract_user_text_from_message_item(value: &Value) -> Option<String> {
+fn extract_user_text_from_message_item(value: &Value, path: &[String]) -> Option<ExtractedText> {
     let object = value.as_object()?;
     if object.get("role").and_then(Value::as_str) != Some("user") {
         return None;
     }
     object
         .get("content")
-        .and_then(extract_content_text)
-        .or_else(|| extract_text_candidate(value))
+        .and_then(|content| extract_content_text(content, &child_path(path, "content")))
+        .or_else(|| extract_text_candidate(value, path))
 }
 
-fn extract_user_input_from_message_item(value: &Value, prefer_user_role: bool) -> Option<String> {
+fn extract_user_input_from_message_item(
+    value: &Value,
+    path: &[String],
+    prefer_user_role: bool,
+) -> Option<ExtractedText> {
     let object = value.as_object()?;
     let role = object.get("role").and_then(Value::as_str);
     if prefer_user_role && role == Some("user") {
         return object
             .get("content")
-            .and_then(extract_content_text)
-            .or_else(|| extract_text_candidate(value));
+            .and_then(|content| extract_content_text(content, &child_path(path, "content")))
+            .or_else(|| extract_text_candidate(value, path));
     }
 
     object
         .get("content")
-        .and_then(extract_content_text)
-        .or_else(|| extract_text_candidate(value))
+        .and_then(|content| extract_content_text(content, &child_path(path, "content")))
+        .or_else(|| extract_text_candidate(value, path))
 }
 
 pub(crate) fn extract_model_output_from_body(body: &str) -> Option<String> {
+    extract_model_output_field_from_body(body).map(|value| value.text)
+}
+
+fn extract_model_output_field_from_body(body: &str) -> Option<ExtractedText> {
     serde_json::from_str::<Value>(body)
         .ok()
-        .and_then(|value| extract_model_output_from_value(&value))
+        .and_then(|value| extract_model_output_from_value(&value, &[]))
         .or_else(|| extract_model_output_from_sse_body(body))
 }
 
-fn extract_model_output_from_value(value: &Value) -> Option<String> {
+fn extract_model_output_from_value(value: &Value, path: &[String]) -> Option<ExtractedText> {
     value
         .get("output_text")
         .and_then(Value::as_str)
-        .and_then(normalize_extracted_text)
-        .or_else(|| value.get("output").and_then(extract_output_text))
+        .and_then(|text| extracted_text(text, &child_path(path, "output_text")))
+        .or_else(|| {
+            value
+                .get("output")
+                .and_then(|output| extract_output_text(output, &child_path(path, "output")))
+        })
         .or_else(|| {
             value
                 .get("choices")
                 .and_then(Value::as_array)
-                .and_then(|choices| choices.first())
-                .and_then(extract_chat_choice_text)
+                .and_then(|choices| {
+                    choices.first().and_then(|choice| {
+                        extract_chat_choice_text(
+                            choice,
+                            &child_index_path(&child_path(path, "choices"), 0),
+                        )
+                    })
+                })
         })
         .or_else(|| {
             value
                 .get("candidates")
                 .and_then(Value::as_array)
-                .and_then(|candidates| candidates.first())
-                .and_then(extract_gemini_candidate_text)
+                .and_then(|candidates| {
+                    candidates.first().and_then(|candidate| {
+                        extract_gemini_candidate_text(
+                            candidate,
+                            &child_index_path(&child_path(path, "candidates"), 0),
+                        )
+                    })
+                })
         })
         .or_else(|| {
             value
                 .get("response")
-                .and_then(extract_model_output_from_value)
+                .and_then(|response| {
+                    extract_model_output_from_value(response, &child_path(path, "response"))
+                })
         })
-        .or_else(|| value.get("content").and_then(extract_content_text))
-        .or_else(|| extract_text_candidate(value))
+        .or_else(|| {
+            value
+                .get("content")
+                .and_then(|content| extract_content_text(content, &child_path(path, "content")))
+        })
+        .or_else(|| extract_text_candidate(value, path))
 }
 
-fn extract_chat_choice_text(value: &Value) -> Option<String> {
+fn extract_chat_choice_text(value: &Value, path: &[String]) -> Option<ExtractedText> {
     value
         .get("message")
-        .and_then(|message| message.get("content"))
-        .and_then(extract_content_text)
+        .and_then(|message| {
+            message
+                .get("content")
+                .and_then(|content| {
+                    extract_content_text(content, &child_path(&child_path(path, "message"), "content"))
+                })
+        })
         .or_else(|| {
             value
                 .get("delta")
-                .and_then(|delta| delta.get("content"))
-                .and_then(extract_content_text)
+                .and_then(|delta| {
+                    delta.get("content")
+                        .and_then(|content| {
+                            extract_content_text(
+                                content,
+                                &child_path(&child_path(path, "delta"), "content"),
+                            )
+                        })
+                })
         })
-        .or_else(|| value.get("text").and_then(extract_content_text))
+        .or_else(|| {
+            value
+                .get("text")
+                .and_then(|text| extract_content_text(text, &child_path(path, "text")))
+        })
 }
 
-fn extract_gemini_candidate_text(value: &Value) -> Option<String> {
+fn extract_gemini_candidate_text(value: &Value, path: &[String]) -> Option<ExtractedText> {
     value
         .get("content")
         .and_then(|content| content.get("parts"))
-        .and_then(extract_text_parts)
+        .and_then(|parts| extract_text_parts(parts, &child_path(path, "content.parts")))
 }
 
-fn extract_output_text(value: &Value) -> Option<String> {
+fn extract_output_text(value: &Value, path: &[String]) -> Option<ExtractedText> {
     match value {
         Value::Array(items) => items
             .iter()
-            .find_map(|item| {
+            .enumerate()
+            .find_map(|(index, item)| {
+                let item_path = child_index_path(path, index);
                 item.get("content")
-                    .and_then(extract_content_text)
-                    .or_else(|| extract_text_candidate(item))
+                    .and_then(|content| extract_content_text(content, &child_path(&item_path, "content")))
+                    .or_else(|| extract_text_candidate(item, &item_path))
             })
-            .or_else(|| items.iter().find_map(extract_text_candidate)),
-        _ => extract_content_text(value).or_else(|| extract_text_candidate(value)),
+            .or_else(|| {
+                items.iter().enumerate().find_map(|(index, item)| {
+                    extract_text_candidate(item, &child_index_path(path, index))
+                })
+            }),
+        _ => extract_content_text(value, path).or_else(|| extract_text_candidate(value, path)),
     }
 }
 
-fn extract_content_text(value: &Value) -> Option<String> {
+fn extract_content_text(value: &Value, path: &[String]) -> Option<ExtractedText> {
     match value {
-        Value::String(text) => normalize_extracted_text(text),
-        Value::Array(_) => extract_text_parts(value),
+        Value::String(text) => extracted_text(text, path),
+        Value::Array(_) => extract_text_parts(value, path),
         Value::Object(object) => object
             .get("text")
             .and_then(Value::as_str)
-            .and_then(normalize_extracted_text)
-            .or_else(|| object.get("content").and_then(extract_content_text)),
+            .and_then(|text| extracted_text(text, &child_path(path, "text")))
+            .or_else(|| {
+                object
+                    .get("content")
+                    .and_then(|content| extract_content_text(content, &child_path(path, "content")))
+            }),
         _ => None,
     }
 }
 
-fn extract_text_parts(value: &Value) -> Option<String> {
+fn extract_text_parts(value: &Value, path: &[String]) -> Option<ExtractedText> {
     let items = value.as_array()?;
-    let text = items
-        .iter()
-        .filter_map(|item| {
-            item.get("text")
-                .and_then(Value::as_str)
-                .map(ToOwned::to_owned)
-                .or_else(|| {
-                    item.get("content")
-                        .and_then(extract_content_text)
-                        .or_else(|| extract_text_candidate(item))
-                })
-        })
-        .collect::<Vec<_>>()
-        .join("");
-    normalize_extracted_text(&text)
+    let mut text_parts = Vec::new();
+    let mut first_path = None;
+
+    for (index, item) in items.iter().enumerate() {
+        let item_path = child_index_path(path, index);
+        if let Some(text) = item.get("text").and_then(Value::as_str) {
+            if first_path.is_none() {
+                first_path = Some(path_string(&child_path(&item_path, "text")));
+            }
+            text_parts.push(text.to_string());
+            continue;
+        }
+
+        if let Some(extracted) = item
+            .get("content")
+            .and_then(|content| extract_content_text(content, &child_path(&item_path, "content")))
+            .or_else(|| extract_text_candidate(item, &item_path))
+        {
+            if first_path.is_none() {
+                first_path = Some(extracted.path.clone());
+            }
+            text_parts.push(extracted.text);
+        }
+    }
+
+    normalize_extracted_text(&text_parts.join("")).map(|text| ExtractedText {
+        text,
+        path: first_path.unwrap_or_else(|| path_string(path)),
+    })
 }
 
-fn extract_model_output_from_sse_body(body: &str) -> Option<String> {
+fn extract_model_output_from_sse_body(body: &str) -> Option<ExtractedText> {
     let mut deltas = Vec::new();
     let mut final_response = None;
 
@@ -824,26 +914,43 @@ fn extract_model_output_from_sse_body(body: &str) -> Option<String> {
             }
             Some("response.output_text.done") => {
                 if let Some(text) = event.get("text").and_then(Value::as_str) {
-                    final_response = normalize_extracted_text(text);
+                    final_response = extracted_text(
+                        text,
+                        &[
+                            "response".to_string(),
+                            "output_text".to_string(),
+                            "done".to_string(),
+                            "text".to_string(),
+                        ],
+                    );
                 }
             }
             Some("response.completed") | Some("response.failed") | Some("response.incomplete") => {
                 final_response = event
                     .get("response")
-                    .and_then(extract_model_output_from_value)
+                    .and_then(|response| {
+                        extract_model_output_from_value(response, &["response".to_string()])
+                    })
                     .or(final_response);
             }
             _ => {}
         }
     }
 
-    final_response.or_else(|| normalize_extracted_text(&deltas.join("")))
+    final_response.or_else(|| {
+        normalize_extracted_text(&deltas.join("")).map(|text| ExtractedText {
+            text,
+            path: "response.output_text.delta".to_string(),
+        })
+    })
 }
 
-fn extract_text_candidate(value: &Value) -> Option<String> {
+fn extract_text_candidate(value: &Value, path: &[String]) -> Option<ExtractedText> {
     match value {
-        Value::String(text) => normalize_extracted_text(text),
-        Value::Array(items) => items.iter().find_map(extract_text_candidate),
+        Value::String(text) => extracted_text(text, path),
+        Value::Array(items) => items.iter().enumerate().find_map(|(index, item)| {
+            extract_text_candidate(item, &child_index_path(path, index))
+        }),
         Value::Object(object) => {
             for key in [
                 "text",
@@ -854,13 +961,41 @@ fn extract_text_candidate(value: &Value) -> Option<String> {
                 "summary",
                 "arguments",
             ] {
-                if let Some(text) = object.get(key).and_then(extract_content_text) {
+                if let Some(text) = object
+                    .get(key)
+                    .and_then(|value| extract_content_text(value, &child_path(path, key)))
+                {
                     return Some(text);
                 }
             }
             None
         }
         _ => None,
+    }
+}
+
+fn extracted_text(text: &str, path: &[String]) -> Option<ExtractedText> {
+    normalize_extracted_text(text).map(|text| ExtractedText {
+        text,
+        path: path_string(path),
+    })
+}
+
+fn child_path(path: &[String], segment: impl Into<String>) -> Vec<String> {
+    let mut next = path.to_vec();
+    next.push(segment.into());
+    next
+}
+
+fn child_index_path(path: &[String], index: usize) -> Vec<String> {
+    child_path(path, index.to_string())
+}
+
+fn path_string(path: &[String]) -> String {
+    if path.is_empty() {
+        "root".to_string()
+    } else {
+        path.join(".")
     }
 }
 
@@ -897,7 +1032,10 @@ fn now_unix() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{LogEvent, LogStage, LogStore, extract_model_output_from_body};
+    use super::{
+        ExtractedText, LogEvent, LogStage, LogStore, extract_model_output_from_body,
+        extract_model_output_field_from_body, extract_user_input_field_from_body,
+    };
     use std::{
         fs,
         path::PathBuf,
@@ -1212,6 +1350,37 @@ mod tests {
         assert_eq!(
             extract_model_output_from_body(sse).as_deref(),
             Some("hello")
+        );
+    }
+
+    #[test]
+    fn extracts_paths_for_user_input_and_model_output() {
+        let request = r#"{
+            "input": [{
+                "role": "user",
+                "content": [{"type": "input_text", "text": "hello"}]
+            }]
+        }"#;
+        let response = r#"{
+            "output": [{
+                "type": "message",
+                "content": [{"type": "output_text", "text": "world"}]
+            }]
+        }"#;
+
+        assert_eq!(
+            extract_user_input_field_from_body(request),
+            Some(ExtractedText {
+                text: "hello".to_string(),
+                path: "input.0.content.0.text".to_string(),
+            })
+        );
+        assert_eq!(
+            extract_model_output_field_from_body(response),
+            Some(ExtractedText {
+                text: "world".to_string(),
+                path: "output.0.content.0.text".to_string(),
+            })
         );
     }
 

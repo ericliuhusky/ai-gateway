@@ -62,7 +62,9 @@ pub struct DebugLogDetail {
     pub error_truncated: bool,
     pub elapsed_ms: Option<i64>,
     pub user_input: Option<String>,
+    pub user_input_path: Option<String>,
     pub model_output: Option<String>,
+    pub model_output_path: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -306,10 +308,18 @@ fn DebugApp(data: DebugPageData) -> impl IntoView {
                                                 <KeyValue label="上游地址" value=detail.egress_request_url.clone()/>
                                             </dl>
                                             {detail.user_input.as_ref().map(|text| view! {
-                                                <FoldedTextBlock title="用户输入" text=text.clone() class_name="json-string"/>
+                                                <JsonScalarBlock
+                                                    title="用户输入"
+                                                    text=text.clone()
+                                                    root_label=detail.user_input_path.clone().unwrap_or_else(|| "user_input".to_string())
+                                                />
                                             })}
                                             {detail.model_output.as_ref().map(|text| view! {
-                                                <FoldedTextBlock title="模型回复" text=text.clone() class_name="json-inline-blob"/>
+                                                <JsonScalarBlock
+                                                    title="模型回复"
+                                                    text=text.clone()
+                                                    root_label=detail.model_output_path.clone().unwrap_or_else(|| "model_output".to_string())
+                                                />
                                             })}
                                             {detail.error_message.as_ref().map(|message| view! {
                                                 <div class="block error-block">
@@ -317,7 +327,7 @@ fn DebugApp(data: DebugPageData) -> impl IntoView {
                                                         "错误"
                                                         {if detail.error_truncated { "（已截断）" } else { "" }}
                                                     </div>
-                                                    <JsonBlock content=message.clone() root_label="error"/>
+                                                    <JsonBlock content=message.clone() root_label="error".to_string()/>
                                                 </div>
                                             })}
                                             {detail.ingress_request_body.as_ref().map(|body| view! {
@@ -326,7 +336,7 @@ fn DebugApp(data: DebugPageData) -> impl IntoView {
                                                         "入口请求"
                                                         {if detail.ingress_request_body_truncated { "（已截断）" } else { "" }}
                                                     </div>
-                                                    <JsonBlock content=body.clone() root_label="ingress_request"/>
+                                                    <JsonBlock content=body.clone() root_label="ingress_request".to_string()/>
                                                 </div>
                                             })}
                                             {detail.egress_request_body.as_ref().map(|body| view! {
@@ -335,7 +345,7 @@ fn DebugApp(data: DebugPageData) -> impl IntoView {
                                                         "出口请求"
                                                         {if detail.egress_request_body_truncated { "（已截断）" } else { "" }}
                                                     </div>
-                                                    <JsonBlock content=body.clone() root_label="egress_request"/>
+                                                    <JsonBlock content=body.clone() root_label="egress_request".to_string()/>
                                                 </div>
                                             })}
                                             {detail.ingress_response_body.as_ref().map(|body| view! {
@@ -344,7 +354,7 @@ fn DebugApp(data: DebugPageData) -> impl IntoView {
                                                         {format!("入口响应{}", detail.ingress_response_status_code.map(|code| format!(" ({code})")).unwrap_or_default())}
                                                         {if detail.ingress_response_body_truncated { "（已截断）" } else { "" }}
                                                     </div>
-                                                    <JsonBlock content=body.clone() root_label="ingress_response"/>
+                                                    <JsonBlock content=body.clone() root_label="ingress_response".to_string()/>
                                                 </div>
                                             })}
                                             {detail.egress_response_body.as_ref().map(|body| view! {
@@ -353,7 +363,7 @@ fn DebugApp(data: DebugPageData) -> impl IntoView {
                                                         {format!("出口响应{}", detail.egress_response_status_code.map(|code| format!(" ({code})")).unwrap_or_default())}
                                                         {if detail.egress_response_body_truncated { "（已截断）" } else { "" }}
                                                     </div>
-                                                    <JsonBlock content=body.clone() root_label="egress_response"/>
+                                                    <JsonBlock content=body.clone() root_label="egress_response".to_string()/>
                                                 </div>
                                             })}
                                         </article>
@@ -855,23 +865,23 @@ fn KeyValue(label: &'static str, value: Option<String>) -> impl IntoView {
 }
 
 #[component]
-fn JsonBlock(content: String, root_label: &'static str) -> impl IntoView {
+fn JsonBlock(content: String, root_label: String) -> impl IntoView {
     match parse_structured_content(&content) {
         Ok(value) => view! {
-            <div class="copyable-block">
-                <div class="copy-actions block-copy-actions">
-                    <CopyButton label="复制".to_string() text=content.clone()/>
+            <div class="copyable-block json-copy-block">
+                <div class="json-copy-actions">
+                    <IconCopyButton text=content.clone()/>
                 </div>
                 <div class="json-tree-shell">
-                    <JsonNode label=Some(root_label.to_string()) value=value/>
+                    <JsonNode label=Some(root_label) value=value/>
                 </div>
             </div>
         }
         .into_any(),
         Err(_) => view! {
-            <div class="copyable-block">
-                <div class="copy-actions block-copy-actions">
-                    <CopyButton label="复制".to_string() text=content.clone()/>
+            <div class="copyable-block json-copy-block">
+                <div class="json-copy-actions">
+                    <IconCopyButton text=content.clone()/>
                 </div>
                 <LongTextBlock text=content quoted=false class_name="plain-text-block"/>
             </div>
@@ -881,23 +891,12 @@ fn JsonBlock(content: String, root_label: &'static str) -> impl IntoView {
 }
 
 #[component]
-fn FoldedTextBlock(title: &'static str, text: String, class_name: &'static str) -> impl IntoView {
+fn JsonScalarBlock(title: &'static str, text: String, root_label: String) -> impl IntoView {
+    let content = serde_json::to_string(&text).unwrap_or_else(|_| "\"\"".to_string());
     view! {
-        <div class="block folded-text-block">
-            <details class="folded-text-toggle">
-                <summary>
-                    <span class="block-title">{title}</span>
-                    <span class="folded-text-summary">{truncate_preview(&text, 30)}</span>
-                </summary>
-                <div class="copyable-block folded-text-content">
-                    <div class="copy-actions block-copy-actions">
-                        <CopyButton label="复制".to_string() text=text.clone()/>
-                    </div>
-                    <div class="plain-text-block">
-                        <LongTextBlock text=text quoted=false class_name=class_name/>
-                    </div>
-                </div>
-            </details>
+        <div class="block">
+            <div class="block-title">{title}</div>
+            <JsonBlock content=content root_label=root_label/>
         </div>
     }
 }
@@ -1047,6 +1046,27 @@ fn CopyButton(label: String, text: String) -> impl IntoView {
         <button class="copy-button" type="button" onclick=onclick>
             <span class="copy-button-idle">{label}</span>
             <span class="copy-button-done">"已复制"</span>
+        </button>
+    }
+}
+
+#[component]
+fn IconCopyButton(text: String) -> impl IntoView {
+    let onclick = copy_button_onclick(&text);
+
+    view! {
+        <button class="copy-icon-button" type="button" onclick=onclick title="复制" aria-label="复制">
+            <span class="copy-icon-button-idle" aria-hidden="true">
+                <svg viewBox="0 0 16 16" fill="none">
+                    <path d="M5.5 5.5H3.75C3.06 5.5 2.5 6.06 2.5 6.75V12.25C2.5 12.94 3.06 13.5 3.75 13.5H9.25C9.94 13.5 10.5 12.94 10.5 12.25V10.5" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/>
+                    <rect x="5.5" y="2.5" width="8" height="8" rx="1.25" stroke="currentColor" stroke-width="1.25"/>
+                </svg>
+            </span>
+            <span class="copy-icon-button-done" aria-hidden="true">
+                <svg viewBox="0 0 16 16" fill="none">
+                    <path d="M3.5 8.5L6.5 11.5L12.5 4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+            </span>
         </button>
     }
 }
@@ -1815,15 +1835,22 @@ form {
   gap: 8px;
 }
 
+.json-copy-block {
+  position: relative;
+}
+
+.json-copy-actions {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 1;
+}
+
 .copy-actions {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
   justify-content: flex-end;
-}
-
-.block-copy-actions {
-  margin-bottom: 2px;
 }
 
 .copy-button {
@@ -1864,6 +1891,56 @@ form {
 }
 
 .copy-button[data-copied="1"] .copy-button-done {
+  display: inline;
+}
+
+.copy-icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  min-width: 24px;
+  min-height: 30px;
+  padding: 0;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: #94a3b8;
+  box-shadow: none;
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 800;
+  transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
+}
+
+.copy-icon-button:hover {
+  background: rgba(148, 163, 184, 0.12);
+  border-color: rgba(148, 163, 184, 0.22);
+  color: #64748b;
+}
+
+.copy-icon-button svg {
+  width: 14px;
+  height: 14px;
+  display: block;
+}
+
+.copy-icon-button-done {
+  display: none;
+}
+
+.copy-icon-button[data-copied="1"] {
+  background: rgba(15, 23, 42, 0.08);
+  border-color: rgba(15, 23, 42, 0.14);
+  color: #94a3b8;
+}
+
+.copy-icon-button[data-copied="1"] .copy-icon-button-idle {
+  display: none;
+}
+
+.copy-icon-button[data-copied="1"] .copy-icon-button-done {
   display: inline;
 }
 

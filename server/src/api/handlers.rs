@@ -726,7 +726,9 @@ fn map_debug_log_detail(log: GatewayLogDetail) -> DebugWebLogDetail {
         error_truncated: log.error_truncated,
         elapsed_ms: log.elapsed_ms,
         user_input: log.user_input,
+        user_input_path: log.user_input_path,
         model_output: log.model_output,
+        model_output_path: log.model_output_path,
     }
 }
 

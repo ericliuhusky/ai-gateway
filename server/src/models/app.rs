@@ -422,7 +422,11 @@ pub struct GatewayLogDetail {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user_input: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_input_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub model_output: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_output_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
