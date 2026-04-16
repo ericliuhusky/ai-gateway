@@ -30,23 +30,21 @@ impl UpstreamClient {
 
     pub async fn fetch_new_api_user_self(
         &self,
-        request_id: &str,
+        id: &str,
         token: &str,
         user_id: &str,
     ) -> Result<Value, String> {
-        self.new_api_site
-            .fetch_user_self(request_id, token, user_id)
-            .await
+        self.new_api_site.fetch_user_self(id, token, user_id).await
     }
 
     pub async fn fetch_new_api_subscription_self(
         &self,
-        request_id: &str,
+        id: &str,
         token: &str,
         user_id: &str,
     ) -> Result<Value, String> {
         self.new_api_site
-            .fetch_subscription_self(request_id, token, user_id)
+            .fetch_subscription_self(id, token, user_id)
             .await
     }
 
@@ -67,85 +65,77 @@ impl UpstreamClient {
     pub async fn call_v1internal(
         &self,
         method: &str,
-        request_id: &str,
+        id: &str,
         access_token: &str,
         body: Value,
         stream: bool,
     ) -> Result<Response, String> {
         self.google_v1internal
-            .call(method, request_id, access_token, body, stream)
+            .call(method, id, access_token, body, stream)
             .await
     }
 
     pub async fn call_openai_responses(
         &self,
-        request_id: &str,
+        id: &str,
         access_token: &str,
         account_id: Option<&str>,
         body: Value,
         stream: bool,
     ) -> Result<Response, String> {
         self.openai_private
-            .call_responses(request_id, access_token, account_id, body, stream)
+            .call_responses(id, access_token, account_id, body, stream)
             .await
     }
 
     pub async fn fetch_openai_models(
         &self,
-        request_id: &str,
+        id: &str,
         access_token: &str,
         account_id: Option<&str>,
     ) -> Result<Value, String> {
         self.openai_private
-            .fetch_models(request_id, access_token, account_id)
+            .fetch_models(id, access_token, account_id)
             .await
     }
 
     pub async fn fetch_openai_usage(
         &self,
-        request_id: &str,
+        id: &str,
         access_token: &str,
         account_id: Option<&str>,
     ) -> Result<Value, String> {
-        self.openai_private
-            .fetch_usage(request_id, access_token, account_id)
-            .await
+        self.openai_private.fetch_usage(id, access_token, account_id).await
     }
 
     pub async fn call_openai_responses_upstream(
         &self,
-        request_id: &str,
+        id: &str,
         base_url: &str,
         api_key: &str,
         body: Value,
         stream: bool,
     ) -> Result<Response, String> {
-        self.openai_responses
-            .call(request_id, base_url, api_key, body, stream)
-            .await
+        self.openai_responses.call(id, base_url, api_key, body, stream).await
     }
 
     pub async fn call_openai_chat_upstream(
         &self,
-        request_id: &str,
+        id: &str,
         base_url: &str,
         api_key: &str,
         body: Value,
     ) -> Result<Response, String> {
-        self.openai_chat
-            .call(request_id, base_url, api_key, body)
-            .await
+        self.openai_chat.call(id, base_url, api_key, body).await
     }
 
     pub async fn fetch_openai_models_upstream(
         &self,
-        request_id: &str,
+        id: &str,
         base_url: &str,
         api_key: &str,
     ) -> Result<Value, String> {
-        self.openai_responses
-            .fetch_models(request_id, base_url, api_key)
-            .await
+        self.openai_responses.fetch_models(id, base_url, api_key).await
     }
 }
 

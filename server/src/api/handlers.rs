@@ -29,7 +29,7 @@ use axum::{
     http::{HeaderMap, HeaderValue, StatusCode},
     response::{Html, IntoResponse, Json, Redirect, Response},
 };
-use debug_web::{DebugLogDetail as DebugWebLogDetail, DebugLogEvent as DebugWebLogEvent, DebugLogSummary as DebugWebLogSummary, DebugPageData};
+use debug_web::{DebugLogDetail as DebugWebLogDetail, DebugLogSummary as DebugWebLogSummary, DebugPageData};
 use futures_util::StreamExt;
 use reqwest::Client;
 use serde::Deserialize;
@@ -450,7 +450,7 @@ pub struct LogsQuery {
 
 #[derive(Debug, Deserialize)]
 pub struct DebugDashboardQuery {
-    pub request_id: Option<String>,
+    pub id: Option<String>,
     pub limit: Option<usize>,
     pub notice: Option<String>,
     pub error: Option<String>,
@@ -459,7 +459,7 @@ pub struct DebugDashboardQuery {
 #[derive(Debug, Deserialize)]
 pub struct DebugLogSettingsForm {
     pub enabled: bool,
-    pub request_id: Option<String>,
+    pub id: Option<String>,
     pub limit: Option<usize>,
 }
 
@@ -482,20 +482,16 @@ pub async fn get_logs(
 
 pub async fn get_log_detail(
     State(state): State<AppState>,
-    AxumPath(request_id): AxumPath<String>,
+    AxumPath(id): AxumPath<String>,
 ) -> Result<Json<GatewayLogDetailResponse>, AppError> {
-    let events = state
+    let detail = state
         .logs
-        .load_request(&request_id)
+        .load_request(&id)
         .map_err(AppError::internal)?;
-    if events.is_empty() {
-        return Err(AppError::bad_request(format!(
-            "log request_id not found: {request_id}"
-        )));
-    }
-    Ok(Json(GatewayLogDetailResponse {
-        log: GatewayLogDetail { request_id, events },
-    }))
+    let Some(log) = detail else {
+        return Err(AppError::bad_request(format!("log id not found: {id}")));
+    };
+    Ok(Json(GatewayLogDetailResponse { log }))
 }
 
 pub async fn get_log_settings(State(state): State<AppState>) -> Json<GatewayLogSettingsResponse> {
@@ -534,30 +530,23 @@ pub async fn debug_dashboard(
         .logs
         .list_request_summaries(limit)
         .map_err(AppError::internal)?;
-    let selected_request_id = query
-        .request_id
+    let selected_id = query
+        .id
         .clone()
-        .or_else(|| logs.first().map(|log| log.request_id.clone()));
+        .or_else(|| logs.first().map(|log| log.id.clone()));
 
-    let selected_detail = if let Some(request_id) = selected_request_id.as_ref() {
-        let events = state
+    let selected_detail = if let Some(id) = selected_id.as_ref() {
+        state
             .logs
-            .load_request(request_id)
-            .map_err(AppError::internal)?;
-        if events.is_empty() {
-            None
-        } else {
-            Some(DebugWebLogDetail {
-                request_id: request_id.clone(),
-                events: events.into_iter().map(map_debug_log_event).collect(),
-            })
-        }
+            .load_request(id)
+            .map_err(AppError::internal)?
+            .map(map_debug_log_detail)
     } else {
         None
     };
 
-    let invalid_selection_error = if query.request_id.is_some() && selected_detail.is_none() {
-        Some("指定的 request_id 不存在或已经被清空。".to_string())
+    let invalid_selection_error = if query.id.is_some() && selected_detail.is_none() {
+        Some("指定的 id 不存在或已经被清空。".to_string())
     } else {
         None
     };
@@ -565,7 +554,7 @@ pub async fn debug_dashboard(
     let document = debug_web::render_debug_page(DebugPageData {
         logging_enabled: state.logs.is_enabled(),
         logs: logs.into_iter().map(map_debug_log_summary).collect(),
-        selected_request_id,
+        selected_id,
         selected_detail,
         limit,
         notice: query.notice,
@@ -590,7 +579,7 @@ pub async fn debug_set_log_settings(
     };
     Ok(Redirect::to(&build_debug_redirect_url(
         form.limit.unwrap_or(100),
-        form.request_id.as_deref(),
+        form.id.as_deref(),
         Some(notice),
         None,
     )))
@@ -613,11 +602,11 @@ pub async fn responses(
     State(state): State<AppState>,
     Json(request): Json<ResponsesRequest>,
 ) -> Result<Response, AppError> {
-    let request_id = format!("req_{}", Uuid::new_v4().simple());
+    let id = Uuid::new_v4().simple().to_string();
     let started_at = Instant::now();
     log_http_event(
         &state.logs,
-        &request_id,
+        &id,
         LogStage::IngressRequest,
         None,
         Some(IngressProtocol::OpenAiResponses.as_str()),
@@ -638,14 +627,14 @@ pub async fn responses(
 
     let model = request.model.clone();
     let stream = request.stream;
-    match responses_inner(state.clone(), request, request_id.clone(), started_at).await {
+    match responses_inner(state.clone(), request, id.clone(), started_at).await {
         Ok(response) => Ok(response),
         Err(err) => {
             let error_body = gateway_error_payload(&err.message);
             let elapsed = elapsed_ms(started_at);
             log_http_event(
                 &state.logs,
-                &request_id,
+                &id,
                 LogStage::Error,
                 Some(err.status),
                 Some(IngressProtocol::OpenAiResponses.as_str()),
@@ -665,7 +654,7 @@ pub async fn responses(
             .await;
             log_http_event(
                 &state.logs,
-                &request_id,
+                &id,
                 LogStage::EgressResponse,
                 Some(err.status),
                 Some(IngressProtocol::OpenAiResponses.as_str()),
@@ -690,7 +679,7 @@ pub async fn responses(
 
 fn map_debug_log_summary(log: GatewayLogSummary) -> DebugWebLogSummary {
     DebugWebLogSummary {
-        request_id: log.request_id,
+        id: log.id,
         updated_at_label: format_timestamp(log.updated_at),
         provider_name: log.provider_name,
         account_email: log.account_email,
@@ -701,31 +690,37 @@ fn map_debug_log_summary(log: GatewayLogSummary) -> DebugWebLogSummary {
         error_message: log.error_message,
         ingress_protocol: log.ingress_protocol,
         egress_protocol: log.egress_protocol,
-        event_count: log.event_count,
     }
 }
 
-fn map_debug_log_event(event: crate::models::GatewayLogEvent) -> DebugWebLogEvent {
-    DebugWebLogEvent {
-        id: event.id,
-        stage: event.stage,
-        created_at_label: format_timestamp(event.created_at),
-        status_code: event.status_code,
-        ingress_protocol: event.ingress_protocol,
-        egress_protocol: event.egress_protocol,
-        provider_name: event.provider_name,
-        account_id: event.account_id,
-        account_email: event.account_email,
-        model: event.model,
-        stream: event.stream,
-        method: event.method,
-        path: event.path,
-        url: event.url,
-        body: event.body,
-        body_truncated: event.body_truncated,
-        error_message: event.error_message,
-        error_truncated: event.error_truncated,
-        elapsed_ms: event.elapsed_ms,
+fn map_debug_log_detail(log: GatewayLogDetail) -> DebugWebLogDetail {
+    DebugWebLogDetail {
+        id: log.id,
+        created_at_label: format_timestamp(log.created_at),
+        updated_at_label: format_timestamp(log.updated_at),
+        provider_name: log.provider_name,
+        account_id: log.account_id,
+        account_email: log.account_email,
+        model: log.model,
+        stream: log.stream,
+        ingress_protocol: log.ingress_protocol,
+        egress_protocol: log.egress_protocol,
+        method: log.method,
+        path: log.path,
+        egress_request_url: log.egress_request_url,
+        ingress_request_body: log.ingress_request_body,
+        ingress_request_body_truncated: log.ingress_request_body_truncated,
+        egress_request_body: log.egress_request_body,
+        egress_request_body_truncated: log.egress_request_body_truncated,
+        ingress_response_status_code: log.ingress_response_status_code,
+        ingress_response_body: log.ingress_response_body,
+        ingress_response_body_truncated: log.ingress_response_body_truncated,
+        egress_response_status_code: log.egress_response_status_code,
+        egress_response_body: log.egress_response_body,
+        egress_response_body_truncated: log.egress_response_body_truncated,
+        error_message: log.error_message,
+        error_truncated: log.error_truncated,
+        elapsed_ms: log.elapsed_ms,
     }
 }
 
@@ -735,14 +730,14 @@ fn format_timestamp(timestamp: i64) -> String {
 
 fn build_debug_redirect_url(
     limit: usize,
-    request_id: Option<&str>,
+    id: Option<&str>,
     notice: Option<&str>,
     error: Option<&str>,
 ) -> String {
     let mut serializer = url::form_urlencoded::Serializer::new(String::new());
     serializer.append_pair("limit", &limit.clamp(1, 500).to_string());
-    if let Some(request_id) = request_id {
-        serializer.append_pair("request_id", request_id);
+    if let Some(id) = id {
+        serializer.append_pair("id", id);
     }
     if let Some(notice) = notice {
         serializer.append_pair("notice", notice);
@@ -756,12 +751,12 @@ fn build_debug_redirect_url(
 async fn responses_inner(
     state: AppState,
     request: ResponsesRequest,
-    request_id: String,
+    id: String,
     started_at: Instant,
 ) -> Result<Response, AppError> {
     let provider = resolve_selected_provider(&state).await?;
     info!(
-        request_id = %request_id,
+        id = %id,
         ingress = IngressProtocol::OpenAiResponses.as_str(),
         provider = %provider.name,
         body = %json_for_log(&request),
@@ -775,7 +770,7 @@ async fn responses_inner(
 
         log_http_event(
             &state.logs,
-            &request_id,
+            &id,
             LogStage::EgressRequest,
             None,
             Some(IngressProtocol::OpenAiResponses.as_str()),
@@ -797,7 +792,7 @@ async fn responses_inner(
         let upstream = state
             .upstream
             .call_openai_responses(
-                &request_id,
+                &id,
                 account.access_token(),
                 account.upstream_account_id(),
                 request_body,
@@ -812,7 +807,7 @@ async fn responses_inner(
             let elapsed = elapsed_ms(started_at);
             let stored_body = json_value_for_storage(&response_body);
             info!(
-                request_id = %request_id,
+                id = %id,
                 elapsed_ms = elapsed,
                 email = %account.email,
                 provider = %provider.name,
@@ -822,7 +817,7 @@ async fn responses_inner(
             );
             log_http_event(
                 &state.logs,
-                &request_id,
+                &id,
                 LogStage::IngressResponse,
                 Some(upstream_status),
                 Some(IngressProtocol::OpenAiResponses.as_str()),
@@ -842,7 +837,7 @@ async fn responses_inner(
             .await;
             log_http_event(
                 &state.logs,
-                &request_id,
+                &id,
                 LogStage::EgressResponse,
                 Some(StatusCode::OK),
                 Some(IngressProtocol::OpenAiResponses.as_str()),
@@ -872,7 +867,7 @@ async fn responses_inner(
         }
 
         let logs = state.logs.clone();
-        let request_id_for_stream = request_id.clone();
+        let id_for_stream = id.clone();
         let provider_name = provider.name.clone();
         let account_id = account.id.clone();
         let account_email = account.email.clone();
@@ -891,7 +886,7 @@ async fn responses_inner(
                         let error_message = err.to_string();
                         log_http_event(
                             &logs,
-                            &request_id_for_stream,
+                            &id_for_stream,
                             LogStage::Error,
                             Some(StatusCode::BAD_GATEWAY),
                             Some(IngressProtocol::OpenAiResponses.as_str()),
@@ -918,7 +913,7 @@ async fn responses_inner(
             let elapsed = elapsed_ms(started_at);
             log_http_event(
                 &logs,
-                &request_id_for_stream,
+                &id_for_stream,
                 LogStage::IngressResponse,
                 Some(upstream_status),
                 Some(IngressProtocol::OpenAiResponses.as_str()),
@@ -938,7 +933,7 @@ async fn responses_inner(
             .await;
             log_http_event(
                 &logs,
-                &request_id_for_stream,
+                &id_for_stream,
                 LogStage::EgressResponse,
                 Some(StatusCode::OK),
                 Some(IngressProtocol::OpenAiResponses.as_str()),
@@ -1002,7 +997,7 @@ async fn responses_inner(
         let upstream_url = google_v1internal_url_label(method, request.stream);
 
         info!(
-            request_id = %request_id,
+            id = %id,
             model = %request.model,
             stream = request.stream,
             email = %account.email,
@@ -1015,7 +1010,7 @@ async fn responses_inner(
 
         log_http_event(
             &state.logs,
-            &request_id,
+            &id,
             LogStage::EgressRequest,
             None,
             Some(IngressProtocol::OpenAiResponses.as_str()),
@@ -1038,7 +1033,7 @@ async fn responses_inner(
             .upstream
             .call_v1internal(
                 method,
-                &request_id,
+                &id,
                 account.access_token(),
                 request_body,
                 request.stream,
@@ -1054,13 +1049,13 @@ async fn responses_inner(
             let upstream_body = json_value_for_storage(&gemini_body);
             let response_body = json_for_storage(&response);
             info!(
-                request_id = %request_id,
+                id = %id,
                 elapsed_ms = elapsed,
                 upstream_response = %json_value_for_log(&gemini_body),
                 "received non-stream Gemini response"
             );
             info!(
-                request_id = %request_id,
+                id = %id,
                 elapsed_ms = elapsed,
                 output_items = response.output.len(),
                 response_body = %json_for_log(&response),
@@ -1068,7 +1063,7 @@ async fn responses_inner(
             );
             log_http_event(
                 &state.logs,
-                &request_id,
+                &id,
                 LogStage::IngressResponse,
                 Some(upstream_status),
                 Some(IngressProtocol::OpenAiResponses.as_str()),
@@ -1088,7 +1083,7 @@ async fn responses_inner(
             .await;
             log_http_event(
                 &state.logs,
-                &request_id,
+                &id,
                 LogStage::EgressResponse,
                 Some(StatusCode::OK),
                 Some(IngressProtocol::OpenAiResponses.as_str()),
@@ -1118,7 +1113,7 @@ async fn responses_inner(
         }
 
         let model = request.model.clone();
-        let request_id_for_stream = request_id.clone();
+        let id_for_stream = id.clone();
         let provider_name = provider.name.clone();
         let account_id = account.id.clone();
         let account_email = account.email.clone();
@@ -1161,7 +1156,7 @@ async fn responses_inner(
                     let error_message = err.to_string();
                     log_http_event(
                         &logs,
-                        &request_id_for_stream,
+                        &id_for_stream,
                         LogStage::Error,
                         Some(StatusCode::INTERNAL_SERVER_ERROR),
                         Some(IngressProtocol::OpenAiResponses.as_str()),
@@ -1191,7 +1186,7 @@ async fn responses_inner(
                         let error_message = err.to_string();
                         log_http_event(
                             &logs,
-                            &request_id_for_stream,
+                            &id_for_stream,
                             LogStage::Error,
                             Some(StatusCode::BAD_GATEWAY),
                             Some(IngressProtocol::OpenAiResponses.as_str()),
@@ -1232,7 +1227,7 @@ async fn responses_inner(
 
                     upstream_chunk_count += 1;
                     info!(
-                        request_id = %request_id_for_stream,
+                        id = %id_for_stream,
                         chunk_index = upstream_chunk_count,
                         upstream_chunk = %truncate_for_log(payload, 3000),
                         "received upstream SSE chunk"
@@ -1242,7 +1237,7 @@ async fn responses_inner(
                         Ok(value) => value,
                         Err(err) => {
                             warn!(
-                                request_id = %request_id_for_stream,
+                                id = %id_for_stream,
                                 chunk_index = upstream_chunk_count,
                                 error = %err,
                                 "failed to parse upstream SSE chunk"
@@ -1498,7 +1493,7 @@ async fn responses_inner(
             }
 
             info!(
-                request_id = %request_id_for_stream,
+                id = %id_for_stream,
                 elapsed_ms = started_at.elapsed().as_millis(),
                 upstream_chunks = upstream_chunk_count,
                 emitted_events = emitted_event_count,
@@ -1512,7 +1507,7 @@ async fn responses_inner(
             let elapsed = elapsed_ms(started_at);
             log_http_event(
                 &logs,
-                &request_id_for_stream,
+                &id_for_stream,
                 LogStage::IngressResponse,
                 Some(upstream_status),
                 Some(IngressProtocol::OpenAiResponses.as_str()),
@@ -1532,7 +1527,7 @@ async fn responses_inner(
             .await;
             log_http_event(
                 &logs,
-                &request_id_for_stream,
+                &id_for_stream,
                 LogStage::EgressResponse,
                 Some(StatusCode::OK),
                 Some(IngressProtocol::OpenAiResponses.as_str()),
@@ -1594,7 +1589,7 @@ async fn responses_inner(
         let upstream_url = chat_completions_api_url(&native_provider.base_url);
         log_http_event(
             &state.logs,
-            &request_id,
+            &id,
             LogStage::EgressRequest,
             None,
             Some(IngressProtocol::OpenAiResponses.as_str()),
@@ -1616,7 +1611,7 @@ async fn responses_inner(
         let upstream = state
             .upstream
             .call_openai_chat_upstream(
-                &request_id,
+                &id,
                 &native_provider.base_url,
                 &native_provider.api_key,
                 request_body,
@@ -1631,7 +1626,7 @@ async fn responses_inner(
 
         log_http_event(
             &state.logs,
-            &request_id,
+            &id,
             LogStage::IngressResponse,
             Some(upstream_status),
             Some(IngressProtocol::OpenAiResponses.as_str()),
@@ -1653,7 +1648,7 @@ async fn responses_inner(
         if !request.stream {
             let response_body = json_for_storage(&response);
             info!(
-                request_id = %request_id,
+                id = %id,
                 elapsed_ms = elapsed,
                 provider = %provider.name,
                 egress = %native_target.egress.as_str(),
@@ -1663,7 +1658,7 @@ async fn responses_inner(
             );
             log_http_event(
                 &state.logs,
-                &request_id,
+                &id,
                 LogStage::EgressResponse,
                 Some(StatusCode::OK),
                 Some(IngressProtocol::OpenAiResponses.as_str()),
@@ -1690,7 +1685,7 @@ async fn responses_inner(
         }
 
         let logs = state.logs.clone();
-        let request_id_for_stream = request_id.clone();
+        let id_for_stream = id.clone();
         let provider_name = provider.name.clone();
         let model = request.model.clone();
         let egress_protocol = native_target.egress.as_str().to_string();
@@ -1709,7 +1704,7 @@ async fn responses_inner(
                     Err(err) => {
                         log_http_event(
                             &logs,
-                            &request_id_for_stream,
+                            &id_for_stream,
                             LogStage::Error,
                             Some(StatusCode::INTERNAL_SERVER_ERROR),
                             Some(IngressProtocol::OpenAiResponses.as_str()),
@@ -1735,7 +1730,7 @@ async fn responses_inner(
 
             log_http_event(
                 &logs,
-                &request_id_for_stream,
+                &id_for_stream,
                 LogStage::EgressResponse,
                 Some(StatusCode::OK),
                 Some(IngressProtocol::OpenAiResponses.as_str()),
@@ -1781,7 +1776,7 @@ async fn responses_inner(
     let upstream_url = responses_api_url(&native_provider.base_url);
     log_http_event(
         &state.logs,
-        &request_id,
+        &id,
         LogStage::EgressRequest,
         None,
         Some(IngressProtocol::OpenAiResponses.as_str()),
@@ -1803,7 +1798,7 @@ async fn responses_inner(
     let upstream = state
         .upstream
         .call_openai_responses_upstream(
-            &request_id,
+            &id,
             &native_provider.base_url,
             &native_provider.api_key,
             request_body,
@@ -1818,7 +1813,7 @@ async fn responses_inner(
         let elapsed = elapsed_ms(started_at);
         let stored_body = json_value_for_storage(&response_body);
         info!(
-            request_id = %request_id,
+            id = %id,
             elapsed_ms = elapsed,
             provider = %provider.name,
             egress = %native_target.egress.as_str(),
@@ -1828,7 +1823,7 @@ async fn responses_inner(
         );
         log_http_event(
             &state.logs,
-            &request_id,
+            &id,
             LogStage::IngressResponse,
             Some(upstream_status),
             Some(IngressProtocol::OpenAiResponses.as_str()),
@@ -1848,7 +1843,7 @@ async fn responses_inner(
         .await;
         log_http_event(
             &state.logs,
-            &request_id,
+            &id,
             LogStage::EgressResponse,
             Some(StatusCode::OK),
             Some(IngressProtocol::OpenAiResponses.as_str()),
@@ -1875,7 +1870,7 @@ async fn responses_inner(
     }
 
     let logs = state.logs.clone();
-    let request_id_for_stream = request_id.clone();
+    let id_for_stream = id.clone();
     let provider_name = provider.name.clone();
     let model = request.model.clone();
     let output = stream! {
@@ -1891,7 +1886,7 @@ async fn responses_inner(
                 Err(err) => {
                     log_http_event(
                         &logs,
-                        &request_id_for_stream,
+                        &id_for_stream,
                         LogStage::Error,
                         Some(StatusCode::BAD_GATEWAY),
                         Some(IngressProtocol::OpenAiResponses.as_str()),
@@ -1918,7 +1913,7 @@ async fn responses_inner(
         let elapsed = elapsed_ms(started_at);
         log_http_event(
             &logs,
-            &request_id_for_stream,
+            &id_for_stream,
             LogStage::IngressResponse,
             Some(upstream_status),
             Some(IngressProtocol::OpenAiResponses.as_str()),
@@ -1938,7 +1933,7 @@ async fn responses_inner(
         .await;
         log_http_event(
             &logs,
-            &request_id_for_stream,
+            &id_for_stream,
             LogStage::EgressResponse,
             Some(StatusCode::OK),
             Some(IngressProtocol::OpenAiResponses.as_str()),
@@ -2545,7 +2540,7 @@ fn synthesized_responses_stream(
 
 async fn log_http_event(
     logs: &LogStore,
-    request_id: &str,
+    id: &str,
     stage: LogStage,
     status_code: Option<StatusCode>,
     ingress_protocol: Option<&str>,
@@ -2565,7 +2560,7 @@ async fn log_http_event(
     let stage_name = stage.as_str().to_string();
     if let Err(err) = logs
         .record(LogEvent {
-            request_id: request_id.to_string(),
+            id: id.to_string(),
             stage,
             status_code: status_code.map(|status| status.as_u16()),
             ingress_protocol: ingress_protocol.map(ToOwned::to_owned),
@@ -2585,7 +2580,7 @@ async fn log_http_event(
         .await
     {
         warn!(
-            request_id = %request_id,
+            id = %id,
             stage = %stage_name,
             error = %err,
             "failed to persist gateway log"

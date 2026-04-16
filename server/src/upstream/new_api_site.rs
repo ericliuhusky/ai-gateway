@@ -17,24 +17,24 @@ impl NewApiSiteClient {
 
     pub async fn fetch_user_self(
         &self,
-        request_id: &str,
+        id: &str,
         token: &str,
         user_id: &str,
     ) -> Result<Value, String> {
         let url = format!("{XCODE_BEST_SITE_URL}/api/user/self");
-        info!(request_id = %request_id, url = %url, user_id = %user_id, "sending new-api user self request");
+        info!(id = %id, url = %url, user_id = %user_id, "sending new-api user self request");
         self.get_with_user_header(&url, token, user_id, "new-api user self")
             .await
     }
 
     pub async fn fetch_subscription_self(
         &self,
-        request_id: &str,
+        id: &str,
         token: &str,
         user_id: &str,
     ) -> Result<Value, String> {
         let url = format!("{XCODE_BEST_SITE_URL}/api/subscription/self");
-        info!(request_id = %request_id, url = %url, user_id = %user_id, "sending new-api subscription self request");
+        info!(id = %id, url = %url, user_id = %user_id, "sending new-api subscription self request");
         self.get_with_user_header(&url, token, user_id, "new-api subscription self")
             .await
     }

@@ -15,14 +15,14 @@ impl OpenAiChatClient {
 
     pub async fn call(
         &self,
-        request_id: &str,
+        id: &str,
         base_url: &str,
         api_key: &str,
         body: Value,
     ) -> Result<Response, String> {
         let url = chat_completions_api_url(base_url);
         info!(
-            request_id = %request_id,
+            id = %id,
             url = %url,
             request = %truncate_for_log(&body.to_string(), 4_000),
             "sending upstream request to OpenAI chat provider"

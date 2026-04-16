@@ -9,7 +9,7 @@ const LONG_VALUE_PREVIEW_CHARS: usize = 500;
 pub struct DebugPageData {
     pub logging_enabled: bool,
     pub logs: Vec<DebugLogSummary>,
-    pub selected_request_id: Option<String>,
+    pub selected_id: Option<String>,
     pub selected_detail: Option<DebugLogDetail>,
     pub limit: usize,
     pub notice: Option<String>,
@@ -18,7 +18,7 @@ pub struct DebugPageData {
 
 #[derive(Clone, Debug)]
 pub struct DebugLogSummary {
-    pub request_id: String,
+    pub id: String,
     pub updated_at_label: String,
     pub provider_name: Option<String>,
     pub account_email: Option<String>,
@@ -29,36 +29,36 @@ pub struct DebugLogSummary {
     pub error_message: Option<String>,
     pub ingress_protocol: Option<String>,
     pub egress_protocol: Option<String>,
-    pub event_count: usize,
 }
 
 #[derive(Clone, Debug)]
-pub struct DebugLogEvent {
-    pub id: i64,
-    pub stage: String,
+pub struct DebugLogDetail {
+    pub id: String,
     pub created_at_label: String,
-    pub status_code: Option<u16>,
-    pub ingress_protocol: Option<String>,
-    pub egress_protocol: Option<String>,
+    pub updated_at_label: String,
     pub provider_name: Option<String>,
     pub account_id: Option<String>,
     pub account_email: Option<String>,
     pub model: Option<String>,
     pub stream: bool,
+    pub ingress_protocol: Option<String>,
+    pub egress_protocol: Option<String>,
     pub method: Option<String>,
     pub path: Option<String>,
-    pub url: Option<String>,
-    pub body: Option<String>,
-    pub body_truncated: bool,
+    pub egress_request_url: Option<String>,
+    pub ingress_request_body: Option<String>,
+    pub ingress_request_body_truncated: bool,
+    pub egress_request_body: Option<String>,
+    pub egress_request_body_truncated: bool,
+    pub ingress_response_status_code: Option<u16>,
+    pub ingress_response_body: Option<String>,
+    pub ingress_response_body_truncated: bool,
+    pub egress_response_status_code: Option<u16>,
+    pub egress_response_body: Option<String>,
+    pub egress_response_body_truncated: bool,
     pub error_message: Option<String>,
     pub error_truncated: bool,
     pub elapsed_ms: Option<i64>,
-}
-
-#[derive(Clone, Debug)]
-pub struct DebugLogDetail {
-    pub request_id: String,
-    pub events: Vec<DebugLogEvent>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -134,7 +134,7 @@ fn DebugApp(data: DebugPageData) -> impl IntoView {
     } else {
         "开启日志"
     };
-    let selected_request_id = data.selected_request_id.clone();
+    let selected_id = data.selected_id.clone();
 
     view! {
         <main class="debug-shell">
@@ -144,7 +144,7 @@ fn DebugApp(data: DebugPageData) -> impl IntoView {
                     <p class="eyebrow">"debug-web"</p>
                     <h1>"网关日志调试台"</h1>
                     <p class="hero-copy">
-                        "这里直接托管在 /debug，下钻查看 request_id 的完整入口、出口与错误链路。"
+                        "这里直接托管在 /debug，下钻查看日志 id 的完整入口、出口与错误链路。"
                     </p>
                 </div>
                 <div class="hero-actions">
@@ -153,7 +153,7 @@ fn DebugApp(data: DebugPageData) -> impl IntoView {
                     </a>
                     <form method="post" action="/debug/logging">
                         <input type="hidden" name="enabled" value=toggle_enabled_value/>
-                        <HiddenContextInputs request_id=selected_request_id.clone() limit=data.limit/>
+                        <HiddenContextInputs id=selected_id.clone() limit=data.limit/>
                         <button class="button primary" type="submit">{toggle_label}</button>
                     </form>
                     <form method="post" action="/debug/clear">
@@ -183,7 +183,7 @@ fn DebugApp(data: DebugPageData) -> impl IntoView {
                     <div class="panel-header">
                         <div>
                             <h2>"请求列表"</h2>
-                            <p>"选择一个 request_id 查看完整明细。"</p>
+                            <p>"选择一个 id 查看完整明细。"</p>
                         </div>
                     </div>
                     <div class="log-list">
@@ -205,13 +205,13 @@ fn DebugApp(data: DebugPageData) -> impl IntoView {
                                 .iter()
                                 .map(|log| {
                                     let href = format!(
-                                        "/debug?limit={}&request_id={}",
-                                        data.limit, log.request_id
+                                        "/debug?limit={}&id={}",
+                                        data.limit, log.id
                                     );
                                     let is_selected = data
-                                        .selected_request_id
+                                        .selected_id
                                         .as_deref()
-                                        == Some(log.request_id.as_str());
+                                        == Some(log.id.as_str());
                                     let row_class = if is_selected {
                                         "log-row selected"
                                     } else {
@@ -223,7 +223,7 @@ fn DebugApp(data: DebugPageData) -> impl IntoView {
                                             <div class="row-top">
                                                 <div>
                                                     <strong>{log.provider_name.clone().unwrap_or_else(|| "未知供应商".to_string())}</strong>
-                                                    <span class="mono">{log.request_id.clone()}</span>
+                                                    <span class="mono">{log.id.clone()}</span>
                                                 </div>
                                                 <span class=if log.has_error { "badge error" } else { "badge ok" }>
                                                     {match log.status_code {
@@ -235,7 +235,7 @@ fn DebugApp(data: DebugPageData) -> impl IntoView {
                                             <div class="tag-row">
                                                 <span class="tag">{if log.stream { "SSE" } else { "JSON" }}</span>
                                                 <span class="tag">{log.model.clone().unwrap_or_else(|| "未知模型".to_string())}</span>
-                                                <span class="tag">{format!("{} 事件", log.event_count)}</span>
+                                                <span class="tag">{log.id.clone()}</span>
                                             </div>
                                             <div class="meta-grid">
                                                 <span>{format!("入口 {}", log.ingress_protocol.clone().unwrap_or_else(|| "-".to_string()))}</span>
@@ -259,14 +259,14 @@ fn DebugApp(data: DebugPageData) -> impl IntoView {
                     <div class="panel-header">
                         <div>
                             <h2>"日志详情"</h2>
-                            <p>"按时间顺序检查每一步事件、请求体和响应体。"</p>
+                            <p>"直接查看这次请求的入口、出口、响应和错误字段。"</p>
                         </div>
                     </div>
                     {match data.selected_detail.clone() {
                         Some(detail) => view! {
                             <div class="detail-header">
-                                <span class="mono">{detail.request_id.clone()}</span>
-                                <span class="pill neutral">{format!("{} 个事件", detail.events.len())}</span>
+                                <span class="mono">{detail.id.clone()}</span>
+                                <span class="pill neutral">{detail.updated_at_label.clone()}</span>
                             </div>
                             <div class="detail-tabs">
                                 <input class="detail-tab-input" type="radio" id="tab-detail" name="detail-tab" checked/>
@@ -277,53 +277,78 @@ fn DebugApp(data: DebugPageData) -> impl IntoView {
                                 </div>
                                 <div class="detail-tab-panel detail-panel-main">
                                     <div class="event-list">
-                                        {detail.events.iter().map(|event| view! {
-                                            <article class="event-card">
-                                                <div class="event-top">
-                                                    <div>
-                                                        <strong>{event.stage.clone()}</strong>
-                                                        <span class="subtle">{event.created_at_label.clone()}</span>
-                                                    </div>
-                                                    <div class="event-meta">
-                                                        {event.status_code.map(|code| view! {
-                                                            <span class="badge ok">{code.to_string()}</span>
-                                                        })}
-                                                        {event.elapsed_ms.map(|elapsed| view! {
-                                                            <span class="pill neutral">{format!("{} ms", elapsed)}</span>
-                                                        })}
-                                                    </div>
+                                        <article class="event-card">
+                                            <div class="event-top">
+                                                <div>
+                                                    <strong>"聚合日志"</strong>
+                                                    <span class="subtle">{detail.created_at_label.clone()}</span>
                                                 </div>
-                                                <dl class="kv-grid">
-                                                    <KeyValue label="Provider" value=event.provider_name.clone()/>
-                                                    <KeyValue label="Account" value=event.account_email.clone().or(event.account_id.clone())/>
-                                                    <KeyValue label="Model" value=event.model.clone()/>
-                                                    <KeyValue label="Stream" value=Some(if event.stream { "true".to_string() } else { "false".to_string() })/>
-                                                    <KeyValue label="Ingress" value=event.ingress_protocol.clone()/>
-                                                    <KeyValue label="Egress" value=event.egress_protocol.clone()/>
-                                                    <KeyValue label="Method" value=event.method.clone()/>
-                                                    <KeyValue label="Path" value=event.path.clone()/>
-                                                    <KeyValue label="URL" value=event.url.clone()/>
-                                                </dl>
-                                                {event.error_message.as_ref().map(|message| view! {
-                                                    <div class="block error-block">
-                                                        <div class="block-title">
-                                                            "错误"
-                                                            {if event.error_truncated { "（已截断）" } else { "" }}
-                                                        </div>
-                                                        <JsonBlock content=message.clone() root_label="error"/>
+                                                <div class="event-meta">
+                                                    {detail.egress_response_status_code.or(detail.ingress_response_status_code).map(|code| view! {
+                                                        <span class="badge ok">{code.to_string()}</span>
+                                                    })}
+                                                    {detail.elapsed_ms.map(|elapsed| view! {
+                                                        <span class="pill neutral">{format!("{} ms", elapsed)}</span>
+                                                    })}
+                                                </div>
+                                            </div>
+                                            <dl class="kv-grid">
+                                                <KeyValue label="Provider" value=detail.provider_name.clone()/>
+                                                <KeyValue label="Account" value=detail.account_email.clone().or(detail.account_id.clone())/>
+                                                <KeyValue label="Model" value=detail.model.clone()/>
+                                                <KeyValue label="Stream" value=Some(if detail.stream { "true".to_string() } else { "false".to_string() })/>
+                                                <KeyValue label="Ingress" value=detail.ingress_protocol.clone()/>
+                                                <KeyValue label="Egress" value=detail.egress_protocol.clone()/>
+                                                <KeyValue label="Method" value=detail.method.clone()/>
+                                                <KeyValue label="Path" value=detail.path.clone()/>
+                                                <KeyValue label="Upstream URL" value=detail.egress_request_url.clone()/>
+                                            </dl>
+                                            {detail.error_message.as_ref().map(|message| view! {
+                                                <div class="block error-block">
+                                                    <div class="block-title">
+                                                        "错误"
+                                                        {if detail.error_truncated { "（已截断）" } else { "" }}
                                                     </div>
-                                                })}
-                                                {event.body.as_ref().map(|body| view! {
-                                                    <div class="block">
-                                                        <div class="block-title">
-                                                            "Body"
-                                                            {if event.body_truncated { "（已截断）" } else { "" }}
-                                                        </div>
-                                                        <JsonBlock content=body.clone() root_label="body"/>
+                                                    <JsonBlock content=message.clone() root_label="error"/>
+                                                </div>
+                                            })}
+                                            {detail.ingress_request_body.as_ref().map(|body| view! {
+                                                <div class="block">
+                                                    <div class="block-title">
+                                                        "入口请求"
+                                                        {if detail.ingress_request_body_truncated { "（已截断）" } else { "" }}
                                                     </div>
-                                                })}
-                                            </article>
-                                        }).collect_view()}
+                                                    <JsonBlock content=body.clone() root_label="ingress_request"/>
+                                                </div>
+                                            })}
+                                            {detail.egress_request_body.as_ref().map(|body| view! {
+                                                <div class="block">
+                                                    <div class="block-title">
+                                                        "出口请求"
+                                                        {if detail.egress_request_body_truncated { "（已截断）" } else { "" }}
+                                                    </div>
+                                                    <JsonBlock content=body.clone() root_label="egress_request"/>
+                                                </div>
+                                            })}
+                                            {detail.ingress_response_body.as_ref().map(|body| view! {
+                                                <div class="block">
+                                                    <div class="block-title">
+                                                        {format!("入口响应{}", detail.ingress_response_status_code.map(|code| format!(" ({code})")).unwrap_or_default())}
+                                                        {if detail.ingress_response_body_truncated { "（已截断）" } else { "" }}
+                                                    </div>
+                                                    <JsonBlock content=body.clone() root_label="ingress_response"/>
+                                                </div>
+                                            })}
+                                            {detail.egress_response_body.as_ref().map(|body| view! {
+                                                <div class="block">
+                                                    <div class="block-title">
+                                                        {format!("出口响应{}", detail.egress_response_status_code.map(|code| format!(" ({code})")).unwrap_or_default())}
+                                                        {if detail.egress_response_body_truncated { "（已截断）" } else { "" }}
+                                                    </div>
+                                                    <JsonBlock content=body.clone() root_label="egress_response"/>
+                                                </div>
+                                            })}
+                                        </article>
                                     </div>
                                 </div>
                                 <div class="detail-tab-panel diff-panel-main">
@@ -335,7 +360,7 @@ fn DebugApp(data: DebugPageData) -> impl IntoView {
                         None => view! {
                             <div class="empty-state detail-empty">
                                 <strong>"没有选中的日志"</strong>
-                                <p>"左侧选中一个 request_id 后，这里会显示完整事件链路。"</p>
+                                <p>"左侧选中一个 id 后，这里会显示完整事件链路。"</p>
                             </div>
                         }.into_any(),
                     }}
@@ -347,51 +372,32 @@ fn DebugApp(data: DebugPageData) -> impl IntoView {
 
 #[component]
 fn ComparisonSection(detail: DebugLogDetail, kind: ComparisonKind) -> impl IntoView {
-    let (title, left_title, right_title, left_event, right_event) = match kind {
+    let (title, left_title, right_title, left_body, right_body) = match kind {
         ComparisonKind::Request => (
             "请求对比",
             "入口请求",
             "出口请求",
-            detail
-                .events
-                .iter()
-                .find(|event| event.stage == "ingress_request")
-                .cloned(),
-            detail
-                .events
-                .iter()
-                .find(|event| event.stage == "egress_request")
-                .cloned(),
+            detail.ingress_request_body.clone(),
+            detail.egress_request_body.clone(),
         ),
         ComparisonKind::Response => (
             "响应对比",
             "入口响应",
             "出口响应",
-            detail
-                .events
-                .iter()
-                .find(|event| event.stage == "ingress_response")
-                .cloned(),
-            detail
-                .events
-                .iter()
-                .find(|event| event.stage == "egress_response")
-                .cloned(),
+            detail.ingress_response_body.clone(),
+            detail.egress_response_body.clone(),
         ),
     };
 
-    if left_event.is_none() && right_event.is_none() {
+    if left_body.is_none() && right_body.is_none() {
         return ().into_any();
     }
-
-    let left_body = left_event.as_ref().and_then(|event| event.body.clone());
-    let right_body = right_event.as_ref().and_then(|event| event.body.clone());
 
     view! {
         <section class="compare-section">
             <div class="compare-header">
                 <h3>{title}</h3>
-                <span class="pill neutral">{detail.request_id}</span>
+                <span class="pill neutral">{detail.id}</span>
             </div>
             <BodyDiffBlock
                 title="Body Diff"
@@ -765,11 +771,11 @@ fn JsonInlineValue(value: Value) -> impl IntoView {
 }
 
 #[component]
-fn HiddenContextInputs(request_id: Option<String>, limit: usize) -> impl IntoView {
+fn HiddenContextInputs(id: Option<String>, limit: usize) -> impl IntoView {
     view! {
         <input type="hidden" name="limit" value=limit.to_string()/>
-        {request_id.map(|request_id| view! {
-            <input type="hidden" name="request_id" value=request_id/>
+        {id.map(|id| view! {
+            <input type="hidden" name="id" value=id/>
         })}
     }
 }

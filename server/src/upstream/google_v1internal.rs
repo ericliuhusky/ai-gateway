@@ -162,7 +162,7 @@ impl GoogleV1InternalClient {
     pub async fn call(
         &self,
         method: &str,
-        request_id: &str,
+        id: &str,
         access_token: &str,
         body: Value,
         stream: bool,
@@ -176,7 +176,7 @@ impl GoogleV1InternalClient {
                 format!("{base}:{method}")
             };
             info!(
-                request_id = %request_id,
+                id = %id,
                 method = %method,
                 stream = stream,
                 url = %url,
@@ -201,7 +201,7 @@ impl GoogleV1InternalClient {
             match response {
                 Ok(resp) if resp.status().is_success() => {
                     info!(
-                        request_id = %request_id,
+                        id = %id,
                         method = %method,
                         url = %url,
                         status = %resp.status(),
@@ -213,7 +213,7 @@ impl GoogleV1InternalClient {
                     let status = resp.status();
                     let response_body = resp.text().await.unwrap_or_default();
                     warn!(
-                        request_id = %request_id,
+                        id = %id,
                         method = %method,
                         url = %url,
                         status = %status,
@@ -226,7 +226,7 @@ impl GoogleV1InternalClient {
                     let status = resp.status();
                     let response_body = resp.text().await.unwrap_or_default();
                     warn!(
-                        request_id = %request_id,
+                        id = %id,
                         method = %method,
                         url = %url,
                         status = %status,
@@ -237,7 +237,7 @@ impl GoogleV1InternalClient {
                 }
                 Err(err) => {
                     warn!(
-                        request_id = %request_id,
+                        id = %id,
                         method = %method,
                         url = %url,
                         error = %err,

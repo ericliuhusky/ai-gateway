@@ -34,7 +34,7 @@ pub fn build_router(state: AppState) -> Router {
             "/logs/settings",
             get(get_log_settings).put(set_log_settings),
         )
-        .route("/logs/:request_id", get(get_log_detail))
+        .route("/logs/:id", get(get_log_detail))
         .route("/debug", get(debug_dashboard))
         .route("/debug/logging", post(debug_set_log_settings))
         .route("/debug/clear", post(debug_clear_logs))

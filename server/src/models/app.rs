@@ -350,7 +350,7 @@ impl AccountRecord {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct GatewayLogSummary {
-    pub request_id: String,
+    pub id: String,
     pub created_at: i64,
     pub updated_at: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -369,20 +369,13 @@ pub struct GatewayLogSummary {
     pub ingress_protocol: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub egress_protocol: Option<String>,
-    pub event_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct GatewayLogEvent {
-    pub id: i64,
-    pub request_id: String,
-    pub stage: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub status_code: Option<u16>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ingress_protocol: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub egress_protocol: Option<String>,
+pub struct GatewayLogDetail {
+    pub id: String,
+    pub created_at: i64,
+    pub updated_at: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -393,26 +386,36 @@ pub struct GatewayLogEvent {
     pub model: Option<String>,
     pub stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub ingress_protocol: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub egress_protocol: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub method: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub url: Option<String>,
+    pub egress_request_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub body: Option<String>,
-    pub body_truncated: bool,
+    pub ingress_request_body: Option<String>,
+    pub ingress_request_body_truncated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub egress_request_body: Option<String>,
+    pub egress_request_body_truncated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ingress_response_status_code: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ingress_response_body: Option<String>,
+    pub ingress_response_body_truncated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub egress_response_status_code: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub egress_response_body: Option<String>,
+    pub egress_response_body_truncated: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_message: Option<String>,
     pub error_truncated: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub elapsed_ms: Option<i64>,
-    pub created_at: i64,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct GatewayLogDetail {
-    pub request_id: String,
-    pub events: Vec<GatewayLogEvent>,
 }
 
 #[derive(Debug, Clone, Serialize)]

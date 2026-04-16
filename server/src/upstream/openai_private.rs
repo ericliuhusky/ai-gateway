@@ -19,14 +19,14 @@ impl OpenAiPrivateClient {
 
     pub async fn call_responses(
         &self,
-        request_id: &str,
+        id: &str,
         access_token: &str,
         account_id: Option<&str>,
         body: Value,
         stream: bool,
     ) -> Result<Response, String> {
         info!(
-            request_id = %request_id,
+            id = %id,
             stream = stream,
             url = %OPENAI_RESPONSES_URL,
             request = %truncate_for_log(&body.to_string(), 4_000),
@@ -71,12 +71,12 @@ impl OpenAiPrivateClient {
 
     pub async fn fetch_models(
         &self,
-        request_id: &str,
+        id: &str,
         access_token: &str,
         account_id: Option<&str>,
     ) -> Result<Value, String> {
         info!(
-            request_id = %request_id,
+            id = %id,
             url = %OPENAI_MODELS_URL,
             "sending upstream request to OpenAI models"
         );
@@ -112,12 +112,12 @@ impl OpenAiPrivateClient {
 
     pub async fn fetch_usage(
         &self,
-        request_id: &str,
+        id: &str,
         access_token: &str,
         account_id: Option<&str>,
     ) -> Result<Value, String> {
         info!(
-            request_id = %request_id,
+            id = %id,
             url = %OPENAI_USAGE_URL,
             "sending upstream request to OpenAI usage"
         );

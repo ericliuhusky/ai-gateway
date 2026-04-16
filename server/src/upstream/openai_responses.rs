@@ -15,7 +15,7 @@ impl OpenAiResponsesClient {
 
     pub async fn call(
         &self,
-        request_id: &str,
+        id: &str,
         base_url: &str,
         api_key: &str,
         body: Value,
@@ -23,7 +23,7 @@ impl OpenAiResponsesClient {
     ) -> Result<Response, String> {
         let url = responses_api_url(base_url);
         info!(
-            request_id = %request_id,
+            id = %id,
             stream = stream,
             url = %url,
             request = %truncate_for_log(&body.to_string(), 4_000),
@@ -61,13 +61,13 @@ impl OpenAiResponsesClient {
 
     pub async fn fetch_models(
         &self,
-        request_id: &str,
+        id: &str,
         base_url: &str,
         api_key: &str,
     ) -> Result<Value, String> {
         let url = models_api_url(base_url);
         info!(
-            request_id = %request_id,
+            id = %id,
             url = %url,
             "sending upstream request to OpenAI provider /models"
         );
