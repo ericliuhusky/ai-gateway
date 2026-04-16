@@ -1,5 +1,7 @@
 use leptos::prelude::*;
 use serde_json::Value;
+use similar::{ChangeTag, TextDiff};
+use std::collections::BTreeSet;
 
 const LONG_VALUE_PREVIEW_CHARS: usize = 500;
 
@@ -63,6 +65,35 @@ pub struct DebugLogDetail {
 enum ComparisonKind {
     Request,
     Response,
+}
+
+#[derive(Clone, Debug)]
+enum JsonDiffNode {
+    Object(Vec<JsonDiffField>),
+    Array(Vec<JsonDiffIndex>),
+    Scalar {
+        before: Option<Value>,
+        after: Option<Value>,
+    },
+}
+
+#[derive(Clone, Debug)]
+struct JsonDiffField {
+    key: String,
+    change: JsonDiffChange,
+}
+
+#[derive(Clone, Debug)]
+struct JsonDiffIndex {
+    index: usize,
+    change: JsonDiffChange,
+}
+
+#[derive(Clone, Debug)]
+enum JsonDiffChange {
+    Added(Value),
+    Removed(Value),
+    Modified(JsonDiffNode),
 }
 
 pub fn render_debug_page(data: DebugPageData) -> String {
@@ -320,6 +351,9 @@ fn ComparisonSection(detail: DebugLogDetail, kind: ComparisonKind) -> impl IntoV
         return ().into_any();
     }
 
+    let left_body = left_event.as_ref().and_then(|event| event.body.clone());
+    let right_body = right_event.as_ref().and_then(|event| event.body.clone());
+
     view! {
         <section class="compare-section">
             <div class="compare-header">
@@ -330,6 +364,13 @@ fn ComparisonSection(detail: DebugLogDetail, kind: ComparisonKind) -> impl IntoV
                 <ComparisonCard title=left_title event=left_event/>
                 <ComparisonCard title=right_title event=right_event/>
             </div>
+            <BodyDiffBlock
+                title="Body Diff"
+                left_label=left_title
+                right_label=right_title
+                left_content=left_body
+                right_content=right_body
+            />
         </section>
     }
     .into_any()
@@ -384,6 +425,287 @@ fn ComparisonCard(title: &'static str, event: Option<DebugLogEvent>) -> impl Int
                 .into_any(),
             }}
         </article>
+    }
+}
+
+#[component]
+fn DiffBlock(
+    title: &'static str,
+    left_label: &'static str,
+    right_label: &'static str,
+    left_content: Option<String>,
+    right_content: Option<String>,
+) -> impl IntoView {
+    let left_prepared = left_content
+        .as_deref()
+        .map(prepare_diff_content)
+        .unwrap_or_else(|| "(empty)".to_string());
+    let right_prepared = right_content
+        .as_deref()
+        .map(prepare_diff_content)
+        .unwrap_or_else(|| "(empty)".to_string());
+
+    let diff = TextDiff::from_lines(&left_prepared, &right_prepared);
+    let grouped_ops = diff.grouped_ops(0);
+    let has_changes = grouped_ops.iter().any(|group| {
+        group.iter().any(|op| {
+            diff.iter_changes(op)
+                .any(|change| change.tag() != ChangeTag::Equal)
+        })
+    });
+
+    view! {
+        <div class="diff-block">
+            <div class="diff-head">
+                <strong>{title}</strong>
+                <div class="diff-legend">
+                    <span class="diff-side before">{left_label}</span>
+                    <span class="diff-side after">{right_label}</span>
+                </div>
+            </div>
+            <div class="diff-shell">
+                {if has_changes {
+                    grouped_ops
+                        .iter()
+                        .enumerate()
+                        .map(|(group_index, group)| {
+                            let lines = group
+                                .iter()
+                                .flat_map(|op| {
+                                    diff.iter_changes(op)
+                                        .filter(|change| change.tag() != ChangeTag::Equal)
+                                        .map(|change| {
+                                            let (prefix, class_name) = match change.tag() {
+                                                ChangeTag::Delete => ("-", "diff-line delete"),
+                                                ChangeTag::Insert => ("+", "diff-line insert"),
+                                                ChangeTag::Equal => (" ", "diff-line equal"),
+                                            };
+                                            let text = change.to_string();
+                                            let text = text.strip_suffix('\n').unwrap_or(&text).to_string();
+
+                                            view! {
+                                                <div class=class_name>
+                                                    <span class="diff-prefix">{prefix}</span>
+                                                    <span class="diff-text">{text}</span>
+                                                </div>
+                                            }
+                                        })
+                                        .collect_view()
+                                })
+                                .collect_view();
+
+                            view! {
+                                <div class="diff-group">
+                                    {if group_index > 0 {
+                                        view! { <div class="diff-hidden">"… unchanged lines hidden …"</div> }.into_any()
+                                    } else {
+                                        ().into_any()
+                                    }}
+                                    {lines}
+                                </div>
+                            }
+                        })
+                        .collect_view()
+                        .into_any()
+                } else {
+                    view! {
+                        <div class="diff-line equal">
+                            <span class="diff-prefix">"="</span>
+                            <span class="diff-text">"没有差异"</span>
+                        </div>
+                    }
+                    .into_any()
+                }}
+            </div>
+        </div>
+    }
+}
+
+#[component]
+fn BodyDiffBlock(
+    title: &'static str,
+    left_label: &'static str,
+    right_label: &'static str,
+    left_content: Option<String>,
+    right_content: Option<String>,
+) -> impl IntoView {
+    match (
+        left_content.as_deref().and_then(parse_json_content),
+        right_content.as_deref().and_then(parse_json_content),
+    ) {
+        (Some(left_json), Some(right_json)) => view! {
+            <JsonDiffBlock
+                title=title
+                left_label=left_label
+                right_label=right_label
+                left_value=left_json
+                right_value=right_json
+            />
+        }
+        .into_any(),
+        _ => view! {
+            <DiffBlock
+                title=title
+                left_label=left_label
+                right_label=right_label
+                left_content=left_content
+                right_content=right_content
+            />
+        }
+        .into_any(),
+    }
+}
+
+#[component]
+fn JsonDiffBlock(
+    title: &'static str,
+    left_label: &'static str,
+    right_label: &'static str,
+    left_value: Value,
+    right_value: Value,
+) -> impl IntoView {
+    let diff = diff_json_values(&left_value, &right_value);
+
+    view! {
+        <div class="diff-block">
+            <div class="diff-head">
+                <strong>{title}</strong>
+                <div class="diff-legend">
+                    <span class="diff-side before">{left_label}</span>
+                    <span class="diff-side after">{right_label}</span>
+                    <span class="diff-side json">"JSON field diff"</span>
+                </div>
+            </div>
+            <div class="json-diff-shell">
+                {match diff {
+                    Some(node) => view! { <JsonDiffNodeView label=None node=node/> }.into_any(),
+                    None => view! {
+                        <div class="diff-line equal">
+                            <span class="diff-prefix">"="</span>
+                            <span class="diff-text">"没有差异"</span>
+                        </div>
+                    }
+                    .into_any(),
+                }}
+            </div>
+        </div>
+    }
+}
+
+#[component]
+fn JsonDiffNodeView(label: Option<String>, node: JsonDiffNode) -> impl IntoView {
+    match node {
+        JsonDiffNode::Object(fields) => view! {
+            <details class="json-diff-node" open>
+                <summary>
+                    {label.map(|label| view! { <span class="json-key">{label}</span> })}
+                    <span class="json-punct">{": "}</span>
+                    <span class="json-summary">{format!("{{{} changed}}", fields.len())}</span>
+                </summary>
+                <div class="json-diff-children">
+                    {fields
+                        .into_iter()
+                        .map(|field| view! {
+                            <JsonDiffChangeView label=field.key change=field.change/>
+                        })
+                        .collect_view()}
+                </div>
+            </details>
+        }
+        .into_any(),
+        JsonDiffNode::Array(items) => view! {
+            <details class="json-diff-node" open>
+                <summary>
+                    {label.map(|label| view! { <span class="json-key">{label}</span> })}
+                    <span class="json-punct">{": "}</span>
+                    <span class="json-summary">{format!("[{} changed]", items.len())}</span>
+                </summary>
+                <div class="json-diff-children">
+                    {items
+                        .into_iter()
+                        .map(|item| view! {
+                            <JsonDiffChangeView label=item.index.to_string() change=item.change/>
+                        })
+                        .collect_view()}
+                </div>
+            </details>
+        }
+        .into_any(),
+        JsonDiffNode::Scalar { before, after } => view! {
+            <div class="json-diff-leaf">
+                {label.map(|label| view! { <span class="json-key">{label}</span> })}
+                <span class="json-punct">{": "}</span>
+                <div class="json-diff-scalar">
+                    {before.map(|value| view! {
+                        <div class="json-diff-value removed">
+                            <span class="diff-prefix">"-"</span>
+                            <JsonInlineValue value=value/>
+                        </div>
+                    })}
+                    {after.map(|value| view! {
+                        <div class="json-diff-value added">
+                            <span class="diff-prefix">"+"</span>
+                            <JsonInlineValue value=value/>
+                        </div>
+                    })}
+                </div>
+            </div>
+        }
+        .into_any(),
+    }
+}
+
+#[component]
+fn JsonDiffChangeView(label: String, change: JsonDiffChange) -> impl IntoView {
+    match change {
+        JsonDiffChange::Added(value) => view! {
+            <div class="json-diff-leaf">
+                <span class="json-key">{label}</span>
+                <span class="json-punct">{": "}</span>
+                <div class="json-diff-value added">
+                    <span class="diff-prefix">"+"</span>
+                    <JsonInlineValue value=value/>
+                </div>
+            </div>
+        }
+        .into_any(),
+        JsonDiffChange::Removed(value) => view! {
+            <div class="json-diff-leaf">
+                <span class="json-key">{label}</span>
+                <span class="json-punct">{": "}</span>
+                <div class="json-diff-value removed">
+                    <span class="diff-prefix">"-"</span>
+                    <JsonInlineValue value=value/>
+                </div>
+            </div>
+        }
+        .into_any(),
+        JsonDiffChange::Modified(node) => view! {
+            <JsonDiffNodeView label=Some(label) node=node/>
+        }
+        .into_any(),
+    }
+}
+
+#[component]
+fn JsonInlineValue(value: Value) -> impl IntoView {
+    match value {
+        Value::Object(_) | Value::Array(_) => {
+            let pretty = serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string());
+            view! { <LongTextBlock text=pretty quoted=false class_name="json-inline-blob"/> }.into_any()
+        }
+        Value::String(text) => {
+            view! { <LongTextBlock text=text quoted=true class_name="json-string"/> }.into_any()
+        }
+        Value::Number(number) => {
+            view! { <span class="json-number">{number.to_string()}</span> }.into_any()
+        }
+        Value::Bool(boolean) => {
+            view! { <span class="json-bool">{boolean.to_string()}</span> }.into_any()
+        }
+        Value::Null => {
+            view! { <span class="json-null">"null"</span> }.into_any()
+        }
     }
 }
 
@@ -544,6 +866,93 @@ fn LongTextBlock(text: String, quoted: bool, class_name: &'static str) -> impl I
         </details>
     }
     .into_any()
+}
+
+fn prepare_diff_content(content: &str) -> String {
+    match serde_json::from_str::<Value>(content) {
+        Ok(value) => serde_json::to_string_pretty(&value).unwrap_or_else(|_| content.to_string()),
+        Err(_) => content.to_string(),
+    }
+}
+
+fn parse_json_content(content: &str) -> Option<Value> {
+    serde_json::from_str(content).ok()
+}
+
+fn diff_json_values(left: &Value, right: &Value) -> Option<JsonDiffNode> {
+    match (left, right) {
+        (Value::Object(left_map), Value::Object(right_map)) => {
+            let mut keys = BTreeSet::new();
+            keys.extend(left_map.keys().cloned());
+            keys.extend(right_map.keys().cloned());
+
+            let mut fields = Vec::new();
+            for key in keys {
+                match (left_map.get(&key), right_map.get(&key)) {
+                    (Some(left_value), Some(right_value)) => {
+                        if let Some(node) = diff_json_values(left_value, right_value) {
+                            fields.push(JsonDiffField {
+                                key,
+                                change: JsonDiffChange::Modified(node),
+                            });
+                        }
+                    }
+                    (Some(left_value), None) => fields.push(JsonDiffField {
+                        key,
+                        change: JsonDiffChange::Removed(left_value.clone()),
+                    }),
+                    (None, Some(right_value)) => fields.push(JsonDiffField {
+                        key,
+                        change: JsonDiffChange::Added(right_value.clone()),
+                    }),
+                    (None, None) => {}
+                }
+            }
+
+            if fields.is_empty() {
+                None
+            } else {
+                Some(JsonDiffNode::Object(fields))
+            }
+        }
+        (Value::Array(left_items), Value::Array(right_items)) => {
+            let max_len = left_items.len().max(right_items.len());
+            let mut items = Vec::new();
+
+            for index in 0..max_len {
+                match (left_items.get(index), right_items.get(index)) {
+                    (Some(left_value), Some(right_value)) => {
+                        if let Some(node) = diff_json_values(left_value, right_value) {
+                            items.push(JsonDiffIndex {
+                                index,
+                                change: JsonDiffChange::Modified(node),
+                            });
+                        }
+                    }
+                    (Some(left_value), None) => items.push(JsonDiffIndex {
+                        index,
+                        change: JsonDiffChange::Removed(left_value.clone()),
+                    }),
+                    (None, Some(right_value)) => items.push(JsonDiffIndex {
+                        index,
+                        change: JsonDiffChange::Added(right_value.clone()),
+                    }),
+                    (None, None) => {}
+                }
+            }
+
+            if items.is_empty() {
+                None
+            } else {
+                Some(JsonDiffNode::Array(items))
+            }
+        }
+        _ if left == right => None,
+        _ => Some(JsonDiffNode::Scalar {
+            before: Some(left.clone()),
+            after: Some(right.clone()),
+        }),
+    }
 }
 
 const STYLE: &str = r#"
@@ -799,6 +1208,111 @@ form {
   font-size: 13px;
 }
 
+.diff-block {
+  display: grid;
+  gap: 10px;
+}
+
+.diff-head {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.diff-legend {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.diff-side {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.diff-side.before {
+  background: rgba(180, 63, 50, 0.12);
+  color: #8f352b;
+}
+
+.diff-side.after {
+  background: rgba(33, 150, 83, 0.14);
+  color: #20643a;
+}
+
+.diff-shell {
+  border-radius: 18px;
+  overflow: hidden;
+  border: 1px solid rgba(48, 54, 61, 0.08);
+  background: #1e2430;
+  font-family: "SF Mono", "Menlo", monospace;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.json-diff-shell {
+  border-radius: 18px;
+  overflow: hidden;
+  border: 1px solid rgba(48, 54, 61, 0.08);
+  background: #1e2430;
+  color: #eef2f5;
+  padding: 12px 14px;
+  font-family: "SF Mono", "Menlo", monospace;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.diff-line {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  align-items: start;
+}
+
+.diff-group + .diff-group {
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.diff-line.equal {
+  background: rgba(255, 255, 255, 0.02);
+  color: #d7dde5;
+}
+
+.diff-line.delete {
+  background: rgba(180, 63, 50, 0.16);
+  color: #ffd7d1;
+}
+
+.diff-line.insert {
+  background: rgba(33, 150, 83, 0.16);
+  color: #d7ffe1;
+}
+
+.diff-prefix,
+.diff-text {
+  padding: 4px 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.diff-prefix {
+  text-align: center;
+  color: rgba(255, 255, 255, 0.72);
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.diff-hidden {
+  padding: 8px 12px;
+  color: #8f99aa;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
 .event-card {
   display: grid;
   gap: 14px;
@@ -933,6 +1447,70 @@ pre {
   border-left: 1px solid rgba(140, 185, 255, 0.22);
 }
 
+.json-diff-node {
+  margin-left: 0;
+}
+
+.json-diff-node + .json-diff-node,
+.json-diff-leaf + .json-diff-node,
+.json-diff-node + .json-diff-leaf,
+.json-diff-leaf + .json-diff-leaf {
+  margin-top: 6px;
+}
+
+.json-diff-node summary {
+  list-style: none;
+  cursor: pointer;
+}
+
+.json-diff-node summary::-webkit-details-marker {
+  display: none;
+}
+
+.json-diff-node summary::before {
+  content: "▾";
+  display: inline-block;
+  width: 12px;
+  margin-right: 6px;
+  color: #8cb9ff;
+}
+
+.json-diff-children {
+  margin-left: 18px;
+  margin-top: 6px;
+  padding-left: 10px;
+  border-left: 1px solid rgba(140, 185, 255, 0.22);
+}
+
+.json-diff-leaf {
+  padding-left: 18px;
+  overflow-wrap: anywhere;
+}
+
+.json-diff-scalar {
+  display: grid;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.json-diff-value {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  align-items: start;
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.json-diff-value.added {
+  background: rgba(33, 150, 83, 0.16);
+  color: #d7ffe1;
+}
+
+.json-diff-value.removed {
+  background: rgba(180, 63, 50, 0.16);
+  color: #ffd7d1;
+}
+
 .json-leaf {
   padding-left: 18px;
   overflow-wrap: anywhere;
@@ -984,6 +1562,7 @@ pre {
 .json-punct { color: #7d8696; }
 .json-summary { color: #8cb9ff; }
 .json-string { color: #9be28f; }
+.json-inline-blob { color: #d7dde5; }
 .json-number { color: #ffd479; }
 .json-bool { color: #ff9f7f; }
 .json-null { color: #c6a7ff; }
