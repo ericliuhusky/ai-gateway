@@ -102,6 +102,21 @@ enum JsonDiffChange {
     Modified(JsonDiffNode),
 }
 
+#[derive(Clone, Debug)]
+struct DiffSummaryItem {
+    path: String,
+    ingress_state: SummaryPresence,
+    egress_state: SummaryPresence,
+    count: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum SummaryPresence {
+    Missing,
+    Present,
+    Changed,
+}
+
 pub fn render_debug_page(data: DebugPageData) -> String {
     let body = view! { <DebugApp data=data/> }.to_html();
 
@@ -378,10 +393,6 @@ fn ComparisonSection(detail: DebugLogDetail, kind: ComparisonKind) -> impl IntoV
                 <h3>{title}</h3>
                 <span class="pill neutral">{detail.request_id}</span>
             </div>
-            <div class="compare-grid">
-                <ComparisonCard title=left_title event=left_event/>
-                <ComparisonCard title=right_title event=right_event/>
-            </div>
             <BodyDiffBlock
                 title="Body Diff"
                 left_label=left_title
@@ -392,58 +403,6 @@ fn ComparisonSection(detail: DebugLogDetail, kind: ComparisonKind) -> impl IntoV
         </section>
     }
     .into_any()
-}
-
-#[component]
-fn ComparisonCard(title: &'static str, event: Option<DebugLogEvent>) -> impl IntoView {
-    view! {
-        <article class="compare-card">
-            <div class="compare-card-head">
-                <strong>{title}</strong>
-                {event
-                    .as_ref()
-                    .and_then(|event| event.status_code)
-                    .map(|status| view! { <span class="badge ok">{status.to_string()}</span> })}
-            </div>
-            {match event {
-                Some(event) => view! {
-                    <dl class="compare-meta">
-                        <KeyValue label="Stage" value=Some(event.stage.clone())/>
-                        <KeyValue label="Method" value=event.method.clone()/>
-                        <KeyValue label="Path" value=event.path.clone()/>
-                        <KeyValue label="URL" value=event.url.clone()/>
-                        <KeyValue label="Model" value=event.model.clone()/>
-                        <KeyValue label="Elapsed" value=event.elapsed_ms.map(|ms| format!("{ms} ms"))/>
-                    </dl>
-                    {event.body.as_ref().map(|body| view! {
-                        <div class="block">
-                            <div class="block-title">
-                                "Body"
-                                {if event.body_truncated { "（已截断）" } else { "" }}
-                            </div>
-                            <JsonBlock content=body.clone() root_label="body"/>
-                        </div>
-                    })}
-                    {event.error_message.as_ref().map(|message| view! {
-                        <div class="block error-block">
-                            <div class="block-title">
-                                "错误"
-                                {if event.error_truncated { "（已截断）" } else { "" }}
-                            </div>
-                            <JsonBlock content=message.clone() root_label="error"/>
-                        </div>
-                    })}
-                }
-                .into_any(),
-                None => view! {
-                    <div class="compare-empty">
-                        "没有对应阶段的日志事件"
-                    </div>
-                }
-                .into_any(),
-            }}
-        </article>
-    }
 }
 
 #[component]
@@ -585,10 +544,7 @@ fn JsonDiffBlock(
     right_value: Value,
 ) -> impl IntoView {
     let diff = diff_json_values(&left_value, &right_value);
-    let summary = diff
-        .as_ref()
-        .map(summarize_json_diff)
-        .unwrap_or_default();
+    let summary = diff.as_ref().map(summarize_json_diff).unwrap_or_default();
 
     view! {
         <div class="diff-block">
@@ -619,19 +575,55 @@ fn JsonDiffBlock(
 }
 
 #[component]
-fn DiffSummary(items: Vec<String>) -> impl IntoView {
+fn DiffSummary(items: Vec<DiffSummaryItem>) -> impl IntoView {
     if items.is_empty() {
         return ().into_any();
     }
     view! {
         <div class="diff-summary">
             <div class="diff-summary-title">"差异总结"</div>
-            <ul class="diff-summary-list">
-                {items.into_iter().map(|item| view! { <li>{item}</li> }).collect_view()}
-            </ul>
+            <div class="diff-summary-list">
+                {items.into_iter().map(|item| view! {
+                    <div class="diff-summary-item">
+                        <div class="diff-summary-path">
+                            <span>{item.path}</span>
+                            {if item.count > 1 {
+                                view! { <span class="diff-summary-count">{format!("x{}", item.count)}</span> }.into_any()
+                            } else {
+                                ().into_any()
+                            }}
+                        </div>
+                        <div class="diff-summary-sides">
+                            <SummarySideBadge side=DiffSide::Ingress state=item.ingress_state/>
+                            <SummarySideBadge side=DiffSide::Egress state=item.egress_state/>
+                        </div>
+                    </div>
+                }).collect_view()}
+            </div>
         </div>
     }
     .into_any()
+}
+
+#[component]
+fn SummarySideBadge(side: DiffSide, state: SummaryPresence) -> impl IntoView {
+    let (label, dot_class) = match side {
+        DiffSide::Ingress => ("入口", "side-dot ingress"),
+        DiffSide::Egress => ("出口", "side-dot egress"),
+    };
+    let (state_class, state_label) = match state {
+        SummaryPresence::Missing => ("summary-state missing", "没有"),
+        SummaryPresence::Present => ("summary-state present", "有"),
+        SummaryPresence::Changed => ("summary-state changed", "值不同"),
+    };
+
+    view! {
+        <div class=state_class>
+            <span class=dot_class></span>
+            <span class="summary-side-name">{label}</span>
+            <span>{state_label}</span>
+        </div>
+    }
 }
 
 #[component]
@@ -945,7 +937,7 @@ fn parse_json_content(content: &str) -> Option<Value> {
 fn summarize_text_diff(
     diff: &TextDiff<'_, '_, '_, str>,
     grouped_ops: &[Vec<similar::DiffOp>],
-) -> Vec<String> {
+) -> Vec<DiffSummaryItem> {
     let mut removed = 0usize;
     let mut added = 0usize;
     let mut groups = 0usize;
@@ -972,28 +964,42 @@ fn summarize_text_diff(
     }
     let mut items = Vec::new();
     if groups > 0 {
-        items.push(format!("{groups} 个变更块，已隐藏未变化的大段内容"));
+        items.push(DiffSummaryItem {
+            path: format!("{groups} 个变更块，已隐藏未变化的大段内容"),
+            ingress_state: SummaryPresence::Changed,
+            egress_state: SummaryPresence::Changed,
+            count: 1,
+        });
     }
     if removed > 0 {
-        items.push(format!("入口侧独有/被删除的行数：{removed}"));
+        items.push(DiffSummaryItem {
+            path: "文本行差异".to_string(),
+            ingress_state: SummaryPresence::Present,
+            egress_state: SummaryPresence::Missing,
+            count: removed,
+        });
     }
     if added > 0 {
-        items.push(format!("出口侧新增的行数：{added}"));
+        items.push(DiffSummaryItem {
+            path: "文本行差异".to_string(),
+            ingress_state: SummaryPresence::Missing,
+            egress_state: SummaryPresence::Present,
+            count: added,
+        });
     }
     items
 }
 
-fn summarize_json_diff(node: &JsonDiffNode) -> Vec<String> {
-    let mut counts = BTreeMap::<String, usize>::new();
+fn summarize_json_diff(node: &JsonDiffNode) -> Vec<DiffSummaryItem> {
+    let mut counts = BTreeMap::<(String, SummaryPresence, SummaryPresence), usize>::new();
     collect_json_diff_summary(node, String::new(), &mut counts);
     counts
         .into_iter()
-        .map(|(label, count)| {
-            if count > 1 {
-                format!("{label} x{count}")
-            } else {
-                label
-            }
+        .map(|((path, ingress_state, egress_state), count)| DiffSummaryItem {
+            path,
+            ingress_state,
+            egress_state,
+            count,
         })
         .collect()
 }
@@ -1001,7 +1007,7 @@ fn summarize_json_diff(node: &JsonDiffNode) -> Vec<String> {
 fn collect_json_diff_summary(
     node: &JsonDiffNode,
     path: String,
-    counts: &mut BTreeMap<String, usize>,
+    counts: &mut BTreeMap<(String, SummaryPresence, SummaryPresence), usize>,
 ) {
     match node {
         JsonDiffNode::Object(fields) => {
@@ -1025,14 +1031,14 @@ fn collect_json_diff_summary(
             }
         }
         JsonDiffNode::Scalar { before, after } => {
-            let label = if before.is_some() && after.is_some() {
-                format!("{path} 的入口值与出口值不同")
+            let states = if before.is_some() && after.is_some() {
+                (SummaryPresence::Changed, SummaryPresence::Changed)
             } else if before.is_some() {
-                format!("{path} 仅入口存在")
+                (SummaryPresence::Present, SummaryPresence::Missing)
             } else {
-                format!("{path} 仅出口存在")
+                (SummaryPresence::Missing, SummaryPresence::Present)
             };
-            *counts.entry(label).or_insert(0) += 1;
+            *counts.entry((path, states.0, states.1)).or_insert(0) += 1;
         }
     }
 }
@@ -1040,14 +1046,18 @@ fn collect_json_diff_summary(
 fn collect_json_change_summary(
     change: &JsonDiffChange,
     path: String,
-    counts: &mut BTreeMap<String, usize>,
+    counts: &mut BTreeMap<(String, SummaryPresence, SummaryPresence), usize>,
 ) {
     match change {
         JsonDiffChange::Added(_) => {
-            *counts.entry(format!("{path} 仅出口存在")).or_insert(0) += 1;
+            *counts
+                .entry((path, SummaryPresence::Missing, SummaryPresence::Present))
+                .or_insert(0) += 1;
         }
         JsonDiffChange::Removed(_) => {
-            *counts.entry(format!("{path} 仅入口存在")).or_insert(0) += 1;
+            *counts
+                .entry((path, SummaryPresence::Present, SummaryPresence::Missing))
+                .or_insert(0) += 1;
         }
         JsonDiffChange::Modified(node) => collect_json_diff_summary(node, path, counts),
     }
@@ -1395,39 +1405,6 @@ form {
   font-size: 18px;
 }
 
-.compare-grid {
-  display: grid;
-  gap: 14px;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-.compare-card {
-  display: grid;
-  gap: 12px;
-  padding: 16px;
-  border-radius: 18px;
-  background: rgba(255, 252, 247, 0.9);
-  border: 1px solid rgba(48, 54, 61, 0.08);
-}
-
-.compare-card-head {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.compare-meta {
-  display: grid;
-  gap: 8px 12px;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-.compare-empty {
-  color: #7a808d;
-  font-size: 13px;
-}
-
 .diff-block {
   display: grid;
   gap: 10px;
@@ -1451,15 +1428,74 @@ form {
 }
 
 .diff-summary-list {
-  margin: 0;
-  padding-left: 18px;
   display: grid;
   gap: 6px;
 }
 
-.diff-summary-list li {
-  color: #2b3340;
+.diff-summary-item {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(255, 252, 247, 0.88);
+  border: 1px solid rgba(48, 54, 61, 0.08);
+}
+
+.diff-summary-path {
+  display: flex;
+  gap: 8px;
+  align-items: center;
   font-size: 13px;
+  color: #2b3340;
+  overflow-wrap: anywhere;
+}
+
+.diff-summary-count {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 4px 8px;
+  background: rgba(31, 36, 48, 0.08);
+  color: #4f5663;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.diff-summary-sides {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.summary-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.summary-state.present {
+  background: rgba(33, 150, 83, 0.14);
+  color: #20643a;
+}
+
+.summary-state.missing {
+  background: rgba(180, 63, 50, 0.14);
+  color: #8f352b;
+}
+
+.summary-state.changed {
+  background: rgba(31, 36, 48, 0.08);
+  color: #374151;
+}
+
+.summary-side-name {
+  opacity: 0.82;
 }
 
 .diff-head {
@@ -1911,8 +1947,9 @@ pre {
     grid-template-columns: 1fr;
   }
 
-  .compare-grid, .compare-meta {
-    grid-template-columns: 1fr;
+  .diff-summary-item, .diff-summary-sides {
+    flex-direction: column;
+    align-items: flex-start;
   }
 }
 "#;
