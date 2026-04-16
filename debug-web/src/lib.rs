@@ -67,6 +67,12 @@ enum ComparisonKind {
     Response,
 }
 
+#[derive(Clone, Copy, Debug)]
+enum DiffSide {
+    Ingress,
+    Egress,
+}
+
 #[derive(Clone, Debug)]
 enum JsonDiffNode {
     Object(Vec<JsonDiffField>),
@@ -571,9 +577,10 @@ fn JsonDiffBlock(
             <div class="diff-head">
                 <strong>{title}</strong>
                 <div class="diff-legend">
-                    <span class="diff-side before">{left_label}</span>
-                    <span class="diff-side after">{right_label}</span>
-                    <span class="diff-side json">"JSON field diff"</span>
+                    <span class="diff-side before"><span class="side-dot ingress"></span>{left_label}</span>
+                    <span class="diff-side after"><span class="side-dot egress"></span>{right_label}</span>
+                    <span class="diff-side present">"绿色=存在"</span>
+                    <span class="diff-side missing">"红色=缺失"</span>
                 </div>
             </div>
             <div class="json-diff-shell">
@@ -637,16 +644,10 @@ fn JsonDiffNodeView(label: Option<String>, node: JsonDiffNode) -> impl IntoView 
                 <span class="json-punct">{": "}</span>
                 <div class="json-diff-scalar">
                     {before.map(|value| view! {
-                        <div class="json-diff-value removed">
-                            <span class="diff-prefix">"-"</span>
-                            <JsonInlineValue value=value/>
-                        </div>
+                        <JsonSideValueRow side=DiffSide::Ingress state_class="compare" value=Some(value)/>
                     })}
                     {after.map(|value| view! {
-                        <div class="json-diff-value added">
-                            <span class="diff-prefix">"+"</span>
-                            <JsonInlineValue value=value/>
-                        </div>
+                        <JsonSideValueRow side=DiffSide::Egress state_class="compare" value=Some(value)/>
                     })}
                 </div>
             </div>
@@ -662,9 +663,9 @@ fn JsonDiffChangeView(label: String, change: JsonDiffChange) -> impl IntoView {
             <div class="json-diff-leaf">
                 <span class="json-key">{label}</span>
                 <span class="json-punct">{": "}</span>
-                <div class="json-diff-value added">
-                    <span class="diff-prefix">"+"</span>
-                    <JsonInlineValue value=value/>
+                <div class="json-diff-scalar">
+                    <JsonSideValueRow side=DiffSide::Ingress state_class="missing" value=None/>
+                    <JsonSideValueRow side=DiffSide::Egress state_class="present" value=Some(value)/>
                 </div>
             </div>
         }
@@ -673,9 +674,9 @@ fn JsonDiffChangeView(label: String, change: JsonDiffChange) -> impl IntoView {
             <div class="json-diff-leaf">
                 <span class="json-key">{label}</span>
                 <span class="json-punct">{": "}</span>
-                <div class="json-diff-value removed">
-                    <span class="diff-prefix">"-"</span>
-                    <JsonInlineValue value=value/>
+                <div class="json-diff-scalar">
+                    <JsonSideValueRow side=DiffSide::Ingress state_class="present" value=Some(value)/>
+                    <JsonSideValueRow side=DiffSide::Egress state_class="missing" value=None/>
                 </div>
             </div>
         }
@@ -684,6 +685,33 @@ fn JsonDiffChangeView(label: String, change: JsonDiffChange) -> impl IntoView {
             <JsonDiffNodeView label=Some(label) node=node/>
         }
         .into_any(),
+    }
+}
+
+#[component]
+fn JsonSideValueRow(
+    side: DiffSide,
+    state_class: &'static str,
+    value: Option<Value>,
+) -> impl IntoView {
+    let (label, dot_class, row_class) = match side {
+        DiffSide::Ingress => ("入口", "side-dot ingress", format!("json-diff-value ingress {state_class}")),
+        DiffSide::Egress => ("出口", "side-dot egress", format!("json-diff-value egress {state_class}")),
+    };
+
+    view! {
+        <div class=row_class>
+            <div class="json-diff-side-label">
+                <span class=dot_class></span>
+                <span>{label}</span>
+            </div>
+            <div class="json-diff-side-value">
+                {match value {
+                    Some(value) => view! { <JsonInlineValue value=value/> }.into_any(),
+                    None => view! { <span class="json-missing-text">"没有"</span> }.into_any(),
+                }}
+            </div>
+        </div>
     }
 }
 
@@ -1236,13 +1264,39 @@ form {
 }
 
 .diff-side.before {
-  background: rgba(180, 63, 50, 0.12);
-  color: #8f352b;
+  background: rgba(31, 117, 220, 0.12);
+  color: #1d5ea8;
 }
 
 .diff-side.after {
+  background: rgba(224, 122, 47, 0.16);
+  color: #9a4f17;
+}
+
+.diff-side.present {
   background: rgba(33, 150, 83, 0.14);
   color: #20643a;
+}
+
+.diff-side.missing {
+  background: rgba(180, 63, 50, 0.14);
+  color: #8f352b;
+}
+
+.side-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  display: inline-block;
+  margin-right: 8px;
+}
+
+.side-dot.ingress {
+  background: #1f75dc;
+}
+
+.side-dot.egress {
+  background: #e07a2f;
 }
 
 .diff-shell {
@@ -1495,10 +1549,53 @@ pre {
 
 .json-diff-value {
   display: grid;
-  grid-template-columns: 22px minmax(0, 1fr);
+  grid-template-columns: 72px minmax(0, 1fr);
   align-items: start;
   border-radius: 12px;
   overflow: hidden;
+}
+
+.json-diff-value.present {
+  background: rgba(33, 150, 83, 0.16);
+  color: #d7ffe1;
+}
+
+.json-diff-value.missing {
+  background: rgba(180, 63, 50, 0.16);
+  color: #ffd7d1;
+}
+
+.json-diff-value.ingress.compare {
+  background: rgba(31, 117, 220, 0.16);
+  color: #d9ebff;
+}
+
+.json-diff-value.egress.compare {
+  background: rgba(224, 122, 47, 0.18);
+  color: #ffe6d5;
+}
+
+.json-diff-side-label,
+.json-diff-side-value {
+  padding: 6px 10px;
+}
+
+.json-diff-side-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  font-size: 11px;
+  font-weight: 700;
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.json-diff-side-value {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.json-missing-text {
+  font-weight: 700;
 }
 
 .json-diff-value.added {
