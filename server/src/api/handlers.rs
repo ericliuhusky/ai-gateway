@@ -18,7 +18,10 @@ use crate::{
         UpstreamRateLimitStatusDetails, UpstreamRateLimitStatusPayload,
         UpstreamRateLimitWindowSnapshot,
     },
-    store::{AccountPool, LogEvent, LogStage, LogStore, ProviderStore, RouteStore},
+    store::{
+        AccountPool, LogEvent, LogStage, LogStore, ProviderStore, RouteStore,
+        log_store::extract_model_output_from_body,
+    },
     upstream::{UpstreamClient, chat_completions_api_url, responses_api_url},
 };
 use async_stream::stream;
@@ -926,6 +929,8 @@ async fn responses_inner(
             }
 
             let elapsed = elapsed_ms(started_at);
+            let logged_response_body =
+                logged_stream_response_body(final_response_body.as_deref(), &response_body);
             log_http_event(
                 &logs,
                 &id_for_stream,
@@ -941,7 +946,7 @@ async fn responses_inner(
                 Some("POST"),
                 None,
                 Some(OPENAI_PRIVATE_RESPONSES_URL),
-                Some(final_response_body.clone().unwrap_or_else(|| response_body.clone())),
+                Some(logged_response_body.clone()),
                 None,
                 Some(elapsed),
             )
@@ -961,7 +966,7 @@ async fn responses_inner(
                 Some("POST"),
                 Some(RESPONSES_PATH),
                 None,
-                Some(final_response_body.unwrap_or(response_body)),
+                Some(logged_response_body),
                 None,
                 Some(elapsed),
             )
@@ -1941,6 +1946,8 @@ async fn responses_inner(
         }
 
         let elapsed = elapsed_ms(started_at);
+        let logged_response_body =
+            logged_stream_response_body(final_response_body.as_deref(), &response_body);
         log_http_event(
             &logs,
             &id_for_stream,
@@ -1956,7 +1963,7 @@ async fn responses_inner(
             Some("POST"),
             None,
             Some(&upstream_url),
-            Some(final_response_body.clone().unwrap_or_else(|| response_body.clone())),
+            Some(logged_response_body.clone()),
             None,
             Some(elapsed),
         )
@@ -1976,7 +1983,7 @@ async fn responses_inner(
             Some("POST"),
             Some(RESPONSES_PATH),
             None,
-            Some(final_response_body.unwrap_or(response_body)),
+            Some(logged_response_body),
             None,
             Some(elapsed),
         )
@@ -2679,6 +2686,16 @@ fn capture_final_response_from_sse_line(line: &str, final_response_body: &mut Op
     }
 }
 
+fn logged_stream_response_body(final_response_body: Option<&str>, response_body: &str) -> String {
+    if let Some(final_body) = final_response_body {
+        if extract_model_output_from_body(final_body).is_some() {
+            return final_body.to_string();
+        }
+    }
+
+    response_body.to_string()
+}
+
 fn google_v1internal_url_label(method: &str, stream: bool) -> String {
     if stream {
         format!("google-v1internal:{method}?alt=sse")
@@ -2770,8 +2787,9 @@ impl IntoResponse for AppError {
 #[cfg(test)]
 mod tests {
     use super::{
-        ResolvedProvider, capture_final_response_from_sse_chunk, openai_models_response,
-        provider_uses_openai_account, quota_from_new_api_extension, quota_from_openai_usage,
+        ResolvedProvider, capture_final_response_from_sse_chunk, logged_stream_response_body,
+        openai_models_response, provider_uses_openai_account, quota_from_new_api_extension,
+        quota_from_openai_usage,
     };
     use crate::models::{ApiProviderBillingMode, ApiProviderRecord, ProviderAuthMode};
     use serde_json::json;
@@ -3019,6 +3037,32 @@ mod tests {
         assert_eq!(
             final_response.as_deref(),
             Some("{\"id\":\"resp_split\",\"output\":[],\"status\":\"completed\"}")
+        );
+    }
+
+    #[test]
+    fn keeps_sse_body_when_completed_response_has_no_output_text() {
+        let final_response = r#"{"id":"resp_1","status":"completed","output":[]}"#;
+        let sse_body = concat!(
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"status\":\"completed\",\"output\":[]}}\n\n",
+            "data: [DONE]\n\n"
+        );
+
+        assert_eq!(
+            logged_stream_response_body(Some(final_response), sse_body),
+            sse_body
+        );
+    }
+
+    #[test]
+    fn keeps_compact_completed_response_when_it_has_output_text() {
+        let final_response = r#"{"id":"resp_1","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"done"}]}]}"#;
+        let sse_body = "data: ignored\n\n";
+
+        assert_eq!(
+            logged_stream_response_body(Some(final_response), sse_body),
+            final_response
         );
     }
 }

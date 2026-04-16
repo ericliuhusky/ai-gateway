@@ -1044,7 +1044,7 @@ fn CopyButton(label: String, text: String) -> impl IntoView {
     let onclick = copy_button_onclick(&text);
 
     view! {
-        <button class="copy-button" type="button" attr:onclick=onclick>
+        <button class="copy-button" type="button" onclick=onclick>
             <span class="copy-button-idle">{label}</span>
             <span class="copy-button-done">"已复制"</span>
         </button>

@@ -699,22 +699,61 @@ fn extract_user_input_from_message_item(value: &Value, prefer_user_role: bool) -
         .or_else(|| extract_text_candidate(value))
 }
 
-fn extract_model_output_from_body(body: &str) -> Option<String> {
-    let value = serde_json::from_str::<Value>(body).ok()?;
-    extract_model_output_from_value(&value)
+pub(crate) fn extract_model_output_from_body(body: &str) -> Option<String> {
+    serde_json::from_str::<Value>(body)
+        .ok()
+        .and_then(|value| extract_model_output_from_value(&value))
+        .or_else(|| extract_model_output_from_sse_body(body))
 }
 
 fn extract_model_output_from_value(value: &Value) -> Option<String> {
     value
-        .get("output")
-        .and_then(extract_output_text)
-        .or_else(|| value.get("content").and_then(extract_content_text))
+        .get("output_text")
+        .and_then(Value::as_str)
+        .and_then(normalize_extracted_text)
+        .or_else(|| value.get("output").and_then(extract_output_text))
+        .or_else(|| {
+            value
+                .get("choices")
+                .and_then(Value::as_array)
+                .and_then(|choices| choices.first())
+                .and_then(extract_chat_choice_text)
+        })
+        .or_else(|| {
+            value
+                .get("candidates")
+                .and_then(Value::as_array)
+                .and_then(|candidates| candidates.first())
+                .and_then(extract_gemini_candidate_text)
+        })
         .or_else(|| {
             value
                 .get("response")
                 .and_then(extract_model_output_from_value)
         })
+        .or_else(|| value.get("content").and_then(extract_content_text))
         .or_else(|| extract_text_candidate(value))
+}
+
+fn extract_chat_choice_text(value: &Value) -> Option<String> {
+    value
+        .get("message")
+        .and_then(|message| message.get("content"))
+        .and_then(extract_content_text)
+        .or_else(|| {
+            value
+                .get("delta")
+                .and_then(|delta| delta.get("content"))
+                .and_then(extract_content_text)
+        })
+        .or_else(|| value.get("text").and_then(extract_content_text))
+}
+
+fn extract_gemini_candidate_text(value: &Value) -> Option<String> {
+    value
+        .get("content")
+        .and_then(|content| content.get("parts"))
+        .and_then(extract_text_parts)
 }
 
 fn extract_output_text(value: &Value) -> Option<String> {
@@ -734,16 +773,7 @@ fn extract_output_text(value: &Value) -> Option<String> {
 fn extract_content_text(value: &Value) -> Option<String> {
     match value {
         Value::String(text) => normalize_extracted_text(text),
-        Value::Array(items) => items.iter().find_map(|item| {
-            item.get("text")
-                .and_then(Value::as_str)
-                .and_then(normalize_extracted_text)
-                .or_else(|| {
-                    item.get("content")
-                        .and_then(extract_content_text)
-                        .or_else(|| extract_text_candidate(item))
-                })
-        }),
+        Value::Array(_) => extract_text_parts(value),
         Value::Object(object) => object
             .get("text")
             .and_then(Value::as_str)
@@ -751,6 +781,63 @@ fn extract_content_text(value: &Value) -> Option<String> {
             .or_else(|| object.get("content").and_then(extract_content_text)),
         _ => None,
     }
+}
+
+fn extract_text_parts(value: &Value) -> Option<String> {
+    let items = value.as_array()?;
+    let text = items
+        .iter()
+        .filter_map(|item| {
+            item.get("text")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+                .or_else(|| {
+                    item.get("content")
+                        .and_then(extract_content_text)
+                        .or_else(|| extract_text_candidate(item))
+                })
+        })
+        .collect::<Vec<_>>()
+        .join("");
+    normalize_extracted_text(&text)
+}
+
+fn extract_model_output_from_sse_body(body: &str) -> Option<String> {
+    let mut deltas = Vec::new();
+    let mut final_response = None;
+
+    for line in body.lines() {
+        let Some(payload) = line.trim_end().strip_prefix("data: ") else {
+            continue;
+        };
+        if payload == "[DONE]" {
+            continue;
+        }
+        let Ok(event) = serde_json::from_str::<Value>(payload) else {
+            continue;
+        };
+        match event.get("type").and_then(Value::as_str) {
+            Some("response.output_text.delta") => {
+                if let Some(delta) = event.get("delta").and_then(Value::as_str) {
+                    deltas.push(delta.to_string());
+                }
+            }
+            Some("response.output_text.done") => {
+                if let Some(text) = event.get("text").and_then(Value::as_str) {
+                    final_response = normalize_extracted_text(text);
+                }
+            }
+            Some("response.completed") | Some("response.failed") | Some("response.incomplete") => {
+                final_response = event
+                    .get("response")
+                    .and_then(extract_model_output_from_value)
+                    .or(final_response);
+            }
+            _ => {}
+        }
+    }
+
+    final_response.or_else(|| normalize_extracted_text(&deltas.join("")))
 }
 
 fn extract_text_candidate(value: &Value) -> Option<String> {
@@ -810,7 +897,7 @@ fn now_unix() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{LogEvent, LogStage, LogStore};
+    use super::{LogEvent, LogStage, LogStore, extract_model_output_from_body};
     use std::{
         fs,
         path::PathBuf,
@@ -1072,6 +1159,60 @@ mod tests {
         assert_eq!(enabled, 1);
 
         let _ = fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn extracts_model_output_from_common_response_shapes() {
+        let responses = r#"{
+            "id": "resp_1",
+            "output": [{
+                "type": "message",
+                "content": [{"type": "output_text", "text": "responses text"}]
+            }]
+        }"#;
+        assert_eq!(
+            extract_model_output_from_body(responses).as_deref(),
+            Some("responses text")
+        );
+
+        let chat = r#"{
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": "chat text"
+                }
+            }]
+        }"#;
+        assert_eq!(
+            extract_model_output_from_body(chat).as_deref(),
+            Some("chat text")
+        );
+
+        let gemini = r#"{
+            "candidates": [{
+                "content": {
+                    "parts": [{"text": "gemini "}, {"text": "text"}]
+                }
+            }]
+        }"#;
+        assert_eq!(
+            extract_model_output_from_body(gemini).as_deref(),
+            Some("gemini text")
+        );
+    }
+
+    #[test]
+    fn extracts_model_output_from_sse_events() {
+        let sse = concat!(
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hel\"}\n\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"lo\"}\n\n",
+            "data: [DONE]\n\n"
+        );
+
+        assert_eq!(
+            extract_model_output_from_body(sse).as_deref(),
+            Some("hello")
+        );
     }
 
     fn unique_test_db_path(prefix: &str) -> PathBuf {
