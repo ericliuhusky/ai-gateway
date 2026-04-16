@@ -59,6 +59,12 @@ pub struct DebugLogDetail {
     pub events: Vec<DebugLogEvent>,
 }
 
+#[derive(Clone, Copy, Debug)]
+enum ComparisonKind {
+    Request,
+    Response,
+}
+
 pub fn render_debug_page(data: DebugPageData) -> String {
     let body = view! { <DebugApp data=data/> }.to_html();
 
@@ -210,6 +216,8 @@ fn DebugApp(data: DebugPageData) -> impl IntoView {
                                 <span class="mono">{detail.request_id.clone()}</span>
                                 <span class="pill neutral">{format!("{} 个事件", detail.events.len())}</span>
                             </div>
+                            <ComparisonSection detail=detail.clone() kind=ComparisonKind::Request/>
+                            <ComparisonSection detail=detail.clone() kind=ComparisonKind::Response/>
                             <div class="event-list">
                                 {detail.events.iter().map(|event| view! {
                                     <article class="event-card">
@@ -270,6 +278,112 @@ fn DebugApp(data: DebugPageData) -> impl IntoView {
                 </div>
             </section>
         </main>
+    }
+}
+
+#[component]
+fn ComparisonSection(detail: DebugLogDetail, kind: ComparisonKind) -> impl IntoView {
+    let (title, left_title, right_title, left_event, right_event) = match kind {
+        ComparisonKind::Request => (
+            "请求对比",
+            "入口请求",
+            "出口请求",
+            detail
+                .events
+                .iter()
+                .find(|event| event.stage == "ingress_request")
+                .cloned(),
+            detail
+                .events
+                .iter()
+                .find(|event| event.stage == "egress_request")
+                .cloned(),
+        ),
+        ComparisonKind::Response => (
+            "响应对比",
+            "入口响应",
+            "出口响应",
+            detail
+                .events
+                .iter()
+                .find(|event| event.stage == "ingress_response")
+                .cloned(),
+            detail
+                .events
+                .iter()
+                .find(|event| event.stage == "egress_response")
+                .cloned(),
+        ),
+    };
+
+    if left_event.is_none() && right_event.is_none() {
+        return ().into_any();
+    }
+
+    view! {
+        <section class="compare-section">
+            <div class="compare-header">
+                <h3>{title}</h3>
+                <span class="pill neutral">{detail.request_id}</span>
+            </div>
+            <div class="compare-grid">
+                <ComparisonCard title=left_title event=left_event/>
+                <ComparisonCard title=right_title event=right_event/>
+            </div>
+        </section>
+    }
+    .into_any()
+}
+
+#[component]
+fn ComparisonCard(title: &'static str, event: Option<DebugLogEvent>) -> impl IntoView {
+    view! {
+        <article class="compare-card">
+            <div class="compare-card-head">
+                <strong>{title}</strong>
+                {event
+                    .as_ref()
+                    .and_then(|event| event.status_code)
+                    .map(|status| view! { <span class="badge ok">{status.to_string()}</span> })}
+            </div>
+            {match event {
+                Some(event) => view! {
+                    <dl class="compare-meta">
+                        <KeyValue label="Stage" value=Some(event.stage.clone())/>
+                        <KeyValue label="Method" value=event.method.clone()/>
+                        <KeyValue label="Path" value=event.path.clone()/>
+                        <KeyValue label="URL" value=event.url.clone()/>
+                        <KeyValue label="Model" value=event.model.clone()/>
+                        <KeyValue label="Elapsed" value=event.elapsed_ms.map(|ms| format!("{ms} ms"))/>
+                    </dl>
+                    {event.body.as_ref().map(|body| view! {
+                        <div class="block">
+                            <div class="block-title">
+                                "Body"
+                                {if event.body_truncated { "（已截断）" } else { "" }}
+                            </div>
+                            <JsonBlock content=body.clone() root_label="body"/>
+                        </div>
+                    })}
+                    {event.error_message.as_ref().map(|message| view! {
+                        <div class="block error-block">
+                            <div class="block-title">
+                                "错误"
+                                {if event.error_truncated { "（已截断）" } else { "" }}
+                            </div>
+                            <JsonBlock content=message.clone() root_label="error"/>
+                        </div>
+                    })}
+                }
+                .into_any(),
+                None => view! {
+                    <div class="compare-empty">
+                        "没有对应阶段的日志事件"
+                    </div>
+                }
+                .into_any(),
+            }}
+        </article>
     }
 }
 
@@ -410,21 +524,23 @@ fn LongTextBlock(text: String, quoted: bool, class_name: &'static str) -> impl I
     view! {
         <details class="long-text-toggle">
             <summary>
-                <span class=class_name>
-                    {if quoted { "\"".to_string() } else { String::new() }}
-                    {preview}
-                    "..."
-                    {if quoted { "\"".to_string() } else { String::new() }}
+                <span class="long-text-preview">
+                    <span class=class_name>
+                        {if quoted { "\"".to_string() } else { String::new() }}
+                        {preview}
+                        "..."
+                        {if quoted { "\"".to_string() } else { String::new() }}
+                    </span>
                 </span>
-                <span class="long-text-hint">"展开"</span>
+                <span class="long-text-full">
+                    <span class=class_name>
+                        {if quoted { "\"".to_string() } else { String::new() }}
+                        {text}
+                        {if quoted { "\"".to_string() } else { String::new() }}
+                    </span>
+                </span>
+                <span class="long-text-hint"></span>
             </summary>
-            <div class="long-text-expanded">
-                <span class=class_name>
-                    {if quoted { "\"".to_string() } else { String::new() }}
-                    {text}
-                    {if quoted { "\"".to_string() } else { String::new() }}
-                </span>
-            </div>
         </details>
     }
     .into_any()
@@ -628,6 +744,61 @@ form {
   margin-bottom: 16px;
 }
 
+.compare-section {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 18px;
+  padding: 16px;
+  border-radius: 22px;
+  background: rgba(243, 237, 227, 0.88);
+  border: 1px solid rgba(48, 54, 61, 0.08);
+}
+
+.compare-header {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.compare-header h3 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.compare-grid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.compare-card {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border-radius: 18px;
+  background: rgba(255, 252, 247, 0.9);
+  border: 1px solid rgba(48, 54, 61, 0.08);
+}
+
+.compare-card-head {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.compare-meta {
+  display: grid;
+  gap: 8px 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.compare-empty {
+  color: #7a808d;
+  font-size: 13px;
+}
+
 .event-card {
   display: grid;
   gap: 14px;
@@ -781,6 +952,19 @@ pre {
   display: none;
 }
 
+.long-text-preview,
+.long-text-full {
+  display: none;
+}
+
+.long-text-toggle:not([open]) > summary .long-text-preview {
+  display: inline;
+}
+
+.long-text-toggle[open] > summary .long-text-full {
+  display: inline;
+}
+
 .long-text-toggle[open] > summary .long-text-hint::before {
   content: "收起";
 }
@@ -794,14 +978,6 @@ pre {
   color: #8cb9ff;
   font-size: 11px;
   font-weight: 700;
-}
-
-.long-text-hint {
-  color: transparent;
-}
-
-.long-text-expanded {
-  display: inline;
 }
 
 .json-key { color: #ffcf8b; }
@@ -835,6 +1011,10 @@ pre {
   }
 
   .kv-grid, .meta-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .compare-grid, .compare-meta {
     grid-template-columns: 1fr;
   }
 }
