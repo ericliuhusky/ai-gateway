@@ -1,6 +1,8 @@
 use leptos::prelude::*;
 use serde_json::Value;
 
+const LONG_VALUE_PREVIEW_CHARS: usize = 500;
+
 #[derive(Clone, Debug)]
 pub struct DebugPageData {
     pub logging_enabled: bool,
@@ -296,16 +298,19 @@ fn JsonBlock(content: String, root_label: &'static str) -> impl IntoView {
     match serde_json::from_str::<Value>(&content) {
         Ok(value) => view! {
             <div class="json-tree-shell">
-                <JsonNode label=Some(root_label.to_string()) value=value depth=0/>
+                <JsonNode label=Some(root_label.to_string()) value=value/>
             </div>
         }
         .into_any(),
-        Err(_) => view! { <pre>{content}</pre> }.into_any(),
+        Err(_) => view! {
+            <LongTextBlock text=content quoted=false class_name="plain-text-block"/>
+        }
+        .into_any(),
     }
 }
 
 #[component]
-fn JsonNode(label: Option<String>, value: Value, depth: usize) -> impl IntoView {
+fn JsonNode(label: Option<String>, value: Value) -> impl IntoView {
     match value {
         Value::Object(map) => {
             let item_count = map.len();
@@ -321,7 +326,7 @@ fn JsonNode(label: Option<String>, value: Value, depth: usize) -> impl IntoView 
                         {map
                             .into_iter()
                             .map(|(child_label, child_value)| view! {
-                                <JsonNode label=Some(child_label) value=child_value depth=depth + 1/>
+                                <JsonNode label=Some(child_label) value=child_value/>
                             })
                             .collect_view()}
                     </div>
@@ -344,7 +349,7 @@ fn JsonNode(label: Option<String>, value: Value, depth: usize) -> impl IntoView 
                             .into_iter()
                             .enumerate()
                             .map(|(index, child_value)| view! {
-                                <JsonNode label=Some(index.to_string()) value=child_value depth=depth + 1/>
+                                <JsonNode label=Some(index.to_string()) value=child_value/>
                             })
                             .collect_view()}
                     </div>
@@ -356,7 +361,7 @@ fn JsonNode(label: Option<String>, value: Value, depth: usize) -> impl IntoView 
             <div class="json-leaf">
                 {label.map(|label| view! { <span class="json-key">{label}</span> })}
                 <span class="json-punct">{": "}</span>
-                <span class="json-string">{"\""}{text}{"\""}</span>
+                <LongTextBlock text=text quoted=true class_name="json-string"/>
             </div>
         }
         .into_any(),
@@ -385,6 +390,44 @@ fn JsonNode(label: Option<String>, value: Value, depth: usize) -> impl IntoView 
         }
         .into_any(),
     }
+}
+
+#[component]
+fn LongTextBlock(text: String, quoted: bool, class_name: &'static str) -> impl IntoView {
+    if text.chars().count() <= LONG_VALUE_PREVIEW_CHARS {
+        return view! {
+            <span class=class_name>
+                {if quoted { "\"".to_string() } else { String::new() }}
+                {text}
+                {if quoted { "\"".to_string() } else { String::new() }}
+            </span>
+        }
+        .into_any();
+    }
+
+    let preview: String = text.chars().take(LONG_VALUE_PREVIEW_CHARS).collect();
+
+    view! {
+        <details class="long-text-toggle">
+            <summary>
+                <span class=class_name>
+                    {if quoted { "\"".to_string() } else { String::new() }}
+                    {preview}
+                    "..."
+                    {if quoted { "\"".to_string() } else { String::new() }}
+                </span>
+                <span class="long-text-hint">"展开"</span>
+            </summary>
+            <div class="long-text-expanded">
+                <span class=class_name>
+                    {if quoted { "\"".to_string() } else { String::new() }}
+                    {text}
+                    {if quoted { "\"".to_string() } else { String::new() }}
+                </span>
+            </div>
+        </details>
+    }
+    .into_any()
 }
 
 const STYLE: &str = r#"
@@ -655,6 +698,20 @@ pre {
   line-height: 1.55;
 }
 
+.plain-text-block {
+  display: block;
+  padding: 14px;
+  border-radius: 18px;
+  background: #1e2430;
+  color: #eef2f5;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: "SF Mono", "Menlo", monospace;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
 .json-tree-shell {
   padding: 12px 14px;
   border-radius: 18px;
@@ -708,6 +765,43 @@ pre {
 .json-leaf {
   padding-left: 18px;
   overflow-wrap: anywhere;
+}
+
+.long-text-toggle {
+  display: inline;
+}
+
+.long-text-toggle summary {
+  display: inline;
+  list-style: none;
+  cursor: pointer;
+}
+
+.long-text-toggle summary::-webkit-details-marker {
+  display: none;
+}
+
+.long-text-toggle[open] > summary .long-text-hint::before {
+  content: "收起";
+}
+
+.long-text-toggle:not([open]) > summary .long-text-hint::before {
+  content: "展开";
+}
+
+.long-text-hint {
+  margin-left: 8px;
+  color: #8cb9ff;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.long-text-hint {
+  color: transparent;
+}
+
+.long-text-expanded {
+  display: inline;
 }
 
 .json-key { color: #ffcf8b; }
