@@ -135,7 +135,7 @@ struct ContentView: View {
 
             Button {
                 Task {
-                    await viewModel.refreshModels()
+                    await viewModel.refreshModels(forceRefresh: true)
                 }
             } label: {
                 Image(systemName: "arrow.clockwise")

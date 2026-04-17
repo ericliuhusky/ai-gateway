@@ -110,7 +110,7 @@ final class GatewayViewModel: ObservableObject {
         }
     }
 
-    func refreshModels() async {
+    func refreshModels(forceRefresh: Bool = false) async {
         guard selectedProviderID != nil else {
             availableModels = []
             selectedModelID = nil
@@ -122,7 +122,7 @@ final class GatewayViewModel: ObservableObject {
         defer { isLoadingModels = false }
 
         do {
-            let models = try await client.fetchModels()
+            let models = try await client.fetchModels(forceRefresh: forceRefresh)
             availableModels = models.sorted { $0.id.localizedStandardCompare($1.id) == .orderedAscending }
             modelErrorMessage = nil
         } catch {

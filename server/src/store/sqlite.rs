@@ -1,8 +1,8 @@
 use crate::{
     config::Config,
     models::{
-        AccountRecord, AccountType, ApiProviderBillingMode, ApiProviderRecord, ProviderAuthMode,
-        ProviderExtensionRecord, SelectedProvider,
+        AccountRecord, AccountType, ApiProviderBillingMode, ApiProviderRecord,
+        CachedProviderModels, ProviderAuthMode, ProviderExtensionRecord, SelectedProvider,
     },
 };
 use rusqlite::{Connection, OptionalExtension, params};
@@ -177,6 +177,40 @@ impl SqliteStore {
         upsert_route_record(&conn, route)
     }
 
+    pub fn load_cached_models(
+        &self,
+        provider_id: &str,
+    ) -> Result<Option<CachedProviderModels>, String> {
+        let conn = self.connect()?;
+        conn.query_row(
+            "SELECT provider_id, models_json, updated_at FROM provider_models WHERE provider_id = ?1",
+            params![provider_id],
+            |row| {
+                Ok(CachedProviderModels {
+                    provider_id: row.get(0)?,
+                    models_json: row.get(1)?,
+                    updated_at: row.get(2)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|err| format!("load cached provider models failed: {err}"))
+    }
+
+    pub fn upsert_cached_models(&self, models: &CachedProviderModels) -> Result<(), String> {
+        let conn = self.connect()?;
+        conn.execute(
+            "INSERT INTO provider_models (provider_id, models_json, updated_at)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(provider_id) DO UPDATE SET
+                models_json = excluded.models_json,
+                updated_at = excluded.updated_at",
+            params![models.provider_id, models.models_json, models.updated_at],
+        )
+        .map_err(|err| format!("upsert cached provider models failed: {err}"))?;
+        Ok(())
+    }
+
     fn init(&self) -> Result<(), String> {
         let conn = self.connect()?;
         conn.execute_batch(
@@ -220,6 +254,12 @@ impl SqliteStore {
                 user_id TEXT NOT NULL,
                 access_token TEXT NOT NULL,
                 PRIMARY KEY (provider_id, extension_type)
+            );
+
+            CREATE TABLE IF NOT EXISTS provider_models (
+                provider_id TEXT PRIMARY KEY,
+                models_json TEXT NOT NULL,
+                updated_at INTEGER NOT NULL
             );
             ",
         )

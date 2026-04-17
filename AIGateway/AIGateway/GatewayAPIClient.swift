@@ -32,8 +32,11 @@ struct GatewayAPIClient: Sendable {
         return response.selectedProvider
     }
 
-    func fetchModels() async throws -> [GatewayModel] {
-        let response: ModelListResponse = try await request(path: "/openai/v1/models")
+    func fetchModels(forceRefresh: Bool = false) async throws -> [GatewayModel] {
+        let response: ModelListResponse = try await request(
+            path: "/openai/v1/models",
+            queryItems: forceRefresh ? [URLQueryItem(name: "force", value: "true")] : []
+        )
         return response.data
     }
 

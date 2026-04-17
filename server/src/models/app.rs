@@ -119,13 +119,13 @@ pub struct CodexConfigStatus {
     pub auth_exists: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelListResponse {
     pub object: String,
     pub data: Vec<ModelListItem>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelListItem {
     pub id: String,
 }

@@ -19,7 +19,7 @@ use crate::{
         UpstreamRateLimitStatusPayload, UpstreamRateLimitWindowSnapshot,
     },
     store::{
-        AccountPool, LogEvent, LogStage, LogStore, ProviderStore, RouteStore,
+        AccountPool, LogEvent, LogStage, LogStore, ModelStore, ProviderStore, RouteStore,
         log_store::extract_model_output_from_body,
     },
     upstream::{UpstreamClient, chat_completions_api_url, responses_api_url},
@@ -59,8 +59,15 @@ pub struct AppState {
     pub accounts: AccountPool,
     pub providers: ProviderStore,
     pub routes: RouteStore,
+    pub models: ModelStore,
     pub upstream: UpstreamClient,
     pub logs: LogStore,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ListModelsQuery {
+    #[serde(default)]
+    pub force: bool,
 }
 
 pub async fn healthz() -> &'static str {
@@ -389,9 +396,10 @@ pub async fn get_provider_quota(
 
 pub async fn list_models(
     State(state): State<AppState>,
+    Query(query): Query<ListModelsQuery>,
 ) -> Result<Json<ModelListResponse>, AppError> {
     let provider = resolve_selected_provider(&state).await?;
-    let response = fetch_provider_models(&state, &provider).await?;
+    let response = load_provider_models(&state, &provider, query.force).await?;
 
     Ok(Json(response))
 }
@@ -451,7 +459,7 @@ pub async fn set_selected_model(
 ) -> Result<Json<Value>, AppError> {
     let model = normalize_selected_model(request.model)?;
     let provider = resolve_selected_provider(&state).await?;
-    let models = fetch_provider_models(&state, &provider).await?;
+    let models = load_provider_models(&state, &provider, false).await?;
     if !models.data.iter().any(|item| item.id == model) {
         return Err(AppError::bad_request(format!(
             "model `{model}` is not available for selected provider `{}`",
@@ -2171,6 +2179,34 @@ async fn fetch_provider_models(
         .await
         .map_err(AppError::upstream_message)?;
     native_models_response(&provider.name, &raw)
+}
+
+async fn load_provider_models(
+    state: &AppState,
+    provider: &ResolvedProvider,
+    force_refresh: bool,
+) -> Result<ModelListResponse, AppError> {
+    let provider_id = provider
+        .record
+        .as_ref()
+        .map(|record| record.id.as_str())
+        .or(provider.account_id.as_deref())
+        .ok_or_else(|| {
+            AppError::bad_request(format!("provider cache key missing: {}", provider.name))
+        })?;
+
+    if !force_refresh {
+        if let Some(cached) = state.models.load(provider_id).map_err(AppError::internal)? {
+            return Ok(cached);
+        }
+    }
+
+    let models = fetch_provider_models(state, provider).await?;
+    state
+        .models
+        .save(provider_id, &models)
+        .map_err(AppError::internal)?;
+    Ok(models)
 }
 
 fn codex_config_status(state: &AppState) -> Result<CodexConfigStatus, AppError> {
