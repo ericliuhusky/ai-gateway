@@ -295,7 +295,11 @@ fn web_search_call_item_to_message(item: &ResponseWebSearchCallItem) -> OpenAIMe
 
 fn raw_input_item_to_message(value: &Value) -> Option<OpenAIMessage> {
     let object = value.as_object()?;
-    match object.get("type").and_then(Value::as_str).unwrap_or_default() {
+    match object
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+    {
         "reasoning" => None,
         "message" => raw_message_to_openai(object),
         "function_call" => Some(raw_function_call_to_message(object)),
@@ -309,7 +313,9 @@ fn raw_input_item_to_message(value: &Value) -> Option<OpenAIMessage> {
 
 fn raw_message_to_openai(object: &serde_json::Map<String, Value>) -> Option<OpenAIMessage> {
     let role = object.get("role")?.as_str()?.to_string();
-    let content = object.get("content").and_then(raw_message_content_to_openai);
+    let content = object
+        .get("content")
+        .and_then(raw_message_content_to_openai);
     let tool_calls = object
         .get("tool_calls")
         .and_then(Value::as_array)
@@ -342,7 +348,11 @@ fn raw_message_content_to_openai(value: &Value) -> Option<OpenAIContent> {
                 let Some(part_obj) = part.as_object() else {
                     continue;
                 };
-                match part_obj.get("type").and_then(Value::as_str).unwrap_or_default() {
+                match part_obj
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                {
                     "text" | "input_text" | "output_text" => {
                         if let Some(text) = part_obj.get("text").and_then(Value::as_str) {
                             text_parts.push(text.to_string());
@@ -400,7 +410,10 @@ fn raw_tool_call_to_openai(value: &Value) -> Option<ToolCall> {
         .or_else(|| object.get("id"))
         .and_then(Value::as_str)
         .unwrap_or_default();
-    let name = object.get("name").and_then(Value::as_str).unwrap_or_default();
+    let name = object
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     let arguments = object
         .get("arguments")
         .map(|value| match value {
@@ -506,10 +519,7 @@ fn raw_web_search_call_to_message(object: &serde_json::Map<String, Value>) -> Op
         .map(ToOwned::to_owned)
         .unwrap_or_else(|| format!("call_{}", Uuid::new_v4()));
     let mut args = serde_json::Map::new();
-    if let Some(query) = object
-        .get("action")
-        .and_then(|action| action.get("query"))
-    {
+    if let Some(query) = object.get("action").and_then(|action| action.get("query")) {
         args.insert("query".to_string(), query.clone());
     }
     OpenAIMessage {

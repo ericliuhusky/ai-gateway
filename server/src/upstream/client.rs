@@ -1,8 +1,7 @@
 use crate::upstream::{
-    google_v1internal::GoogleV1InternalClient, openai_chat::OpenAiChatClient,
-    new_api_site::NewApiSiteClient,
-    openai_private::OpenAiPrivateClient, openai_responses::OpenAiResponsesClient,
-    shared::build_http_client,
+    google_v1internal::GoogleV1InternalClient, new_api_site::NewApiSiteClient,
+    openai_chat::OpenAiChatClient, openai_private::OpenAiPrivateClient,
+    openai_responses::OpenAiResponsesClient, shared::build_http_client,
 };
 use reqwest::Response;
 use serde_json::Value;
@@ -105,7 +104,9 @@ impl UpstreamClient {
         access_token: &str,
         account_id: Option<&str>,
     ) -> Result<Value, String> {
-        self.openai_private.fetch_usage(id, access_token, account_id).await
+        self.openai_private
+            .fetch_usage(id, access_token, account_id)
+            .await
     }
 
     pub async fn call_openai_responses_upstream(
@@ -116,7 +117,9 @@ impl UpstreamClient {
         body: Value,
         stream: bool,
     ) -> Result<Response, String> {
-        self.openai_responses.call(id, base_url, api_key, body, stream).await
+        self.openai_responses
+            .call(id, base_url, api_key, body, stream)
+            .await
     }
 
     pub async fn call_openai_chat_upstream(
@@ -135,7 +138,9 @@ impl UpstreamClient {
         base_url: &str,
         api_key: &str,
     ) -> Result<Value, String> {
-        self.openai_responses.fetch_models(id, base_url, api_key).await
+        self.openai_responses
+            .fetch_models(id, base_url, api_key)
+            .await
     }
 }
 

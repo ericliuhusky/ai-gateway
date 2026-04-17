@@ -40,7 +40,11 @@ use reqwest::Client;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::time::Instant;
-use std::{fs, path::Path, sync::Arc};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 use tracing::{info, warn};
 use uuid::Uuid;
 
@@ -300,47 +304,7 @@ pub async fn list_models(
     State(state): State<AppState>,
 ) -> Result<Json<ModelListResponse>, AppError> {
     let provider = resolve_selected_provider(&state).await?;
-    let response = if provider.auth_mode == ProviderAuthMode::Account {
-        let account = resolve_account_for_provider(&state, &provider).await?;
-        if provider.name == PROVIDER_GOOGLE_PROXY {
-            let raw = state
-                .upstream
-                .fetch_google_available_models(account.access_token(), account.project_id())
-                .await
-                .map_err(AppError::upstream_message)?;
-            google_models_response(&provider.name, &raw)?
-        } else if provider.name == PROVIDER_OPENAI_PROXY {
-            let raw = state
-                .upstream
-                .fetch_openai_models(
-                    &format!("models_{}", Uuid::new_v4().simple()),
-                    account.access_token(),
-                    account.upstream_account_id(),
-                )
-                .await
-                .map_err(AppError::upstream_message)?;
-            openai_models_response(&provider.name, &raw)?
-        } else {
-            return Err(AppError::bad_request(format!(
-                "account auth provider is not supported yet: {}",
-                provider.name
-            )));
-        }
-    } else {
-        let native_provider = provider
-            .record
-            .ok_or_else(|| AppError::bad_request(format!("unknown provider: {}", provider.name)))?;
-        let raw = state
-            .upstream
-            .fetch_openai_models_upstream(
-                &format!("models_{}", Uuid::new_v4().simple()),
-                &native_provider.base_url,
-                &native_provider.api_key,
-            )
-            .await
-            .map_err(AppError::upstream_message)?;
-        native_models_response(&provider.name, &raw)?
-    };
+    let response = fetch_provider_models(&state, &provider).await?;
 
     Ok(Json(response))
 }
@@ -378,14 +342,18 @@ pub async fn set_route(
     Json(request): Json<UpdateSelectedProviderRequest>,
 ) -> Result<Json<Value>, AppError> {
     let provider_id = normalize_selected_provider_id(request.provider_id)?;
-    validate_selected_provider(&state, &provider_id).await?;
+    let provider = resolve_provider_by_id(&state, &provider_id).await?;
 
     let route = state
         .routes
         .set(Some(provider_id))
         .await
         .map_err(AppError::bad_request)?;
-    Ok(Json(json!({ "selected_provider": route_payload(route) })))
+    let codex_model_catalog = sync_codex_model_catalog_for_provider(&state, &provider).await?;
+    Ok(Json(json!({
+        "selected_provider": route_payload(route),
+        "codex_model_catalog": codex_model_catalog,
+    })))
 }
 
 pub async fn get_codex_config_status(
@@ -2028,6 +1996,279 @@ fn route_payload(route: SelectedProvider) -> Value {
     })
 }
 
+async fn fetch_provider_models(
+    state: &AppState,
+    provider: &ResolvedProvider,
+) -> Result<ModelListResponse, AppError> {
+    if provider.auth_mode == ProviderAuthMode::Account {
+        let account = resolve_account_for_provider(state, provider).await?;
+        if provider.name == PROVIDER_GOOGLE_PROXY {
+            let raw = state
+                .upstream
+                .fetch_google_available_models(account.access_token(), account.project_id())
+                .await
+                .map_err(AppError::upstream_message)?;
+            return google_models_response(&provider.name, &raw);
+        }
+        if provider.name == PROVIDER_OPENAI_PROXY {
+            let raw = state
+                .upstream
+                .fetch_openai_models(
+                    &format!("models_{}", Uuid::new_v4().simple()),
+                    account.access_token(),
+                    account.upstream_account_id(),
+                )
+                .await
+                .map_err(AppError::upstream_message)?;
+            return openai_models_response(&provider.name, &raw);
+        }
+
+        return Err(AppError::bad_request(format!(
+            "account auth provider is not supported yet: {}",
+            provider.name
+        )));
+    }
+
+    let native_provider = provider
+        .record
+        .as_ref()
+        .ok_or_else(|| AppError::bad_request(format!("unknown provider: {}", provider.name)))?;
+    let raw = state
+        .upstream
+        .fetch_openai_models_upstream(
+            &format!("models_{}", Uuid::new_v4().simple()),
+            &native_provider.base_url,
+            &native_provider.api_key,
+        )
+        .await
+        .map_err(AppError::upstream_message)?;
+    native_models_response(&provider.name, &raw)
+}
+
+async fn sync_codex_model_catalog_for_provider(
+    state: &AppState,
+    provider: &ResolvedProvider,
+) -> Result<Value, AppError> {
+    let models = fetch_provider_models(state, provider).await?;
+    if models.data.is_empty() {
+        return Err(AppError::upstream_message(format!(
+            "provider `{}` returned no models",
+            provider.name
+        )));
+    }
+
+    let config = state._config.as_ref();
+    fs::create_dir_all(config.codex_dir())
+        .map_err(|err| AppError::bad_request(format!("failed to create CodeX dir: {err}")))?;
+
+    let catalog_path = config.codex_model_catalog_path();
+    write_codex_model_catalog(&catalog_path, &provider.name, &models)?;
+
+    let current_model = current_codex_model(config.codex_config_path())?;
+    let selected_model = choose_codex_model(current_model.as_deref(), &models)?;
+    ensure_codex_model_catalog_config(config.codex_config_path(), &selected_model, &catalog_path)?;
+
+    Ok(json!({
+        "provider": provider.name,
+        "path": catalog_path.display().to_string(),
+        "model_count": models.data.len(),
+        "selected_model": selected_model,
+    }))
+}
+
+fn write_codex_model_catalog(
+    path: &Path,
+    provider_name: &str,
+    models: &ModelListResponse,
+) -> Result<(), AppError> {
+    let entries: Vec<Value> = models
+        .data
+        .iter()
+        .enumerate()
+        .map(|(priority, model)| codex_model_catalog_entry(provider_name, model, priority))
+        .collect();
+    let catalog = json!({ "models": entries });
+    let contents = serde_json::to_string_pretty(&catalog)
+        .map_err(|err| AppError::internal(format!("failed to serialize model catalog: {err}")))?;
+    fs::write(path, contents)
+        .map_err(|err| AppError::bad_request(format!("failed to write CodeX model catalog: {err}")))
+}
+
+fn codex_model_catalog_entry(provider_name: &str, model: &ModelListItem, priority: usize) -> Value {
+    json!({
+        "slug": model.id,
+        "display_name": model.id,
+        "description": format!("Model from selected provider: {provider_name}."),
+        "default_reasoning_level": "medium",
+        "supported_reasoning_levels": [
+            {
+                "effort": "low",
+                "description": "Fast responses with lighter reasoning"
+            },
+            {
+                "effort": "medium",
+                "description": "Balances speed and reasoning depth for everyday tasks"
+            },
+            {
+                "effort": "high",
+                "description": "Greater reasoning depth for complex problems"
+            },
+            {
+                "effort": "xhigh",
+                "description": "Extra high reasoning depth for complex problems"
+            }
+        ],
+        "shell_type": "shell_command",
+        "visibility": "list",
+        "supported_in_api": true,
+        "priority": priority,
+        "availability_nux": null,
+        "upgrade": null,
+        "base_instructions": "You are Codex, a coding agent based on GPT-5. You and the user share the same workspace and collaborate to achieve the user's goals.",
+        "model_messages": null,
+        "supports_reasoning_summaries": true,
+        "default_reasoning_summary": "none",
+        "support_verbosity": true,
+        "default_verbosity": "low",
+        "apply_patch_tool_type": "freeform",
+        "web_search_tool_type": "text",
+        "truncation_policy": {
+            "mode": "tokens",
+            "limit": 10000
+        },
+        "supports_parallel_tool_calls": true,
+        "supports_image_detail_original": true,
+        "context_window": 272000,
+        "effective_context_window_percent": 95,
+        "experimental_supported_tools": [],
+        "input_modalities": ["text", "image"],
+        "supports_search_tool": true
+    })
+}
+
+fn current_codex_model(path: PathBuf) -> Result<Option<String>, AppError> {
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let contents = fs::read_to_string(&path)
+        .map_err(|err| AppError::bad_request(format!("failed to read CodeX config: {err}")))?;
+    Ok(parse_top_level_toml_string(&contents, "model"))
+}
+
+fn choose_codex_model(
+    current_model: Option<&str>,
+    models: &ModelListResponse,
+) -> Result<String, AppError> {
+    if let Some(current_model) = current_model {
+        if models.data.iter().any(|model| model.id == current_model) {
+            return Ok(current_model.to_string());
+        }
+    }
+
+    models
+        .data
+        .first()
+        .map(|model| model.id.clone())
+        .ok_or_else(|| AppError::upstream_message("provider returned no models"))
+}
+
+fn ensure_codex_model_catalog_config(
+    path: PathBuf,
+    selected_model: &str,
+    catalog_path: &Path,
+) -> Result<(), AppError> {
+    let contents = if path.exists() {
+        fs::read_to_string(&path)
+            .map_err(|err| AppError::bad_request(format!("failed to read CodeX config: {err}")))?
+    } else {
+        BUNDLED_CODEX_CONFIG.to_string()
+    };
+    let updated = upsert_codex_model_catalog_config(&contents, selected_model, catalog_path);
+    fs::write(&path, updated)
+        .map_err(|err| AppError::bad_request(format!("failed to update CodeX config: {err}")))
+}
+
+fn upsert_codex_model_catalog_config(
+    contents: &str,
+    selected_model: &str,
+    catalog_path: &Path,
+) -> String {
+    let catalog_path = escape_toml_string(&catalog_path.display().to_string());
+    let selected_model = escape_toml_string(selected_model);
+    let mut lines = Vec::new();
+    let mut inserted_catalog = false;
+    let mut saw_model = false;
+    let mut saw_catalog = false;
+
+    for line in contents.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("[") && !inserted_catalog && !saw_catalog {
+            lines.push(format!("model_catalog_json = \"{catalog_path}\""));
+            inserted_catalog = true;
+        }
+
+        if trimmed.starts_with("model = ") {
+            lines.push(format!("model = \"{selected_model}\""));
+            saw_model = true;
+            continue;
+        }
+        if trimmed.starts_with("model_catalog_json = ") {
+            lines.push(format!("model_catalog_json = \"{catalog_path}\""));
+            saw_catalog = true;
+            inserted_catalog = true;
+            continue;
+        }
+        lines.push(line.to_string());
+    }
+
+    if !saw_model {
+        lines.insert(0, format!("model = \"{selected_model}\""));
+    }
+    if !inserted_catalog && !saw_catalog {
+        let insert_at = lines
+            .iter()
+            .position(|line| line.trim_start().starts_with("["))
+            .unwrap_or(lines.len());
+        lines.insert(
+            insert_at,
+            format!("model_catalog_json = \"{catalog_path}\""),
+        );
+    }
+
+    let mut updated = lines.join("\n");
+    updated.push('\n');
+    updated
+}
+
+fn parse_top_level_toml_string(contents: &str, key: &str) -> Option<String> {
+    for line in contents.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            return None;
+        }
+        let Some((left, right)) = trimmed.split_once('=') else {
+            continue;
+        };
+        if left.trim() != key {
+            continue;
+        }
+        let right = right.trim();
+        if right.starts_with('"') && right.ends_with('"') && right.len() >= 2 {
+            return Some(
+                right[1..right.len() - 1]
+                    .replace("\\\"", "\"")
+                    .replace("\\\\", "\\"),
+            );
+        }
+    }
+    None
+}
+
+fn escape_toml_string(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
 fn codex_config_status(state: &AppState) -> Result<CodexConfigStatus, AppError> {
     let config = state._config.as_ref();
     let config_backup_exists = config.codex_config_backup_path().exists();
@@ -2179,10 +2420,6 @@ fn native_model_id(entry: &Value) -> Option<&str> {
         .or_else(|| entry.get("model"))
         .or_else(|| entry.get("name"))
         .and_then(Value::as_str)
-}
-
-async fn validate_selected_provider(state: &AppState, provider_id: &str) -> Result<(), AppError> {
-    resolve_provider_by_id(state, provider_id).await.map(|_| ())
 }
 
 #[derive(Clone, Debug)]
@@ -2756,14 +2993,17 @@ impl IntoResponse for AppError {
 #[cfg(test)]
 mod tests {
     use super::{
-        ResolvedProvider, capture_final_response_from_sse_chunk, logged_stream_response_body,
-        openai_models_response, provider_uses_openai_account, quota_from_new_api_extension,
-        quota_from_openai_usage, resolve_native_target,
+        ResolvedProvider, capture_final_response_from_sse_chunk, choose_codex_model,
+        logged_stream_response_body, openai_models_response, parse_top_level_toml_string,
+        provider_uses_openai_account, quota_from_new_api_extension, quota_from_openai_usage,
+        resolve_native_target, upsert_codex_model_catalog_config,
     };
     use crate::models::{
-        ApiProviderBillingMode, ApiProviderRecord, EgressProtocol, ProviderAuthMode,
+        ApiProviderBillingMode, ApiProviderRecord, EgressProtocol, ModelListItem,
+        ModelListResponse, ProviderAuthMode,
     };
     use serde_json::json;
+    use std::path::Path;
 
     #[test]
     fn parses_openai_codex_models_payload() {
@@ -2781,6 +3021,69 @@ mod tests {
         assert_eq!(response.object, "list");
         assert_eq!(response.data.len(), 1);
         assert_eq!(response.data[0].id, "gpt-5.4");
+    }
+
+    #[test]
+    fn keeps_existing_codex_model_when_provider_supports_it() {
+        let models = ModelListResponse {
+            object: "list".to_string(),
+            data: vec![
+                ModelListItem {
+                    id: "minimax-2.7".to_string(),
+                },
+                ModelListItem {
+                    id: "qwen3-32b".to_string(),
+                },
+            ],
+        };
+
+        let selected =
+            choose_codex_model(Some("qwen3-32b"), &models).expect("choose provider model");
+
+        assert_eq!(selected, "qwen3-32b");
+    }
+
+    #[test]
+    fn falls_back_to_first_provider_model_when_current_model_is_unavailable() {
+        let models = ModelListResponse {
+            object: "list".to_string(),
+            data: vec![ModelListItem {
+                id: "minimax-2.7".to_string(),
+            }],
+        };
+
+        let selected = choose_codex_model(Some("gpt-5.4"), &models).expect("choose provider model");
+
+        assert_eq!(selected, "minimax-2.7");
+    }
+
+    #[test]
+    fn updates_codex_config_model_and_catalog_at_top_level() {
+        let config = r#"model_provider = "ai-gateway"
+model = "gpt-5.4"
+disable_response_storage = true
+
+[model_providers.ai-gateway]
+name = "ai-gateway"
+"#;
+
+        let updated = upsert_codex_model_catalog_config(
+            config,
+            "qwen3-32b",
+            Path::new("/Users/ninebot/.codex/model_catalog_test.json"),
+        );
+
+        assert_eq!(
+            parse_top_level_toml_string(&updated, "model").as_deref(),
+            Some("qwen3-32b")
+        );
+        let catalog_index = updated
+            .find("model_catalog_json = \"/Users/ninebot/.codex/model_catalog_test.json\"")
+            .expect("catalog path should be present");
+        let provider_index = updated
+            .find("[model_providers.ai-gateway]")
+            .expect("provider table should be present");
+        assert!(catalog_index < provider_index);
     }
 
     #[test]

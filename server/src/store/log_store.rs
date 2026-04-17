@@ -771,11 +771,9 @@ fn extract_model_output_from_value(value: &Value, path: &[String]) -> Option<Ext
                 })
         })
         .or_else(|| {
-            value
-                .get("response")
-                .and_then(|response| {
-                    extract_model_output_from_value(response, &child_path(path, "response"))
-                })
+            value.get("response").and_then(|response| {
+                extract_model_output_from_value(response, &child_path(path, "response"))
+            })
         })
         .or_else(|| {
             value
@@ -789,24 +787,22 @@ fn extract_chat_choice_text(value: &Value, path: &[String]) -> Option<ExtractedT
     value
         .get("message")
         .and_then(|message| {
-            message
-                .get("content")
-                .and_then(|content| {
-                    extract_content_text(content, &child_path(&child_path(path, "message"), "content"))
-                })
+            message.get("content").and_then(|content| {
+                extract_content_text(
+                    content,
+                    &child_path(&child_path(path, "message"), "content"),
+                )
+            })
         })
         .or_else(|| {
-            value
-                .get("delta")
-                .and_then(|delta| {
-                    delta.get("content")
-                        .and_then(|content| {
-                            extract_content_text(
-                                content,
-                                &child_path(&child_path(path, "delta"), "content"),
-                            )
-                        })
+            value.get("delta").and_then(|delta| {
+                delta.get("content").and_then(|content| {
+                    extract_content_text(
+                        content,
+                        &child_path(&child_path(path, "delta"), "content"),
+                    )
                 })
+            })
         })
         .or_else(|| {
             value
@@ -830,7 +826,9 @@ fn extract_output_text(value: &Value, path: &[String]) -> Option<ExtractedText> 
             .find_map(|(index, item)| {
                 let item_path = child_index_path(path, index);
                 item.get("content")
-                    .and_then(|content| extract_content_text(content, &child_path(&item_path, "content")))
+                    .and_then(|content| {
+                        extract_content_text(content, &child_path(&item_path, "content"))
+                    })
                     .or_else(|| extract_text_candidate(item, &item_path))
             })
             .or_else(|| {
@@ -948,9 +946,10 @@ fn extract_model_output_from_sse_body(body: &str) -> Option<ExtractedText> {
 fn extract_text_candidate(value: &Value, path: &[String]) -> Option<ExtractedText> {
     match value {
         Value::String(text) => extracted_text(text, path),
-        Value::Array(items) => items.iter().enumerate().find_map(|(index, item)| {
-            extract_text_candidate(item, &child_index_path(path, index))
-        }),
+        Value::Array(items) => items
+            .iter()
+            .enumerate()
+            .find_map(|(index, item)| extract_text_candidate(item, &child_index_path(path, index))),
         Value::Object(object) => {
             for key in [
                 "text",
@@ -1033,8 +1032,8 @@ fn now_unix() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        ExtractedText, LogEvent, LogStage, LogStore, extract_model_output_from_body,
-        extract_model_output_field_from_body, extract_user_input_field_from_body,
+        ExtractedText, LogEvent, LogStage, LogStore, extract_model_output_field_from_body,
+        extract_model_output_from_body, extract_user_input_field_from_body,
     };
     use std::{
         fs,
