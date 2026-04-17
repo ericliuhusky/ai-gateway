@@ -125,8 +125,8 @@ mod tests {
     #[test]
     fn appends_models_to_v1_base_url() {
         assert_eq!(
-            models_api_url("https://ark.cn-beijing.volces.com/api/v3"),
-            "https://ark.cn-beijing.volces.com/api/v3/models"
+            models_api_url("https://example.com/api/v3"),
+            "https://example.com/api/v3/models"
         );
     }
 

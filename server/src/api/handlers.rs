@@ -363,6 +363,7 @@ pub async fn add_provider(
             "base_url": provider.base_url,
             "api_key": provider.api_key,
             "account_id": provider.account_id,
+            "uses_chat_completions": provider.uses_chat_completions,
             "billing_mode": provider.billing_mode,
         }
     })))
@@ -2261,6 +2262,7 @@ async fn provider_summary_for_resolved(
         base_url: record.base_url.clone(),
         account_id: record.account_id.clone(),
         account_email: None,
+        uses_chat_completions: record.uses_chat_completions,
         billing_mode: record.billing_mode.clone(),
         api_key_preview: if record.api_key.is_empty() {
             "********".to_string()
@@ -2453,22 +2455,11 @@ struct NativeTarget {
 }
 
 fn resolve_native_target(provider: &ApiProviderRecord, requested_model: &str) -> NativeTarget {
-    let name = provider.name.as_str();
-    let base_url = provider.base_url.as_str();
-
-    if name == "bytedance-coding-plan" || base_url.contains("/api/coding/v3") {
+    if provider.uses_chat_completions {
         return NativeTarget {
-            upstream_model: map_bytedance_coding_model(requested_model),
+            upstream_model: requested_model.to_string(),
             egress: EgressProtocol::NativeChatCompletions,
             uses_chat_completions: true,
-        };
-    }
-
-    if name == "bytedance" || base_url.contains("volces.com/api/v3") {
-        return NativeTarget {
-            upstream_model: map_bytedance_model(requested_model),
-            egress: EgressProtocol::NativeResponses,
-            uses_chat_completions: false,
         };
     }
 
@@ -2477,30 +2468,6 @@ fn resolve_native_target(provider: &ApiProviderRecord, requested_model: &str) ->
         egress: EgressProtocol::NativeResponses,
         uses_chat_completions: false,
     }
-}
-
-fn map_bytedance_model(requested_model: &str) -> String {
-    if is_codex_style_model(requested_model) {
-        "doubao-seed-2-0-lite-260215".to_string()
-    } else {
-        requested_model.to_string()
-    }
-}
-
-fn map_bytedance_coding_model(requested_model: &str) -> String {
-    if is_codex_style_model(requested_model) {
-        "ark-code-latest".to_string()
-    } else {
-        requested_model.to_string()
-    }
-}
-
-fn is_codex_style_model(model: &str) -> bool {
-    model.starts_with("gpt-")
-        || model.starts_with("o1")
-        || model.starts_with("o3")
-        || model.starts_with("o4")
-        || model.starts_with("codex-")
 }
 
 fn synthesized_responses_stream(
@@ -2791,9 +2758,11 @@ mod tests {
     use super::{
         ResolvedProvider, capture_final_response_from_sse_chunk, logged_stream_response_body,
         openai_models_response, provider_uses_openai_account, quota_from_new_api_extension,
-        quota_from_openai_usage,
+        quota_from_openai_usage, resolve_native_target,
     };
-    use crate::models::{ApiProviderBillingMode, ApiProviderRecord, ProviderAuthMode};
+    use crate::models::{
+        ApiProviderBillingMode, ApiProviderRecord, EgressProtocol, ProviderAuthMode,
+    };
     use serde_json::json;
 
     #[test]
@@ -2914,11 +2883,51 @@ mod tests {
                 base_url: String::new(),
                 api_key: String::new(),
                 account_id: Some("account-123".to_string()),
+                uses_chat_completions: false,
                 billing_mode: ApiProviderBillingMode::Subscription,
             }),
         };
 
         assert!(provider_uses_openai_account(&provider));
+    }
+
+    #[test]
+    fn api_provider_uses_responses_by_default_even_for_compatible_provider_name() {
+        let provider = ApiProviderRecord {
+            id: "provider-123".to_string(),
+            name: "compatible-provider".to_string(),
+            auth_mode: ProviderAuthMode::ApiKey,
+            base_url: "https://example.com/v1".to_string(),
+            api_key: "sk-test".to_string(),
+            account_id: None,
+            uses_chat_completions: false,
+            billing_mode: ApiProviderBillingMode::Metered,
+        };
+
+        let target = resolve_native_target(&provider, "gpt-5.4");
+
+        assert_eq!(target.egress, EgressProtocol::NativeResponses);
+        assert!(!target.uses_chat_completions);
+    }
+
+    #[test]
+    fn api_provider_uses_chat_completions_only_when_enabled() {
+        let provider = ApiProviderRecord {
+            id: "provider-123".to_string(),
+            name: "custom-compatible".to_string(),
+            auth_mode: ProviderAuthMode::ApiKey,
+            base_url: "https://example.com/v1".to_string(),
+            api_key: "sk-test".to_string(),
+            account_id: None,
+            uses_chat_completions: true,
+            billing_mode: ApiProviderBillingMode::Metered,
+        };
+
+        let target = resolve_native_target(&provider, "qwen3-32b");
+
+        assert_eq!(target.egress, EgressProtocol::NativeChatCompletions);
+        assert!(target.uses_chat_completions);
+        assert_eq!(target.upstream_model, "qwen3-32b");
     }
 
     #[test]

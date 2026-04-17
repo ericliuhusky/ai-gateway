@@ -8,7 +8,7 @@
   - `Google v1internal`
   - `Native responses`
   - `Native chat completions`
-- `Provider`: 具体供应商实例，例如 `openai-proxy`、`google-proxy`、`bytedance`
+- `Provider`: 具体供应商实例，例如 `openai-proxy`、`google-proxy`、`openai-compatible`
 - `Route`: 当前把入口请求转发到哪个 provider
 - `Adapter`: 从统一 `Responses` 入口适配到具体出口协议的转换层
 
@@ -81,8 +81,8 @@ open http://127.0.0.1:10100/auth/openai/start
 curl -X POST http://127.0.0.1:10100/providers \
   -H 'Content-Type: application/json' \
   -d '{
-    "name": "bytedance",
-    "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+    "name": "openai-compatible",
+    "base_url": "https://api.example.com/v1",
     "api_key": "sk-xxx",
     "billing_mode": "metered"
   }'
@@ -90,9 +90,10 @@ curl -X POST http://127.0.0.1:10100/providers \
 
 其中：
 
-- `name`: 供应商名，例如 `openai`、`google`、`bytedance`、`bytedance-coding-plan`、`local-8080`
+- `name`: 供应商名，例如 `openai-compatible`、`local-8080`
 - `base_url`: 该供应商的 API 基础地址
 - `api_key`: 上游 API key
+- `uses_chat_completions`: 可选，默认 `false`。设为 `true` 时把统一入口适配到 OpenAI Chat Completions 兼容接口；默认走 OpenAI Responses 原生接口
 - `billing_mode`: `metered` 或 `subscription`
   - `metered`: 按量计费，通常按 token、请求次数或实际用量扣费
   - `subscription`: 订阅制 / 套餐制，通常不是每次调用单独计费
@@ -160,6 +161,8 @@ curl -X PUT http://127.0.0.1:10100/selected-provider \
 - 当前这两个 OAuth 供应商被视为“账号型 provider”：
   - `openai-proxy`: 使用 ChatGPT OAuth，会转发到 `https://chatgpt.com/backend-api/codex/responses`
   - `google-proxy`: 使用 Google OAuth，会转发到 Gemini 私有 `v1internal`
+- API key 型 provider 默认走 OpenAI Responses 原生出口协议
+- API key 型 provider 设置 `uses_chat_completions: true` 时，走 OpenAI Chat Completions 兼容出口协议
 - OAuth 登录成功后，会自动创建或更新对应 provider，并绑定到刚登录的本地 account
 - 当前设计要求 `account` 和 `provider` 一对一存在：要么同时存在，要么同时不存在
 - 不再提供自动路由；所有 `/openai/v1/models` 和 `/openai/v1/responses` 调用都依赖用户显式选择的 provider

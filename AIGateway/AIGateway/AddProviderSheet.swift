@@ -10,6 +10,7 @@ struct AddProviderSheet: View {
     @State private var baseURL = ""
     @State private var apiKey = ""
     @State private var billingMode: GatewayBillingMode = .metered
+    @State private var usesChatCompletions = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -39,7 +40,7 @@ struct AddProviderSheet: View {
 
     private var apiForm: some View {
         VStack(alignment: .leading, spacing: 16) {
-            labeledField("供应商名字", text: $name, prompt: "bytedance")
+            labeledField("供应商名字", text: $name, prompt: "openai-compatible")
             labeledField("Base URL", text: $baseURL, prompt: "https://api.example.com/v1")
 
             VStack(alignment: .leading, spacing: 8) {
@@ -62,6 +63,9 @@ struct AddProviderSheet: View {
                 .pickerStyle(.segmented)
             }
 
+            Toggle("兼容 Chat Completions 接口", isOn: $usesChatCompletions)
+                .toggleStyle(.checkbox)
+
             HStack {
                 Spacer()
 
@@ -76,7 +80,8 @@ struct AddProviderSheet: View {
                             name: name.trimmingCharacters(in: .whitespacesAndNewlines),
                             baseURL: baseURL.trimmingCharacters(in: .whitespacesAndNewlines),
                             apiKey: apiKey.trimmingCharacters(in: .whitespacesAndNewlines),
-                            billingMode: billingMode
+                            billingMode: billingMode,
+                            usesChatCompletions: usesChatCompletions
                         )
                         if didCreate {
                             dismiss()

@@ -47,6 +47,7 @@ impl ProviderStore {
                 base_url: provider.base_url.clone(),
                 account_id: provider.account_id.clone(),
                 account_email: None,
+                uses_chat_completions: provider.uses_chat_completions,
                 billing_mode: provider.billing_mode.clone(),
                 api_key_preview: mask_api_key(&provider.api_key),
             })
@@ -78,6 +79,7 @@ impl ProviderStore {
                 existing.base_url = base_url;
                 existing.api_key = api_key;
                 existing.account_id = None;
+                existing.uses_chat_completions = request.uses_chat_completions;
                 existing.billing_mode = request
                     .billing_mode
                     .unwrap_or_else(|| existing.billing_mode.clone());
@@ -90,6 +92,7 @@ impl ProviderStore {
                     base_url,
                     api_key,
                     account_id: None,
+                    uses_chat_completions: request.uses_chat_completions,
                     billing_mode: request
                         .billing_mode
                         .unwrap_or(ApiProviderBillingMode::Metered),
@@ -126,6 +129,7 @@ impl ProviderStore {
             existing.base_url.clear();
             existing.api_key.clear();
             existing.account_id = Some(account_id.to_string());
+            existing.uses_chat_completions = false;
             existing.clone()
         } else {
             let provider = ApiProviderRecord {
@@ -135,6 +139,7 @@ impl ProviderStore {
                 base_url: String::new(),
                 api_key: String::new(),
                 account_id: Some(account_id.to_string()),
+                uses_chat_completions: false,
                 billing_mode: ApiProviderBillingMode::Metered,
             };
             providers.push(provider.clone());
@@ -160,10 +165,7 @@ impl ProviderStore {
             .cloned()
     }
 
-    pub async fn upsert_extension(
-        &self,
-        extension: ProviderExtensionRecord,
-    ) -> Result<(), String> {
+    pub async fn upsert_extension(&self, extension: ProviderExtensionRecord) -> Result<(), String> {
         self.sqlite.upsert_provider_extension(&extension)?;
         let mut extensions = self.extensions.lock().await;
         if let Some(existing) = extensions.iter_mut().find(|existing| {

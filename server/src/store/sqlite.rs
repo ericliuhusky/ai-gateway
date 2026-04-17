@@ -1,8 +1,8 @@
 use crate::{
     config::Config,
     models::{
-        AccountRecord, AccountType, ApiProviderBillingMode, ApiProviderRecord,
-        ProviderAuthMode, ProviderExtensionRecord, SelectedProvider,
+        AccountRecord, AccountType, ApiProviderBillingMode, ApiProviderRecord, ProviderAuthMode,
+        ProviderExtensionRecord, SelectedProvider,
     },
 };
 use rusqlite::{Connection, OptionalExtension, params};
@@ -28,7 +28,8 @@ impl SqliteStore {
     #[cfg(test)]
     pub fn for_test(db_path: PathBuf) -> Result<Self, String> {
         if let Some(parent) = db_path.parent() {
-            fs::create_dir_all(parent).map_err(|err| format!("create test data dir failed: {err}"))?;
+            fs::create_dir_all(parent)
+                .map_err(|err| format!("create test data dir failed: {err}"))?;
         }
 
         let store = Self { db_path };
@@ -75,7 +76,7 @@ impl SqliteStore {
         let conn = self.connect()?;
         let mut stmt = conn
             .prepare(
-                "SELECT id, name, auth_mode, base_url, api_key, account_id, billing_mode
+                "SELECT id, name, auth_mode, base_url, api_key, account_id, uses_chat_completions, billing_mode
                  FROM providers
                  ORDER BY rowid ASC",
             )
@@ -90,7 +91,8 @@ impl SqliteStore {
                     base_url: row.get(3)?,
                     api_key: row.get(4)?,
                     account_id: row.get(5)?,
-                    billing_mode: billing_mode_from_str(&row.get::<_, String>(6)?)
+                    uses_chat_completions: row.get::<_, i64>(6)? != 0,
+                    billing_mode: billing_mode_from_str(&row.get::<_, String>(7)?)
                         .map_err(rusqlite::Error::ToSqlConversionFailure)?,
                 })
             })
@@ -129,7 +131,10 @@ impl SqliteStore {
             .map_err(|err| format!("read provider extensions failed: {err}"))
     }
 
-    pub fn upsert_provider_extension(&self, extension: &ProviderExtensionRecord) -> Result<(), String> {
+    pub fn upsert_provider_extension(
+        &self,
+        extension: &ProviderExtensionRecord,
+    ) -> Result<(), String> {
         let conn = self.connect()?;
         conn.execute(
             "INSERT INTO provider_extensions (
@@ -192,11 +197,12 @@ impl SqliteStore {
 
             CREATE TABLE IF NOT EXISTS providers (
                 id TEXT PRIMARY KEY,
-                name TEXT NOT NULL UNIQUE,
+                name TEXT NOT NULL,
                 auth_mode TEXT NOT NULL,
                 base_url TEXT NOT NULL,
                 api_key TEXT NOT NULL,
                 account_id TEXT,
+                uses_chat_completions INTEGER NOT NULL DEFAULT 0,
                 billing_mode TEXT NOT NULL
             );
 
@@ -216,7 +222,6 @@ impl SqliteStore {
             ",
         )
         .map_err(|err| format!("initialize sqlite schema failed: {err}"))?;
-        migrate_providers_table_if_needed(&conn)?;
         Ok(())
     }
 
@@ -260,61 +265,18 @@ fn upsert_account_record(conn: &Connection, account: &AccountRecord) -> Result<(
     Ok(())
 }
 
-fn migrate_providers_table_if_needed(conn: &Connection) -> Result<(), String> {
-    let create_sql = conn
-        .query_row(
-            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'providers'",
-            [],
-            |row| row.get::<_, Option<String>>(0),
-        )
-        .optional()
-        .map_err(|err| format!("inspect providers table failed: {err}"))?
-        .flatten();
-
-    let Some(create_sql) = create_sql else {
-        return Ok(());
-    };
-
-    if !create_sql.contains("name TEXT NOT NULL UNIQUE") {
-        return Ok(());
-    }
-
-    conn.execute_batch(
-        "
-        BEGIN IMMEDIATE;
-        CREATE TABLE providers_v2 (
-            id TEXT PRIMARY KEY,
-            name TEXT NOT NULL,
-            auth_mode TEXT NOT NULL,
-            base_url TEXT NOT NULL,
-            api_key TEXT NOT NULL,
-            account_id TEXT,
-            billing_mode TEXT NOT NULL
-        );
-        INSERT INTO providers_v2 (id, name, auth_mode, base_url, api_key, account_id, billing_mode)
-        SELECT id, name, auth_mode, base_url, api_key, account_id, billing_mode
-        FROM providers;
-        DROP TABLE providers;
-        ALTER TABLE providers_v2 RENAME TO providers;
-        COMMIT;
-        ",
-    )
-    .map_err(|err| format!("migrate providers table failed: {err}"))?;
-
-    Ok(())
-}
-
 fn upsert_provider_record(conn: &Connection, provider: &ApiProviderRecord) -> Result<(), String> {
     conn.execute(
         "INSERT INTO providers (
-            id, name, auth_mode, base_url, api_key, account_id, billing_mode
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            id, name, auth_mode, base_url, api_key, account_id, uses_chat_completions, billing_mode
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
          ON CONFLICT(id) DO UPDATE SET
             name = excluded.name,
             auth_mode = excluded.auth_mode,
             base_url = excluded.base_url,
             api_key = excluded.api_key,
             account_id = excluded.account_id,
+            uses_chat_completions = excluded.uses_chat_completions,
             billing_mode = excluded.billing_mode",
         params![
             provider.id,
@@ -323,6 +285,7 @@ fn upsert_provider_record(conn: &Connection, provider: &ApiProviderRecord) -> Re
             provider.base_url,
             provider.api_key,
             provider.account_id,
+            if provider.uses_chat_completions { 1 } else { 0 },
             billing_mode_to_str(&provider.billing_mode)
         ],
     )

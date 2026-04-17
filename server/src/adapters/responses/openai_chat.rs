@@ -305,7 +305,7 @@ mod tests {
         }))
         .expect("request should parse");
 
-        let body = responses_to_chat_completions(&request, "ark-code-latest")
+        let body = responses_to_chat_completions(&request, "chat-compatible-latest")
             .expect("request should convert");
         let parameters = &body["tools"][0]["function"]["parameters"];
 

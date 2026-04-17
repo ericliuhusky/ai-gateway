@@ -65,7 +65,8 @@ final class GatewayViewModel: ObservableObject {
         name: String,
         baseURL: String,
         apiKey: String,
-        billingMode: GatewayBillingMode
+        billingMode: GatewayBillingMode,
+        usesChatCompletions: Bool
     ) async -> Bool {
         isLoading = true
         defer { isLoading = false }
@@ -76,7 +77,8 @@ final class GatewayViewModel: ObservableObject {
                     name: name,
                     baseURL: baseURL,
                     apiKey: apiKey,
-                    billingMode: billingMode
+                    billingMode: billingMode,
+                    usesChatCompletions: usesChatCompletions
                 )
             )
             await refresh()

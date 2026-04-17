@@ -41,6 +41,8 @@ pub struct CreateApiProviderRequest {
     #[serde(default)]
     pub api_key: Option<String>,
     #[serde(default)]
+    pub uses_chat_completions: bool,
+    #[serde(default)]
     pub billing_mode: Option<ApiProviderBillingMode>,
 }
 
@@ -56,6 +58,8 @@ pub struct ApiProviderRecord {
     pub api_key: String,
     #[serde(default)]
     pub account_id: Option<String>,
+    #[serde(default)]
+    pub uses_chat_completions: bool,
     #[serde(default)]
     pub billing_mode: ApiProviderBillingMode,
 }
@@ -78,6 +82,7 @@ pub struct ApiProviderSummary {
     pub account_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub account_email: Option<String>,
+    pub uses_chat_completions: bool,
     pub billing_mode: ApiProviderBillingMode,
     pub api_key_preview: String,
 }

@@ -29,6 +29,7 @@ struct GatewayProvider: Codable, Identifiable, Hashable {
     let accountID: String?
     let accountEmail: String?
     let billingMode: GatewayBillingMode
+    let usesChatCompletions: Bool
     let apiKeyPreview: String
 
     enum CodingKeys: String, CodingKey {
@@ -39,6 +40,7 @@ struct GatewayProvider: Codable, Identifiable, Hashable {
         case accountID = "account_id"
         case accountEmail = "account_email"
         case billingMode = "billing_mode"
+        case usesChatCompletions = "uses_chat_completions"
         case apiKeyPreview = "api_key_preview"
     }
 
@@ -172,12 +174,14 @@ struct CreateAPIProviderRequest: Codable {
     let baseURL: String
     let apiKey: String
     let billingMode: GatewayBillingMode
+    let usesChatCompletions: Bool
 
     enum CodingKeys: String, CodingKey {
         case name
         case baseURL = "base_url"
         case apiKey = "api_key"
         case billingMode = "billing_mode"
+        case usesChatCompletions = "uses_chat_completions"
     }
 }
 
