@@ -824,20 +824,48 @@ fn extract_output_text(value: &Value, path: &[String]) -> Option<ExtractedText> 
             .iter()
             .enumerate()
             .find_map(|(index, item)| {
-                let item_path = child_index_path(path, index);
-                item.get("content")
-                    .and_then(|content| {
-                        extract_content_text(content, &child_path(&item_path, "content"))
-                    })
-                    .or_else(|| extract_text_candidate(item, &item_path))
+                extract_assistant_output_item_text(item, &child_index_path(path, index))
             })
             .or_else(|| {
                 items.iter().enumerate().find_map(|(index, item)| {
-                    extract_text_candidate(item, &child_index_path(path, index))
+                    extract_non_reasoning_output_item_text(item, &child_index_path(path, index))
                 })
             }),
         _ => extract_content_text(value, path).or_else(|| extract_text_candidate(value, path)),
     }
+}
+
+fn extract_assistant_output_item_text(value: &Value, path: &[String]) -> Option<ExtractedText> {
+    let object = value.as_object()?;
+    let item_type = object.get("type").and_then(Value::as_str);
+    let role = object.get("role").and_then(Value::as_str);
+    if item_type != Some("message") && role != Some("assistant") {
+        return None;
+    }
+
+    object
+        .get("content")
+        .and_then(|content| extract_content_text(content, &child_path(path, "content")))
+        .or_else(|| {
+            object
+                .get("text")
+                .and_then(|text| extract_content_text(text, &child_path(path, "text")))
+        })
+}
+
+fn extract_non_reasoning_output_item_text(value: &Value, path: &[String]) -> Option<ExtractedText> {
+    if value
+        .get("type")
+        .and_then(Value::as_str)
+        .is_some_and(|item_type| item_type == "reasoning")
+    {
+        return None;
+    }
+
+    value
+        .get("content")
+        .and_then(|content| extract_content_text(content, &child_path(path, "content")))
+        .or_else(|| extract_text_candidate(value, path))
 }
 
 fn extract_content_text(value: &Value, path: &[String]) -> Option<ExtractedText> {
@@ -1335,6 +1363,31 @@ mod tests {
         assert_eq!(
             extract_model_output_from_body(gemini).as_deref(),
             Some("gemini text")
+        );
+    }
+
+    #[test]
+    fn extracts_assistant_output_instead_of_reasoning_output() {
+        let response = r#"{
+            "output": [
+                {
+                    "type": "reasoning",
+                    "summary": [{"type": "summary_text", "text": "hidden reasoning"}]
+                },
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "visible answer"}]
+                }
+            ]
+        }"#;
+
+        assert_eq!(
+            extract_model_output_field_from_body(response),
+            Some(ExtractedText {
+                text: "visible answer".to_string(),
+                path: "output.1.content.0.text".to_string(),
+            })
         );
     }
 
