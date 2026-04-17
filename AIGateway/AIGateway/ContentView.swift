@@ -20,6 +20,7 @@ struct ContentView: View {
         NavigationStack {
             VStack(spacing: 18) {
                 header
+                modelSelector
                 providerGrid
                 footer
             }
@@ -97,6 +98,94 @@ struct ContentView: View {
 
     private var providerTable: some View {
         EmptyView()
+    }
+
+    private var modelSelector: some View {
+        HStack(spacing: 14) {
+            Image(systemName: "cpu")
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(selectionAccent)
+                .frame(width: 28)
+
+            VStack(alignment: .leading, spacing: 5) {
+                Text("模型")
+                    .font(.system(size: 13, weight: .bold))
+                Text(modelSelectorDetail)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer()
+
+            if viewModel.isLoadingModels {
+                ProgressView()
+                    .controlSize(.small)
+            }
+
+            Picker("模型", selection: modelSelectionBinding) {
+                Text("跟随请求模型").tag("")
+                ForEach(viewModel.availableModels) { model in
+                    Text(model.id).tag(model.id)
+                }
+            }
+            .labelsHidden()
+            .frame(width: 280)
+            .disabled(viewModel.availableModels.isEmpty || viewModel.isLoadingModels)
+
+            Button {
+                Task {
+                    await viewModel.refreshModels()
+                }
+            } label: {
+                Image(systemName: "arrow.clockwise")
+            }
+            .help("刷新模型列表")
+            .buttonStyle(.bordered)
+            .disabled(viewModel.selectedProviderID == nil || viewModel.isLoadingModels)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(Color.primary.opacity(colorScheme == .dark ? 0.08 : 0.045))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .strokeBorder(cardBorder, lineWidth: 1)
+        )
+    }
+
+    private var modelSelectionBinding: Binding<String> {
+        Binding(
+            get: { viewModel.selectedModelID ?? "" },
+            set: { modelID in
+                guard modelID != (viewModel.selectedModelID ?? "") else { return }
+                Task {
+                    if modelID.isEmpty {
+                        await viewModel.clearSelectedModel()
+                    } else {
+                        await viewModel.selectModel(id: modelID)
+                    }
+                }
+            }
+        )
+    }
+
+    private var modelSelectorDetail: String {
+        if let error = viewModel.modelErrorMessage {
+            return error
+        }
+        guard viewModel.selectedProviderID != nil else {
+            return "先选择一个供应商，再读取它支持的模型。"
+        }
+        if let model = viewModel.selectedModelID {
+            return "网关会把 Codex 请求覆盖为 \(model)，无需修改本地 model_catalog。"
+        }
+        if viewModel.availableModels.isEmpty {
+            return "当前供应商还没有返回模型列表。"
+        }
+        return "选择后由网关覆盖请求模型；Codex 本地配置保持不变。"
     }
 
     private var providerGrid: some View {

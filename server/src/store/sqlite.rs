@@ -157,12 +157,13 @@ impl SqliteStore {
     pub fn load_route(&self) -> Result<SelectedProvider, String> {
         let conn = self.connect()?;
         conn.query_row(
-            "SELECT provider_id, updated_at FROM selected_provider WHERE id = 1",
+            "SELECT provider_id, selected_model, updated_at FROM selected_provider WHERE id = 1",
             [],
             |row| {
                 Ok(SelectedProvider {
                     provider_id: row.get(0)?,
-                    updated_at: row.get(1)?,
+                    selected_model: row.get(1)?,
+                    updated_at: row.get(2)?,
                 })
             },
         )
@@ -209,6 +210,7 @@ impl SqliteStore {
             CREATE TABLE IF NOT EXISTS selected_provider (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 provider_id TEXT,
+                selected_model TEXT,
                 updated_at INTEGER NOT NULL
             );
 
@@ -222,6 +224,7 @@ impl SqliteStore {
             ",
         )
         .map_err(|err| format!("initialize sqlite schema failed: {err}"))?;
+
         Ok(())
     }
 
@@ -295,12 +298,13 @@ fn upsert_provider_record(conn: &Connection, provider: &ApiProviderRecord) -> Re
 
 fn upsert_route_record(conn: &Connection, route: &SelectedProvider) -> Result<(), String> {
     conn.execute(
-        "INSERT INTO selected_provider (id, provider_id, updated_at)
-         VALUES (1, ?1, ?2)
+        "INSERT INTO selected_provider (id, provider_id, selected_model, updated_at)
+         VALUES (1, ?1, ?2, ?3)
          ON CONFLICT(id) DO UPDATE SET
             provider_id = excluded.provider_id,
+            selected_model = excluded.selected_model,
             updated_at = excluded.updated_at",
-        params![route.provider_id, route.updated_at],
+        params![route.provider_id, route.selected_model, route.updated_at],
     )
     .map_err(|err| format!("upsert route failed: {err}"))?;
     Ok(())

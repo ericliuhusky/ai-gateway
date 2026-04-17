@@ -9,6 +9,10 @@ final class GatewayViewModel: ObservableObject {
     @Published var quotaErrors: [String: String] = [:]
     @Published var quotaLoadingProviderIDs: Set<String> = []
     @Published var selectedProviderID: String?
+    @Published var selectedModelID: String?
+    @Published var availableModels: [GatewayModel] = []
+    @Published var isLoadingModels = false
+    @Published var modelErrorMessage: String?
     @Published var codexConfigStatus: CodexConfigStatus?
     @Published var isLoading = false
     @Published var errorMessage: String?
@@ -54,7 +58,9 @@ final class GatewayViewModel: ObservableObject {
             let sortedProviders = providers.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
             self.providers = sortedProviders
             self.selectedProviderID = selected.providerID
+            self.selectedModelID = selected.selectedModel
             self.codexConfigStatus = codexConfig
+            await refreshModels()
             await refreshProviderQuotas(for: sortedProviders)
         } catch {
             errorMessage = error.localizedDescription
@@ -96,8 +102,60 @@ final class GatewayViewModel: ObservableObject {
         do {
             try await client.selectProvider(id: id)
             selectedProviderID = id
+            selectedModelID = nil
+            availableModels = []
+            await refreshModels()
         } catch {
             errorMessage = error.localizedDescription
+        }
+    }
+
+    func refreshModels() async {
+        guard selectedProviderID != nil else {
+            availableModels = []
+            selectedModelID = nil
+            modelErrorMessage = nil
+            return
+        }
+
+        isLoadingModels = true
+        defer { isLoadingModels = false }
+
+        do {
+            let models = try await client.fetchModels()
+            availableModels = models.sorted { $0.id.localizedStandardCompare($1.id) == .orderedAscending }
+            modelErrorMessage = nil
+        } catch {
+            availableModels = []
+            modelErrorMessage = error.localizedDescription
+        }
+    }
+
+    func selectModel(id: String) async {
+        isLoadingModels = true
+        defer { isLoadingModels = false }
+
+        do {
+            let selected = try await client.selectModel(id: id)
+            selectedModelID = selected.selectedModel
+            selectedProviderID = selected.providerID
+            modelErrorMessage = nil
+        } catch {
+            modelErrorMessage = error.localizedDescription
+        }
+    }
+
+    func clearSelectedModel() async {
+        isLoadingModels = true
+        defer { isLoadingModels = false }
+
+        do {
+            let selected = try await client.clearSelectedModel()
+            selectedModelID = selected.selectedModel
+            selectedProviderID = selected.providerID
+            modelErrorMessage = nil
+        } catch {
+            modelErrorMessage = error.localizedDescription
         }
     }
 

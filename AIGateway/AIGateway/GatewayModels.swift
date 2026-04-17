@@ -153,10 +153,12 @@ struct ProviderQuotaResponse: Codable {
 
 struct SelectedProviderPayload: Codable {
     let providerID: String?
+    let selectedModel: String?
     let updatedAt: Int64
 
     enum CodingKeys: String, CodingKey {
         case providerID = "provider_id"
+        case selectedModel = "selected_model"
         case updatedAt = "updated_at"
     }
 }
@@ -191,6 +193,26 @@ struct UpdateSelectedProviderRequest: Codable {
     enum CodingKeys: String, CodingKey {
         case providerID = "provider_id"
     }
+}
+
+struct GatewayModel: Codable, Identifiable, Hashable {
+    let id: String
+}
+
+struct ModelListResponse: Codable {
+    let data: [GatewayModel]
+}
+
+struct SelectedModelResponse: Codable {
+    let selectedModel: SelectedProviderPayload
+
+    enum CodingKeys: String, CodingKey {
+        case selectedModel = "selected_model"
+    }
+}
+
+struct UpdateSelectedModelRequest: Codable {
+    let model: String
 }
 
 struct CodexConfigStatus: Codable {

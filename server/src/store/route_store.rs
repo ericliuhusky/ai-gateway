@@ -28,11 +28,26 @@ impl RouteStore {
         self.route.lock().await.clone()
     }
 
-    pub async fn set(&self, provider_id: Option<String>) -> Result<SelectedProvider, String> {
-        let route = SelectedProvider {
-            provider_id,
-            updated_at: now_unix() as i64,
-        };
+    pub async fn set_provider(
+        &self,
+        provider_id: Option<String>,
+    ) -> Result<SelectedProvider, String> {
+        let mut route = self.route.lock().await.clone();
+        route.provider_id = provider_id;
+        route.selected_model = None;
+        route.updated_at = now_unix() as i64;
+        self.sqlite.upsert_route(&route)?;
+        *self.route.lock().await = route.clone();
+        Ok(route)
+    }
+
+    pub async fn set_model(
+        &self,
+        selected_model: Option<String>,
+    ) -> Result<SelectedProvider, String> {
+        let mut route = self.route.lock().await.clone();
+        route.selected_model = selected_model;
+        route.updated_at = now_unix() as i64;
         self.sqlite.upsert_route(&route)?;
         *self.route.lock().await = route.clone();
         Ok(route)

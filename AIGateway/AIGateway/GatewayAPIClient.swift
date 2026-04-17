@@ -32,6 +32,11 @@ struct GatewayAPIClient: Sendable {
         return response.selectedProvider
     }
 
+    func fetchModels() async throws -> [GatewayModel] {
+        let response: ModelListResponse = try await request(path: "/openai/v1/models")
+        return response.data
+    }
+
     func fetchCodexConfigStatus() async throws -> CodexConfigStatus {
         let response: CodexConfigStatusResponse = try await request(path: "/codex-config")
         return response.codexConfig
@@ -51,6 +56,20 @@ struct GatewayAPIClient: Sendable {
             method: "PUT",
             body: UpdateSelectedProviderRequest(providerID: id)
         )
+    }
+
+    func selectModel(id: String) async throws -> SelectedProviderPayload {
+        let response: SelectedModelResponse = try await requestWithBody(
+            path: "/selected-model",
+            method: "PUT",
+            body: UpdateSelectedModelRequest(model: id)
+        )
+        return response.selectedModel
+    }
+
+    func clearSelectedModel() async throws -> SelectedProviderPayload {
+        let response: SelectedModelResponse = try await request(path: "/selected-model", method: "DELETE")
+        return response.selectedModel
     }
 
     func applyCodexConfig() async throws -> CodexConfigStatus {

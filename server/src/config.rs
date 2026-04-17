@@ -44,10 +44,6 @@ impl Config {
         self.codex_dir().join("config.toml")
     }
 
-    pub fn codex_model_catalog_path(&self) -> PathBuf {
-        self.codex_dir().join("model_catalog_test.json")
-    }
-
     pub fn codex_config_backup_path(&self) -> PathBuf {
         self.data_dir().join("codex-config.backup.toml")
     }

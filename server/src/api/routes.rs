@@ -1,9 +1,10 @@
 use crate::api::handlers::{
     add_provider, apply_codex_config, auth_google_callback, auth_google_start,
-    auth_openai_callback, auth_openai_start, clear_logs, debug_clear_logs, debug_dashboard,
-    debug_set_log_settings, get_codex_config_status, get_log_detail, get_log_settings, get_logs,
-    get_provider_quota, get_route, healthz, list_models, list_providers, responses,
-    restore_codex_config, set_log_settings, set_route,
+    auth_openai_callback, auth_openai_start, clear_logs, clear_selected_model, debug_clear_logs,
+    debug_dashboard, debug_set_log_settings, get_codex_config_status, get_log_detail,
+    get_log_settings, get_logs, get_provider_quota, get_route, get_selected_model, healthz,
+    list_models, list_providers, responses, restore_codex_config, set_log_settings, set_route,
+    set_selected_model,
 };
 use axum::{
     Router,
@@ -23,6 +24,12 @@ pub fn build_router(state: AppState) -> Router {
         .route("/providers", get(list_providers).post(add_provider))
         .route("/providers/:provider_id/quota", get(get_provider_quota))
         .route("/selected-provider", get(get_route).put(set_route))
+        .route(
+            "/selected-model",
+            get(get_selected_model)
+                .put(set_selected_model)
+                .delete(clear_selected_model),
+        )
         .route(
             "/codex-config",
             get(get_codex_config_status)
