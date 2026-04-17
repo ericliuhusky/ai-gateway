@@ -5,7 +5,7 @@ use tracing::info;
 
 pub const OPENAI_RESPONSES_URL: &str = "https://chatgpt.com/backend-api/codex/responses";
 pub const OPENAI_MODELS_URL: &str = "https://chatgpt.com/backend-api/codex/models";
-pub const OPENAI_USAGE_URL: &str = "https://chatgpt.com/backend-api/codex/usage";
+pub const OPENAI_USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
 
 #[derive(Clone, Debug)]
 pub struct OpenAiPrivateClient {

@@ -1,5 +1,5 @@
 use crate::{
-    auth::{ImportedOpenAIAuth, OAuthClient, TokenResponse, UserInfo},
+    auth::{ImportedOpenAIAuth, OAuthClient, TokenResponse, UserInfo, extract_openai_chatgpt_account_id},
     config::Config,
     models::{AccountRecord, AccountType, PROVIDER_GOOGLE_PROXY, PROVIDER_OPENAI_PROXY},
     store::sqlite::SqliteStore,
@@ -234,6 +234,10 @@ impl AccountPool {
                     if let Some(refresh_token) = refreshed.refresh_token {
                         *account.refresh_token_mut() = refresh_token;
                     }
+                    if account.provider() == PROVIDER_OPENAI_PROXY {
+                        account.upstream_account_id =
+                            extract_openai_chatgpt_account_id(account.access_token());
+                    }
                     info!(
                         account_id = %account.id,
                         email = %account.email,
@@ -272,6 +276,10 @@ impl AccountPool {
                     ));
                 }
             }
+        }
+
+        if account.provider() == PROVIDER_OPENAI_PROXY && account.upstream_account_id.is_none() {
+            account.upstream_account_id = extract_openai_chatgpt_account_id(account.access_token());
         }
 
         self.update_account(account.clone()).await?;

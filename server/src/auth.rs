@@ -79,9 +79,14 @@ struct OpenAITokenClaims {
     email: Option<String>,
     #[serde(default, rename = "scp")]
     scopes: Vec<String>,
-    #[serde(default)]
+    // These JWT claim keys are literal URLs.
+    //
+    // We explicitly rename them so Serde can map the incoming token payload.
+    // Without these renames, `account_id` (ChatGPT-Account-Id) will be missing,
+    // which breaks downstream quota lookups against `backend-api/wham/usage`.
+    #[serde(default, rename = "https://api.openai.com/profile")]
     https_api_openai_com_profile: Option<OpenAIProfileClaims>,
-    #[serde(default)]
+    #[serde(default, rename = "https://api.openai.com/auth")]
     https_api_openai_com_auth: Option<OpenAIAuthClaims>,
 }
 
@@ -351,7 +356,8 @@ impl OAuthClient {
                 .client_id
                 .clone()
                 .unwrap_or_else(|| OPENAI_CLIENT_ID.to_string()),
-            account_id: openai_account_id_from_claims(&access_claims),
+            account_id: openai_account_id_from_claims(&access_claims)
+                .or_else(|| id_claims.as_ref().and_then(openai_account_id_from_claims)),
             scopes: access_claims.scopes,
         })
     }
@@ -374,7 +380,9 @@ impl OAuthClient {
         let expiry_timestamp = access_claims
             .exp
             .ok_or_else(|| "missing exp in OpenAI access token".to_string())?;
-        let account_id = openai_account_id_from_claims(&access_claims).or(account_id_hint);
+        let account_id = openai_account_id_from_claims(&access_claims)
+            .or_else(|| id_claims.as_ref().and_then(openai_account_id_from_claims))
+            .or(account_id_hint);
 
         Ok(ImportedOpenAIAuth {
             email,
@@ -470,6 +478,15 @@ fn openai_account_id_from_claims(claims: &OpenAITokenClaims) -> Option<String> {
     })
 }
 
+/// Best-effort extraction of ChatGPT account/user id from an OpenAI OAuth access token.
+///
+/// This value is required by certain ChatGPT backend endpoints (e.g. `backend-api/wham/usage`)
+/// via the `ChatGPT-Account-Id` header.
+pub fn extract_openai_chatgpt_account_id(access_token: &str) -> Option<String> {
+    let claims = decode_openai_claims(access_token).ok()?;
+    openai_account_id_from_claims(&claims)
+}
+
 fn random_urlsafe(bytes_len: usize) -> String {
     let mut bytes = Vec::with_capacity(bytes_len);
     while bytes.len() < bytes_len {
@@ -482,4 +499,39 @@ fn random_urlsafe(bytes_len: usize) -> String {
 fn pkce_challenge(verifier: &str) -> String {
     let digest = Sha256::digest(verifier.as_bytes());
     URL_SAFE_NO_PAD.encode(digest)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{decode_openai_claims, openai_account_id_from_claims, openai_email_from_claims};
+    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+
+    #[test]
+    fn openai_jwt_claims_extract_chatgpt_account_id_from_url_claims() {
+        let payload = serde_json::json!({
+            "exp": 1_700_000_000,
+            "client_id": "app_test",
+            "email": "user@example.com",
+            "scp": ["openid", "profile"],
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": "acc_123"
+            },
+            "https://api.openai.com/profile": {
+                "email": "profile@example.com"
+            }
+        });
+        let payload_encoded = URL_SAFE_NO_PAD.encode(payload.to_string().as_bytes());
+        let token = format!("header.{payload_encoded}.sig");
+
+        let claims = decode_openai_claims(&token).expect("should decode jwt payload");
+        assert_eq!(
+            openai_account_id_from_claims(&claims).as_deref(),
+            Some("acc_123")
+        );
+        // Prefer the explicit email claim if present.
+        assert_eq!(
+            openai_email_from_claims(&claims).as_deref(),
+            Some("user@example.com")
+        );
+    }
 }

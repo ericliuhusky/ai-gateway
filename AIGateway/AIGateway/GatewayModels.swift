@@ -122,6 +122,15 @@ struct ProviderQuotaSummary: Codable, Hashable {
         case message
     }
 
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        status = try container.decode(QuotaSupportStatus.self, forKey: .status)
+        snapshot = try container.decodeIfPresent(ProviderQuotaSnapshot.self, forKey: .snapshot)
+        additionalSnapshots =
+            try container.decodeIfPresent([ProviderQuotaSnapshot].self, forKey: .additionalSnapshots) ?? []
+        message = try container.decodeIfPresent(String.self, forKey: .message)
+    }
+
     var snapshots: [ProviderQuotaSnapshot] {
         let primarySnapshot = snapshot.map { [$0] } ?? []
         return primarySnapshot + additionalSnapshots

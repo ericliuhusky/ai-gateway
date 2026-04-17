@@ -321,38 +321,191 @@ struct ContentView: View {
     }
 
     private func providerQuotaSection(for provider: GatewayProvider) -> some View {
-        let display = quotaDisplay(for: provider)
+        Group {
+            if viewModel.isLoadingQuota(for: provider.id) {
+                quotaPanel(
+                    title: "额度窗口",
+                    headline: "同步中",
+                    headlineTint: .secondary
+                ) {
+                    Text("正在读取当前供应商的额度快照")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+            } else if let error = viewModel.quotaErrorMessage(for: provider.id) {
+                quotaPanel(
+                    title: "额度窗口",
+                    headline: "读取失败",
+                    headlineTint: .red
+                ) {
+                    Text(error)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+            } else if let summary = viewModel.quotaSummary(for: provider.id) {
+                if summary.status == .unsupported {
+                    quotaPanel(
+                        title: "额度窗口",
+                        headline: "暂不支持",
+                        headlineTint: .secondary
+                    ) {
+                        Text(summary.message ?? "当前供应商暂不支持额度快照")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+                } else {
+                    supportedQuotaPanel(summary: summary)
+                }
+            } else {
+                quotaPanel(
+                    title: "额度窗口",
+                    headline: "暂无数据",
+                    headlineTint: .secondary
+                ) {
+                    Text("还没有拿到额度信息")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+            }
+        }
+    }
 
-        return VStack(alignment: .leading, spacing: 10) {
+    @ViewBuilder
+    private func supportedQuotaPanel(summary: ProviderQuotaSummary) -> some View {
+        let primary = summary.snapshot?.primary
+        let secondary = summary.snapshot?.secondary
+
+        if primary == nil && secondary == nil {
+            quotaPanel(
+                title: "额度窗口",
+                headline: "可用",
+                headlineTint: selectionAccent
+            ) {
+                Text("额度接口已接通，但当前没有可视化窗口数据")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+        } else {
+            let headlineTint = quotaTint(forRemainingPercent: (primary ?? secondary)!.remainingPercent)
+            quotaPanel(
+                title: "额度窗口",
+                headline: quotaHeadline(primary: primary, secondary: secondary),
+                headlineTint: headlineTint
+            ) {
+                VStack(alignment: .leading, spacing: 10) {
+                    if let primary {
+                        quotaWindowRow(
+                            title: quotaWindowTitle(minutes: primary.windowMinutes, fallback: "五小时窗口"),
+                            window: primary
+                        )
+                    }
+
+                    if let secondary {
+                        quotaWindowRow(
+                            title: quotaWindowTitle(minutes: secondary.windowMinutes, fallback: "周窗口"),
+                            window: secondary
+                        )
+                    }
+
+                    if let footnote = quotaCreditsFootnoteText(summary: summary) {
+                        Text(footnote)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+                }
+            }
+        }
+    }
+
+    private func quotaHeadline(primary: ProviderQuotaWindow?, secondary: ProviderQuotaWindow?) -> String {
+        var parts: [String] = []
+        if let primary {
+            parts.append("5h \(Int(primary.remainingPercent.rounded()))%")
+        }
+        if let secondary {
+            parts.append("周 \(Int(secondary.remainingPercent.rounded()))%")
+        }
+        return parts.isEmpty ? "可用" : parts.joined(separator: " · ")
+    }
+
+    private func quotaCreditsFootnoteText(summary: ProviderQuotaSummary) -> String? {
+        var footnotes: [String] = []
+
+        if summary.hasUnlimitedCredits {
+            footnotes.append("账户余额无限")
+        } else if let balance = summary.creditBalance {
+            footnotes.append("余额 \(balance)")
+        }
+
+        if let plan = summary.snapshot?.planType, !plan.isEmpty {
+            footnotes.append("Plan \(plan)")
+        }
+
+        return footnotes.isEmpty ? nil : footnotes.joined(separator: " · ")
+    }
+
+    private func quotaWindowTitle(minutes: Int?, fallback: String) -> String {
+        guard let minutes else { return fallback }
+        if minutes == 300 { return "五小时窗口" }
+        if minutes >= 7 * 24 * 60 { return "周窗口" }
+        return quotaWindowDescription(minutes: minutes)
+    }
+
+    private func quotaWindowRow(title: String, window: ProviderQuotaWindow) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline) {
-                Text("剩余额度")
+                Text(title)
                     .font(.system(size: 11, weight: .bold))
                     .foregroundStyle(.secondary)
 
                 Spacer()
 
-                Text(display.headline)
-                    .font(.system(size: 13, weight: .bold, design: .rounded))
-                    .foregroundStyle(display.tint)
+                Text("\(Int(window.remainingPercent.rounded()))%")
+                    .font(.system(size: 12, weight: .bold, design: .rounded))
+                    .foregroundStyle(quotaTint(forRemainingPercent: window.remainingPercent))
             }
 
-            ProgressView(value: display.fraction, total: 1)
+            ProgressView(value: max(window.remainingPercent / 100, 0.02), total: 1)
                 .progressViewStyle(.linear)
-                .tint(display.tint)
-                .scaleEffect(x: 1, y: 1.25, anchor: .center)
-                .animation(.easeInOut(duration: 0.2), value: display.fraction)
+                .tint(quotaTint(forRemainingPercent: window.remainingPercent))
+                .scaleEffect(x: 1, y: 1.15, anchor: .center)
+                .animation(.easeInOut(duration: 0.2), value: window.remainingPercent)
 
-            Text(display.detail)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
-
-            if let footnote = display.footnote {
-                Text(footnote)
-                    .font(.system(size: 11))
+            if let resetDate = window.resetDate {
+                Text("\(resetDate.formatted(.dateTime.month().day().hour().minute())) 重置")
+                    .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(.secondary)
-                    .lineLimit(2)
+                    .lineLimit(1)
             }
+        }
+    }
+
+    private func quotaPanel<Content: View>(
+        title: String,
+        headline: String,
+        headlineTint: Color,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(title)
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(.secondary)
+
+                Spacer()
+
+                Text(headline)
+                    .font(.system(size: 13, weight: .bold, design: .rounded))
+                    .foregroundStyle(headlineTint)
+            }
+
+            content()
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -476,99 +629,6 @@ struct ContentView: View {
         .black
     }
 
-    private func quotaDisplay(for provider: GatewayProvider) -> ProviderQuotaDisplay {
-        if viewModel.isLoadingQuota(for: provider.id) {
-            return ProviderQuotaDisplay(
-                fraction: 1,
-                headline: "同步中",
-                detail: "正在读取当前供应商的额度快照",
-                footnote: nil,
-                tint: .secondary
-            )
-        }
-
-        if let error = viewModel.quotaErrorMessage(for: provider.id) {
-            return ProviderQuotaDisplay(
-                fraction: 1,
-                headline: "读取失败",
-                detail: error,
-                footnote: nil,
-                tint: .red
-            )
-        }
-
-        guard let summary = viewModel.quotaSummary(for: provider.id) else {
-            return ProviderQuotaDisplay(
-                fraction: 1,
-                headline: "暂无数据",
-                detail: "还没有拿到额度信息",
-                footnote: nil,
-                tint: .secondary
-            )
-        }
-
-        if summary.status == .unsupported {
-            return ProviderQuotaDisplay(
-                fraction: 1,
-                headline: "暂不支持",
-                detail: summary.message ?? "当前供应商暂不支持额度快照",
-                footnote: nil,
-                tint: .secondary
-            )
-        }
-
-        if let window = summary.primaryWindow {
-            let remaining = Int(window.remainingPercent.rounded())
-            var footnotes: [String] = []
-
-            if let secondaryWindow = summary.secondaryWindow, secondaryWindow != window {
-                footnotes.append("长窗口剩余 \(Int(secondaryWindow.remainingPercent.rounded()))%")
-            }
-
-            if summary.hasUnlimitedCredits {
-                footnotes.append("账户余额无限")
-            } else if let balance = summary.creditBalance {
-                footnotes.append("余额 \(balance)")
-            }
-
-            return ProviderQuotaDisplay(
-                fraction: max(window.remainingPercent / 100, 0.02),
-                headline: "\(remaining)%",
-                detail: quotaPrimaryDetail(for: window),
-                footnote: footnotes.isEmpty ? nil : footnotes.joined(separator: " · "),
-                tint: quotaTint(forRemainingPercent: window.remainingPercent)
-            )
-        }
-
-        if summary.hasUnlimitedCredits {
-            return ProviderQuotaDisplay(
-                fraction: 1,
-                headline: "无限",
-                detail: "当前账户没有 credits 上限",
-                footnote: nil,
-                tint: selectionAccent
-            )
-        }
-
-        if let balance = summary.creditBalance {
-            return ProviderQuotaDisplay(
-                fraction: 1,
-                headline: balance,
-                detail: "当前账户剩余余额",
-                footnote: nil,
-                tint: apiAccent
-            )
-        }
-
-        return ProviderQuotaDisplay(
-            fraction: 1,
-            headline: "可用",
-            detail: "额度接口已接通，但当前没有可视化窗口数据",
-            footnote: nil,
-            tint: selectionAccent
-        )
-    }
-
     private func quotaPrimaryDetail(for window: ProviderQuotaWindow) -> String {
         var parts: [String] = [quotaWindowDescription(minutes: window.windowMinutes)]
 
@@ -633,16 +693,10 @@ struct ContentView: View {
     }
 }
 
-private struct ProviderQuotaDisplay {
-    let fraction: Double
-    let headline: String
-    let detail: String
-    let footnote: String?
-    let tint: Color
-}
-
-#Preview {
-    ContentView()
+struct ContentView_Previews: PreviewProvider {
+    static var previews: some View {
+        ContentView()
+    }
 }
 
 struct CodexConfigSheet: View {
