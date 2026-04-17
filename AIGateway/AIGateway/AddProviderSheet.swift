@@ -112,6 +112,33 @@ struct AddProviderSheet: View {
             }
             .pickerStyle(.segmented)
 
+            if loginProvider == .openai {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("也可以直接复用 Codex 本机已登录的账号（读取 `~/.codex/auth.json` 导入到网关账号池）。")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+
+                    HStack {
+                        Button {
+                            Task {
+                                _ = await viewModel.importOpenAIFromLocalCodexAuth()
+                            }
+                        } label: {
+                            Label("从本机 Codex 导入", systemImage: "arrow.down.doc")
+                                .frame(minWidth: 140)
+                        }
+                        .buttonStyle(.bordered)
+
+                        Spacer()
+                    }
+                }
+                .padding(12)
+                .background(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(Color.primary.opacity(0.04))
+                )
+            }
+
             HStack {
                 Spacer()
 

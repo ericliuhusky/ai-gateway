@@ -3,8 +3,8 @@ use crate::api::handlers::{
     auth_openai_callback, auth_openai_start, clear_logs, clear_selected_model, debug_clear_logs,
     debug_dashboard, debug_set_log_settings, get_codex_config_status, get_log_detail,
     get_log_settings, get_logs, get_provider_quota, get_route, get_selected_model, healthz,
-    list_models, list_providers, responses, restore_codex_config, set_log_settings, set_route,
-    set_selected_model,
+    import_openai_from_local_codex_auth, list_models, list_providers, responses,
+    restore_codex_config, set_log_settings, set_route, set_selected_model,
 };
 use axum::{
     Router,
@@ -21,6 +21,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/auth/openai/start", get(auth_openai_start))
         .route("/auth/callback", get(auth_openai_callback))
         .route("/auth/openai/callback", get(auth_openai_callback))
+        .route(
+            "/auth/openai/import-local",
+            post(import_openai_from_local_codex_auth),
+        )
         .route("/providers", get(list_providers).post(add_provider))
         .route("/providers/:provider_id/quota", get(get_provider_quota))
         .route("/selected-provider", get(get_route).put(set_route))

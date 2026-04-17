@@ -243,6 +243,22 @@ struct CodexConfigStatusResponse: Codable {
     }
 }
 
+struct ImportOpenAiFromLocalResponse: Codable {
+    let imported: Bool
+    let email: String
+    let accountID: String
+    let hasResponsesWrite: Bool
+    let sourcePath: String
+
+    enum CodingKeys: String, CodingKey {
+        case imported
+        case email
+        case accountID = "account_id"
+        case hasResponsesWrite = "has_responses_write"
+        case sourcePath = "source_path"
+    }
+}
+
 enum ProviderCreationMode: String, CaseIterable, Identifiable {
     case apiKey
     case account

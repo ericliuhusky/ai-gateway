@@ -38,6 +38,7 @@ use debug_web::{
 use futures_util::StreamExt;
 use reqwest::Client;
 use serde::Deserialize;
+use serde::Serialize;
 use serde_json::{Value, json};
 use std::time::Instant;
 use std::{fs, path::Path, sync::Arc};
@@ -210,6 +211,96 @@ pub async fn auth_openai_callback(
         "<html><body style='font-family:sans-serif;padding:32px'><h1>OpenAI login successful</h1><p>Account <strong>{}</strong> is now in the proxy pool.</p>{}<p>Stored account id: <code>{}</code></p><p>You can close this page and call <code>/openai/v1/responses</code>.</p></body></html>",
         email, scope_hint, account.id
     )))
+}
+
+#[derive(Debug, Deserialize)]
+struct CodexAuthTokensFile {
+    access_token: String,
+    #[serde(default)]
+    refresh_token: Option<String>,
+    #[serde(default)]
+    id_token: Option<String>,
+    #[serde(default)]
+    account_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CodexAuthFile {
+    #[serde(default)]
+    tokens: Option<CodexAuthTokensFile>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ImportOpenAiFromLocalResponse {
+    imported: bool,
+    email: String,
+    account_id: String,
+    has_responses_write: bool,
+    source_path: String,
+}
+
+/// Import an OpenAI account from Codex's local `~/.codex/auth.json` without running OAuth.
+///
+/// This is useful when Codex is already logged in on the same machine, and we just want the
+/// gateway to reuse that session for the `openai-proxy` account provider.
+pub async fn import_openai_from_local_codex_auth(
+    State(state): State<AppState>,
+) -> Result<Json<ImportOpenAiFromLocalResponse>, AppError> {
+    let config = state._config.as_ref();
+    let auth_path = config.codex_auth_path();
+    let content = fs::read_to_string(&auth_path).map_err(|err| {
+        AppError::bad_request(format!(
+            "failed to read Codex auth.json at {}: {err}",
+            auth_path.display()
+        ))
+    })?;
+
+    let auth_file: CodexAuthFile = serde_json::from_str(&content).map_err(|err| {
+        AppError::bad_request(format!(
+            "failed to parse Codex auth.json at {}: {err}",
+            auth_path.display()
+        ))
+    })?;
+    let tokens = auth_file.tokens.ok_or_else(|| {
+        AppError::bad_request("Codex auth.json is missing `tokens` (please login in Codex first)")
+    })?;
+    let refresh_token = tokens.refresh_token.ok_or_else(|| {
+        AppError::bad_request("Codex auth.json tokens is missing `refresh_token`")
+    })?;
+
+    let imported = state
+        .oauth
+        .openai_auth_from_local_tokens(
+            tokens.access_token,
+            refresh_token,
+            tokens.id_token,
+            tokens.account_id,
+        )
+        .map_err(AppError::bad_request)?;
+    let has_responses_write = imported
+        .scopes
+        .iter()
+        .any(|scope| scope == "api.responses.write");
+    let email = imported.email.clone();
+
+    let account = state
+        .accounts
+        .add_openai_account(imported)
+        .await
+        .map_err(AppError::bad_request)?;
+    state
+        .providers
+        .bind_account_provider(PROVIDER_OPENAI_PROXY, &account.id)
+        .await
+        .map_err(AppError::bad_request)?;
+
+    Ok(Json(ImportOpenAiFromLocalResponse {
+        imported: true,
+        email,
+        account_id: account.id,
+        has_responses_write,
+        source_path: auth_path.display().to_string(),
+    }))
 }
 
 pub async fn list_providers(State(state): State<AppState>) -> Json<Value> {
