@@ -1,9 +1,10 @@
 use crate::adapters::responses::shared::{build_messages, clean_tool_schema};
 use crate::models::{
-    ResponseOutputContent, ResponseOutputItem, ResponseTool, ResponsesRequest, ResponsesResponse,
-    ResponsesUsage,
+    OpenAIMessage, ResponseOutputContent, ResponseOutputItem, ResponseTool, ResponsesRequest,
+    ResponsesResponse, ResponsesUsage,
 };
 use serde_json::{Value, json};
+use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
@@ -17,6 +18,7 @@ pub fn responses_to_chat_completions(
             message.role = "system".to_string();
         }
     }
+    normalize_messages_for_chat_completions(&mut messages);
     let mut body = serde_json::Map::new();
     body.insert("model".to_string(), Value::String(model.to_string()));
     body.insert(
@@ -39,6 +41,105 @@ pub fn responses_to_chat_completions(
         body.insert("top_p".to_string(), json!(top_p));
     }
     Ok(Value::Object(body))
+}
+
+/// Chat Completions has stricter sequencing rules around tool messages:
+/// a `role="tool"` message must come after an `assistant` message with a matching `tool_calls`.
+///
+/// When adapting from the Responses API (which can represent tool calls and outputs as separate
+/// input items), we defensively:
+/// - move tool output messages right after the assistant message that declared the tool call
+/// - demote unmatched/invalid tool messages to `role="user"` so the request remains valid
+/// - strip `name` from tool messages (Chat Completions tool messages use `tool_call_id` instead)
+fn normalize_messages_for_chat_completions(messages: &mut Vec<OpenAIMessage>) {
+    let original = std::mem::take(messages);
+    if original.is_empty() {
+        return;
+    }
+
+    let mut tool_call_to_assistant_idx: HashMap<String, usize> = HashMap::new();
+    for (idx, message) in original.iter().enumerate() {
+        if message.role != "assistant" {
+            continue;
+        }
+        let Some(tool_calls) = &message.tool_calls else {
+            continue;
+        };
+        for tool_call in tool_calls {
+            if !tool_call.id.trim().is_empty() {
+                tool_call_to_assistant_idx.insert(tool_call.id.clone(), idx);
+            }
+        }
+    }
+
+    let mut tool_outputs_by_assistant_idx: HashMap<usize, Vec<OpenAIMessage>> = HashMap::new();
+    let mut rewritten: Vec<OpenAIMessage> = Vec::with_capacity(original.len());
+
+    // First pass: bucket tool outputs by the assistant tool_calls message they belong to.
+    for (idx, mut message) in original.iter().cloned().enumerate() {
+        if message.role == "tool" {
+            // Chat Completions "tool" messages should not carry a "name" field.
+            message.name = None;
+
+            let call_id = message
+                .tool_call_id
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+
+            if call_id.is_empty() {
+                // Invalid tool message (no tool_call_id) → treat as plain user context.
+                message.role = "user".to_string();
+                message.tool_call_id = None;
+                message.tool_calls = None;
+                rewritten.push(message);
+                continue;
+            }
+
+            if let Some(&assistant_idx) = tool_call_to_assistant_idx.get(&call_id) {
+                tool_outputs_by_assistant_idx
+                    .entry(assistant_idx)
+                    .or_default()
+                    .push(message);
+                continue;
+            }
+
+            // Tool output without a matching tool call in the request history →
+            // demote to plain user context to keep the request valid.
+            message.role = "user".to_string();
+            message.tool_call_id = None;
+            message.tool_calls = None;
+            rewritten.push(message);
+            continue;
+        }
+
+        // Non-tool messages are emitted in order; assistant tool outputs will be inserted after.
+        let is_assistant = message.role == "assistant";
+        rewritten.push(message);
+
+        if is_assistant {
+            if let Some(tool_outputs) = tool_outputs_by_assistant_idx.remove(&idx) {
+                rewritten.extend(tool_outputs);
+            }
+        }
+    }
+
+    // If there are still tool outputs (e.g. assistant message was dropped), append them as user context.
+    if !tool_outputs_by_assistant_idx.is_empty() {
+        let mut leftovers = tool_outputs_by_assistant_idx
+            .into_values()
+            .flatten()
+            .collect::<Vec<_>>();
+        for leftover in &mut leftovers {
+            leftover.role = "user".to_string();
+            leftover.tool_call_id = None;
+            leftover.tool_calls = None;
+        }
+        rewritten.extend(leftovers);
+    }
+
+    *messages = rewritten;
 }
 
 fn build_openai_tools(tools: &Option<Vec<ResponseTool>>) -> Option<Vec<Value>> {
@@ -345,5 +446,46 @@ mod tests {
         assert_eq!(response.output[0].item_type, "function_call");
         assert_eq!(response.output[0].name.as_deref(), Some("shell"));
         assert_eq!(response.output[1].item_type, "message");
+    }
+
+    #[test]
+    fn reorders_tool_outputs_to_follow_assistant_tool_calls_for_chat_completions() {
+        let request: ResponsesRequest = serde_json::from_value(json!({
+            "model": "gpt-5.4",
+            "input": [
+                { "type": "function_call_output", "call_id": "call_1", "output": "ok", "name": "shell" },
+                { "type": "function_call", "call_id": "call_1", "name": "shell", "arguments": "{\"command\":[\"pwd\"]}" }
+            ]
+        }))
+        .expect("request should parse");
+
+        let body = responses_to_chat_completions(&request, "chat-compatible-latest")
+            .expect("request should convert");
+        let messages = body["messages"].as_array().expect("messages array");
+
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0]["role"], "assistant");
+        assert!(messages[0].get("tool_calls").is_some());
+        assert_eq!(messages[1]["role"], "tool");
+        assert_eq!(messages[1]["tool_call_id"], "call_1");
+    }
+
+    #[test]
+    fn demotes_unmatched_tool_outputs_to_user_messages_for_chat_completions() {
+        let request: ResponsesRequest = serde_json::from_value(json!({
+            "model": "gpt-5.4",
+            "input": [
+                { "type": "function_call_output", "call_id": "call_orphan", "output": "orphaned", "name": "shell" }
+            ]
+        }))
+        .expect("request should parse");
+
+        let body = responses_to_chat_completions(&request, "chat-compatible-latest")
+            .expect("request should convert");
+        let messages = body["messages"].as_array().expect("messages array");
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0]["role"], "user");
+        assert!(messages[0].get("tool_call_id").is_none());
     }
 }
