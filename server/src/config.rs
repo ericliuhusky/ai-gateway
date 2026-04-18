@@ -52,6 +52,10 @@ impl Config {
         self.codex_dir().join("auth.json")
     }
 
+    pub fn codex_models_cache_path(&self) -> PathBuf {
+        self.codex_dir().join("models_cache.json")
+    }
+
     pub fn codex_auth_backup_path(&self) -> PathBuf {
         self.data_dir().join("codex-auth.backup.json")
     }

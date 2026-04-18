@@ -49,6 +49,7 @@ const BUNDLED_CODEX_CONFIG: &str = include_str!("../../../assets/codex-config.to
 const MISSING_FILE_SENTINEL: &str = "__AI_GATEWAY_MISSING__";
 const RESPONSES_PATH: &str = "/openai/v1/responses";
 const OPENAI_PRIVATE_RESPONSES_URL: &str = "https://chatgpt.com/backend-api/codex/responses";
+const DEFAULT_OPENAI_CLIENT_VERSION: &str = "0.122.0";
 
 #[derive(Clone)]
 pub struct AppState {
@@ -2105,12 +2106,14 @@ async fn fetch_provider_models(
             return google_models_response(&provider.name, &raw);
         }
         if provider.name == PROVIDER_OPENAI_PROXY {
+            let client_version = openai_client_version(state);
             let raw = state
                 .upstream
                 .fetch_openai_models(
                     &format!("models_{}", Uuid::new_v4().simple()),
                     account.access_token(),
                     account.upstream_account_id(),
+                    &client_version,
                 )
                 .await
                 .map_err(AppError::upstream_message)?;
@@ -2318,6 +2321,23 @@ fn openai_models_response(_provider: &str, raw: &Value) -> Result<ModelListRespo
         object: "list".to_string(),
         data: data.into_iter().map(|(_, _, item)| item).collect(),
     })
+}
+
+#[derive(Debug, Deserialize)]
+struct CodexModelsCacheVersion {
+    client_version: Option<String>,
+}
+
+fn openai_client_version(state: &AppState) -> String {
+    let cache_path = state._config.codex_models_cache_path();
+    let parsed = fs::read_to_string(&cache_path)
+        .ok()
+        .and_then(|content| serde_json::from_str::<CodexModelsCacheVersion>(&content).ok())
+        .and_then(|cache| cache.client_version)
+        .map(|version| version.trim().to_string())
+        .filter(|version| !version.is_empty());
+
+    parsed.unwrap_or_else(|| DEFAULT_OPENAI_CLIENT_VERSION.to_string())
 }
 
 fn native_model_id(entry: &Value) -> Option<&str> {

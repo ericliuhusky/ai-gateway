@@ -74,10 +74,12 @@ impl OpenAiPrivateClient {
         id: &str,
         access_token: &str,
         account_id: Option<&str>,
+        client_version: &str,
     ) -> Result<Value, String> {
         info!(
             id = %id,
             url = %OPENAI_MODELS_URL,
+            client_version = %client_version,
             "sending upstream request to OpenAI models"
         );
 
@@ -85,7 +87,9 @@ impl OpenAiPrivateClient {
             .http
             .get(OPENAI_MODELS_URL)
             .bearer_auth(access_token)
-            .header("accept", "application/json");
+            .header("accept", "application/json")
+            .header("user-agent", "CodexBar")
+            .query(&[("client_version", client_version)]);
 
         if let Some(account_id) = account_id.filter(|value| !value.is_empty()) {
             request = request.header("ChatGPT-Account-Id", account_id);

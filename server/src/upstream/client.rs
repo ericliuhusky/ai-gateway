@@ -70,9 +70,10 @@ impl UpstreamClient {
         id: &str,
         access_token: &str,
         account_id: Option<&str>,
+        client_version: &str,
     ) -> Result<Value, String> {
         self.openai_private
-            .fetch_models(id, access_token, account_id)
+            .fetch_models(id, access_token, account_id, client_version)
             .await
     }
 
