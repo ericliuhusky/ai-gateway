@@ -332,7 +332,8 @@ struct ContentView: View {
                     Text(provider.name)
                         .font(.system(size: 20, weight: .bold, design: .rounded))
                         .foregroundStyle(.primary)
-                        .lineLimit(2)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
 
                     HStack(spacing: 8) {
                         authBadge(for: provider)
@@ -367,7 +368,11 @@ struct ContentView: View {
             providerQuotaSection(for: provider)
         }
         .padding(20)
-        .frame(maxWidth: .infinity, minHeight: 245, alignment: .topLeading)
+        .frame(
+            maxWidth: .infinity,
+            minHeight: provider.supportsQuotaDisplay ? 245 : nil,
+            alignment: .topLeading
+        )
         .background(cardBackground(isSelected: isSelected))
         .overlay(
             RoundedRectangle(cornerRadius: 24, style: .continuous)
@@ -565,7 +570,7 @@ struct ContentView: View {
                 .animation(.easeInOut(duration: 0.2), value: window.remainingPercent)
 
             if let resetDate = window.resetDate {
-                Text("\(resetDate.formatted(.dateTime.month().day().hour().minute())) 重置")
+                Text(quotaResetText(for: resetDate, windowMinutes: window.windowMinutes))
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -733,10 +738,17 @@ struct ContentView: View {
         var parts: [String] = [quotaWindowDescription(minutes: window.windowMinutes)]
 
         if let resetDate = window.resetDate {
-            parts.append("\(resetDate.formatted(.dateTime.month().day().hour().minute())) 重置")
+            parts.append(quotaResetText(for: resetDate, windowMinutes: window.windowMinutes))
         }
 
         return parts.joined(separator: " · ")
+    }
+
+    private func quotaResetText(for date: Date, windowMinutes: Int?) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = windowMinutes == 300 ? "HH:mm" : "M月d日 EEE HH:mm"
+        return "\(formatter.string(from: date)) 重置"
     }
 
     private func quotaWindowDescription(minutes: Int?) -> String {
