@@ -37,6 +37,22 @@ cargo run
 
 默认固定监听 `127.0.0.1:10100`。
 
+如果你使用 macOS 上的 `AIGateway.app`：
+
+- Xcode 构建时会自动编译 Rust `server`，并把它打进 app bundle
+- GUI 启动时会把内置 Rust `server` 安装到 `~/.ai-gateway/bin/ai-gateway-server`
+- GUI 会生成并维护同一份 `LaunchAgent`：`~/Library/LaunchAgents/ericliu.husky.ai-gateway.server.plist`
+- GUI 和手动命令都通过 `launchctl` 控制同一个用户级后台服务 `ericliu.husky.ai-gateway.server`
+
+手动控制同一份服务时，可以直接使用：
+
+```bash
+launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/ericliu.husky.ai-gateway.server.plist
+launchctl kickstart -k "gui/$(id -u)/ericliu.husky.ai-gateway.server"
+launchctl bootout "gui/$(id -u)" ~/Library/LaunchAgents/ericliu.husky.ai-gateway.server.plist
+launchctl print "gui/$(id -u)/ericliu.husky.ai-gateway.server"
+```
+
 在 macOS 上，网关启动时会主动读取 `scutil --proxy` 返回的系统 `HTTP/HTTPS` 代理，并显式用于上游请求；`localhost` / `127.0.0.1` / `::1` 保持直连，不会被套进上游代理。
 
 账号、provider 和路由状态固定保存在 `~/.ai-gateway/db.sqlite`。

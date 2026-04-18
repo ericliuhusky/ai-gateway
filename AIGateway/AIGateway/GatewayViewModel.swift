@@ -60,6 +60,7 @@ final class GatewayViewModel: ObservableObject {
             self.selectedProviderID = selected.providerID
             self.selectedModelID = selected.selectedModel
             self.codexConfigStatus = codexConfig
+            self.errorMessage = nil
             await refreshModels()
             await refreshProviderQuotas(for: sortedProviders)
         } catch {
@@ -203,6 +204,23 @@ final class GatewayViewModel: ObservableObject {
 
     func dismissError() {
         errorMessage = nil
+    }
+
+    func clearData() {
+        providers = []
+        providerQuotas = [:]
+        quotaErrors = [:]
+        quotaLoadingProviderIDs = []
+        selectedProviderID = nil
+        selectedModelID = nil
+        availableModels = []
+        isLoadingModels = false
+        modelErrorMessage = nil
+        codexConfigStatus = nil
+    }
+
+    func openDebugDashboard() {
+        NSWorkspace.shared.open(baseURL.appending(path: "debug"))
     }
 
     private func refreshProviderQuotas(for providers: [GatewayProvider]) async {

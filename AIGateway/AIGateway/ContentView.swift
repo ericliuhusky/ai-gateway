@@ -5,11 +5,13 @@
 //  Created by 刘子豪 on 2026/4/11.
 //
 
+import AppKit
 import SwiftUI
 
 struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
     @StateObject private var viewModel = GatewayViewModel()
+    @StateObject private var serviceSupervisor = GatewayServiceSupervisor()
     @State private var showingAddProvider = false
     @State private var showingCodexConfigSheet = false
     private let gridColumns = [
@@ -20,6 +22,7 @@ struct ContentView: View {
         NavigationStack {
             VStack(spacing: 18) {
                 header
+                servicePanel
                 modelSelector
                 providerGrid
                 footer
@@ -35,7 +38,7 @@ struct ContentView: View {
             CodexConfigSheet(viewModel: viewModel)
         }
         .task {
-            await viewModel.refresh()
+            await initialLoad()
         }
         .alert("Request Failed", isPresented: errorPresented) {
             Button("OK") {
@@ -72,7 +75,7 @@ struct ContentView: View {
             HStack(spacing: 10) {
                 Button {
                     Task {
-                        await viewModel.refresh()
+                        await refreshAll()
                     }
                 } label: {
                     Label("刷新", systemImage: "arrow.clockwise")
@@ -94,6 +97,76 @@ struct ContentView: View {
                 .buttonStyle(.bordered)
             }
         }
+    }
+
+    private var servicePanel: some View {
+        HStack(alignment: .center, spacing: 16) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 10) {
+                    Circle()
+                        .fill(serviceStatusColor)
+                        .frame(width: 10, height: 10)
+
+                    Text("服务状态")
+                        .font(.system(size: 13, weight: .bold))
+
+                    Text(serviceSupervisor.statusTitle)
+                        .font(.system(size: 12, weight: .semibold))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(serviceStatusColor.opacity(colorScheme == .dark ? 0.24 : 0.14))
+                        .foregroundStyle(serviceStatusColor)
+                        .clipShape(Capsule())
+                }
+            }
+
+            Spacer()
+
+            if serviceSupervisor.isBusy {
+                ProgressView()
+                    .controlSize(.small)
+            }
+
+            HStack(spacing: 10) {
+                Button {
+                    Task {
+                        await startService()
+                    }
+                } label: {
+                    Label("启动服务", systemImage: "play.fill")
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(!serviceSupervisor.canStart)
+
+                Button {
+                    Task {
+                        await stopManagedService()
+                    }
+                } label: {
+                    Label("停止服务", systemImage: "stop.fill")
+                }
+                .buttonStyle(.bordered)
+                .disabled(!serviceSupervisor.canStop)
+
+                Button {
+                    viewModel.openDebugDashboard()
+                } label: {
+                    Label("打开调试页", systemImage: "ladybug")
+                }
+                .buttonStyle(.bordered)
+                .disabled(!serviceSupervisor.isReachable)
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(Color.primary.opacity(colorScheme == .dark ? 0.08 : 0.045))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .strokeBorder(cardBorder, lineWidth: 1)
+        )
     }
 
     private var providerTable: some View {
@@ -190,7 +263,14 @@ struct ContentView: View {
 
     private var providerGrid: some View {
         ScrollView {
-            if viewModel.providers.isEmpty && !viewModel.isLoading {
+            if !serviceSupervisor.isReachable && !viewModel.isLoading {
+                ContentUnavailableView(
+                    "服务未连接",
+                    systemImage: "bolt.horizontal.circle",
+                    description: Text("先启动网关服务，再加载供应商和模型信息。")
+                )
+                .frame(maxWidth: .infinity, minHeight: 420)
+            } else if viewModel.providers.isEmpty && !viewModel.isLoading {
                 ContentUnavailableView(
                     "还没有供应商",
                     systemImage: "tray",
@@ -211,7 +291,13 @@ struct ContentView: View {
 
     private var footer: some View {
         HStack {
-            if viewModel.isLoading {
+            if serviceSupervisor.isBusy {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Waiting for gateway service...")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.secondary)
+            } else if viewModel.isLoading {
                 ProgressView()
                     .controlSize(.small)
                 Text("Syncing with gateway...")
@@ -552,6 +638,19 @@ struct ContentView: View {
             : Color.black.opacity(0.04)
     }
 
+    private var serviceStatusColor: Color {
+        switch serviceSupervisor.status {
+        case .checking, .installing, .starting:
+            return Color(red: 0.94, green: 0.59, blue: 0.18)
+        case .runningLaunchAgent:
+            return selectionAccent
+        case .runningExternal:
+            return apiAccent
+        case .installedStopped, .notInstalled, .failed:
+            return Color(red: 0.86, green: 0.24, blue: 0.24)
+        }
+    }
+
     private var errorPresented: Binding<Bool> {
         Binding(
             get: { viewModel.errorMessage != nil },
@@ -689,6 +788,44 @@ struct ContentView: View {
             return colorScheme == .dark
                 ? Color(red: 0.61, green: 0.78, blue: 1.00)
                 : apiAccent
+        }
+    }
+
+    private func initialLoad() async {
+        do {
+            try await serviceSupervisor.ensureServiceRunning()
+            await viewModel.refresh()
+        } catch {
+            viewModel.clearData()
+            viewModel.errorMessage = error.localizedDescription
+        }
+    }
+
+    private func refreshAll() async {
+        await serviceSupervisor.refreshStatus()
+        if serviceSupervisor.isReachable {
+            await viewModel.refresh()
+        } else {
+            viewModel.clearData()
+        }
+    }
+
+    private func startService() async {
+        do {
+            try await serviceSupervisor.startService()
+            await viewModel.refresh()
+        } catch {
+            viewModel.clearData()
+            viewModel.errorMessage = error.localizedDescription
+        }
+    }
+
+    private func stopManagedService() async {
+        await serviceSupervisor.stopService()
+        if serviceSupervisor.isReachable {
+            await viewModel.refresh()
+        } else {
+            viewModel.clearData()
         }
     }
 }
