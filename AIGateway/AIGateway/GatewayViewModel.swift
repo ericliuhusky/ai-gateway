@@ -4,6 +4,14 @@ import Foundation
 
 @MainActor
 final class GatewayViewModel: ObservableObject {
+    private enum QuotaRefreshPolicy {
+        static let selectedInterval: TimeInterval = 60
+        static let unselectedInterval: TimeInterval = 300
+        static let lowRemainingSelectedInterval: TimeInterval = 30
+        static let lowRemainingUnselectedInterval: TimeInterval = 150
+        static let lowRemainingThreshold: Double = 20
+    }
+
     @Published var providers: [GatewayProvider] = []
     @Published var providerQuotas: [String: ProviderQuotaSummary] = [:]
     @Published var quotaErrors: [String: String] = [:]
@@ -21,6 +29,8 @@ final class GatewayViewModel: ObservableObject {
     let baseURL: URL
     private let client: GatewayAPIClient
     private var modelActivityTask: Task<Void, Never>?
+    private var quotaLastRefreshAt: [String: Date] = [:]
+    private var refreshingQuotaProviderIDs: Set<String> = []
 
     init(baseURL: URL = URL(string: "http://127.0.0.1:10100")!) {
         self.baseURL = baseURL
@@ -63,6 +73,7 @@ final class GatewayViewModel: ObservableObject {
             self.selectedModelID = selected.selectedModel
             self.codexConfigStatus = codexConfig
             self.errorMessage = nil
+            trimQuotaState(to: Set(sortedProviders.map(\.id)))
             await refreshModels()
             await refreshProviderQuotas(for: sortedProviders)
         } catch {
@@ -107,6 +118,7 @@ final class GatewayViewModel: ObservableObject {
             selectedProviderID = id
             selectedModelID = nil
             await refreshModels()
+            await refreshQuota(for: id, showLoadingState: false)
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -246,31 +258,70 @@ final class GatewayViewModel: ObservableObject {
         showsModelRefreshActivity = false
         modelErrorMessage = nil
         codexConfigStatus = nil
+        quotaLastRefreshAt = [:]
+        refreshingQuotaProviderIDs = []
     }
 
     func openDebugDashboard() {
         NSWorkspace.shared.open(baseURL.appending(path: "debug"))
     }
 
+    func refreshDueQuotas(now: Date = Date()) async {
+        let dueProviderIDs = quotaProviderIDs.filter { shouldRefreshQuota(for: $0, now: now) }
+
+        guard !dueProviderIDs.isEmpty else { return }
+        await refreshQuotas(for: Array(dueProviderIDs), showLoadingState: false)
+    }
+
+    func refreshQuota(for providerID: String, showLoadingState: Bool = true) async {
+        guard quotaProviderIDs.contains(providerID) else { return }
+        await refreshQuotas(for: [providerID], showLoadingState: showLoadingState)
+    }
+
     private func refreshProviderQuotas(for providers: [GatewayProvider]) async {
-        let quotaProviders = providers.filter(\.supportsQuotaDisplay)
-        let providerIDs = Set(quotaProviders.map(\.id))
-        providerQuotas = providerQuotas.filter { providerIDs.contains($0.key) }
+        let providerIDs = Set(providers.filter(\.supportsQuotaDisplay).map(\.id))
+        trimQuotaState(to: providerIDs)
         quotaErrors = [:]
         quotaLoadingProviderIDs = providerIDs
 
-        guard !quotaProviders.isEmpty else {
+        guard !providerIDs.isEmpty else {
             quotaLoadingProviderIDs = []
             return
         }
 
+        await refreshQuotas(
+            for: Array(providerIDs),
+            showLoadingState: true,
+            replaceExistingQuotas: true
+        )
+    }
+
+    private func refreshQuotas(
+        for providerIDs: [String],
+        showLoadingState: Bool,
+        replaceExistingQuotas: Bool = false
+    ) async {
+        let refreshableIDs = Array(Set(providerIDs)).filter { !refreshingQuotaProviderIDs.contains($0) }
+        guard !refreshableIDs.isEmpty else { return }
+
+        refreshingQuotaProviderIDs.formUnion(refreshableIDs)
+        if showLoadingState {
+            quotaLoadingProviderIDs.formUnion(refreshableIDs)
+        }
+
+        defer {
+            refreshingQuotaProviderIDs.subtract(refreshableIDs)
+            if showLoadingState {
+                quotaLoadingProviderIDs.subtract(refreshableIDs)
+            }
+        }
+
         let client = self.client
-        var nextQuotas: [String: ProviderQuotaSummary] = [:]
+        var fetchedQuotas: [String: ProviderQuotaSummary] = [:]
         var nextErrors: [String: String] = [:]
 
         await withTaskGroup(of: (String, Result<ProviderQuotaSummary, Error>).self) { group in
-            for provider in quotaProviders {
-                let providerID = provider.id
+            for providerID in refreshableIDs {
                 group.addTask {
                     do {
                         return (providerID, .success(try await client.fetchProviderQuota(providerID: providerID)))
@@ -283,15 +334,75 @@ final class GatewayViewModel: ObservableObject {
             for await (providerID, result) in group {
                 switch result {
                 case .success(let quota):
-                    nextQuotas[providerID] = quota
+                    fetchedQuotas[providerID] = quota
                 case .failure(let error):
                     nextErrors[providerID] = error.localizedDescription
                 }
+
+                quotaLastRefreshAt[providerID] = Date()
             }
         }
 
-        providerQuotas = nextQuotas
-        quotaErrors = nextErrors
-        quotaLoadingProviderIDs = []
+        if replaceExistingQuotas {
+            providerQuotas = fetchedQuotas
+        } else {
+            for (providerID, quota) in fetchedQuotas {
+                providerQuotas[providerID] = quota
+            }
+        }
+
+        for providerID in refreshableIDs {
+            if let error = nextErrors[providerID] {
+                quotaErrors[providerID] = error
+            } else {
+                quotaErrors.removeValue(forKey: providerID)
+            }
+        }
+    }
+
+    private func shouldRefreshQuota(for providerID: String, now: Date) -> Bool {
+        guard !refreshingQuotaProviderIDs.contains(providerID) else {
+            return false
+        }
+
+        guard let lastRefreshAt = quotaLastRefreshAt[providerID] else {
+            return true
+        }
+
+        return now.timeIntervalSince(lastRefreshAt) >= quotaRefreshInterval(for: providerID)
+    }
+
+    private func quotaRefreshInterval(for providerID: String) -> TimeInterval {
+        if quotaRemainingPercent(for: providerID) < QuotaRefreshPolicy.lowRemainingThreshold {
+            return selectedProviderID == providerID
+                ? QuotaRefreshPolicy.lowRemainingSelectedInterval
+                : QuotaRefreshPolicy.lowRemainingUnselectedInterval
+        }
+
+        return selectedProviderID == providerID
+            ? QuotaRefreshPolicy.selectedInterval
+            : QuotaRefreshPolicy.unselectedInterval
+    }
+
+    private func quotaRemainingPercent(for providerID: String) -> Double {
+        guard let summary = providerQuotas[providerID] else {
+            return 100
+        }
+
+        let remainingPercents = summary.snapshots.flatMap { snapshot in
+            [snapshot.primary?.remainingPercent, snapshot.secondary?.remainingPercent].compactMap { $0 }
+        }
+
+        return remainingPercents.min() ?? 100
+    }
+
+    private var quotaProviderIDs: Set<String> {
+        Set(providers.filter(\.supportsQuotaDisplay).map(\.id))
+    }
+
+    private func trimQuotaState(to providerIDs: Set<String>) {
+        providerQuotas = providerQuotas.filter { providerIDs.contains($0.key) }
+        quotaErrors = quotaErrors.filter { providerIDs.contains($0.key) }
+        quotaLastRefreshAt = quotaLastRefreshAt.filter { providerIDs.contains($0.key) }
     }
 }

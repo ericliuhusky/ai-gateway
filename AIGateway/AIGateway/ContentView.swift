@@ -15,9 +15,11 @@ struct ContentView: View {
     @State private var showingAddProvider = false
     @State private var showingCodexConfigSheet = false
     @State private var modelRefreshRotation: Double = 0
+    @State private var manuallyRefreshingQuotaProviderIDs: Set<String> = []
     private let gridColumns = [
         GridItem(.adaptive(minimum: 280, maximum: 360), spacing: 18)
     ]
+    private let quotaAutoRefreshCheckInterval: Duration = .seconds(5)
 
     var body: some View {
         NavigationStack {
@@ -39,6 +41,9 @@ struct ContentView: View {
         }
         .task {
             await initialLoad()
+        }
+        .task(id: quotaAutoRefreshTaskID) {
+            await runQuotaAutoRefreshLoop()
         }
         .alert("Request Failed", isPresented: errorPresented) {
             Button("OK") {
@@ -414,8 +419,25 @@ struct ContentView: View {
         Group {
             if !provider.supportsQuotaDisplay {
                 EmptyView()
+            } else if let summary = viewModel.quotaSummary(for: provider.id) {
+                if summary.status == .unsupported {
+                    quotaPanel(
+                        providerID: provider.id,
+                        title: "额度窗口",
+                        headline: "暂不支持",
+                        headlineTint: .secondary
+                    ) {
+                        Text(summary.message ?? "当前供应商暂不支持额度快照")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+                } else {
+                    supportedQuotaPanel(summary: summary, providerID: provider.id)
+                }
             } else if viewModel.isLoadingQuota(for: provider.id) {
                 quotaPanel(
+                    providerID: provider.id,
                     title: "额度窗口",
                     headline: "同步中",
                     headlineTint: .secondary
@@ -427,6 +449,7 @@ struct ContentView: View {
                 }
             } else if let error = viewModel.quotaErrorMessage(for: provider.id) {
                 quotaPanel(
+                    providerID: provider.id,
                     title: "额度窗口",
                     headline: "读取失败",
                     headlineTint: .red
@@ -436,23 +459,9 @@ struct ContentView: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
                 }
-            } else if let summary = viewModel.quotaSummary(for: provider.id) {
-                if summary.status == .unsupported {
-                    quotaPanel(
-                        title: "额度窗口",
-                        headline: "暂不支持",
-                        headlineTint: .secondary
-                    ) {
-                        Text(summary.message ?? "当前供应商暂不支持额度快照")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(2)
-                    }
-                } else {
-                    supportedQuotaPanel(summary: summary)
-                }
             } else {
                 quotaPanel(
+                    providerID: provider.id,
                     title: "额度窗口",
                     headline: "暂无数据",
                     headlineTint: .secondary
@@ -467,12 +476,13 @@ struct ContentView: View {
     }
 
     @ViewBuilder
-    private func supportedQuotaPanel(summary: ProviderQuotaSummary) -> some View {
+    private func supportedQuotaPanel(summary: ProviderQuotaSummary, providerID: String) -> some View {
         let primary = summary.snapshot?.primary
         let secondary = summary.snapshot?.secondary
 
         if primary == nil && secondary == nil {
             quotaPanel(
+                providerID: providerID,
                 title: "额度窗口",
                 headline: "可用",
                 headlineTint: selectionAccent
@@ -485,6 +495,7 @@ struct ContentView: View {
         } else {
             let headlineTint = quotaTint(forRemainingPercent: (primary ?? secondary)!.remainingPercent)
             quotaPanel(
+                providerID: providerID,
                 title: "额度窗口",
                 headline: quotaHeadline(primary: primary, secondary: secondary),
                 headlineTint: headlineTint
@@ -579,6 +590,7 @@ struct ContentView: View {
     }
 
     private func quotaPanel<Content: View>(
+        providerID: String,
         title: String,
         headline: String,
         headlineTint: Color,
@@ -591,6 +603,24 @@ struct ContentView: View {
                     .foregroundStyle(.secondary)
 
                 Spacer()
+
+                Button {
+                    manuallyRefreshQuota(for: providerID)
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 10, weight: .bold))
+                        .frame(width: 16, height: 16)
+                }
+                .buttonStyle(.borderless)
+                .controlSize(.mini)
+                .foregroundStyle(.secondary)
+                .disabled(viewModel.isLoadingQuota(for: providerID))
+                .help("刷新额度")
+                .symbolEffect(
+                    .rotate,
+                    options: .repeating,
+                    isActive: manuallyRefreshingQuotaProviderIDs.contains(providerID)
+                )
 
                 Text(headline)
                     .font(.system(size: 13, weight: .bold, design: .rounded))
@@ -666,6 +696,14 @@ struct ContentView: View {
                 }
             }
         )
+    }
+
+    private var isQuotaAutoRefreshActive: Bool {
+        serviceSupervisor.isReachable
+    }
+
+    private var quotaAutoRefreshTaskID: String {
+        "\(isQuotaAutoRefreshActive)-\(viewModel.providers.count)-\(viewModel.selectedProviderID ?? "none")"
     }
 
     private var backgroundTop: Color {
@@ -814,12 +852,38 @@ struct ContentView: View {
         }
     }
 
+    private func runQuotaAutoRefreshLoop() async {
+        guard isQuotaAutoRefreshActive else { return }
+
+        while !Task.isCancelled {
+            await viewModel.refreshDueQuotas()
+
+            do {
+                try await Task.sleep(for: quotaAutoRefreshCheckInterval)
+            } catch {
+                return
+            }
+        }
+    }
+
     private func refreshAll() async {
         await serviceSupervisor.refreshStatus()
         if serviceSupervisor.isReachable {
             await viewModel.refresh()
         } else {
             viewModel.clearData()
+        }
+    }
+
+    private func manuallyRefreshQuota(for providerID: String) {
+        guard !manuallyRefreshingQuotaProviderIDs.contains(providerID) else { return }
+
+        manuallyRefreshingQuotaProviderIDs.insert(providerID)
+        Task {
+            await viewModel.refreshQuota(for: providerID)
+            _ = await MainActor.run {
+                manuallyRefreshingQuotaProviderIDs.remove(providerID)
+            }
         }
     }
 
