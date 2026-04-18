@@ -12,6 +12,7 @@ final class GatewayViewModel: ObservableObject {
     @Published var selectedModelID: String?
     @Published var availableModels: [GatewayModel] = []
     @Published var isLoadingModels = false
+    @Published var showsModelRefreshActivity = false
     @Published var modelErrorMessage: String?
     @Published var codexConfigStatus: CodexConfigStatus?
     @Published var isLoading = false
@@ -19,6 +20,7 @@ final class GatewayViewModel: ObservableObject {
 
     let baseURL: URL
     private let client: GatewayAPIClient
+    private var modelActivityTask: Task<Void, Never>?
 
     init(baseURL: URL = URL(string: "http://127.0.0.1:10100")!) {
         self.baseURL = baseURL
@@ -104,30 +106,56 @@ final class GatewayViewModel: ObservableObject {
             try await client.selectProvider(id: id)
             selectedProviderID = id
             selectedModelID = nil
-            availableModels = []
             await refreshModels()
         } catch {
             errorMessage = error.localizedDescription
         }
     }
 
-    func refreshModels(forceRefresh: Bool = false) async {
+    func refreshModels(forceRefresh: Bool = false, userInitiated: Bool = false) async {
         guard selectedProviderID != nil else {
+            modelActivityTask?.cancel()
             availableModels = []
             selectedModelID = nil
+            showsModelRefreshActivity = false
             modelErrorMessage = nil
             return
         }
 
+        modelActivityTask?.cancel()
         isLoadingModels = true
-        defer { isLoadingModels = false }
+
+        let shouldShowActivityImmediately = userInitiated
+        let shouldDelayActivity = !userInitiated && availableModels.isEmpty
+
+        if shouldShowActivityImmediately {
+            showsModelRefreshActivity = true
+        } else {
+            showsModelRefreshActivity = false
+        }
+
+        if shouldDelayActivity {
+            modelActivityTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .milliseconds(180))
+                guard let self, !Task.isCancelled, self.isLoadingModels else { return }
+                self.showsModelRefreshActivity = true
+            }
+        } else {
+            modelActivityTask = nil
+        }
+
+        defer {
+            modelActivityTask?.cancel()
+            modelActivityTask = nil
+            isLoadingModels = false
+            showsModelRefreshActivity = false
+        }
 
         do {
             let models = try await client.fetchModels(forceRefresh: forceRefresh)
             availableModels = models.sorted { $0.id.localizedStandardCompare($1.id) == .orderedAscending }
             modelErrorMessage = nil
         } catch {
-            availableModels = []
             modelErrorMessage = error.localizedDescription
         }
     }
@@ -215,6 +243,7 @@ final class GatewayViewModel: ObservableObject {
         selectedModelID = nil
         availableModels = []
         isLoadingModels = false
+        showsModelRefreshActivity = false
         modelErrorMessage = nil
         codexConfigStatus = nil
     }

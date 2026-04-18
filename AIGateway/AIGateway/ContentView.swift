@@ -14,6 +14,7 @@ struct ContentView: View {
     @StateObject private var serviceSupervisor = GatewayServiceSupervisor()
     @State private var showingAddProvider = false
     @State private var showingCodexConfigSheet = false
+    @State private var modelRefreshRotation: Double = 0
     private let gridColumns = [
         GridItem(.adaptive(minimum: 280, maximum: 360), spacing: 18)
     ]
@@ -203,11 +204,6 @@ struct ContentView: View {
                 .font(.system(size: 11, weight: .semibold, design: .rounded))
                 .foregroundStyle(.secondary)
 
-            if viewModel.isLoadingModels {
-                ProgressView()
-                    .controlSize(.small)
-            }
-
             Picker("模型", selection: modelSelectionBinding) {
                 Text("跟随请求模型").tag("")
                 ForEach(viewModel.availableModels) { model in
@@ -221,18 +217,31 @@ struct ContentView: View {
 
             Button {
                 Task {
-                    await viewModel.refreshModels(forceRefresh: true)
+                    await viewModel.refreshModels(forceRefresh: true, userInitiated: true)
                 }
             } label: {
                 Image(systemName: "arrow.clockwise")
                     .font(.system(size: 11, weight: .semibold))
                     .frame(width: 16, height: 16)
+                    .rotationEffect(.degrees(modelRefreshRotation))
             }
             .help("刷新模型列表")
             .buttonStyle(.bordered)
             .disabled(viewModel.selectedProviderID == nil || viewModel.isLoadingModels)
         }
         .fixedSize(horizontal: true, vertical: false)
+        .onChange(of: viewModel.showsModelRefreshActivity) { isActive in
+            if isActive {
+                modelRefreshRotation = 0
+                withAnimation(.linear(duration: 0.9).repeatForever(autoreverses: false)) {
+                    modelRefreshRotation = 360
+                }
+            } else {
+                withAnimation(.easeOut(duration: 0.2)) {
+                    modelRefreshRotation = 0
+                }
+            }
+        }
     }
 
     private var modelSelectionBinding: Binding<String> {
