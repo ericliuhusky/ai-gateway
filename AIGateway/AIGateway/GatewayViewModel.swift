@@ -224,12 +224,13 @@ final class GatewayViewModel: ObservableObject {
     }
 
     private func refreshProviderQuotas(for providers: [GatewayProvider]) async {
-        let providerIDs = Set(providers.map(\.id))
+        let quotaProviders = providers.filter(\.supportsQuotaDisplay)
+        let providerIDs = Set(quotaProviders.map(\.id))
         providerQuotas = providerQuotas.filter { providerIDs.contains($0.key) }
         quotaErrors = [:]
         quotaLoadingProviderIDs = providerIDs
 
-        guard !providers.isEmpty else {
+        guard !quotaProviders.isEmpty else {
             quotaLoadingProviderIDs = []
             return
         }
@@ -239,7 +240,7 @@ final class GatewayViewModel: ObservableObject {
         var nextErrors: [String: String] = [:]
 
         await withTaskGroup(of: (String, Result<ProviderQuotaSummary, Error>).self) { group in
-            for provider in providers {
+            for provider in quotaProviders {
                 let providerID = provider.id
                 group.addTask {
                     do {

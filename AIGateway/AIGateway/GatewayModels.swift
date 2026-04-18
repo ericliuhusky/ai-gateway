@@ -47,6 +47,10 @@ struct GatewayProvider: Codable, Identifiable, Hashable {
     var billingModeLabel: String {
         billingMode.title
     }
+
+    var supportsQuotaDisplay: Bool {
+        authMode == .account
+    }
 }
 
 struct ProvidersResponse: Codable {

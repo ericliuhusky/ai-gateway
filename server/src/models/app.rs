@@ -64,14 +64,6 @@ pub struct ApiProviderRecord {
     pub billing_mode: ApiProviderBillingMode,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProviderExtensionRecord {
-    pub provider_id: String,
-    pub extension_type: String,
-    pub user_id: String,
-    pub access_token: String,
-}
-
 #[derive(Debug, Clone, Serialize)]
 pub struct ApiProviderSummary {
     pub id: String,
@@ -134,7 +126,6 @@ pub struct ModelListItem {
 #[serde(rename_all = "snake_case")]
 pub enum QuotaSource {
     ChatgptCodexUsageApi,
-    NewApiExtension,
     Unsupported,
 }
 
@@ -242,58 +233,6 @@ pub struct UpstreamAdditionalRateLimitDetails {
     pub metered_feature: String,
     #[serde(default)]
     pub rate_limit: Option<UpstreamRateLimitStatusDetails>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct NewApiUserSelfEnvelope {
-    pub data: NewApiUserSelf,
-    pub success: bool,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct NewApiUserSelf {
-    pub id: i64,
-    pub username: String,
-    #[serde(default)]
-    pub display_name: String,
-    #[serde(default)]
-    pub group: String,
-    #[serde(default)]
-    pub quota: i64,
-    #[serde(default)]
-    pub used_quota: i64,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct NewApiSubscriptionEnvelope {
-    pub data: NewApiSubscriptionData,
-    pub success: bool,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct NewApiSubscriptionData {
-    #[serde(default)]
-    pub subscriptions: Vec<NewApiSubscriptionWrapper>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct NewApiSubscriptionWrapper {
-    pub subscription: NewApiSubscription,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct NewApiSubscription {
-    pub id: i64,
-    pub user_id: i64,
-    pub amount_total: i64,
-    pub amount_used: i64,
-    #[serde(default)]
-    pub purchase_price_amount: f64,
-    #[serde(default)]
-    pub purchase_currency: String,
-    pub start_time: i64,
-    pub end_time: i64,
-    pub status: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

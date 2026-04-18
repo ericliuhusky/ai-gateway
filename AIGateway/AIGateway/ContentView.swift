@@ -408,7 +408,9 @@ struct ContentView: View {
 
     private func providerQuotaSection(for provider: GatewayProvider) -> some View {
         Group {
-            if viewModel.isLoadingQuota(for: provider.id) {
+            if !provider.supportsQuotaDisplay {
+                EmptyView()
+            } else if viewModel.isLoadingQuota(for: provider.id) {
                 quotaPanel(
                     title: "额度窗口",
                     headline: "同步中",
