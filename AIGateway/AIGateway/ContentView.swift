@@ -102,50 +102,61 @@ struct ContentView: View {
         HStack(alignment: .center, spacing: 18) {
             servicePanel
 
-            Rectangle()
-                .fill(cardBorder.opacity(colorScheme == .dark ? 0.9 : 0.7))
-                .frame(width: 1, height: 28)
+            Divider()
+                .frame(height: 24)
+                .overlay(cardBorder.opacity(colorScheme == .dark ? 0.9 : 0.6))
 
             modelSelector
         }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 14)
+        .controlSize(.small)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(Color.primary.opacity(colorScheme == .dark ? 0.08 : 0.045))
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            cardTop.opacity(colorScheme == .dark ? 0.9 : 0.94),
+                            cardBottom.opacity(colorScheme == .dark ? 0.88 : 0.9),
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
         )
         .overlay(
             RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .strokeBorder(cardBorder, lineWidth: 1)
+                .strokeBorder(cardBorder.opacity(colorScheme == .dark ? 1 : 0.8), lineWidth: 1)
         )
     }
 
     private var servicePanel: some View {
-        HStack(alignment: .center, spacing: 16) {
-            HStack(spacing: 10) {
+        HStack(alignment: .center, spacing: 14) {
+            Text("网关")
+                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                .foregroundStyle(.secondary)
+
+            HStack(spacing: 8) {
                 Circle()
                     .fill(serviceStatusColor)
-                    .frame(width: 10, height: 10)
-
-                Text("网关服务状态")
-                    .font(.system(size: 13, weight: .bold))
+                    .frame(width: 7, height: 7)
 
                 Text(serviceSupervisor.statusTitle)
                     .font(.system(size: 12, weight: .semibold))
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 5)
-                    .background(serviceStatusColor.opacity(colorScheme == .dark ? 0.24 : 0.14))
                     .foregroundStyle(serviceStatusColor)
-                    .clipShape(Capsule())
             }
-
-            Spacer()
+            .padding(.horizontal, 11)
+            .padding(.vertical, 7)
+            .background(serviceStatusColor.opacity(colorScheme == .dark ? 0.18 : 0.1))
+            .clipShape(Capsule())
 
             if serviceSupervisor.isBusy {
                 ProgressView()
                     .controlSize(.small)
             }
+
+            Spacer(minLength: 12)
 
             HStack(spacing: 10) {
                 Button {
@@ -158,6 +169,7 @@ struct ContentView: View {
                     }
                 } label: {
                     Image(systemName: serviceSupervisor.isReachable ? "stop.fill" : "play.fill")
+                        .font(.system(size: 11, weight: .semibold))
                         .frame(width: 16, height: 16)
                 }
                 .buttonStyle(.bordered)
@@ -169,6 +181,7 @@ struct ContentView: View {
                     viewModel.openDebugDashboard()
                 } label: {
                     Image(systemName: "ladybug")
+                        .font(.system(size: 11, weight: .semibold))
                         .frame(width: 16, height: 16)
                 }
                 .buttonStyle(.bordered)
@@ -186,13 +199,9 @@ struct ContentView: View {
 
     private var modelSelector: some View {
         HStack(spacing: 14) {
-            Image(systemName: "cpu")
-                .font(.system(size: 18, weight: .semibold))
-                .foregroundStyle(selectionAccent)
-                .frame(width: 28)
-
             Text("模型")
-                .font(.system(size: 13, weight: .bold))
+                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                .foregroundStyle(.secondary)
 
             if viewModel.isLoadingModels {
                 ProgressView()
@@ -205,8 +214,9 @@ struct ContentView: View {
                     Text(model.id).tag(model.id)
                 }
             }
+            .pickerStyle(.menu)
             .labelsHidden()
-            .frame(width: 240)
+            .frame(minWidth: 180, idealWidth: 220, maxWidth: 240)
             .disabled(viewModel.availableModels.isEmpty || viewModel.isLoadingModels)
 
             Button {
@@ -215,6 +225,8 @@ struct ContentView: View {
                 }
             } label: {
                 Image(systemName: "arrow.clockwise")
+                    .font(.system(size: 11, weight: .semibold))
+                    .frame(width: 16, height: 16)
             }
             .help("刷新模型列表")
             .buttonStyle(.bordered)
