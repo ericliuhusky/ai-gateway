@@ -22,8 +22,7 @@ struct ContentView: View {
         NavigationStack {
             VStack(spacing: 18) {
                 header
-                servicePanel
-                modelSelector
+                topControlBar
                 providerGrid
                 footer
             }
@@ -99,25 +98,46 @@ struct ContentView: View {
         }
     }
 
+    private var topControlBar: some View {
+        HStack(alignment: .center, spacing: 18) {
+            servicePanel
+
+            Rectangle()
+                .fill(cardBorder.opacity(colorScheme == .dark ? 0.9 : 0.7))
+                .frame(width: 1, height: 28)
+
+            modelSelector
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(Color.primary.opacity(colorScheme == .dark ? 0.08 : 0.045))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .strokeBorder(cardBorder, lineWidth: 1)
+        )
+    }
+
     private var servicePanel: some View {
         HStack(alignment: .center, spacing: 16) {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 10) {
-                    Circle()
-                        .fill(serviceStatusColor)
-                        .frame(width: 10, height: 10)
+            HStack(spacing: 10) {
+                Circle()
+                    .fill(serviceStatusColor)
+                    .frame(width: 10, height: 10)
 
-                    Text("服务状态")
-                        .font(.system(size: 13, weight: .bold))
+                Text("网关服务状态")
+                    .font(.system(size: 13, weight: .bold))
 
-                    Text(serviceSupervisor.statusTitle)
-                        .font(.system(size: 12, weight: .semibold))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5)
-                        .background(serviceStatusColor.opacity(colorScheme == .dark ? 0.24 : 0.14))
-                        .foregroundStyle(serviceStatusColor)
-                        .clipShape(Capsule())
-                }
+                Text(serviceSupervisor.statusTitle)
+                    .font(.system(size: 12, weight: .semibold))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(serviceStatusColor.opacity(colorScheme == .dark ? 0.24 : 0.14))
+                    .foregroundStyle(serviceStatusColor)
+                    .clipShape(Capsule())
             }
 
             Spacer()
@@ -130,43 +150,34 @@ struct ContentView: View {
             HStack(spacing: 10) {
                 Button {
                     Task {
-                        await startService()
+                        if serviceSupervisor.canStop {
+                            await stopManagedService()
+                        } else {
+                            await startService()
+                        }
                     }
                 } label: {
-                    Label("启动服务", systemImage: "play.fill")
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(!serviceSupervisor.canStart)
-
-                Button {
-                    Task {
-                        await stopManagedService()
-                    }
-                } label: {
-                    Label("停止服务", systemImage: "stop.fill")
+                    Image(systemName: serviceSupervisor.isReachable ? "stop.fill" : "play.fill")
+                        .frame(width: 16, height: 16)
                 }
                 .buttonStyle(.bordered)
-                .disabled(!serviceSupervisor.canStop)
+                .help(serviceSupervisor.isReachable ? "停止服务" : "启动服务")
+                .accessibilityLabel(serviceSupervisor.isReachable ? "停止服务" : "启动服务")
+                .disabled(!serviceSupervisor.canStart && !serviceSupervisor.canStop)
 
                 Button {
                     viewModel.openDebugDashboard()
                 } label: {
-                    Label("打开调试页", systemImage: "ladybug")
+                    Image(systemName: "ladybug")
+                        .frame(width: 16, height: 16)
                 }
                 .buttonStyle(.bordered)
+                .help("打开调试页")
+                .accessibilityLabel("打开调试页")
                 .disabled(!serviceSupervisor.isReachable)
             }
         }
-        .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(Color.primary.opacity(colorScheme == .dark ? 0.08 : 0.045))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .strokeBorder(cardBorder, lineWidth: 1)
-        )
     }
 
     private var providerTable: some View {
@@ -180,16 +191,8 @@ struct ContentView: View {
                 .foregroundStyle(selectionAccent)
                 .frame(width: 28)
 
-            VStack(alignment: .leading, spacing: 5) {
-                Text("模型")
-                    .font(.system(size: 13, weight: .bold))
-                Text(modelSelectorDetail)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-
-            Spacer()
+            Text("模型")
+                .font(.system(size: 13, weight: .bold))
 
             if viewModel.isLoadingModels {
                 ProgressView()
@@ -203,7 +206,7 @@ struct ContentView: View {
                 }
             }
             .labelsHidden()
-            .frame(width: 280)
+            .frame(width: 240)
             .disabled(viewModel.availableModels.isEmpty || viewModel.isLoadingModels)
 
             Button {
@@ -217,16 +220,7 @@ struct ContentView: View {
             .buttonStyle(.bordered)
             .disabled(viewModel.selectedProviderID == nil || viewModel.isLoadingModels)
         }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(Color.primary.opacity(colorScheme == .dark ? 0.08 : 0.045))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .strokeBorder(cardBorder, lineWidth: 1)
-        )
+        .fixedSize(horizontal: true, vertical: false)
     }
 
     private var modelSelectionBinding: Binding<String> {
@@ -243,22 +237,6 @@ struct ContentView: View {
                 }
             }
         )
-    }
-
-    private var modelSelectorDetail: String {
-        if let error = viewModel.modelErrorMessage {
-            return error
-        }
-        guard viewModel.selectedProviderID != nil else {
-            return "先选择一个供应商，再读取它支持的模型。"
-        }
-        if let model = viewModel.selectedModelID {
-            return "网关会把 Codex 请求覆盖为 \(model)，无需修改本地 model_catalog。"
-        }
-        if viewModel.availableModels.isEmpty {
-            return "当前供应商还没有返回模型列表。"
-        }
-        return "选择后由网关覆盖请求模型；Codex 本地配置保持不变。"
     }
 
     private var providerGrid: some View {
