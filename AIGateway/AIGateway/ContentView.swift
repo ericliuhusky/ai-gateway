@@ -58,12 +58,6 @@ struct ContentView: View {
     private var header: some View {
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 10) {
-                Text("供应商")
-                    .font(.system(size: 32, weight: .bold, design: .rounded))
-                Text("管理 API 供应商、发起 Google / OpenAI 账号登录，并切换当前选中的供应商。")
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(.secondary)
-
                 if let selected = viewModel.selectedProviderName {
                     Label("当前选中的供应商：\(selected)", systemImage: "checkmark.circle.fill")
                         .font(.system(size: 13, weight: .semibold))
@@ -79,22 +73,6 @@ struct ContentView: View {
 
             HStack(spacing: 10) {
                 Button {
-                    Task {
-                        await refreshAll()
-                    }
-                } label: {
-                    Label("刷新", systemImage: "arrow.clockwise")
-                }
-                .buttonStyle(.bordered)
-
-                Button {
-                    showingAddProvider = true
-                } label: {
-                    Label("添加供应商", systemImage: "plus")
-                }
-                .buttonStyle(.borderedProminent)
-
-                Button {
                     showingCodexConfigSheet = true
                 } label: {
                     Label("CodeX 配置", systemImage: "doc.badge.gearshape")
@@ -107,6 +85,12 @@ struct ContentView: View {
     private var topControlBar: some View {
         HStack(alignment: .center, spacing: 18) {
             servicePanel
+
+            Divider()
+                .frame(height: 24)
+                .overlay(cardBorder.opacity(colorScheme == .dark ? 0.9 : 0.6))
+
+            addProviderControl
 
             Divider()
                 .frame(height: 24)
@@ -201,6 +185,26 @@ struct ContentView: View {
 
     private var providerTable: some View {
         EmptyView()
+    }
+
+    private var addProviderControl: some View {
+        HStack(spacing: 14) {
+            Text("供应商")
+                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                .foregroundStyle(.secondary)
+
+            Button {
+                showingAddProvider = true
+            } label: {
+                Image(systemName: "plus")
+                    .font(.system(size: 11, weight: .semibold))
+                    .frame(width: 16, height: 16)
+            }
+            .buttonStyle(.bordered)
+            .help("添加供应商")
+            .accessibilityLabel("添加供应商")
+        }
+        .fixedSize(horizontal: true, vertical: false)
     }
 
     private var modelSelector: some View {
@@ -863,15 +867,6 @@ struct ContentView: View {
             } catch {
                 return
             }
-        }
-    }
-
-    private func refreshAll() async {
-        await serviceSupervisor.refreshStatus()
-        if serviceSupervisor.isReachable {
-            await viewModel.refresh()
-        } else {
-            viewModel.clearData()
         }
     }
 
