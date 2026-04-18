@@ -52,6 +52,15 @@ fn normalize_openai_codex_input(input: &mut Value) {
             .and_then(Value::as_str)
             .unwrap_or_default();
         match item_type {
+            "custom_tool_call" => {
+                rewritten.push(json!({
+                    "type": "custom_tool_call",
+                    "call_id": item_obj.get("call_id").cloned().unwrap_or(Value::Null),
+                    "name": item_obj.get("name").cloned().unwrap_or(Value::Null),
+                    "input": item_obj.get("input").cloned().unwrap_or(Value::String(String::new())),
+                }));
+                continue;
+            }
             "function_call" => {
                 rewritten.push(json!({
                     "type": "function_call",
@@ -61,9 +70,17 @@ fn normalize_openai_codex_input(input: &mut Value) {
                 }));
                 continue;
             }
-            "function_call_output" | "custom_tool_call_output" => {
+            "function_call_output" => {
                 rewritten.push(json!({
                     "type": "function_call_output",
+                    "call_id": item_obj.get("call_id").cloned().unwrap_or(Value::Null),
+                    "output": stringify_output(item_obj.get("output").cloned()),
+                }));
+                continue;
+            }
+            "custom_tool_call_output" => {
+                rewritten.push(json!({
+                    "type": "custom_tool_call_output",
                     "call_id": item_obj.get("call_id").cloned().unwrap_or(Value::Null),
                     "output": stringify_output(item_obj.get("output").cloned()),
                 }));
@@ -244,5 +261,42 @@ fn normalize_openai_codex_tool_choice(tool_choice: &mut Value) {
         if let Some(name) = tool_choice_obj.get("name").cloned() {
             *tool_choice = json!({ "type": "function", "function": { "name": name } });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::responses_to_openai_private;
+    use crate::models::ResponsesRequest;
+    use serde_json::json;
+
+    #[test]
+    fn preserves_custom_tool_calls_for_openai_private() {
+        let request: ResponsesRequest = serde_json::from_value(json!({
+            "model": "gpt-5.4",
+            "input": [{
+                "type": "custom_tool_call",
+                "call_id": "call_123",
+                "name": "apply_patch",
+                "input": "*** Begin Patch\n*** End Patch\n"
+            }, {
+                "type": "custom_tool_call_output",
+                "call_id": "call_123",
+                "output": "ok"
+            }]
+        }))
+        .expect("request should parse");
+
+        let body = responses_to_openai_private(&request).expect("request should normalize");
+
+        assert_eq!(body["input"][0]["type"], "custom_tool_call");
+        assert_eq!(body["input"][0]["call_id"], "call_123");
+        assert_eq!(body["input"][0]["name"], "apply_patch");
+        assert_eq!(
+            body["input"][0]["input"],
+            "*** Begin Patch\n*** End Patch\n"
+        );
+        assert_eq!(body["input"][1]["type"], "custom_tool_call_output");
+        assert_eq!(body["input"][1]["call_id"], "call_123");
     }
 }

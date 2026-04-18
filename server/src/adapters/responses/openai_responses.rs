@@ -85,6 +85,28 @@ fn normalize_input_item(item: &mut Value, _provider_name: &str) {
             });
             return;
         }
+        "custom_tool_call" => {
+            let call_id = object
+                .get("call_id")
+                .cloned()
+                .or_else(|| object.get("id").cloned())
+                .unwrap_or_else(|| Value::String(format!("call_{}", Uuid::new_v4().simple())));
+            let name = object
+                .get("name")
+                .cloned()
+                .unwrap_or_else(|| Value::String("custom_tool".to_string()));
+            let arguments = stringify_custom_tool_arguments(
+                name.as_str().unwrap_or_default(),
+                object.get("input").cloned(),
+            );
+            *item = json!({
+                "type": "function_call",
+                "call_id": call_id,
+                "name": name,
+                "arguments": arguments,
+            });
+            return;
+        }
         "local_shell_call" => {
             let call_id = object
                 .get("call_id")
@@ -329,6 +351,20 @@ fn stringify_output(value: Option<Value>) -> String {
     }
 }
 
+fn stringify_custom_tool_arguments(name: &str, input: Option<Value>) -> String {
+    let key = match name {
+        "apply_patch" => "patch",
+        "view_image" => "path",
+        _ => "input",
+    };
+    let mut args = serde_json::Map::new();
+    args.insert(
+        key.to_string(),
+        input.unwrap_or_else(|| Value::String(String::new())),
+    );
+    Value::Object(args).to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::request_with_model;
@@ -449,5 +485,61 @@ mod tests {
 
         assert_eq!(body["input"][0]["content"][0]["type"], "input_text");
         assert_eq!(body["input"][1]["content"][0]["type"], "output_text");
+    }
+
+    #[test]
+    fn rewrites_custom_tool_call_items_to_function_call_items() {
+        let request: ResponsesRequest = serde_json::from_value(json!({
+            "model": "gpt-5.4",
+            "input": [
+                {
+                    "type": "custom_tool_call",
+                    "call_id": "call_123",
+                    "name": "apply_patch",
+                    "input": "*** Begin Patch\n*** End Patch\n"
+                }
+            ]
+        }))
+        .expect("request should parse");
+
+        let body = request_with_model(&request, "gpt-5.4", "xcode-best")
+            .expect("request should normalize");
+
+        assert_eq!(body["input"][0]["type"], "function_call");
+        assert_eq!(body["input"][0]["call_id"], "call_123");
+        assert_eq!(body["input"][0]["name"], "apply_patch");
+        assert_eq!(
+            body["input"][0]["arguments"],
+            "{\"patch\":\"*** Begin Patch\\n*** End Patch\\n\"}"
+        );
+    }
+
+    #[test]
+    fn rewrites_custom_tool_call_outputs_to_function_call_outputs() {
+        let request: ResponsesRequest = serde_json::from_value(json!({
+            "model": "gpt-5.4",
+            "input": [
+                {
+                    "type": "custom_tool_call",
+                    "call_id": "call_123",
+                    "name": "apply_patch",
+                    "input": "*** Begin Patch\n*** End Patch\n"
+                },
+                {
+                    "type": "custom_tool_call_output",
+                    "call_id": "call_123",
+                    "output": "ok"
+                }
+            ]
+        }))
+        .expect("request should parse");
+
+        let body = request_with_model(&request, "gpt-5.4", "xcode-best")
+            .expect("request should normalize");
+
+        assert_eq!(body["input"].as_array().map(Vec::len), Some(2));
+        assert_eq!(body["input"][0]["type"], "function_call");
+        assert_eq!(body["input"][1]["type"], "function_call_output");
+        assert_eq!(body["input"][1]["call_id"], "call_123");
     }
 }
