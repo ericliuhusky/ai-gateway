@@ -40,11 +40,6 @@ struct GatewayAPIClient: Sendable {
         return response.data
     }
 
-    func fetchCodexConfigStatus() async throws -> CodexConfigStatus {
-        let response: CodexConfigStatusResponse = try await request(path: "/codex-config")
-        return response.codexConfig
-    }
-
     func createProvider(_ payload: CreateAPIProviderRequest) async throws {
         _ = try await requestWithoutBody(
             path: "/providers",
@@ -73,16 +68,6 @@ struct GatewayAPIClient: Sendable {
     func clearSelectedModel() async throws -> SelectedProviderPayload {
         let response: SelectedModelResponse = try await request(path: "/selected-model", method: "DELETE")
         return response.selectedModel
-    }
-
-    func applyCodexConfig() async throws -> CodexConfigStatus {
-        let response: CodexConfigStatusResponse = try await request(path: "/codex-config", method: "PUT")
-        return response.codexConfig
-    }
-
-    func restoreCodexConfig() async throws -> CodexConfigStatus {
-        let response: CodexConfigStatusResponse = try await request(path: "/codex-config", method: "DELETE")
-        return response.codexConfig
     }
 
     func importOpenAIFromLocalCodexAuth() async throws -> ImportOpenAiFromLocalResponse {

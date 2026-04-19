@@ -111,11 +111,13 @@ final class GatewayServiceSupervisor: ObservableObject {
         let task = Task<Void, Error> {
             let launchd = try await self.inspectLaunchAgent()
             if launchd.isLoaded, await self.isServerHealthy() {
+                try await self.applyCodexConfig()
                 self.status = .runningLaunchAgent(pid: launchd.pid)
                 return
             }
 
             if !launchd.isLoaded, await self.isServerHealthy() {
+                try await self.applyCodexConfig()
                 self.status = .runningExternal
                 return
             }
@@ -164,6 +166,9 @@ final class GatewayServiceSupervisor: ObservableObject {
                 return
             }
 
+            if await isServerHealthy() {
+                try await restoreCodexConfig()
+            }
             _ = try await runLaunchctl(arguments: ["bootout", launchDomain, launchAgentPlistURL.path], allowFailure: false)
             await refreshStatus()
         } catch {
@@ -197,6 +202,7 @@ final class GatewayServiceSupervisor: ObservableObject {
         for _ in 0 ..< 40 {
             let refreshed = try await inspectLaunchAgent()
             if refreshed.isLoaded, await isServerHealthy() {
+                try await applyCodexConfig()
                 status = .runningLaunchAgent(pid: refreshed.pid)
                 return
             }
@@ -205,6 +211,46 @@ final class GatewayServiceSupervisor: ObservableObject {
 
         status = .failed("服务启动后健康检查超时，未能连接到 /healthz。")
         throw GatewayServiceError.startupTimedOut
+    }
+
+    private func applyCodexConfig() async throws {
+        try await requestCodexConfig(method: "PUT", allowsMissingBackup: false)
+    }
+
+    private func restoreCodexConfig() async throws {
+        try await requestCodexConfig(method: "DELETE", allowsMissingBackup: true)
+    }
+
+    private func requestCodexConfig(method: String, allowsMissingBackup: Bool) async throws {
+        var request = URLRequest(url: baseURL.appending(path: "codex-config"))
+        request.httpMethod = method
+        request.timeoutInterval = 5
+
+        let (data, response): (Data, URLResponse)
+        do {
+            (data, response) = try await URLSession.shared.data(for: request)
+        } catch {
+            throw GatewayServiceError.codexConfigFailed("CodeX 配置接口请求失败：\(error.localizedDescription)")
+        }
+
+        guard let http = response as? HTTPURLResponse else {
+            throw GatewayServiceError.codexConfigFailed("CodeX 配置接口返回无效响应。")
+        }
+
+        if (200 ..< 300).contains(http.statusCode) {
+            return
+        }
+
+        let message = Self.codexConfigErrorMessage(from: data)
+            ?? "CodeX 配置接口返回 HTTP \(http.statusCode)。"
+        if allowsMissingBackup,
+           http.statusCode == 400,
+           message.contains("no CodeX config backup available")
+        {
+            return
+        }
+
+        throw GatewayServiceError.codexConfigFailed(message)
     }
 
     private func installOrUpdateLaunchAgentFiles() throws {
@@ -353,6 +399,17 @@ final class GatewayServiceSupervisor: ObservableObject {
         return Int32(String(output[pidRange]))
     }
 
+    private static func codexConfigErrorMessage(from data: Data) -> String? {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let error = object["error"] as? [String: Any],
+              let message = error["message"] as? String,
+              !message.isEmpty
+        else {
+            return nil
+        }
+        return message
+    }
+
     private var homeDirectoryURL: URL {
         if let home = Self.posixHomeDirectory() {
             return home
@@ -405,6 +462,7 @@ private struct LaunchAgentState {
 enum GatewayServiceError: LocalizedError {
     case missingBundleResources
     case missingBundledServer(String)
+    case codexConfigFailed(String)
     case startupTimedOut
     case launchctlFailed(String, Int, String)
 
@@ -414,6 +472,8 @@ enum GatewayServiceError: LocalizedError {
             return "无法读取 app bundle 资源目录。"
         case .missingBundledServer(let path):
             return "没有在 app bundle 里找到内置 server：\(path)"
+        case .codexConfigFailed(let message):
+            return message
         case .startupTimedOut:
             return "服务启动超时，未能通过健康检查。"
         case .launchctlFailed(let command, let code, let output):

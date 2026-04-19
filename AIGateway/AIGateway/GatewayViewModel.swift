@@ -22,7 +22,6 @@ final class GatewayViewModel: ObservableObject {
     @Published var isLoadingModels = false
     @Published var showsModelRefreshActivity = false
     @Published var modelErrorMessage: String?
-    @Published var codexConfigStatus: CodexConfigStatus?
     @Published var isLoading = false
     @Published var errorMessage: String?
 
@@ -60,18 +59,15 @@ final class GatewayViewModel: ObservableObject {
         do {
             async let providersTask = client.fetchProviders()
             async let selectedTask = client.fetchSelectedProvider()
-            async let codexConfigTask = client.fetchCodexConfigStatus()
 
-            let (providers, selected, codexConfig) = try await (
+            let (providers, selected) = try await (
                 providersTask,
-                selectedTask,
-                codexConfigTask
+                selectedTask
             )
             let sortedProviders = providers.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
             self.providers = sortedProviders
             self.selectedProviderID = selected.providerID
             self.selectedModelID = selected.selectedModel
-            self.codexConfigStatus = codexConfig
             self.errorMessage = nil
             trimQuotaState(to: Set(sortedProviders.map(\.id)))
             await refreshModels()
@@ -218,30 +214,6 @@ final class GatewayViewModel: ObservableObject {
         }
     }
 
-    func applyCodexConfig() async -> Bool {
-        isLoading = true
-        defer { isLoading = false }
-
-        do {
-            codexConfigStatus = try await client.applyCodexConfig()
-            return true
-        } catch {
-            errorMessage = error.localizedDescription
-            return false
-        }
-    }
-
-    func restoreCodexConfig() async {
-        isLoading = true
-        defer { isLoading = false }
-
-        do {
-            codexConfigStatus = try await client.restoreCodexConfig()
-        } catch {
-            errorMessage = error.localizedDescription
-        }
-    }
-
     func dismissError() {
         errorMessage = nil
     }
@@ -257,7 +229,6 @@ final class GatewayViewModel: ObservableObject {
         isLoadingModels = false
         showsModelRefreshActivity = false
         modelErrorMessage = nil
-        codexConfigStatus = nil
         quotaLastRefreshAt = [:]
         refreshingQuotaProviderIDs = []
     }

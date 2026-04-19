@@ -13,7 +13,6 @@ struct ContentView: View {
     @StateObject private var viewModel = GatewayViewModel()
     @StateObject private var serviceSupervisor = GatewayServiceSupervisor()
     @State private var showingAddProvider = false
-    @State private var showingCodexConfigSheet = false
     @State private var modelRefreshRotation: Double = 0
     @State private var manuallyRefreshingQuotaProviderIDs: Set<String> = []
     private let gridColumns = [
@@ -35,9 +34,6 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showingAddProvider) {
             AddProviderSheet(viewModel: viewModel)
-        }
-        .sheet(isPresented: $showingCodexConfigSheet) {
-            CodexConfigSheet(viewModel: viewModel)
         }
         .task {
             await initialLoad()
@@ -70,15 +66,6 @@ struct ContentView: View {
             }
 
             Spacer()
-
-            HStack(spacing: 10) {
-                Button {
-                    showingCodexConfigSheet = true
-                } label: {
-                    Label("CodeX 配置", systemImage: "doc.badge.gearshape")
-                }
-                .buttonStyle(.bordered)
-            }
         }
     }
 
@@ -905,117 +892,5 @@ struct ContentView: View {
 struct ContentView_Previews: PreviewProvider {
     static var previews: some View {
         ContentView()
-    }
-}
-
-struct CodexConfigSheet: View {
-    @ObservedObject var viewModel: GatewayViewModel
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            Text("CodeX 配置")
-                .font(.system(size: 26, weight: .bold, design: .rounded))
-
-            Text("可以把 CodeX 的 `~/.codex/config.toml` 一键切换成内置的 AI Gateway 配置，也可以随时恢复到原来的版本。")
-                .font(.system(size: 14))
-                .foregroundStyle(.secondary)
-
-            statusCard
-
-            HStack {
-                Spacer()
-
-                Button("关闭") {
-                    dismiss()
-                }
-                .buttonStyle(.bordered)
-
-                Button {
-                    Task {
-                        _ = await viewModel.applyCodexConfig()
-                    }
-                } label: {
-                    Label("应用内置配置", systemImage: "square.and.arrow.down")
-                }
-                .buttonStyle(.borderedProminent)
-
-                Button {
-                    Task {
-                        await viewModel.restoreCodexConfig()
-                    }
-                } label: {
-                    Label("恢复原配置", systemImage: "arrow.uturn.backward")
-                }
-                .buttonStyle(.bordered)
-                .disabled(!(viewModel.codexConfigStatus?.restoreAvailable ?? false))
-            }
-        }
-        .padding(24)
-        .frame(minWidth: 560, minHeight: 320)
-    }
-
-    private var statusCard: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            statusRow(title: "配置文件", value: viewModel.codexConfigStatus?.targetPath ?? "读取中…")
-            statusRow(title: "认证文件", value: viewModel.codexConfigStatus?.authPath ?? "读取中…")
-            statusRow(
-                title: "当前状态",
-                value: statusText
-            )
-            statusRow(title: "备份内容", value: backupText)
-        }
-        .padding(18)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .fill(Color.primary.opacity(0.05))
-        )
-    }
-
-    private var statusText: String {
-        guard let status = viewModel.codexConfigStatus else {
-            return "读取中…"
-        }
-
-        if status.restoreAvailable {
-            return "已应用 AI Gateway 内置配置，可恢复原来的配置和认证"
-        }
-
-        if status.targetExists || status.authExists {
-            return "当前是本地原配置"
-        }
-
-        return "当前没有本地配置"
-    }
-
-    private var backupText: String {
-        guard let status = viewModel.codexConfigStatus else {
-            return "读取中…"
-        }
-
-        if !status.restoreAvailable {
-            return "当前没有备份"
-        }
-
-        var items: [String] = []
-        if status.configBackupExists {
-            items.append("config.toml")
-        }
-        if status.authBackupExists {
-            items.append("auth.json")
-        }
-        return items.joined(separator: "、")
-    }
-
-    private func statusRow(title: String, value: String) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(.secondary)
-            Text(value)
-                .font(.system(size: 13, design: .monospaced))
-                .textSelection(.enabled)
-        }
     }
 }

@@ -41,7 +41,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::time::Instant;
-use std::{fs, path::Path, sync::Arc};
+use std::{fs, io::ErrorKind, path::Path, sync::Arc};
 use tracing::{info, warn};
 use uuid::Uuid;
 
@@ -472,6 +472,7 @@ pub async fn apply_codex_config(State(state): State<AppState>) -> Result<Json<Va
 
     fs::write(&target_path, BUNDLED_CODEX_CONFIG)
         .map_err(|err| AppError::bad_request(format!("failed to write CodeX config: {err}")))?;
+    remove_file_if_exists(&auth_path, "CodeX auth")?;
 
     Ok(Json(
         json!({ "codex_config": codex_config_status(&state)? }),
@@ -2219,6 +2220,16 @@ fn restore_or_remove_backup(backup: &Path, target: &Path, label: &str) -> Result
     }
 
     Ok(())
+}
+
+fn remove_file_if_exists(target: &Path, label: &str) -> Result<(), AppError> {
+    match fs::remove_file(target) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(AppError::bad_request(format!(
+            "failed to remove {label} file: {err}"
+        ))),
+    }
 }
 
 fn normalize_selected_provider_id(provider_id: Option<String>) -> Result<String, AppError> {

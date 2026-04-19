@@ -228,34 +228,6 @@ struct UpdateSelectedModelRequest: Codable {
     let model: String
 }
 
-struct CodexConfigStatus: Codable {
-    let targetPath: String
-    let authPath: String
-    let configBackupExists: Bool
-    let authBackupExists: Bool
-    let restoreAvailable: Bool
-    let targetExists: Bool
-    let authExists: Bool
-
-    enum CodingKeys: String, CodingKey {
-        case targetPath = "target_path"
-        case authPath = "auth_path"
-        case configBackupExists = "config_backup_exists"
-        case authBackupExists = "auth_backup_exists"
-        case restoreAvailable = "restore_available"
-        case targetExists = "target_exists"
-        case authExists = "auth_exists"
-    }
-}
-
-struct CodexConfigStatusResponse: Codable {
-    let codexConfig: CodexConfigStatus
-
-    enum CodingKeys: String, CodingKey {
-        case codexConfig = "codex_config"
-    }
-}
-
 struct ImportOpenAiFromLocalResponse: Codable {
     let imported: Bool
     let email: String
