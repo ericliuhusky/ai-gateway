@@ -370,10 +370,7 @@ impl OAuthClient {
         account_id_hint: Option<String>,
     ) -> Result<ImportedOpenAIAuth, String> {
         let access_claims = decode_openai_claims(&access_token)?;
-        let id_claims = id_token
-            .as_deref()
-            .map(decode_openai_claims)
-            .transpose()?;
+        let id_claims = id_token.as_deref().map(decode_openai_claims).transpose()?;
         let email = openai_email_from_claims(&access_claims)
             .or_else(|| id_claims.as_ref().and_then(openai_email_from_claims))
             .ok_or_else(|| "failed to determine email from Codex auth.json tokens".to_string())?;

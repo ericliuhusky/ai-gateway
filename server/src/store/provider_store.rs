@@ -166,8 +166,7 @@ mod tests {
     use super::ProviderStore;
     use crate::{
         models::{
-            ApiProviderBillingMode, PROVIDER_GOOGLE_PROXY, PROVIDER_OPENAI_PROXY,
-            ProviderAuthMode,
+            ApiProviderBillingMode, PROVIDER_GOOGLE_PROXY, PROVIDER_OPENAI_PROXY, ProviderAuthMode,
         },
         store::sqlite::SqliteStore,
     };

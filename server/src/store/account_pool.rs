@@ -1,5 +1,7 @@
 use crate::{
-    auth::{ImportedOpenAIAuth, OAuthClient, TokenResponse, UserInfo, extract_openai_chatgpt_account_id},
+    auth::{
+        ImportedOpenAIAuth, OAuthClient, TokenResponse, UserInfo, extract_openai_chatgpt_account_id,
+    },
     config::Config,
     models::{AccountRecord, AccountType, PROVIDER_GOOGLE_PROXY, PROVIDER_OPENAI_PROXY},
     store::sqlite::SqliteStore,
