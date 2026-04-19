@@ -384,7 +384,7 @@ struct ContentView: View {
         .animation(.spring(response: 0.26, dampingFraction: 0.85), value: isSelected)
         .contentShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
         .onTapGesture {
-            guard !isSelected, !viewModel.isLoading else { return }
+            guard !isSelected else { return }
             Task {
                 await viewModel.selectProvider(id: provider.id)
             }

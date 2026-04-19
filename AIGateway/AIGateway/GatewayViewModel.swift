@@ -28,6 +28,9 @@ final class GatewayViewModel: ObservableObject {
     let baseURL: URL
     private let client: GatewayAPIClient
     private var modelActivityTask: Task<Void, Never>?
+    private var selectedProviderRefreshTask: Task<Void, Never>?
+    private var providerSelectionGeneration = 0
+    private var modelRefreshGeneration = 0
     private var quotaLastRefreshAt: [String: Date] = [:]
     private var refreshingQuotaProviderIDs: Set<String> = []
 
@@ -106,31 +109,40 @@ final class GatewayViewModel: ObservableObject {
     }
 
     func selectProvider(id: String) async {
-        isLoading = true
-        defer { isLoading = false }
+        providerSelectionGeneration += 1
+        let generation = providerSelectionGeneration
+        selectedProviderRefreshTask?.cancel()
+        invalidateModelRefreshState()
+
+        selectedProviderID = id
+        selectedModelID = nil
+        availableModels = []
+        modelErrorMessage = nil
 
         do {
             try await client.selectProvider(id: id)
-            selectedProviderID = id
-            selectedModelID = nil
-            await refreshModels()
-            await refreshQuota(for: id, showLoadingState: false)
+            guard generation == providerSelectionGeneration else { return }
+            selectedProviderRefreshTask = Task { @MainActor [weak self] in
+                guard let self else { return }
+                await self.refreshModels()
+                guard !Task.isCancelled, generation == self.providerSelectionGeneration else { return }
+                await self.refreshQuota(for: id, showLoadingState: true)
+            }
         } catch {
+            guard generation == providerSelectionGeneration else { return }
             errorMessage = error.localizedDescription
         }
     }
 
     func refreshModels(forceRefresh: Bool = false, userInitiated: Bool = false) async {
-        guard selectedProviderID != nil else {
-            modelActivityTask?.cancel()
-            availableModels = []
-            selectedModelID = nil
-            showsModelRefreshActivity = false
-            modelErrorMessage = nil
+        guard let providerID = selectedProviderID else {
+            invalidateModelRefreshState()
             return
         }
 
         modelActivityTask?.cancel()
+        modelRefreshGeneration += 1
+        let refreshGeneration = modelRefreshGeneration
         isLoadingModels = true
 
         let shouldShowActivityImmediately = userInitiated
@@ -145,7 +157,11 @@ final class GatewayViewModel: ObservableObject {
         if shouldDelayActivity {
             modelActivityTask = Task { @MainActor [weak self] in
                 try? await Task.sleep(for: .milliseconds(180))
-                guard let self, !Task.isCancelled, self.isLoadingModels else { return }
+                guard let self,
+                      !Task.isCancelled,
+                      self.isLoadingModels,
+                      refreshGeneration == self.modelRefreshGeneration
+                else { return }
                 self.showsModelRefreshActivity = true
             }
         } else {
@@ -153,17 +169,25 @@ final class GatewayViewModel: ObservableObject {
         }
 
         defer {
-            modelActivityTask?.cancel()
-            modelActivityTask = nil
-            isLoadingModels = false
-            showsModelRefreshActivity = false
+            if refreshGeneration == modelRefreshGeneration {
+                modelActivityTask?.cancel()
+                modelActivityTask = nil
+                isLoadingModels = false
+                showsModelRefreshActivity = false
+            }
         }
 
         do {
             let models = try await client.fetchModels(forceRefresh: forceRefresh)
+            guard refreshGeneration == modelRefreshGeneration,
+                  selectedProviderID == providerID
+            else { return }
             availableModels = models.sorted { $0.id.localizedStandardCompare($1.id) == .orderedAscending }
             modelErrorMessage = nil
         } catch {
+            guard refreshGeneration == modelRefreshGeneration,
+                  selectedProviderID == providerID
+            else { return }
             modelErrorMessage = error.localizedDescription
         }
     }
@@ -223,12 +247,12 @@ final class GatewayViewModel: ObservableObject {
         providerQuotas = [:]
         quotaErrors = [:]
         quotaLoadingProviderIDs = []
+        selectedProviderRefreshTask?.cancel()
+        selectedProviderRefreshTask = nil
+        providerSelectionGeneration += 1
         selectedProviderID = nil
         selectedModelID = nil
-        availableModels = []
-        isLoadingModels = false
-        showsModelRefreshActivity = false
-        modelErrorMessage = nil
+        invalidateModelRefreshState()
         quotaLastRefreshAt = [:]
         refreshingQuotaProviderIDs = []
     }
@@ -375,5 +399,16 @@ final class GatewayViewModel: ObservableObject {
         providerQuotas = providerQuotas.filter { providerIDs.contains($0.key) }
         quotaErrors = quotaErrors.filter { providerIDs.contains($0.key) }
         quotaLastRefreshAt = quotaLastRefreshAt.filter { providerIDs.contains($0.key) }
+    }
+
+    private func invalidateModelRefreshState() {
+        modelRefreshGeneration += 1
+        modelActivityTask?.cancel()
+        modelActivityTask = nil
+        availableModels = []
+        selectedModelID = nil
+        isLoadingModels = false
+        showsModelRefreshActivity = false
+        modelErrorMessage = nil
     }
 }
