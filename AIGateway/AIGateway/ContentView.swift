@@ -12,8 +12,7 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
     @StateObject private var viewModel = GatewayViewModel()
     @StateObject private var serviceSupervisor = GatewayServiceSupervisor()
-    @State private var showingAddProvider = false
-    @State private var addProviderMode: ProviderCreationMode = .apiKey
+    @State private var addProviderMode: ProviderCreationMode?
     @State private var modelRefreshRotation: Double = 0
     @State private var manuallyRefreshingQuotaProviderIDs: Set<String> = []
     private let gridColumns = [
@@ -32,8 +31,8 @@ struct ContentView: View {
             .background(background)
             .navigationTitle("AI Gateway")
         }
-        .sheet(isPresented: $showingAddProvider) {
-            AddProviderSheet(viewModel: viewModel, initialMode: addProviderMode)
+        .sheet(item: $addProviderMode) { mode in
+            AddProviderSheet(viewModel: viewModel, initialMode: mode)
         }
         .task {
             await initialLoad()
@@ -179,7 +178,6 @@ struct ContentView: View {
             HStack(spacing: 10) {
                 Button {
                     addProviderMode = .apiKey
-                    showingAddProvider = true
                 } label: {
                     Image(systemName: "key.fill")
                         .font(.system(size: 11, weight: .semibold))
@@ -191,7 +189,6 @@ struct ContentView: View {
 
                 Button {
                     addProviderMode = .account
-                    showingAddProvider = true
                 } label: {
                     Image(systemName: "person.crop.circle")
                         .font(.system(size: 11, weight: .semibold))

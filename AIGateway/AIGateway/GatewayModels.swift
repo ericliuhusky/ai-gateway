@@ -252,8 +252,8 @@ enum ProviderCreationMode: String, CaseIterable, Identifiable {
 }
 
 enum AccountLoginProvider: String, CaseIterable, Identifiable {
-    case google
     case openai
+    case google
 
     var id: String { rawValue }
 

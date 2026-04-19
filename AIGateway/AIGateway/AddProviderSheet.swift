@@ -6,7 +6,7 @@ struct AddProviderSheet: View {
     @Environment(\.colorScheme) private var colorScheme
 
     private let mode: ProviderCreationMode
-    @State private var loginProvider: AccountLoginProvider = .google
+    @State private var loginProvider: AccountLoginProvider = .openai
     @State private var name = ""
     @State private var baseURL = ""
     @State private var apiKey = ""
@@ -95,37 +95,6 @@ struct AddProviderSheet: View {
                 }
             }
 
-            if loginProvider == .openai {
-                HStack(spacing: 10) {
-                    Image(systemName: "terminal")
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundStyle(openAIAccent)
-
-                    Text("已登录 Codex 时，可直接导入本机账号。")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-
-                    Spacer()
-
-                    Button {
-                        Task {
-                            _ = await viewModel.importOpenAIFromLocalCodexAuth()
-                        }
-                    } label: {
-                        Text("导入")
-                            .frame(minWidth: 44)
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .disabled(viewModel.isLoading)
-                }
-                .padding(12)
-                .background(
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .fill(openAIAccent.opacity(colorScheme == .dark ? 0.16 : 0.08))
-                )
-            }
         }
     }
 
@@ -148,6 +117,19 @@ struct AddProviderSheet: View {
                 }
                 .buttonStyle(.bordered)
                 .disabled(viewModel.isLoading)
+
+                if loginProvider == .openai {
+                    Button {
+                        Task {
+                            _ = await viewModel.importOpenAIFromLocalCodexAuth()
+                        }
+                    } label: {
+                        Label("导入本地账号", systemImage: "arrow.down.doc")
+                            .frame(minWidth: 112)
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(viewModel.isLoading)
+                }
 
                 Button {
                     viewModel.openLogin(provider: loginProvider)
