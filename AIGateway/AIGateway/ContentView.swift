@@ -13,6 +13,7 @@ struct ContentView: View {
     @StateObject private var viewModel = GatewayViewModel()
     @StateObject private var serviceSupervisor = GatewayServiceSupervisor()
     @State private var showingAddProvider = false
+    @State private var addProviderMode: ProviderCreationMode = .apiKey
     @State private var modelRefreshRotation: Double = 0
     @State private var manuallyRefreshingQuotaProviderIDs: Set<String> = []
     private let gridColumns = [
@@ -32,7 +33,7 @@ struct ContentView: View {
             .navigationTitle("AI Gateway")
         }
         .sheet(isPresented: $showingAddProvider) {
-            AddProviderSheet(viewModel: viewModel)
+            AddProviderSheet(viewModel: viewModel, initialMode: addProviderMode)
         }
         .task {
             await initialLoad()
@@ -175,18 +176,33 @@ struct ContentView: View {
                 .clipShape(Capsule())
                 .frame(minWidth: 76, maxWidth: 180, alignment: .leading)
 
-            Button {
-                showingAddProvider = true
-            } label: {
-                Image(systemName: "plus")
-                    .font(.system(size: 11, weight: .semibold))
-                    .frame(width: 16, height: 16)
+            HStack(spacing: 10) {
+                Button {
+                    addProviderMode = .apiKey
+                    showingAddProvider = true
+                } label: {
+                    Image(systemName: "key.fill")
+                        .font(.system(size: 11, weight: .semibold))
+                        .frame(width: 16, height: 16)
+                }
+                .buttonStyle(.bordered)
+                .help("添加 API Key 供应商")
+                .accessibilityLabel("添加 API Key 供应商")
+
+                Button {
+                    addProviderMode = .account
+                    showingAddProvider = true
+                } label: {
+                    Image(systemName: "person.crop.circle")
+                        .font(.system(size: 11, weight: .semibold))
+                        .frame(width: 16, height: 16)
+                }
+                .buttonStyle(.bordered)
+                .help("添加账户供应商")
+                .accessibilityLabel("添加账户供应商")
             }
-            .buttonStyle(.bordered)
-            .help("添加供应商")
-            .accessibilityLabel("添加供应商")
         }
-        .frame(minWidth: 170, idealWidth: 240, maxWidth: 280, alignment: .leading)
+        .frame(minWidth: 210, idealWidth: 280, maxWidth: 320, alignment: .leading)
     }
 
     private var modelSelector: some View {
