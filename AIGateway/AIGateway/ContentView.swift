@@ -289,10 +289,9 @@ struct ContentView: View {
                 )
                 .frame(maxWidth: .infinity, minHeight: 420)
             } else {
-                LazyVGrid(columns: gridColumns, alignment: .center, spacing: 18) {
-                    ForEach(viewModel.providers) { provider in
-                        providerCard(provider)
-                    }
+                VStack(alignment: .leading, spacing: 24) {
+                    providerSection(title: "账户供应商", providers: accountProviders)
+                    providerSection(title: "API Key 供应商", providers: apiKeyProviders)
                 }
                 .padding(.horizontal, 12)
                 .padding(.top, 6)
@@ -300,6 +299,37 @@ struct ContentView: View {
             }
         }
         .scrollContentBackground(.hidden)
+    }
+
+    @ViewBuilder
+    private func providerSection(title: String, providers: [GatewayProvider]) -> some View {
+        if !providers.isEmpty {
+            VStack(alignment: .leading, spacing: 12) {
+                Text(title)
+                    .font(.system(size: 12, weight: .bold, design: .rounded))
+                    .foregroundStyle(.secondary)
+
+                LazyVGrid(columns: gridColumns, alignment: .center, spacing: 18) {
+                    ForEach(providers) { provider in
+                        providerCard(provider)
+                    }
+                }
+            }
+        }
+    }
+
+    private var accountProviders: [GatewayProvider] {
+        sortedProviders(for: .account)
+    }
+
+    private var apiKeyProviders: [GatewayProvider] {
+        sortedProviders(for: .apiKey)
+    }
+
+    private func sortedProviders(for authMode: GatewayAuthMode) -> [GatewayProvider] {
+        viewModel.providers
+            .filter { $0.authMode == authMode }
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 
     private var footer: some View {
