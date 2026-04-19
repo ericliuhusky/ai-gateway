@@ -22,7 +22,9 @@ use crate::{
         AccountPool, LogEvent, LogStage, LogStore, ModelStore, ProviderStore, RouteStore,
         log_store::extract_model_output_from_body,
     },
-    upstream::{UpstreamClient, chat_completions_api_url, responses_api_url},
+    upstream::{
+        GOOGLE_PROJECT_ID_FALLBACK, UpstreamClient, chat_completions_api_url, responses_api_url,
+    },
 };
 use async_stream::stream;
 use axum::{
@@ -141,11 +143,17 @@ pub async fn auth_google_callback(
         .get_user_info(&token.access_token)
         .await
         .map_err(AppError::bad_request)?;
-    let project_id = state
-        .upstream
-        .fetch_project_id(&token.access_token)
-        .await
-        .map_err(AppError::bad_request)?;
+    let project_id = match state.upstream.fetch_project_id(&token.access_token).await {
+        Ok(project_id) => Some(project_id),
+        Err(err) => {
+            warn!(
+                email = %user.email,
+                error = %err,
+                "Google login continuing without cloudaicompanionProject"
+            );
+            None
+        }
+    };
     let account = state
         .accounts
         .add_oauth_account(user, token, project_id)
@@ -1058,10 +1066,15 @@ async fn responses_inner(
     if provider.auth_mode == ProviderAuthMode::Account && provider.name == PROVIDER_GOOGLE_PROXY {
         let gemini_request = responses_to_gemini(&request).map_err(AppError::bad_request)?;
         let account = resolve_account_for_provider(&state, &provider).await?;
-        let project_id = account
-            .project_id()
-            .map(str::to_string)
-            .ok_or_else(|| AppError::bad_request("selected account has no project_id"))?;
+        let project_id = google_project_id_for_request(&account).to_string();
+        if account.project_id().is_none() {
+            warn!(
+                account_id = %account.id,
+                email = %account.email,
+                fallback_project_id = %project_id,
+                "selected Google account has no cloudaicompanionProject; using fallback project"
+            );
+        }
         let request_body = wrap_v1internal(
             serde_json::to_value(&gemini_request)
                 .map_err(|err| AppError::internal(err.to_string()))?,
@@ -2770,6 +2783,13 @@ fn google_v1internal_url_label(method: &str, stream: bool) -> String {
     } else {
         format!("google-v1internal:{method}")
     }
+}
+
+fn google_project_id_for_request(account: &AccountRecord) -> &str {
+    account
+        .project_id()
+        .filter(|project_id| !project_id.trim().is_empty())
+        .unwrap_or(GOOGLE_PROJECT_ID_FALLBACK)
 }
 
 fn elapsed_ms(started_at: Instant) -> i64 {

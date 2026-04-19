@@ -41,7 +41,7 @@ impl AccountPool {
         &self,
         user: UserInfo,
         token: TokenResponse,
-        project_id: String,
+        project_id: Option<String>,
     ) -> Result<AccountRecord, String> {
         let refresh_token = token
             .refresh_token
@@ -57,7 +57,9 @@ impl AccountPool {
             existing.refresh_token = refresh_token;
             existing.expiry_timestamp = expiry_timestamp;
             existing.client_id = None;
-            existing.project_id = Some(project_id);
+            if let Some(project_id) = project_id {
+                existing.project_id = Some(project_id);
+            }
             existing.upstream_account_id = None;
             existing.clone()
         } else {
@@ -69,7 +71,7 @@ impl AccountPool {
                 refresh_token,
                 expiry_timestamp,
                 client_id: None,
-                project_id: Some(project_id),
+                project_id,
                 upstream_account_id: None,
             };
             accounts.push(account.clone());
@@ -270,10 +272,12 @@ impl AccountPool {
                     );
                 }
                 Err(err) => {
-                    return Err(format!(
-                        "project_id fetch failed for {}: {err}",
-                        account.email
-                    ));
+                    warn!(
+                        account_id = %account.id,
+                        email = %account.email,
+                        error = %err,
+                        "project_id fetch failed; continuing without cloudaicompanionProject"
+                    );
                 }
             }
         }

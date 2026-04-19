@@ -13,6 +13,7 @@ const V1_INTERNAL_BASE_URLS: [&str; 3] = [
 const ANTIGRAVITY_CLIENT_VERSION: &str = "4.1.31";
 const ANTIGRAVITY_USER_AGENT: &str =
     "Antigravity/4.1.31 (Macintosh; Intel Mac OS X 10_15_7) Chrome/132.0.6834.160 Electron/39.2.3";
+pub const GOOGLE_PROJECT_ID_FALLBACK: &str = "bamboo-precept-lgxtn";
 
 fn session_id() -> &'static str {
     static SESSION_ID: OnceLock<String> = OnceLock::new();
@@ -83,7 +84,11 @@ impl GoogleV1InternalClient {
             }
         }
 
-        Err("failed to fetch cloudaicompanionProject".to_string())
+        warn!(
+            fallback_project_id = GOOGLE_PROJECT_ID_FALLBACK,
+            "failed to fetch cloudaicompanionProject; using fallback project"
+        );
+        Ok(GOOGLE_PROJECT_ID_FALLBACK.to_string())
     }
 
     pub async fn fetch_available_models(
