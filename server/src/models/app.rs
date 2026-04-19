@@ -126,6 +126,7 @@ pub struct ModelListItem {
 #[serde(rename_all = "snake_case")]
 pub enum QuotaSource {
     ChatgptCodexUsageApi,
+    GoogleV1InternalModelsApi,
     Unsupported,
 }
 

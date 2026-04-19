@@ -7,7 +7,7 @@ use crate::{
     auth::OAuthClient,
     config::Config,
     models::{
-        AccountRecord, ApiProviderRecord, ApiProviderSummary, CodexConfigStatus,
+        AccountRecord, AccountType, ApiProviderRecord, ApiProviderSummary, CodexConfigStatus,
         CreateApiProviderRequest, EgressProtocol, GatewayLogDetail, GatewayLogDetailResponse,
         GatewayLogListResponse, GatewayLogSettings, GatewayLogSettingsResponse, GatewayLogSummary,
         IngressProtocol, ModelListItem, ModelListResponse, PROVIDER_GOOGLE_PROXY,
@@ -322,25 +322,48 @@ pub async fn get_provider_quota(
     let provider_summary = provider_summary_for_resolved(&state, &provider).await?;
 
     let quota = if provider.auth_mode == ProviderAuthMode::Account {
-        if provider_uses_openai_account(&provider) {
-            let account = resolve_account_for_provider(&state, &provider).await?;
-            let raw = state
-                .upstream
-                .fetch_openai_usage(
-                    &format!("quota_{}", Uuid::new_v4().simple()),
-                    account.access_token(),
-                    account.upstream_account_id(),
-                )
-                .await
-                .map_err(AppError::upstream_message)?;
-            let payload: UpstreamRateLimitStatusPayload = serde_json::from_value(raw)
-                .map_err(|err| AppError::upstream_message(err.to_string()))?;
-            quota_from_openai_usage(payload)
-        } else {
-            unsupported_quota_summary(format!(
-                "official quota snapshot is not supported yet for account provider `{}`",
-                provider.name
-            ))
+        let account = resolve_account_for_provider(&state, &provider).await?;
+        match account.account_type {
+            AccountType::Openai => {
+                let raw = state
+                    .upstream
+                    .fetch_openai_usage(
+                        &format!("quota_{}", Uuid::new_v4().simple()),
+                        account.access_token(),
+                        account.upstream_account_id(),
+                    )
+                    .await
+                    .map_err(AppError::upstream_message)?;
+                let payload: UpstreamRateLimitStatusPayload = serde_json::from_value(raw)
+                    .map_err(|err| AppError::upstream_message(err.to_string()))?;
+                quota_from_openai_usage(payload)
+            }
+            AccountType::Google => {
+                let raw = match state
+                    .upstream
+                    .fetch_google_available_models(account.access_token(), account.project_id())
+                    .await
+                {
+                    Ok(raw) => raw,
+                    Err(err) if is_google_quota_forbidden_error(&err) => {
+                        warn!(
+                            provider = %provider.name,
+                            account_id = %account.id,
+                            email = %account.email,
+                            error = %err,
+                            "Google quota request forbidden; returning displayable quota status"
+                        );
+                        return Ok(Json(ProviderQuotaResponse {
+                            provider: provider_summary,
+                            quota: google_forbidden_quota_summary(),
+                        }));
+                    }
+                    Err(err) => return Err(AppError::upstream_message(err)),
+                };
+                let payload: GoogleAvailableModelsQuotaPayload = serde_json::from_value(raw)
+                    .map_err(|err| AppError::upstream_message(err.to_string()))?;
+                quota_from_google_available_models(payload)
+            }
         }
     } else {
         unsupported_quota_summary(format!("missing provider record for `{}`", provider.name))
@@ -2510,6 +2533,130 @@ fn quota_from_openai_usage(payload: UpstreamRateLimitStatusPayload) -> ProviderQ
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct GoogleAvailableModelsQuotaPayload {
+    #[serde(default)]
+    models: std::collections::HashMap<String, GoogleAvailableModelQuotaInfo>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GoogleAvailableModelQuotaInfo {
+    #[serde(rename = "quotaInfo")]
+    quota_info: Option<GoogleModelQuotaInfo>,
+    #[serde(rename = "displayName")]
+    display_name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GoogleModelQuotaInfo {
+    #[serde(rename = "remainingFraction")]
+    remaining_fraction: Option<f64>,
+    #[serde(rename = "resetTime")]
+    reset_time: Option<String>,
+}
+
+fn quota_from_google_available_models(
+    payload: GoogleAvailableModelsQuotaPayload,
+) -> ProviderQuotaSummary {
+    let mut snapshots: Vec<ProviderQuotaSnapshot> = payload
+        .models
+        .into_iter()
+        .filter(|(name, _)| google_model_has_visible_quota(name))
+        .filter_map(|(name, model)| google_model_quota_snapshot(name, model))
+        .collect();
+
+    snapshots.sort_by(|left, right| {
+        let left_used = left
+            .primary
+            .as_ref()
+            .map_or(0.0, |window| window.used_percent);
+        let right_used = right
+            .primary
+            .as_ref()
+            .map_or(0.0, |window| window.used_percent);
+        right_used
+            .total_cmp(&left_used)
+            .then_with(|| left.limit_id.cmp(&right.limit_id))
+    });
+
+    if snapshots.is_empty() {
+        return ProviderQuotaSummary {
+            source: QuotaSource::GoogleV1InternalModelsApi,
+            status: QuotaSupportStatus::Supported,
+            snapshot: None,
+            additional_snapshots: Vec::new(),
+            message: Some("Google 额度接口已接通，但响应中没有可视化窗口数据。".to_string()),
+        };
+    }
+
+    let snapshot = snapshots.remove(0);
+    ProviderQuotaSummary {
+        source: QuotaSource::GoogleV1InternalModelsApi,
+        status: QuotaSupportStatus::Supported,
+        snapshot: Some(snapshot),
+        additional_snapshots: snapshots,
+        message: None,
+    }
+}
+
+fn google_forbidden_quota_summary() -> ProviderQuotaSummary {
+    ProviderQuotaSummary {
+        source: QuotaSource::GoogleV1InternalModelsApi,
+        status: QuotaSupportStatus::Unsupported,
+        snapshot: None,
+        additional_snapshots: Vec::new(),
+        message: Some("Google 返回 403 Forbidden，当前账号暂时无法读取额度窗口。".to_string()),
+    }
+}
+
+fn is_google_quota_forbidden_error(error: &str) -> bool {
+    let lower = error.to_ascii_lowercase();
+    error.contains("403")
+        || lower.contains("forbidden")
+        || lower.contains("permission_denied")
+        || lower.contains("permission denied")
+}
+
+fn google_model_has_visible_quota(name: &str) -> bool {
+    name.starts_with("gemini")
+        || name.starts_with("claude")
+        || name.starts_with("gpt")
+        || name.starts_with("image")
+        || name.starts_with("imagen")
+}
+
+fn google_model_quota_snapshot(
+    name: String,
+    model: GoogleAvailableModelQuotaInfo,
+) -> Option<ProviderQuotaSnapshot> {
+    let quota = model.quota_info?;
+    let remaining_fraction = quota.remaining_fraction?;
+    let remaining_percent = (remaining_fraction * 100.0).clamp(0.0, 100.0);
+    let used_percent = 100.0 - remaining_percent;
+
+    Some(ProviderQuotaSnapshot {
+        limit_id: Some(name),
+        limit_name: model.display_name,
+        primary: Some(ProviderQuotaWindow {
+            used_percent,
+            window_minutes: None,
+            resets_at: quota
+                .reset_time
+                .as_deref()
+                .and_then(parse_google_reset_time_unix),
+        }),
+        secondary: None,
+        credits: None,
+        plan_type: None,
+    })
+}
+
+fn parse_google_reset_time_unix(reset_time: &str) -> Option<i64> {
+    chrono::DateTime::parse_from_rfc3339(reset_time)
+        .ok()
+        .map(|time| time.timestamp())
+}
+
 fn rate_limit_snapshot_from_payload(
     limit_id: Option<String>,
     limit_name: Option<String>,
@@ -2867,8 +3014,8 @@ impl IntoResponse for AppError {
 mod tests {
     use super::{
         ResolvedProvider, capture_final_response_from_sse_chunk, logged_stream_response_body,
-        openai_models_response, provider_uses_openai_account, quota_from_openai_usage,
-        resolve_native_target,
+        openai_models_response, provider_uses_openai_account, quota_from_google_available_models,
+        quota_from_openai_usage, resolve_native_target,
     };
     use crate::models::{
         ApiProviderBillingMode, ApiProviderRecord, EgressProtocol, ProviderAuthMode,
@@ -2978,6 +3125,74 @@ mod tests {
             quota.additional_snapshots[0].limit_id.as_deref(),
             Some("codex_other")
         );
+    }
+
+    #[test]
+    fn maps_google_available_models_payload_to_gateway_quota_snapshot() {
+        let payload = serde_json::from_value(json!({
+            "models": {
+                "chat-bison": {
+                    "quotaInfo": {
+                        "remainingFraction": 0.99,
+                        "resetTime": "2026-04-19T12:00:00Z"
+                    }
+                },
+                "gemini-3-pro-preview": {
+                    "displayName": "Gemini 3 Pro",
+                    "quotaInfo": {
+                        "remainingFraction": 0.25,
+                        "resetTime": "2026-04-19T08:30:00Z"
+                    }
+                },
+                "gemini-2.5-flash": {
+                    "displayName": "Gemini 2.5 Flash",
+                    "quotaInfo": {
+                        "remainingFraction": 0.8,
+                        "resetTime": "2026-04-19T09:00:00Z"
+                    }
+                }
+            }
+        }))
+        .expect("payload should parse");
+
+        let quota = quota_from_google_available_models(payload);
+
+        assert_eq!(
+            quota.source,
+            crate::models::QuotaSource::GoogleV1InternalModelsApi
+        );
+        assert_eq!(quota.status, crate::models::QuotaSupportStatus::Supported);
+        assert_eq!(
+            quota
+                .snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.limit_id.as_deref()),
+            Some("gemini-3-pro-preview")
+        );
+        assert_eq!(
+            quota
+                .snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.limit_name.as_deref()),
+            Some("Gemini 3 Pro")
+        );
+        assert_eq!(
+            quota
+                .snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.primary.as_ref())
+                .map(|window| window.used_percent),
+            Some(75.0)
+        );
+        assert_eq!(
+            quota
+                .snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.primary.as_ref())
+                .and_then(|window| window.resets_at),
+            Some(1776587400)
+        );
+        assert_eq!(quota.additional_snapshots.len(), 1);
     }
 
     #[test]
