@@ -23,7 +23,6 @@ struct ContentView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 18) {
-                header
                 topControlBar
                 providerGrid
                 footer
@@ -49,24 +48,6 @@ struct ContentView: View {
             Text(viewModel.errorMessage ?? "Unknown error")
         }
         .frame(minWidth: 980, minHeight: 680)
-    }
-
-    private var header: some View {
-        HStack(alignment: .top) {
-            VStack(alignment: .leading, spacing: 10) {
-                if let selected = viewModel.selectedProviderName {
-                    Label("当前选中的供应商：\(selected)", systemImage: "checkmark.circle.fill")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(selectionAccent)
-                } else {
-                    Label("当前未选择供应商", systemImage: "circle.dashed")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            Spacer()
-        }
     }
 
     private var topControlBar: some View {
@@ -180,6 +161,20 @@ struct ContentView: View {
                 .font(.system(size: 11, weight: .semibold, design: .rounded))
                 .foregroundStyle(.secondary)
 
+            Text(viewModel.selectedProviderName ?? "未选择")
+                .font(.system(size: 12, weight: .semibold, design: .rounded))
+                .foregroundStyle(viewModel.selectedProviderName == nil ? .secondary : selectionAccent)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .padding(.horizontal, 11)
+                .padding(.vertical, 7)
+                .background(
+                    (viewModel.selectedProviderName == nil ? Color.secondary : selectionAccent)
+                        .opacity(colorScheme == .dark ? 0.18 : 0.10)
+                )
+                .clipShape(Capsule())
+                .frame(minWidth: 76, maxWidth: 180, alignment: .leading)
+
             Button {
                 showingAddProvider = true
             } label: {
@@ -191,7 +186,7 @@ struct ContentView: View {
             .help("添加供应商")
             .accessibilityLabel("添加供应商")
         }
-        .fixedSize(horizontal: true, vertical: false)
+        .frame(minWidth: 170, idealWidth: 240, maxWidth: 280, alignment: .leading)
     }
 
     private var modelSelector: some View {
@@ -273,12 +268,14 @@ struct ContentView: View {
                 )
                 .frame(maxWidth: .infinity, minHeight: 420)
             } else {
-                LazyVGrid(columns: gridColumns, alignment: .leading, spacing: 18) {
+                LazyVGrid(columns: gridColumns, alignment: .center, spacing: 18) {
                     ForEach(viewModel.providers) { provider in
                         providerCard(provider)
                     }
                 }
-                .padding(.vertical, 6)
+                .padding(.horizontal, 12)
+                .padding(.top, 6)
+                .padding(.bottom, 24)
             }
         }
         .scrollContentBackground(.hidden)
@@ -369,6 +366,7 @@ struct ContentView: View {
             minHeight: provider.supportsQuotaDisplay ? 245 : nil,
             alignment: .topLeading
         )
+        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
         .background(cardBackground(isSelected: isSelected))
         .overlay(
             RoundedRectangle(cornerRadius: 24, style: .continuous)
@@ -379,7 +377,6 @@ struct ContentView: View {
                     lineWidth: isSelected ? 2 : 1
                 )
         )
-        .shadow(color: shadowColor.opacity(isSelected ? 0.34 : 0.18), radius: isSelected ? 22 : 12, x: 0, y: 12)
         .scaleEffect(isSelected ? 1.01 : 1.0)
         .animation(.spring(response: 0.26, dampingFraction: 0.85), value: isSelected)
         .contentShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
@@ -587,7 +584,9 @@ struct ContentView: View {
         headlineTint: Color,
         @ViewBuilder content: () -> Content
     ) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
+        let isSelected = providerID == viewModel.selectedProviderID
+
+        return VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline) {
                 Text(title)
                     .font(.system(size: 11, weight: .bold))
@@ -624,7 +623,11 @@ struct ContentView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(quotaPanelBackground)
+                .fill(quotaPanelBackground(isSelected: isSelected))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .strokeBorder(quotaPanelBorder(isSelected: isSelected), lineWidth: 1)
         )
     }
 
@@ -659,10 +662,24 @@ struct ContentView: View {
         .ignoresSafeArea()
     }
 
-    private var quotaPanelBackground: Color {
-        colorScheme == .dark
-            ? Color.white.opacity(0.06)
-            : Color.black.opacity(0.04)
+    private func quotaPanelBackground(isSelected: Bool) -> Color {
+        if colorScheme == .dark {
+            return Color.white.opacity(0.06)
+        }
+
+        return isSelected
+            ? Color(red: 0.94, green: 0.98, blue: 0.95)
+            : Color(red: 0.96, green: 0.97, blue: 0.95)
+    }
+
+    private func quotaPanelBorder(isSelected: Bool) -> Color {
+        if colorScheme == .dark {
+            return Color.white.opacity(isSelected ? 0.08 : 0.05)
+        }
+
+        return isSelected
+            ? selectionAccent.opacity(0.10)
+            : Color.white.opacity(0.65)
     }
 
     private var serviceStatusColor: Color {
@@ -757,10 +774,6 @@ struct ContentView: View {
 
     private var accountBadgeBackground: Color {
         colorScheme == .dark ? accountAccent.opacity(0.22) : accountAccent.opacity(0.16)
-    }
-
-    private var shadowColor: Color {
-        .black
     }
 
     private func quotaPrimaryDetail(for window: ProviderQuotaWindow) -> String {
