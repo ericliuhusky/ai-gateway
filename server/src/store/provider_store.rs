@@ -126,6 +126,7 @@ impl ProviderStore {
             existing.api_key.clear();
             existing.account_id = Some(account_id.to_string());
             existing.uses_chat_completions = false;
+            existing.billing_mode = ApiProviderBillingMode::Subscription;
             existing.clone()
         } else {
             let provider = ApiProviderRecord {
@@ -136,7 +137,7 @@ impl ProviderStore {
                 api_key: String::new(),
                 account_id: Some(account_id.to_string()),
                 uses_chat_completions: false,
-                billing_mode: ApiProviderBillingMode::Metered,
+                billing_mode: ApiProviderBillingMode::Subscription,
             };
             providers.push(provider.clone());
             provider
@@ -164,7 +165,10 @@ fn mask_api_key(api_key: &str) -> String {
 mod tests {
     use super::ProviderStore;
     use crate::{
-        models::{PROVIDER_GOOGLE_PROXY, PROVIDER_OPENAI_PROXY, ProviderAuthMode},
+        models::{
+            ApiProviderBillingMode, PROVIDER_GOOGLE_PROXY, PROVIDER_OPENAI_PROXY,
+            ProviderAuthMode,
+        },
         store::sqlite::SqliteStore,
     };
     use std::{
@@ -196,6 +200,8 @@ mod tests {
         assert_eq!(second.name, PROVIDER_OPENAI_PROXY);
         assert_eq!(first.account_id.as_deref(), Some("account_1"));
         assert_eq!(second.account_id.as_deref(), Some("account_2"));
+        assert_eq!(first.billing_mode, ApiProviderBillingMode::Subscription);
+        assert_eq!(second.billing_mode, ApiProviderBillingMode::Subscription);
 
         let providers = store.list().await;
         assert_eq!(providers.len(), 2);
@@ -228,6 +234,7 @@ mod tests {
         assert_eq!(first.id, second.id);
         assert_eq!(second.account_id.as_deref(), Some("account_1"));
         assert_eq!(second.auth_mode, ProviderAuthMode::Account);
+        assert_eq!(second.billing_mode, ApiProviderBillingMode::Subscription);
         assert_eq!(store.list().await.len(), 1);
     }
 
