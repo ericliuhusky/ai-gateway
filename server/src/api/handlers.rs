@@ -110,6 +110,12 @@ pub struct OAuthCallbackQuery {
     pub error: Option<String>,
 }
 
+fn auth_success_html(provider_name: &str, email: &str) -> Html<String> {
+    Html(format!(
+        "<html lang='zh-CN'><head><meta charset='utf-8'></head><body style='font-family:sans-serif;padding:32px'><h1>{provider_name} 登录成功</h1><p>账号 <strong>{email}</strong> 已加入代理池。</p><p>你现在可以关闭此页面，并调用 <code>{RESPONSES_PATH}</code>。</p></body></html>"
+    ))
+}
+
 pub async fn auth_google_callback(
     State(state): State<AppState>,
     Query(query): Query<OAuthCallbackQuery>,
@@ -165,10 +171,7 @@ pub async fn auth_google_callback(
         .await
         .map_err(AppError::bad_request)?;
 
-    Ok(Html(format!(
-        "<html><body style='font-family:sans-serif;padding:32px'><h1>Login successful</h1><p>Account <strong>{}</strong> is now in the proxy pool.</p><p>You can close this page and call <code>/openai/v1/responses</code>.</p></body></html>",
-        account.email
-    )))
+    Ok(auth_success_html("Google", &account.email))
 }
 
 pub async fn auth_openai_callback(
@@ -201,10 +204,6 @@ pub async fn auth_openai_callback(
         .oauth
         .openai_auth_from_token_response(token)
         .map_err(AppError::bad_request)?;
-    let has_responses_write = imported
-        .scopes
-        .iter()
-        .any(|scope| scope == "api.responses.write");
     let email = imported.email.clone();
     let account = state
         .accounts
@@ -216,16 +215,8 @@ pub async fn auth_openai_callback(
         .bind_account_provider(PROVIDER_OPENAI_PROXY, &account.id)
         .await
         .map_err(AppError::bad_request)?;
-    let scope_hint = if has_responses_write {
-        "<p>Detected <code>api.responses.write</code>, so this account should be able to call the ChatGPT Codex responses endpoint directly.</p>"
-    } else {
-        "<p><strong>Warning:</strong> this ChatGPT/Codex session does not appear to include <code>api.responses.write</code>. OAuth login succeeds, but calls to the ChatGPT Codex responses endpoint may still return 401.</p>"
-    };
 
-    Ok(Html(format!(
-        "<html><body style='font-family:sans-serif;padding:32px'><h1>OpenAI login successful</h1><p>Account <strong>{}</strong> is now in the proxy pool.</p>{}<p>Stored account id: <code>{}</code></p><p>You can close this page and call <code>/openai/v1/responses</code>.</p></body></html>",
-        email, scope_hint, account.id
-    )))
+    Ok(auth_success_html("OpenAI", &email))
 }
 
 #[derive(Debug, Deserialize)]
