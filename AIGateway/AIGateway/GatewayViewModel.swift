@@ -43,6 +43,10 @@ final class GatewayViewModel: ObservableObject {
         providers.first(where: { $0.id == selectedProviderID })?.name
     }
 
+    var selectedProvider: GatewayProvider? {
+        providers.first(where: { $0.id == selectedProviderID })
+    }
+
     func quotaSummary(for providerID: String) -> ProviderQuotaSummary? {
         providerQuotas[providerID]
     }

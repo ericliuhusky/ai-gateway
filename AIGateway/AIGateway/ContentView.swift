@@ -10,8 +10,8 @@ import SwiftUI
 
 struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
-    @StateObject private var viewModel = GatewayViewModel()
-    @StateObject private var serviceSupervisor = GatewayServiceSupervisor()
+    @ObservedObject private var viewModel: GatewayViewModel
+    @ObservedObject private var serviceSupervisor: GatewayServiceSupervisor
     @State private var addProviderMode: ProviderCreationMode?
     @State private var modelRefreshRotation: Double = 0
     @State private var manuallyRefreshingQuotaProviderIDs: Set<String> = []
@@ -19,6 +19,14 @@ struct ContentView: View {
         GridItem(.adaptive(minimum: 280, maximum: 360), spacing: 18)
     ]
     private let quotaAutoRefreshCheckInterval: Duration = .seconds(5)
+
+    init(
+        viewModel: GatewayViewModel,
+        serviceSupervisor: GatewayServiceSupervisor
+    ) {
+        self.viewModel = viewModel
+        self.serviceSupervisor = serviceSupervisor
+    }
 
     var body: some View {
         NavigationStack {
@@ -494,7 +502,7 @@ struct ContentView: View {
                     .lineLimit(2)
             }
         } else {
-            let headlineTint = quotaTint(forRemainingPercent: (primary ?? secondary)!.remainingPercent)
+            let headlineTint = quotaHeadlineTint(primary: primary, secondary: secondary)
             quotaPanel(
                 providerID: providerID,
                 title: "额度窗口",
@@ -536,6 +544,13 @@ struct ContentView: View {
             parts.append("周 \(Int(secondary.remainingPercent.rounded()))%")
         }
         return parts.isEmpty ? "可用" : parts.joined(separator: " · ")
+    }
+
+    private func quotaHeadlineTint(primary: ProviderQuotaWindow?, secondary: ProviderQuotaWindow?) -> Color {
+        let remainingPercent = [primary?.remainingPercent, secondary?.remainingPercent]
+            .compactMap { $0 }
+            .min() ?? 100
+        return quotaTint(forRemainingPercent: remainingPercent)
     }
 
     private func quotaCreditsFootnoteText(summary: ProviderQuotaSummary) -> String? {
@@ -916,7 +931,8 @@ struct ContentView: View {
 }
 
 struct ContentView_Previews: PreviewProvider {
+    @MainActor
     static var previews: some View {
-        ContentView()
+        ContentView(viewModel: GatewayViewModel(), serviceSupervisor: GatewayServiceSupervisor())
     }
 }
