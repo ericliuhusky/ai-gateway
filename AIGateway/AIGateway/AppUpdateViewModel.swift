@@ -41,11 +41,16 @@ final class AppUpdateViewModel: ObservableObject {
     @Published private(set) var state: UpdateState = .hidden
 
     private let session: URLSession
+    private let serviceSupervisor: GatewayServiceSupervisor
     private let fileManager = FileManager.default
     private var latestRelease: GitHubRelease?
     private var lastCheckedAt: Date?
 
-    init(session: URLSession = .shared) {
+    init(
+        serviceSupervisor: GatewayServiceSupervisor,
+        session: URLSession = .shared
+    ) {
+        self.serviceSupervisor = serviceSupervisor
         self.session = session
     }
 
@@ -135,6 +140,7 @@ final class AppUpdateViewModel: ObservableObject {
 
             state = .installing(version: remoteVersion)
             let installedAppURL = try prepareInstalledApp(from: zipURL)
+            await serviceSupervisor.stopService()
             try launchInstaller(appURL: installedAppURL)
         } catch {
             state = .failed(error.localizedDescription)

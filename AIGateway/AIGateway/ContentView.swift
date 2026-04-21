@@ -963,10 +963,11 @@ struct ContentView: View {
 struct ContentView_Previews: PreviewProvider {
     @MainActor
     static var previews: some View {
+        let serviceSupervisor = GatewayServiceSupervisor()
         ContentView(
             viewModel: GatewayViewModel(),
-            serviceSupervisor: GatewayServiceSupervisor(),
-            updater: AppUpdateViewModel()
+            serviceSupervisor: serviceSupervisor,
+            updater: AppUpdateViewModel(serviceSupervisor: serviceSupervisor)
         )
     }
 }

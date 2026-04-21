@@ -9,9 +9,16 @@ import SwiftUI
 
 @main
 struct AIGatewayApp: App {
-    @StateObject private var viewModel = GatewayViewModel()
-    @StateObject private var serviceSupervisor = GatewayServiceSupervisor()
-    @StateObject private var updater = AppUpdateViewModel()
+    @StateObject private var viewModel: GatewayViewModel
+    @StateObject private var serviceSupervisor: GatewayServiceSupervisor
+    @StateObject private var updater: AppUpdateViewModel
+
+    init() {
+        let serviceSupervisor = GatewayServiceSupervisor()
+        _viewModel = StateObject(wrappedValue: GatewayViewModel())
+        _serviceSupervisor = StateObject(wrappedValue: serviceSupervisor)
+        _updater = StateObject(wrappedValue: AppUpdateViewModel(serviceSupervisor: serviceSupervisor))
+    }
 
     var body: some Scene {
         Window("AI Gateway", id: "main") {
