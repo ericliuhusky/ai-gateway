@@ -140,6 +140,8 @@ pub struct ResponseTool {
     pub parameters: Option<Value>,
     #[serde(default)]
     pub function: Option<Value>,
+    #[serde(default)]
+    pub tools: Option<Vec<ResponseTool>>,
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -218,7 +218,11 @@ fn normalize_openai_codex_tools(tools: &mut Value) {
                 if key == "function" || value.is_null() {
                     continue;
                 }
-                preserved.insert(key.clone(), value.clone());
+                let mut value = value.clone();
+                if key == "tools" {
+                    normalize_openai_codex_tools(&mut value);
+                }
+                preserved.insert(key.clone(), value);
             }
             if !preserved.is_empty() {
                 normalized.push(Value::Object(preserved));
@@ -228,14 +232,17 @@ fn normalize_openai_codex_tools(tools: &mut Value) {
         let function_obj = tool_obj.get("function").and_then(Value::as_object);
         let name = tool_obj
             .get("name")
+            .filter(|value| !value.is_null())
             .cloned()
             .or_else(|| function_obj.and_then(|f| f.get("name").cloned()));
         let description = tool_obj
             .get("description")
+            .filter(|value| !value.is_null())
             .cloned()
             .or_else(|| function_obj.and_then(|f| f.get("description").cloned()));
         let parameters = tool_obj
             .get("parameters")
+            .filter(|value| !value.is_null())
             .cloned()
             .or_else(|| function_obj.and_then(|f| f.get("parameters").cloned()));
         let strict = function_obj.and_then(|f| f.get("strict").cloned());
@@ -298,5 +305,68 @@ mod tests {
         );
         assert_eq!(body["input"][1]["type"], "custom_tool_call_output");
         assert_eq!(body["input"][1]["call_id"], "call_123");
+    }
+
+    #[test]
+    fn preserves_namespace_tools_for_openai_private() {
+        let request: ResponsesRequest = serde_json::from_value(json!({
+            "model": "gpt-5.4",
+            "input": "hello",
+            "tools": [{
+                "type": "namespace",
+                "name": "mcp__computer_use__",
+                "description": "Computer Use tools",
+                "parameters": null,
+                "function": null,
+                "tools": [{
+                    "type": "function",
+                    "name": "get_app_state",
+                    "description": "Get app state",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "app": { "type": "string" }
+                        },
+                        "required": ["app"]
+                    },
+                    "function": null
+                }, {
+                    "type": "function",
+                    "function": {
+                        "name": "click",
+                        "description": "Click an element",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "app": { "type": "string" },
+                                "x": { "type": "number" },
+                                "y": { "type": "number" }
+                            },
+                            "required": ["app"]
+                        },
+                        "strict": true
+                    }
+                }]
+            }]
+        }))
+        .expect("request should parse");
+
+        let body = responses_to_openai_private(&request).expect("request should normalize");
+        let namespace = &body["tools"][0];
+
+        assert_eq!(namespace["type"], "namespace");
+        assert_eq!(namespace["name"], "mcp__computer_use__");
+        assert!(namespace.get("function").is_none());
+        assert!(namespace.get("parameters").is_none());
+        assert!(namespace["tools"].is_array());
+        assert_eq!(namespace["tools"].as_array().expect("tools array").len(), 2);
+
+        assert_eq!(namespace["tools"][0]["type"], "function");
+        assert_eq!(namespace["tools"][0]["name"], "get_app_state");
+        assert_eq!(namespace["tools"][0]["parameters"]["required"][0], "app");
+
+        assert_eq!(namespace["tools"][1]["type"], "function");
+        assert_eq!(namespace["tools"][1]["name"], "click");
+        assert_eq!(namespace["tools"][1]["strict"], true);
     }
 }
