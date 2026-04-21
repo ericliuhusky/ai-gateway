@@ -36,7 +36,6 @@ struct ContentView: View {
             VStack(spacing: 18) {
                 topControlBar
                 providerGrid
-                footer
             }
             .padding(24)
             .background(background)
@@ -355,30 +354,6 @@ struct ContentView: View {
         viewModel.providers
             .filter { $0.authMode == authMode }
             .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-    }
-
-    private var footer: some View {
-        HStack {
-            if serviceSupervisor.isBusy {
-                ProgressView()
-                    .controlSize(.small)
-                Text("Waiting for gateway service...")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.secondary)
-            } else if viewModel.isLoading {
-                ProgressView()
-                    .controlSize(.small)
-                Text("Syncing with gateway...")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.secondary)
-            } else {
-                Text("Gateway Base URL: \(viewModel.baseURL.absoluteString)")
-                    .font(.system(size: 12, design: .monospaced))
-                    .foregroundStyle(.secondary)
-            }
-
-            Spacer()
-        }
     }
 
     private func authBadge(for provider: GatewayProvider) -> some View {
