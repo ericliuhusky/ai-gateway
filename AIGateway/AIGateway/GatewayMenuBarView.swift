@@ -5,6 +5,7 @@ struct GatewayMenuBarView: View {
     @Environment(\.openWindow) private var openWindow
     @ObservedObject var viewModel: GatewayViewModel
     @ObservedObject var serviceSupervisor: GatewayServiceSupervisor
+    @ObservedObject var updater: AppUpdateViewModel
     @State private var isRefreshing = false
     @State private var isStarting = false
 

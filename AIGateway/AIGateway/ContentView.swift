@@ -12,6 +12,7 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
     @ObservedObject private var viewModel: GatewayViewModel
     @ObservedObject private var serviceSupervisor: GatewayServiceSupervisor
+    @ObservedObject private var updater: AppUpdateViewModel
     @State private var addProviderMode: ProviderCreationMode?
     @State private var modelRefreshRotation: Double = 0
     @State private var manuallyRefreshingQuotaProviderIDs: Set<String> = []
@@ -22,10 +23,12 @@ struct ContentView: View {
 
     init(
         viewModel: GatewayViewModel,
-        serviceSupervisor: GatewayServiceSupervisor
+        serviceSupervisor: GatewayServiceSupervisor,
+        updater: AppUpdateViewModel
     ) {
         self.viewModel = viewModel
         self.serviceSupervisor = serviceSupervisor
+        self.updater = updater
     }
 
     var body: some View {
@@ -125,6 +128,28 @@ struct ContentView: View {
             Spacer(minLength: 12)
 
             HStack(spacing: 10) {
+                if updater.shouldShowButton {
+                    Button {
+                        Task {
+                            await updater.updateApp()
+                        }
+                    } label: {
+                        if updater.isBusy {
+                            ProgressView()
+                                .controlSize(.small)
+                                .frame(width: 16, height: 16)
+                        } else {
+                            Image(systemName: "arrow.down.app.fill")
+                                .font(.system(size: 11, weight: .semibold))
+                                .frame(width: 16, height: 16)
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .help(updater.buttonTitle)
+                    .accessibilityLabel(updater.buttonTitle)
+                    .disabled(updater.isBusy)
+                }
+
                 Button {
                     Task {
                         if serviceSupervisor.canStop {
@@ -963,6 +988,10 @@ struct ContentView: View {
 struct ContentView_Previews: PreviewProvider {
     @MainActor
     static var previews: some View {
-        ContentView(viewModel: GatewayViewModel(), serviceSupervisor: GatewayServiceSupervisor())
+        ContentView(
+            viewModel: GatewayViewModel(),
+            serviceSupervisor: GatewayServiceSupervisor(),
+            updater: AppUpdateViewModel()
+        )
     }
 }
