@@ -146,6 +146,18 @@ impl ProviderStore {
         self.persist_provider(&provider)?;
         Ok(provider)
     }
+
+    pub async fn delete(&self, id: &str) -> Result<ApiProviderRecord, String> {
+        let mut providers = self.providers.lock().await;
+        let index = providers
+            .iter()
+            .position(|provider| provider.id == id)
+            .ok_or_else(|| format!("unknown provider_id: {id}"))?;
+        let provider = providers.remove(index);
+        self.sqlite.delete_provider(id)?;
+        Ok(provider)
+    }
+
     fn persist_provider(&self, provider: &ApiProviderRecord) -> Result<(), String> {
         self.sqlite.upsert_provider(provider)
     }

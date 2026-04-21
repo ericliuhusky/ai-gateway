@@ -48,6 +48,10 @@ struct GatewayAPIClient: Sendable {
         )
     }
 
+    func deleteProvider(id: String) async throws {
+        _ = try await request(path: "/providers/\(id)", method: "DELETE") as EmptyResponse
+    }
+
     func selectProvider(id: String) async throws {
         _ = try await requestWithoutBody(
             path: "/selected-provider",
@@ -170,3 +174,5 @@ struct GatewayAPIClient: Sendable {
         }
     }
 }
+
+private struct EmptyResponse: Decodable {}

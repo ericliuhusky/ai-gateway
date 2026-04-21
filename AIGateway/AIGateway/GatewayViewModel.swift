@@ -24,6 +24,7 @@ final class GatewayViewModel: ObservableObject {
     @Published var modelErrorMessage: String?
     @Published var isLoading = false
     @Published var errorMessage: String?
+    @Published private(set) var deletingProviderIDs: Set<String> = []
 
     let baseURL: URL
     private let client: GatewayAPIClient
@@ -105,6 +106,41 @@ final class GatewayViewModel: ObservableObject {
                 )
             )
             await refresh()
+            return true
+        } catch {
+            errorMessage = error.localizedDescription
+            return false
+        }
+    }
+
+    func isDeletingProvider(id: String) -> Bool {
+        deletingProviderIDs.contains(id)
+    }
+
+    func deleteProvider(id: String) async -> Bool {
+        guard !deletingProviderIDs.contains(id) else { return false }
+        deletingProviderIDs.insert(id)
+        defer { deletingProviderIDs.remove(id) }
+
+        do {
+            try await client.deleteProvider(id: id)
+
+            providers.removeAll { $0.id == id }
+            providerQuotas.removeValue(forKey: id)
+            quotaErrors.removeValue(forKey: id)
+            quotaLoadingProviderIDs.remove(id)
+            quotaLastRefreshAt.removeValue(forKey: id)
+            refreshingQuotaProviderIDs.remove(id)
+
+            if selectedProviderID == id {
+                providerSelectionGeneration += 1
+                selectedProviderRefreshTask?.cancel()
+                selectedProviderRefreshTask = nil
+                selectedProviderID = nil
+                invalidateModelRefreshState()
+            }
+
+            errorMessage = nil
             return true
         } catch {
             errorMessage = error.localizedDescription
@@ -244,6 +280,7 @@ final class GatewayViewModel: ObservableObject {
 
     func dismissError() {
         errorMessage = nil
+        deletingProviderIDs = []
     }
 
     func clearData() {

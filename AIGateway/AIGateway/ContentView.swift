@@ -16,6 +16,7 @@ struct ContentView: View {
     @State private var addProviderMode: ProviderCreationMode?
     @State private var modelRefreshRotation: Double = 0
     @State private var manuallyRefreshingQuotaProviderIDs: Set<String> = []
+    @State private var providerPendingDeletion: GatewayProvider?
     private let gridColumns = [
         GridItem(.adaptive(minimum: 280, maximum: 360), spacing: 18)
     ]
@@ -56,6 +57,26 @@ struct ContentView: View {
             }
         } message: {
             Text(viewModel.errorMessage ?? "Unknown error")
+        }
+        .alert(
+            "删除供应商",
+            isPresented: providerDeletionConfirmationPresented,
+            presenting: providerPendingDeletion
+        ) { provider in
+            Button("取消", role: .cancel) {
+                providerPendingDeletion = nil
+            }
+            Button("删除", role: .destructive) {
+                Task {
+                    let deleted = await viewModel.deleteProvider(id: provider.id)
+                    if deleted {
+                        providerPendingDeletion = nil
+                    }
+                }
+            }
+            .disabled(viewModel.isDeletingProvider(id: provider.id))
+        } message: { provider in
+            Text("确定要删除供应商“\(provider.name)”吗？删除后将无法继续使用该供应商。")
         }
         .frame(minWidth: 980, minHeight: 680)
     }
@@ -369,6 +390,7 @@ struct ContentView: View {
     @ViewBuilder
     private func providerCard(_ provider: GatewayProvider) -> some View {
         let isSelected = provider.id == viewModel.selectedProviderID
+        let isDeleting = viewModel.isDeletingProvider(id: provider.id)
 
         VStack(alignment: .leading, spacing: 16) {
             HStack(alignment: .top) {
@@ -394,7 +416,10 @@ struct ContentView: View {
 
                 Spacer()
 
-                if isSelected {
+                if isDeleting {
+                    ProgressView()
+                        .controlSize(.small)
+                } else if isSelected {
                     Image(systemName: "checkmark.circle.fill")
                         .font(.system(size: 22, weight: .bold))
                         .foregroundStyle(selectionAccent)
@@ -431,12 +456,19 @@ struct ContentView: View {
         .scaleEffect(isSelected ? 1.01 : 1.0)
         .animation(.spring(response: 0.26, dampingFraction: 0.85), value: isSelected)
         .contentShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .contextMenu {
+            Button("删除", role: .destructive) {
+                providerPendingDeletion = provider
+            }
+            .disabled(isDeleting)
+        }
         .onTapGesture {
-            guard !isSelected else { return }
+            guard !isSelected, !isDeleting else { return }
             Task {
                 await viewModel.selectProvider(id: provider.id)
             }
         }
+        .opacity(isDeleting ? 0.72 : 1)
     }
 
     private func providerMetaRow(title: String, value: String, emphasized: Bool) -> some View {
@@ -770,6 +802,17 @@ struct ContentView: View {
 
     private var quotaAutoRefreshTaskID: String {
         "\(isQuotaAutoRefreshActive)-\(viewModel.providers.count)-\(viewModel.selectedProviderID ?? "none")"
+    }
+
+    private var providerDeletionConfirmationPresented: Binding<Bool> {
+        Binding(
+            get: { providerPendingDeletion != nil },
+            set: { isPresented in
+                if !isPresented {
+                    providerPendingDeletion = nil
+                }
+            }
+        )
     }
 
     private var backgroundTop: Color {

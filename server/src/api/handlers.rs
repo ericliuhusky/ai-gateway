@@ -409,6 +409,33 @@ pub async fn add_provider(
     })))
 }
 
+pub async fn delete_provider(
+    State(state): State<AppState>,
+    AxumPath(provider_id): AxumPath<String>,
+) -> Result<Json<Value>, AppError> {
+    let deleted = state
+        .providers
+        .delete(&provider_id)
+        .await
+        .map_err(AppError::bad_request)?;
+
+    let route = state.routes.get().await;
+    if route.provider_id.as_deref() == Some(provider_id.as_str()) {
+        state
+            .routes
+            .set_provider(None)
+            .await
+            .map_err(AppError::bad_request)?;
+    }
+
+    Ok(Json(json!({
+        "deleted_provider": {
+            "id": deleted.id,
+            "name": deleted.name,
+        }
+    })))
+}
+
 pub async fn get_route(State(state): State<AppState>) -> Json<Value> {
     Json(json!({ "selected_provider": route_payload(state.routes.get().await) }))
 }
