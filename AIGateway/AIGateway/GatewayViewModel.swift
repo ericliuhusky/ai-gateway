@@ -310,14 +310,13 @@ final class GatewayViewModel: ObservableObject {
 
         defer {
             refreshingQuotaProviderIDs.subtract(refreshableIDs)
-            if showLoadingState {
-                quotaLoadingProviderIDs.subtract(refreshableIDs)
-            }
         }
 
         let client = self.client
-        var fetchedQuotas: [String: ProviderQuotaSummary] = [:]
-        var nextErrors: [String: String] = [:]
+
+        if replaceExistingQuotas {
+            providerQuotas = providerQuotas.filter { !refreshableIDs.contains($0.key) }
+        }
 
         await withTaskGroup(of: (String, Result<ProviderQuotaSummary, Error>).self) { group in
             for providerID in refreshableIDs {
@@ -333,28 +332,16 @@ final class GatewayViewModel: ObservableObject {
             for await (providerID, result) in group {
                 switch result {
                 case .success(let quota):
-                    fetchedQuotas[providerID] = quota
+                    providerQuotas[providerID] = quota
+                    quotaErrors.removeValue(forKey: providerID)
                 case .failure(let error):
-                    nextErrors[providerID] = error.localizedDescription
+                    quotaErrors[providerID] = error.localizedDescription
                 }
 
                 quotaLastRefreshAt[providerID] = Date()
-            }
-        }
-
-        if replaceExistingQuotas {
-            providerQuotas = fetchedQuotas
-        } else {
-            for (providerID, quota) in fetchedQuotas {
-                providerQuotas[providerID] = quota
-            }
-        }
-
-        for providerID in refreshableIDs {
-            if let error = nextErrors[providerID] {
-                quotaErrors[providerID] = error
-            } else {
-                quotaErrors.removeValue(forKey: providerID)
+                if showLoadingState {
+                    quotaLoadingProviderIDs.remove(providerID)
+                }
             }
         }
     }
