@@ -9,9 +9,15 @@ on:
 permissions:
   contents: write
 
+env:
+  EXPECTED_MACOS_MAJOR: "26"
+  EXPECTED_MACOS_VERSION: "26.5"
+  EXPECTED_XCODE_VERSION: "26.0"
+  EXPECTED_MACOS_SDK_VERSION: "26.0"
+
 jobs:
   release-macos:
-    runs-on: macos-latest
+    runs-on: macos-26
     timeout-minutes: 60
 
     steps:
@@ -23,12 +29,48 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Select Xcode version
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: ${{ env.EXPECTED_XCODE_VERSION }}
+
       - name: Show tool versions
         run: |
+          set -euo pipefail
+
+          ACTUAL_MACOS_VERSION="$(sw_vers -productVersion)"
+          ACTUAL_XCODE_VERSION="$(xcodebuild -version | sed -n '1s/^Xcode //p')"
+          ACTUAL_MACOS_SDK_VERSION="$(xcrun --sdk macosx --show-sdk-version)"
+
+          echo "Runner macOS version: ${ACTUAL_MACOS_VERSION}"
           xcodebuild -version
+          echo "macOS SDK: ${ACTUAL_MACOS_SDK_VERSION}"
           rustc --version
           cargo --version
           gh --version
+
+          if [ "${ACTUAL_XCODE_VERSION}" != "${EXPECTED_XCODE_VERSION}" ]; then
+            echo "error: expected Xcode ${EXPECTED_XCODE_VERSION}, got ${ACTUAL_XCODE_VERSION}" >&2
+            exit 1
+          fi
+
+          if [ "${ACTUAL_MACOS_SDK_VERSION}" != "${EXPECTED_MACOS_SDK_VERSION}" ]; then
+            echo "error: expected macOS SDK ${EXPECTED_MACOS_SDK_VERSION}, got ${ACTUAL_MACOS_SDK_VERSION}" >&2
+            exit 1
+          fi
+
+          case "${ACTUAL_MACOS_VERSION}" in
+            ${EXPECTED_MACOS_MAJOR}.*) ;;
+            *)
+              echo "error: expected macOS ${EXPECTED_MACOS_MAJOR}.x runner, got ${ACTUAL_MACOS_VERSION}" >&2
+              exit 1
+              ;;
+          esac
+
+          if [ "${ACTUAL_MACOS_VERSION}" != "${EXPECTED_MACOS_VERSION}" ]; then
+            echo "warning: runner macOS is ${ACTUAL_MACOS_VERSION}, local machine is ${EXPECTED_MACOS_VERSION}" >&2
+            echo "warning: GitHub-hosted runners may not expose the exact same macOS patch version as local." >&2
+          fi
 
       - name: Build app and publish GitHub release
         env:
