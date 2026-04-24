@@ -224,10 +224,8 @@ struct GatewayMenuBarView: View {
         switch serviceSupervisor.status {
         case .checking, .installing, .starting:
             return Color(red: 0.94, green: 0.59, blue: 0.18)
-        case .runningLaunchAgent:
+        case .runningLaunchAgent, .runningExternal:
             return Color(red: 0.19, green: 0.74, blue: 0.46)
-        case .runningExternal:
-            return Color(red: 0.22, green: 0.52, blue: 0.96)
         case .installedStopped, .notInstalled, .failed:
             return Color(red: 0.86, green: 0.24, blue: 0.24)
         }

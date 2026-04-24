@@ -776,10 +776,8 @@ struct ContentView: View {
         switch serviceSupervisor.status {
         case .checking, .installing, .starting:
             return Color(red: 0.94, green: 0.59, blue: 0.18)
-        case .runningLaunchAgent:
+        case .runningLaunchAgent, .runningExternal:
             return selectionAccent
-        case .runningExternal:
-            return apiAccent
         case .installedStopped, .notInstalled, .failed:
             return Color(red: 0.86, green: 0.24, blue: 0.24)
         }
