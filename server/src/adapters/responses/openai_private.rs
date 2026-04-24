@@ -218,10 +218,14 @@ fn normalize_openai_codex_tools(tools: &mut Value) {
                 if key == "function" || value.is_null() {
                     continue;
                 }
-                if key == "description" && server_executed_tool_disallows_description(tool_type) {
+                if key == "description"
+                    && server_executed_tool_disallows_description(tool_type, tool_obj)
+                {
                     continue;
                 }
-                if key == "parameters" && server_executed_tool_disallows_parameters(tool_type) {
+                if key == "parameters"
+                    && server_executed_tool_disallows_parameters(tool_type, tool_obj)
+                {
                     continue;
                 }
                 let mut value = value.clone();
@@ -230,6 +234,7 @@ fn normalize_openai_codex_tools(tools: &mut Value) {
                 }
                 preserved.insert(key.clone(), value);
             }
+            maybe_add_client_tool_search_defaults(tool_type, tool_obj, &mut preserved);
             if !preserved.is_empty() {
                 normalized.push(Value::Object(preserved));
             }
@@ -261,33 +266,112 @@ fn normalize_openai_codex_tools(tools: &mut Value) {
             .unwrap_or_default()
             .to_string();
         let mut normalized_tool = serde_json::Map::new();
+        for (key, value) in tool_obj {
+            if matches!(key.as_str(), "type" | "name" | "description" | "parameters" | "function")
+                || value.is_null()
+            {
+                continue;
+            }
+            let mut value = value.clone();
+            if key == "tools" {
+                normalize_openai_codex_tools(&mut value);
+            }
+            normalized_tool.insert(key.clone(), value);
+        }
         normalized_tool.insert("type".to_string(), Value::String("function".to_string()));
         normalized_tool.insert("name".to_string(), normalized_name);
-        if !server_executed_tool_disallows_description(&normalized_name_str) {
+        if !server_executed_tool_disallows_description(&normalized_name_str, tool_obj) {
             if let Some(description) = description {
                 normalized_tool.insert("description".to_string(), description);
             }
         }
-        if !server_executed_tool_disallows_parameters(&normalized_name_str) {
+        if !server_executed_tool_disallows_parameters(&normalized_name_str, tool_obj) {
             normalized_tool.insert(
                 "parameters".to_string(),
                 parameters.unwrap_or_else(|| json!({"type":"object","properties":{}})),
             );
         }
-        if let Some(strict) = strict {
+        if let Some(strict) = strict.clone() {
             normalized_tool.insert("strict".to_string(), strict);
+        }
+        if let Some(function_obj) = function_obj {
+            for (key, value) in function_obj {
+                if matches!(key.as_str(), "name" | "description" | "parameters" | "strict")
+                    || value.is_null()
+                {
+                    continue;
+                }
+                normalized_tool
+                    .entry(key.clone())
+                    .or_insert_with(|| value.clone());
+            }
         }
         normalized.push(Value::Object(normalized_tool));
     }
     *tool_items = normalized;
 }
 
-fn server_executed_tool_disallows_description(tool_name: &str) -> bool {
-    matches!(tool_name, "tool_search")
+fn maybe_add_client_tool_search_defaults(
+    tool_name: &str,
+    tool_obj: &serde_json::Map<String, Value>,
+    normalized_tool: &mut serde_json::Map<String, Value>,
+) {
+    if !is_client_executed_tool_search(tool_name, tool_obj) {
+        return;
+    }
+    normalized_tool
+        .entry("description".to_string())
+        .or_insert_with(client_tool_search_description);
+    normalized_tool
+        .entry("parameters".to_string())
+        .or_insert_with(client_tool_search_parameters);
 }
 
-fn server_executed_tool_disallows_parameters(tool_name: &str) -> bool {
-    matches!(tool_name, "tool_search")
+fn is_client_executed_tool_search(
+    tool_name: &str,
+    tool_obj: &serde_json::Map<String, Value>,
+) -> bool {
+    tool_name == "tool_search"
+        && tool_obj.get("execution").and_then(Value::as_str) == Some("client")
+}
+
+fn client_tool_search_description() -> Value {
+    Value::String(
+        "Search over deferred tool metadata with BM25 and expose matching tools for the next model call."
+            .to_string(),
+    )
+}
+
+fn client_tool_search_parameters() -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Search query for deferred tools."
+            },
+            "limit": {
+                "type": "number",
+                "description": "Maximum number of tools to return."
+            }
+        },
+        "required": ["query"]
+    })
+}
+
+fn server_executed_tool_disallows_description(
+    tool_name: &str,
+    tool_obj: &serde_json::Map<String, Value>,
+) -> bool {
+    matches!(tool_name, "tool_search") && !is_client_executed_tool_search(tool_name, tool_obj)
+}
+
+fn server_executed_tool_disallows_parameters(
+    tool_name: &str,
+    tool_obj: &serde_json::Map<String, Value>,
+) -> bool {
+    matches!(tool_name, "tool_search") && !is_client_executed_tool_search(tool_name, tool_obj)
 }
 
 fn normalize_openai_codex_tool_choice(tool_choice: &mut Value) {
@@ -441,5 +525,62 @@ mod tests {
 
         assert_eq!(tool["type"], "tool_search");
         assert!(tool.get("parameters").is_none());
+    }
+
+    #[test]
+    fn adds_description_and_parameters_to_client_executed_tool_search() {
+        let request: ResponsesRequest = serde_json::from_value(json!({
+            "model": "gpt-5.4",
+            "input": "hello",
+            "tools": [{
+                "type": "tool_search",
+                "execution": "client"
+            }]
+        }))
+        .expect("request should parse");
+
+        let body = responses_to_openai_private(&request).expect("request should normalize");
+        let tool = &body["tools"][0];
+
+        assert_eq!(tool["type"], "tool_search");
+        assert_eq!(tool["execution"], "client");
+        assert_eq!(
+            tool["description"],
+            "Search over deferred tool metadata with BM25 and expose matching tools for the next model call."
+        );
+        assert_eq!(tool["parameters"]["type"], "object");
+        assert_eq!(tool["parameters"]["required"][0], "query");
+        assert_eq!(tool["parameters"]["properties"]["query"]["type"], "string");
+    }
+
+    #[test]
+    fn preserves_deferred_flag_for_function_tools() {
+        let request: ResponsesRequest = serde_json::from_value(json!({
+            "model": "gpt-5.4",
+            "input": "hello",
+            "tools": [{
+                "type": "tool_search"
+            }, {
+                "type": "function",
+                "name": "tool_search_tool",
+                "description": "Search over deferred tools",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string" }
+                    },
+                    "required": ["query"]
+                },
+                "deferred": true
+            }]
+        }))
+        .expect("request should parse");
+
+        let body = responses_to_openai_private(&request).expect("request should normalize");
+        let tool = &body["tools"][1];
+
+        assert_eq!(tool["type"], "function");
+        assert_eq!(tool["name"], "tool_search_tool");
+        assert_eq!(tool["deferred"], true);
     }
 }

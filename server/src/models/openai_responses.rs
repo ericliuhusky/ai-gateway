@@ -1,6 +1,6 @@
 use super::openai_chat::OpenAIContent;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ResponsesRequest {
@@ -142,6 +142,8 @@ pub struct ResponseTool {
     pub function: Option<Value>,
     #[serde(default)]
     pub tools: Option<Vec<ResponseTool>>,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
 }
 
 #[derive(Debug, Clone, Serialize)]
