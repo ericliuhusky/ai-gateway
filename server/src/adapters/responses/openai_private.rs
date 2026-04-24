@@ -218,6 +218,12 @@ fn normalize_openai_codex_tools(tools: &mut Value) {
                 if key == "function" || value.is_null() {
                     continue;
                 }
+                if key == "description" && server_executed_tool_disallows_description(tool_type) {
+                    continue;
+                }
+                if key == "parameters" && server_executed_tool_disallows_parameters(tool_type) {
+                    continue;
+                }
                 let mut value = value.clone();
                 if key == "tools" {
                     normalize_openai_codex_tools(&mut value);
@@ -249,15 +255,39 @@ fn normalize_openai_codex_tools(tools: &mut Value) {
         if name.as_ref().and_then(Value::as_str).is_none() {
             continue;
         }
-        normalized.push(json!({
-            "type": "function",
-            "name": name.unwrap_or(Value::String(String::new())),
-            "description": description.unwrap_or(Value::Null),
-            "parameters": parameters.unwrap_or_else(|| json!({"type":"object","properties":{}})),
-            "strict": strict.unwrap_or(Value::Null),
-        }));
+        let normalized_name = name.unwrap_or(Value::String(String::new()));
+        let normalized_name_str = normalized_name
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        let mut normalized_tool = serde_json::Map::new();
+        normalized_tool.insert("type".to_string(), Value::String("function".to_string()));
+        normalized_tool.insert("name".to_string(), normalized_name);
+        if !server_executed_tool_disallows_description(&normalized_name_str) {
+            if let Some(description) = description {
+                normalized_tool.insert("description".to_string(), description);
+            }
+        }
+        if !server_executed_tool_disallows_parameters(&normalized_name_str) {
+            normalized_tool.insert(
+                "parameters".to_string(),
+                parameters.unwrap_or_else(|| json!({"type":"object","properties":{}})),
+            );
+        }
+        if let Some(strict) = strict {
+            normalized_tool.insert("strict".to_string(), strict);
+        }
+        normalized.push(Value::Object(normalized_tool));
     }
     *tool_items = normalized;
+}
+
+fn server_executed_tool_disallows_description(tool_name: &str) -> bool {
+    matches!(tool_name, "tool_search")
+}
+
+fn server_executed_tool_disallows_parameters(tool_name: &str) -> bool {
+    matches!(tool_name, "tool_search")
 }
 
 fn normalize_openai_codex_tool_choice(tool_choice: &mut Value) {
@@ -368,5 +398,48 @@ mod tests {
         assert_eq!(namespace["tools"][1]["type"], "function");
         assert_eq!(namespace["tools"][1]["name"], "click");
         assert_eq!(namespace["tools"][1]["strict"], true);
+    }
+
+    #[test]
+    fn strips_description_from_server_executed_tool_search() {
+        let request: ResponsesRequest = serde_json::from_value(json!({
+            "model": "gpt-5.4",
+            "input": "hello",
+            "tools": [{
+                "type": "tool_search",
+                "description": "Search local tools"
+            }]
+        }))
+        .expect("request should parse");
+
+        let body = responses_to_openai_private(&request).expect("request should normalize");
+        let tool = &body["tools"][0];
+
+        assert_eq!(tool["type"], "tool_search");
+        assert!(tool.get("description").is_none());
+    }
+
+    #[test]
+    fn strips_parameters_from_server_executed_tool_search() {
+        let request: ResponsesRequest = serde_json::from_value(json!({
+            "model": "gpt-5.4",
+            "input": "hello",
+            "tools": [{
+                "type": "tool_search",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string" }
+                    }
+                }
+            }]
+        }))
+        .expect("request should parse");
+
+        let body = responses_to_openai_private(&request).expect("request should normalize");
+        let tool = &body["tools"][0];
+
+        assert_eq!(tool["type"], "tool_search");
+        assert!(tool.get("parameters").is_none());
     }
 }
