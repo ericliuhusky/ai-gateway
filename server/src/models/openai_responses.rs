@@ -209,7 +209,7 @@ pub struct ResponsesUsage {
 #[cfg(test)]
 mod public_responses_entry_compat_tests {
     use super::ResponsesRequest;
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     fn public_entry_roundtrip(value: Value) -> Value {
         let request: ResponsesRequest =

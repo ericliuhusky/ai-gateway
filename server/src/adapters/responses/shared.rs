@@ -5,7 +5,7 @@ use crate::models::{
     ResponseWebSearchCallItem, ResponsesInput, ResponsesInputBlock, ResponsesInputItem,
     ResponsesRequest, ToolCall, ToolFunction,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 pub fn build_messages(request: &ResponsesRequest) -> Result<Vec<OpenAIMessage>, String> {

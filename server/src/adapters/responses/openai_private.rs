@@ -1,5 +1,5 @@
 use crate::models::ResponsesRequest;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 const OPENAI_CODEX_DEFAULT_INSTRUCTIONS: &str = "You are Codex.";
 

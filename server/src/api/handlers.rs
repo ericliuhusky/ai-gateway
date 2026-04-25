@@ -29,7 +29,10 @@ use crate::{
 use async_stream::stream;
 use axum::{
     body::{Body, Bytes},
-    extract::{Form, Host, Path as AxumPath, Query, State},
+    extract::{
+        Form, Host, Path as AxumPath, Query, State,
+        ws::{Message as WsMessage, WebSocket, WebSocketUpgrade},
+    },
     http::{HeaderMap, HeaderValue, StatusCode},
     response::{Html, IntoResponse, Json, Redirect, Response},
 };
@@ -38,6 +41,7 @@ use debug_web::{
     DebugLogDetail as DebugWebLogDetail, DebugLogSummary as DebugWebLogSummary, DebugPageData,
 };
 use futures_util::StreamExt;
+use http_body_util::BodyExt;
 use reqwest::Client;
 use serde::Deserialize;
 use serde::Serialize;
@@ -784,6 +788,231 @@ pub async fn responses(
             Err(err)
         }
     }
+}
+
+pub async fn responses_websocket(
+    State(state): State<AppState>,
+    ws: WebSocketUpgrade,
+) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| responses_websocket_session(state, socket))
+}
+
+async fn responses_websocket_session(state: AppState, mut socket: WebSocket) {
+    while let Some(message) = socket.next().await {
+        let message = match message {
+            Ok(message) => message,
+            Err(err) => {
+                warn!(error = %err, "responses websocket receive failed");
+                break;
+            }
+        };
+
+        match message {
+            WsMessage::Text(text) => {
+                if let Err(err) =
+                    handle_responses_websocket_text(state.clone(), &mut socket, text).await
+                {
+                    warn!(error = %err, "responses websocket request failed");
+                    break;
+                }
+            }
+            WsMessage::Close(_) => break,
+            WsMessage::Ping(payload) => {
+                if socket.send(WsMessage::Pong(payload)).await.is_err() {
+                    break;
+                }
+            }
+            WsMessage::Pong(_) => {}
+            WsMessage::Binary(_) => {
+                if socket
+                    .send(WsMessage::Text(responses_ws_error_event(
+                        "websocket messages must be JSON text frames",
+                    )))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        }
+    }
+}
+
+async fn handle_responses_websocket_text(
+    state: AppState,
+    socket: &mut WebSocket,
+    text: String,
+) -> Result<(), String> {
+    let mut request = match response_create_ws_message_to_request(&text) {
+        Ok(request) => request,
+        Err(err) => {
+            socket
+                .send(WsMessage::Text(responses_ws_error_event(&err)))
+                .await
+                .map_err(|send_err| send_err.to_string())?;
+            return Ok(());
+        }
+    };
+
+    let id = Uuid::new_v4().simple().to_string();
+    let started_at = Instant::now();
+    apply_selected_model_override(&state, &mut request).await;
+    log_http_event(
+        &state.logs,
+        &id,
+        LogStage::IngressRequest,
+        None,
+        Some(IngressProtocol::OpenAiResponses.as_str()),
+        None,
+        None,
+        None,
+        None,
+        Some(&request.model),
+        true,
+        Some("GET"),
+        Some(RESPONSES_PATH),
+        None,
+        Some(json_for_storage(&request)),
+        None,
+        None,
+    )
+    .await;
+
+    let response = match responses_inner(state, request, id, started_at).await {
+        Ok(response) => response,
+        Err(err) => {
+            socket
+                .send(WsMessage::Text(responses_ws_error_event(&err.message)))
+                .await
+                .map_err(|send_err| send_err.to_string())?;
+            return Ok(());
+        }
+    };
+
+    if !response.status().is_success() {
+        socket
+            .send(WsMessage::Text(responses_ws_error_event(&format!(
+                "responses request returned {}",
+                response.status()
+            ))))
+            .await
+            .map_err(|send_err| send_err.to_string())?;
+        return Ok(());
+    }
+
+    let mut body = response.into_body();
+    let mut sse_buffer = String::new();
+    let mut saw_terminal_event = false;
+
+    while let Some(frame_result) = body.frame().await {
+        let frame = frame_result.map_err(|err| err.to_string())?;
+        let Ok(data) = frame.into_data() else {
+            continue;
+        };
+        let chunk = String::from_utf8_lossy(&data);
+        for event in sse_chunk_to_ws_json_messages(&mut sse_buffer, &chunk) {
+            saw_terminal_event |= is_terminal_responses_ws_event(&event);
+            socket
+                .send(WsMessage::Text(event))
+                .await
+                .map_err(|send_err| send_err.to_string())?;
+        }
+    }
+
+    if !saw_terminal_event {
+        socket
+            .send(WsMessage::Text(responses_ws_error_event(
+                "stream closed before response.completed",
+            )))
+            .await
+            .map_err(|send_err| send_err.to_string())?;
+    }
+
+    Ok(())
+}
+
+fn response_create_ws_message_to_request(text: &str) -> Result<ResponsesRequest, String> {
+    let mut value: Value =
+        serde_json::from_str(text).map_err(|err| format!("invalid websocket JSON: {err}"))?;
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| "websocket message must be a JSON object".to_string())?;
+    match object.get("type").and_then(Value::as_str) {
+        Some("response.create") => {}
+        Some(other) => return Err(format!("unsupported websocket message type `{other}`")),
+        None => return Err("websocket message is missing `type`".to_string()),
+    }
+
+    object.remove("type");
+    object.insert("stream".to_string(), Value::Bool(true));
+    object.remove("background");
+
+    serde_json::from_value(value).map_err(|err| format!("invalid response.create payload: {err}"))
+}
+
+fn sse_chunk_to_ws_json_messages(buffer: &mut String, chunk: &str) -> Vec<String> {
+    buffer.push_str(chunk);
+    let mut messages = Vec::new();
+
+    while let Some(block_end) = buffer.find("\n\n") {
+        let block: String = buffer.drain(..block_end + 2).collect();
+        let mut data_lines = Vec::new();
+        for line in block.lines() {
+            let line = line.trim_end_matches('\r');
+            let Some(data) = line.strip_prefix("data:") else {
+                continue;
+            };
+            let data = data.strip_prefix(' ').unwrap_or(data);
+            if data == "[DONE]" {
+                data_lines.clear();
+                break;
+            }
+            data_lines.push(data);
+        }
+
+        if data_lines.is_empty() {
+            continue;
+        }
+        let payload = data_lines.join("\n");
+        if serde_json::from_str::<Value>(&payload).is_ok() {
+            messages.push(payload);
+        }
+    }
+
+    messages
+}
+
+fn is_terminal_responses_ws_event(event: &str) -> bool {
+    serde_json::from_str::<Value>(event)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("type")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .is_some_and(|event_type| {
+            matches!(
+                event_type.as_str(),
+                "response.completed" | "response.failed" | "response.incomplete"
+            )
+        })
+}
+
+fn responses_ws_error_event(message: &str) -> String {
+    json!({
+        "type": "response.failed",
+        "response": {
+            "id": format!("resp_{}", Uuid::new_v4().simple()),
+            "object": "response",
+            "status": "failed",
+            "error": {
+                "message": message,
+                "type": "proxy_error"
+            }
+        }
+    })
+    .to_string()
 }
 
 fn map_debug_log_summary(log: GatewayLogSummary) -> DebugWebLogSummary {
@@ -3040,14 +3269,89 @@ impl IntoResponse for AppError {
 #[cfg(test)]
 mod tests {
     use super::{
-        ResolvedProvider, capture_final_response_from_sse_chunk, logged_stream_response_body,
-        openai_models_response, provider_uses_openai_account, quota_from_google_available_models,
-        quota_from_openai_usage, resolve_native_target,
+        ResolvedProvider, capture_final_response_from_sse_chunk, is_terminal_responses_ws_event,
+        logged_stream_response_body, openai_models_response, provider_uses_openai_account,
+        quota_from_google_available_models, quota_from_openai_usage, resolve_native_target,
+        response_create_ws_message_to_request, responses_ws_error_event,
+        sse_chunk_to_ws_json_messages,
     };
     use crate::models::{
         ApiProviderBillingMode, ApiProviderRecord, EgressProtocol, ProviderAuthMode,
     };
     use serde_json::json;
+
+    #[test]
+    fn converts_response_create_websocket_message_to_streaming_request() {
+        let request = response_create_ws_message_to_request(
+            &json!({
+                "type": "response.create",
+                "model": "gpt-5.4",
+                "input": [{ "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "hi" }] }],
+                "previous_response_id": "resp_previous_123",
+                "stream": false,
+                "background": true
+            })
+            .to_string(),
+        )
+        .expect("response.create should convert");
+        let body = serde_json::to_value(request).expect("request should serialize");
+
+        assert_eq!(body["model"], "gpt-5.4");
+        assert_eq!(body["stream"], true);
+        assert_eq!(body["previous_response_id"], "resp_previous_123");
+        assert!(body.get("background").is_none());
+        assert_eq!(body["input"][0]["content"][0]["type"], "input_text");
+    }
+
+    #[test]
+    fn rejects_unsupported_websocket_message_type() {
+        let err = response_create_ws_message_to_request(
+            &json!({
+                "type": "session.update",
+                "model": "gpt-5.4",
+                "input": "hi"
+            })
+            .to_string(),
+        )
+        .expect_err("unsupported type should fail");
+
+        assert!(err.contains("unsupported websocket message type"));
+    }
+
+    #[test]
+    fn converts_sse_data_blocks_to_websocket_json_messages() {
+        let mut buffer = String::new();
+        let first = sse_chunk_to_ws_json_messages(
+            &mut buffer,
+            "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\"}}\n\n",
+        );
+        let second = sse_chunk_to_ws_json_messages(
+            &mut buffer,
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"你\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"status\":\"completed\"}}\n\ndata: [DONE]\n\n",
+        );
+
+        assert_eq!(first.len(), 1);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&first[0]).unwrap()["type"],
+            "response.created"
+        );
+        assert_eq!(second.len(), 2);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&second[0]).unwrap()["delta"],
+            "你"
+        );
+        assert!(is_terminal_responses_ws_event(&second[1]));
+    }
+
+    #[test]
+    fn creates_responses_websocket_failed_event() {
+        let event = responses_ws_error_event("boom");
+        let value: serde_json::Value = serde_json::from_str(&event).expect("valid json");
+
+        assert_eq!(value["type"], "response.failed");
+        assert_eq!(value["response"]["status"], "failed");
+        assert_eq!(value["response"]["error"]["message"], "boom");
+    }
 
     #[test]
     fn parses_openai_codex_models_payload() {

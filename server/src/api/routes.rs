@@ -2,10 +2,9 @@ use crate::api::handlers::{
     add_provider, apply_codex_config, auth_google_callback, auth_google_start,
     auth_openai_callback, auth_openai_start, clear_logs, clear_selected_model, debug_clear_logs,
     debug_dashboard, debug_set_log_settings, delete_provider, get_codex_config_status,
-    get_log_detail, get_log_settings, get_logs, get_provider_quota, get_route,
-    get_selected_model, healthz, import_openai_from_local_codex_auth, list_models,
-    list_providers, responses, restore_codex_config, set_log_settings, set_route,
-    set_selected_model,
+    get_log_detail, get_log_settings, get_logs, get_provider_quota, get_route, get_selected_model,
+    healthz, import_openai_from_local_codex_auth, list_models, list_providers, responses,
+    responses_websocket, restore_codex_config, set_log_settings, set_route, set_selected_model,
 };
 use axum::{
     Router,
@@ -52,6 +51,9 @@ pub fn build_router(state: AppState) -> Router {
         .route("/debug/logging", post(debug_set_log_settings))
         .route("/debug/clear", post(debug_clear_logs))
         .route("/openai/v1/models", get(list_models))
-        .route("/openai/v1/responses", post(responses))
+        .route(
+            "/openai/v1/responses",
+            post(responses).get(responses_websocket),
+        )
         .with_state(state)
 }
