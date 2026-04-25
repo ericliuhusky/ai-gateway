@@ -5,7 +5,7 @@ use crate::models::{
     ResponseWebSearchCallItem, ResponsesInput, ResponsesInputBlock, ResponsesInputItem,
     ResponsesRequest, ToolCall, ToolFunction,
 };
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use uuid::Uuid;
 
 pub fn build_messages(request: &ResponsesRequest) -> Result<Vec<OpenAIMessage>, String> {
@@ -38,10 +38,10 @@ pub fn build_messages(request: &ResponsesRequest) -> Result<Vec<OpenAIMessage>, 
                     ResponsesInputItem::Block(block) => messages.push(OpenAIMessage {
                         role: "user".to_string(),
                         content: Some(match block {
-                            ResponsesInputBlock::InputText { text } => {
+                            ResponsesInputBlock::InputText { text, .. } => {
                                 OpenAIContent::String(text.clone())
                             }
-                            ResponsesInputBlock::InputImage { image_url } => {
+                            ResponsesInputBlock::InputImage { image_url, .. } => {
                                 OpenAIContent::Array(vec![OpenAIContentBlock::ImageUrl {
                                     image_url: OpenAIImageUrl {
                                         url: image_url.clone(),
@@ -151,7 +151,10 @@ fn clean_tool_schema_with_case(value: &mut Value, uppercase_types: bool) {
 fn response_message_to_openai(message: &ResponseMessageInput) -> OpenAIMessage {
     OpenAIMessage {
         role: message.role.clone(),
-        content: message.content.clone(),
+        content: message
+            .content
+            .as_ref()
+            .and_then(raw_message_content_to_openai),
         tool_calls: message.tool_calls.as_ref().map(|tool_calls| {
             tool_calls
                 .iter()

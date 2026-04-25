@@ -1,5 +1,5 @@
 use crate::models::ResponsesRequest;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 const OPENAI_CODEX_DEFAULT_INSTRUCTIONS: &str = "You are Codex.";
 
@@ -53,37 +53,89 @@ fn normalize_openai_codex_input(input: &mut Value) {
             .unwrap_or_default();
         match item_type {
             "custom_tool_call" => {
-                rewritten.push(json!({
-                    "type": "custom_tool_call",
-                    "call_id": item_obj.get("call_id").cloned().unwrap_or(Value::Null),
-                    "name": item_obj.get("name").cloned().unwrap_or(Value::Null),
-                    "input": item_obj.get("input").cloned().unwrap_or(Value::String(String::new())),
-                }));
+                let mut tool_call = serde_json::Map::new();
+                tool_call.insert(
+                    "type".to_string(),
+                    Value::String("custom_tool_call".to_string()),
+                );
+                tool_call.insert(
+                    "call_id".to_string(),
+                    item_obj.get("call_id").cloned().unwrap_or(Value::Null),
+                );
+                tool_call.insert(
+                    "name".to_string(),
+                    item_obj.get("name").cloned().unwrap_or(Value::Null),
+                );
+                tool_call.insert(
+                    "input".to_string(),
+                    item_obj
+                        .get("input")
+                        .cloned()
+                        .unwrap_or(Value::String(String::new())),
+                );
+                copy_optional_fields(item_obj, &mut tool_call, &["id", "status"]);
+                rewritten.push(Value::Object(tool_call));
                 continue;
             }
             "function_call" => {
-                rewritten.push(json!({
-                    "type": "function_call",
-                    "call_id": item_obj.get("call_id").cloned().unwrap_or(Value::Null),
-                    "name": item_obj.get("name").cloned().unwrap_or(Value::Null),
-                    "arguments": item_obj.get("arguments").cloned().unwrap_or(Value::String("{}".to_string())),
-                }));
+                let mut tool_call = serde_json::Map::new();
+                tool_call.insert(
+                    "type".to_string(),
+                    Value::String("function_call".to_string()),
+                );
+                tool_call.insert(
+                    "call_id".to_string(),
+                    item_obj.get("call_id").cloned().unwrap_or(Value::Null),
+                );
+                tool_call.insert(
+                    "name".to_string(),
+                    item_obj.get("name").cloned().unwrap_or(Value::Null),
+                );
+                tool_call.insert(
+                    "arguments".to_string(),
+                    item_obj
+                        .get("arguments")
+                        .cloned()
+                        .unwrap_or(Value::String("{}".to_string())),
+                );
+                copy_optional_fields(item_obj, &mut tool_call, &["id", "status"]);
+                rewritten.push(Value::Object(tool_call));
                 continue;
             }
             "function_call_output" => {
-                rewritten.push(json!({
-                    "type": "function_call_output",
-                    "call_id": item_obj.get("call_id").cloned().unwrap_or(Value::Null),
-                    "output": stringify_output(item_obj.get("output").cloned()),
-                }));
+                let mut output = serde_json::Map::new();
+                output.insert(
+                    "type".to_string(),
+                    Value::String("function_call_output".to_string()),
+                );
+                output.insert(
+                    "call_id".to_string(),
+                    item_obj.get("call_id").cloned().unwrap_or(Value::Null),
+                );
+                output.insert(
+                    "output".to_string(),
+                    Value::String(stringify_output(item_obj.get("output").cloned())),
+                );
+                copy_optional_fields(item_obj, &mut output, &["name", "status"]);
+                rewritten.push(Value::Object(output));
                 continue;
             }
             "custom_tool_call_output" => {
-                rewritten.push(json!({
-                    "type": "custom_tool_call_output",
-                    "call_id": item_obj.get("call_id").cloned().unwrap_or(Value::Null),
-                    "output": stringify_output(item_obj.get("output").cloned()),
-                }));
+                let mut output = serde_json::Map::new();
+                output.insert(
+                    "type".to_string(),
+                    Value::String("custom_tool_call_output".to_string()),
+                );
+                output.insert(
+                    "call_id".to_string(),
+                    item_obj.get("call_id").cloned().unwrap_or(Value::Null),
+                );
+                output.insert(
+                    "output".to_string(),
+                    Value::String(stringify_output(item_obj.get("output").cloned())),
+                );
+                copy_optional_fields(item_obj, &mut output, &["name", "status"]);
+                rewritten.push(Value::Object(output));
                 continue;
             }
             "input_text" | "input_image" => {
@@ -96,6 +148,13 @@ fn normalize_openai_codex_input(input: &mut Value) {
             }
             _ => {}
         }
+        let has_message_shape = item_obj.contains_key("role")
+            || item_obj.contains_key("content")
+            || item_obj.contains_key("tool_calls");
+        if !item_type.is_empty() && !has_message_shape {
+            rewritten.push(item);
+            continue;
+        }
         let role = item_obj
             .get("role")
             .and_then(Value::as_str)
@@ -103,7 +162,12 @@ fn normalize_openai_codex_input(input: &mut Value) {
             .to_string();
         let content = normalize_message_content(item_obj.get("content").cloned(), &role);
         if let Some(content) = content {
-            rewritten.push(json!({ "type": "message", "role": role, "content": content }));
+            let mut message = item_obj.clone();
+            message.insert("type".to_string(), Value::String("message".to_string()));
+            message.insert("role".to_string(), Value::String(role.clone()));
+            message.insert("content".to_string(), content);
+            message.remove("tool_calls");
+            rewritten.push(Value::Object(message));
         }
         if let Some(tool_calls) = item_obj.get("tool_calls").and_then(Value::as_array) {
             for tool_call in tool_calls {
@@ -119,6 +183,18 @@ fn normalize_openai_codex_input(input: &mut Value) {
         }
     }
     *items = rewritten;
+}
+
+fn copy_optional_fields(
+    source: &serde_json::Map<String, Value>,
+    target: &mut serde_json::Map<String, Value>,
+    field_names: &[&str],
+) {
+    for field_name in field_names {
+        if let Some(value) = source.get(*field_name) {
+            target.insert((*field_name).to_string(), value.clone());
+        }
+    }
 }
 
 fn normalize_message_content(content: Option<Value>, role: &str) -> Option<Value> {
@@ -169,7 +245,13 @@ fn normalize_content_part(part: Value, role: &str) -> Value {
     }
     if part_type == "input_image" {
         if let Some(url) = part_obj.get("image_url").and_then(Value::as_str) {
-            return json!({ "type": "input_image", "source": { "type": "url", "url": url } });
+            let mut image = serde_json::Map::new();
+            image.insert("type".to_string(), Value::String("input_image".to_string()));
+            image.insert("source".to_string(), json!({ "type": "url", "url": url }));
+            if let Some(detail) = part_obj.get("detail") {
+                image.insert("detail".to_string(), detail.clone());
+            }
+            return Value::Object(image);
         }
     }
     part
@@ -261,14 +343,13 @@ fn normalize_openai_codex_tools(tools: &mut Value) {
             continue;
         }
         let normalized_name = name.unwrap_or(Value::String(String::new()));
-        let normalized_name_str = normalized_name
-            .as_str()
-            .unwrap_or_default()
-            .to_string();
+        let normalized_name_str = normalized_name.as_str().unwrap_or_default().to_string();
         let mut normalized_tool = serde_json::Map::new();
         for (key, value) in tool_obj {
-            if matches!(key.as_str(), "type" | "name" | "description" | "parameters" | "function")
-                || value.is_null()
+            if matches!(
+                key.as_str(),
+                "type" | "name" | "description" | "parameters" | "function"
+            ) || value.is_null()
             {
                 continue;
             }
@@ -296,8 +377,10 @@ fn normalize_openai_codex_tools(tools: &mut Value) {
         }
         if let Some(function_obj) = function_obj {
             for (key, value) in function_obj {
-                if matches!(key.as_str(), "name" | "description" | "parameters" | "strict")
-                    || value.is_null()
+                if matches!(
+                    key.as_str(),
+                    "name" | "description" | "parameters" | "strict"
+                ) || value.is_null()
                 {
                     continue;
                 }
