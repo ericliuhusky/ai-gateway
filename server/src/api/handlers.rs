@@ -843,7 +843,7 @@ async fn handle_responses_websocket_text(
     socket: &mut WebSocket,
     text: String,
 ) -> Result<(), String> {
-    let mut request = match response_create_ws_message_to_request(&text) {
+    let mut ws_request = match response_create_ws_message_to_request(&text) {
         Ok(request) => request,
         Err(err) => {
             socket
@@ -854,9 +854,20 @@ async fn handle_responses_websocket_text(
         }
     };
 
+    if !ws_request.generate {
+        socket
+            .send(WsMessage::Text(responses_ws_completed_event(
+                &ws_request.request.model,
+            )))
+            .await
+            .map_err(|send_err| send_err.to_string())?;
+        return Ok(());
+    }
+
     let id = Uuid::new_v4().simple().to_string();
     let started_at = Instant::now();
-    apply_selected_model_override(&state, &mut request).await;
+    apply_selected_model_override(&state, &mut ws_request.request).await;
+    let request = &ws_request.request;
     log_http_event(
         &state.logs,
         &id,
@@ -878,7 +889,7 @@ async fn handle_responses_websocket_text(
     )
     .await;
 
-    let response = match responses_inner(state, request, id, started_at).await {
+    let response = match responses_inner(state, ws_request.request, id, started_at).await {
         Ok(response) => response,
         Err(err) => {
             socket
@@ -931,7 +942,13 @@ async fn handle_responses_websocket_text(
     Ok(())
 }
 
-fn response_create_ws_message_to_request(text: &str) -> Result<ResponsesRequest, String> {
+#[derive(Debug)]
+struct ResponseCreateWsRequest {
+    request: ResponsesRequest,
+    generate: bool,
+}
+
+fn response_create_ws_message_to_request(text: &str) -> Result<ResponseCreateWsRequest, String> {
     let mut value: Value =
         serde_json::from_str(text).map_err(|err| format!("invalid websocket JSON: {err}"))?;
     let object = value
@@ -944,10 +961,16 @@ fn response_create_ws_message_to_request(text: &str) -> Result<ResponsesRequest,
     }
 
     object.remove("type");
+    let generate = object
+        .remove("generate")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(true);
     object.insert("stream".to_string(), Value::Bool(true));
     object.remove("background");
 
-    serde_json::from_value(value).map_err(|err| format!("invalid response.create payload: {err}"))
+    let request = serde_json::from_value(value)
+        .map_err(|err| format!("invalid response.create payload: {err}"))?;
+    Ok(ResponseCreateWsRequest { request, generate })
 }
 
 fn sse_chunk_to_ws_json_messages(buffer: &mut String, chunk: &str) -> Vec<String> {
@@ -1010,6 +1033,20 @@ fn responses_ws_error_event(message: &str) -> String {
                 "message": message,
                 "type": "proxy_error"
             }
+        }
+    })
+    .to_string()
+}
+
+fn responses_ws_completed_event(model: &str) -> String {
+    json!({
+        "type": "response.completed",
+        "response": {
+            "id": format!("resp_{}", Uuid::new_v4().simple()),
+            "object": "response",
+            "status": "completed",
+            "model": model,
+            "output": []
         }
     })
     .to_string()
@@ -3272,8 +3309,8 @@ mod tests {
         ResolvedProvider, capture_final_response_from_sse_chunk, is_terminal_responses_ws_event,
         logged_stream_response_body, openai_models_response, provider_uses_openai_account,
         quota_from_google_available_models, quota_from_openai_usage, resolve_native_target,
-        response_create_ws_message_to_request, responses_ws_error_event,
-        sse_chunk_to_ws_json_messages,
+        response_create_ws_message_to_request, responses_ws_completed_event,
+        responses_ws_error_event, sse_chunk_to_ws_json_messages,
     };
     use crate::models::{
         ApiProviderBillingMode, ApiProviderRecord, EgressProtocol, ProviderAuthMode,
@@ -3282,25 +3319,69 @@ mod tests {
 
     #[test]
     fn converts_response_create_websocket_message_to_streaming_request() {
-        let request = response_create_ws_message_to_request(
+        let ws_request = response_create_ws_message_to_request(
             &json!({
                 "type": "response.create",
                 "model": "gpt-5.4",
                 "input": [{ "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "hi" }] }],
                 "previous_response_id": "resp_previous_123",
                 "stream": false,
-                "background": true
+                "background": true,
+                "generate": true,
+                "parallel_tool_calls": true,
+                "reasoning": { "effort": "medium", "summary": "auto" },
+                "include": ["reasoning.encrypted_content"],
+                "service_tier": "priority",
+                "prompt_cache_key": "cache-key",
+                "text": { "verbosity": "medium" },
+                "client_metadata": {
+                    "x-codex-window-id": "thread-id:0",
+                    "ws_request_header_traceparent": "00-00000000000000000000000000000000-0000000000000000-01",
+                    "ws_request_header_tracestate": "vendor=value"
+                }
             })
             .to_string(),
         )
         .expect("response.create should convert");
-        let body = serde_json::to_value(request).expect("request should serialize");
+        let body = serde_json::to_value(ws_request.request).expect("request should serialize");
 
+        assert!(ws_request.generate);
         assert_eq!(body["model"], "gpt-5.4");
         assert_eq!(body["stream"], true);
         assert_eq!(body["previous_response_id"], "resp_previous_123");
         assert!(body.get("background").is_none());
+        assert!(body.get("generate").is_none());
+        assert_eq!(body["parallel_tool_calls"], true);
+        assert_eq!(body["reasoning"]["effort"], "medium");
+        assert_eq!(body["include"][0], "reasoning.encrypted_content");
+        assert_eq!(body["service_tier"], "priority");
+        assert_eq!(body["prompt_cache_key"], "cache-key");
+        assert_eq!(body["text"]["verbosity"], "medium");
+        assert_eq!(body["client_metadata"]["x-codex-window-id"], "thread-id:0");
+        assert_eq!(
+            body["client_metadata"]["ws_request_header_traceparent"],
+            "00-00000000000000000000000000000000-0000000000000000-01"
+        );
         assert_eq!(body["input"][0]["content"][0]["type"], "input_text");
+    }
+
+    #[test]
+    fn converts_response_create_prewarm_generate_false() {
+        let ws_request = response_create_ws_message_to_request(
+            &json!({
+                "type": "response.create",
+                "model": "gpt-5.4",
+                "input": [{ "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "hi" }] }],
+                "generate": false
+            })
+            .to_string(),
+        )
+        .expect("response.create should convert");
+        let body = serde_json::to_value(ws_request.request).expect("request should serialize");
+
+        assert!(!ws_request.generate);
+        assert_eq!(body["stream"], true);
+        assert!(body.get("generate").is_none());
     }
 
     #[test]
@@ -3351,6 +3432,17 @@ mod tests {
         assert_eq!(value["type"], "response.failed");
         assert_eq!(value["response"]["status"], "failed");
         assert_eq!(value["response"]["error"]["message"], "boom");
+    }
+
+    #[test]
+    fn creates_responses_websocket_completed_event_for_prewarm() {
+        let event = responses_ws_completed_event("gpt-5.4");
+        let value: serde_json::Value = serde_json::from_str(&event).expect("valid json");
+
+        assert_eq!(value["type"], "response.completed");
+        assert_eq!(value["response"]["status"], "completed");
+        assert_eq!(value["response"]["model"], "gpt-5.4");
+        assert_eq!(value["response"]["output"].as_array().unwrap().len(), 0);
     }
 
     #[test]

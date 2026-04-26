@@ -148,10 +148,7 @@ fn normalize_openai_codex_input(input: &mut Value) {
             }
             _ => {}
         }
-        let has_message_shape = item_obj.contains_key("role")
-            || item_obj.contains_key("content")
-            || item_obj.contains_key("tool_calls");
-        if !item_type.is_empty() && !has_message_shape {
+        if !item_type.is_empty() && item_type != "message" {
             rewritten.push(item);
             continue;
         }
@@ -247,7 +244,7 @@ fn normalize_content_part(part: Value, role: &str) -> Value {
         if let Some(url) = part_obj.get("image_url").and_then(Value::as_str) {
             let mut image = serde_json::Map::new();
             image.insert("type".to_string(), Value::String("input_image".to_string()));
-            image.insert("source".to_string(), json!({ "type": "url", "url": url }));
+            image.insert("image_url".to_string(), Value::String(url.to_string()));
             if let Some(detail) = part_obj.get("detail") {
                 image.insert("detail".to_string(), detail.clone());
             }
@@ -665,5 +662,282 @@ mod tests {
         assert_eq!(tool["type"], "function");
         assert_eq!(tool["name"], "tool_search_tool");
         assert_eq!(tool["deferred"], true);
+    }
+
+    #[test]
+    fn covers_codex_backend_http_request_fields_items_and_tools() {
+        let request: ResponsesRequest = serde_json::from_value(json!({
+            "model": "gpt-5.1-codex",
+            "instructions": "You are Codex, a coding agent running locally.",
+            "input": [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [
+                        { "type": "input_text", "text": "Analyze the repository." },
+                        { "type": "input_image", "image_url": "data:image/png;base64,BASE64", "detail": "high" }
+                    ]
+                },
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{ "type": "output_text", "text": "I will inspect the project." }],
+                    "end_turn": false,
+                    "phase": "commentary"
+                },
+                {
+                    "type": "reasoning",
+                    "summary": [{ "type": "summary_text", "text": "Inspect, test, fix." }],
+                    "content": [{ "type": "text", "text": "Internal reasoning placeholder." }],
+                    "encrypted_content": "gAAAAABl"
+                },
+                {
+                    "type": "function_call",
+                    "name": "shell",
+                    "arguments": "{\"command\":[\"bash\",\"-lc\",\"cargo test\"]}",
+                    "call_id": "call_shell_001"
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_shell_001",
+                    "output": "{\"output\":\"failed\",\"metadata\":{\"exit_code\":101}}"
+                },
+                {
+                    "type": "custom_tool_call",
+                    "status": "completed",
+                    "call_id": "call_custom_001",
+                    "name": "apply_patch",
+                    "input": "*** Begin Patch\n*** End Patch"
+                },
+                {
+                    "type": "custom_tool_call_output",
+                    "call_id": "call_custom_001",
+                    "name": "apply_patch",
+                    "output": "Patch applied successfully."
+                },
+                {
+                    "type": "local_shell_call",
+                    "call_id": "call_local_shell_001",
+                    "status": "completed",
+                    "action": {
+                        "type": "exec",
+                        "command": ["bash", "-lc", "cargo test"],
+                        "timeout_ms": 120000,
+                        "working_directory": "/workspace/project",
+                        "env": { "RUST_BACKTRACE": "1" },
+                        "user": null
+                    }
+                },
+                {
+                    "type": "tool_search_call",
+                    "call_id": "call_tool_search_001",
+                    "status": "completed",
+                    "execution": "server",
+                    "arguments": { "query": "rust test failure", "limit": 10 }
+                },
+                {
+                    "type": "tool_search_output",
+                    "call_id": "call_tool_search_001",
+                    "status": "completed",
+                    "execution": "server",
+                    "tools": [{ "name": "example_tool", "description": "placeholder" }]
+                },
+                {
+                    "type": "web_search_call",
+                    "status": "completed",
+                    "action": { "type": "search", "query": "Rust cargo test failure example" }
+                },
+                {
+                    "type": "image_generation_call",
+                    "id": "ig_123",
+                    "status": "completed",
+                    "revised_prompt": "A diagram of the fixed architecture",
+                    "result": "base64-or-image-result-placeholder"
+                },
+                {
+                    "type": "compaction",
+                    "encrypted_content": "encrypted_compaction_summary_placeholder"
+                }
+            ],
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "shell",
+                    "description": "Run a shell command.",
+                    "strict": false,
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "command": { "type": "array", "items": { "type": "string" } },
+                            "workdir": { "type": "string" },
+                            "timeout_ms": { "type": "integer" },
+                            "sandbox_permissions": { "type": "string", "enum": ["use_default", "require_escalated", "with_additional_permissions"] },
+                            "justification": { "type": "string" }
+                        },
+                        "required": ["command"],
+                        "additionalProperties": false
+                    }
+                },
+                {
+                    "type": "custom",
+                    "name": "apply_patch",
+                    "description": "Apply a patch to files.",
+                    "format": { "type": "grammar", "syntax": "lark", "definition": "start: /(.|\\n)+/" }
+                },
+                { "type": "local_shell" },
+                {
+                    "type": "web_search",
+                    "external_web_access": true,
+                    "filters": { "allowed_domains": ["github.com", "docs.rs"] },
+                    "user_location": {
+                        "type": "approximate",
+                        "country": "US",
+                        "region": "CA",
+                        "city": "Los Angeles",
+                        "timezone": "America/Los_Angeles"
+                    },
+                    "search_context_size": "medium",
+                    "search_content_types": ["text", "image"]
+                },
+                { "type": "image_generation", "output_format": "png" },
+                {
+                    "type": "tool_search",
+                    "execution": "server",
+                    "description": "Search available tools.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": { "type": "string" },
+                            "limit": { "type": "integer" }
+                        },
+                        "required": ["query"],
+                        "additionalProperties": false
+                    }
+                },
+                {
+                    "type": "namespace",
+                    "name": "container",
+                    "description": "Container-related tools.",
+                    "tools": [{
+                        "type": "function",
+                        "name": "exec",
+                        "description": "Execute a command.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "cmd": { "type": "array", "items": { "type": "string" } },
+                                "workdir": { "type": "string" },
+                                "timeout": { "type": "integer" }
+                            },
+                            "required": ["cmd"],
+                            "additionalProperties": false
+                        }
+                    }]
+                }
+            ],
+            "tool_choice": "auto",
+            "parallel_tool_calls": true,
+            "reasoning": { "effort": "medium", "summary": "auto" },
+            "store": true,
+            "stream": true,
+            "include": ["reasoning.encrypted_content"],
+            "service_tier": "priority",
+            "prompt_cache_key": "00000000-0000-0000-0000-000000000000",
+            "text": {
+                "verbosity": "medium",
+                "format": {
+                    "type": "json_schema",
+                    "strict": true,
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "summary": { "type": "string" },
+                            "changed_files": { "type": "array", "items": { "type": "string" } }
+                        },
+                        "required": ["summary", "changed_files"],
+                        "additionalProperties": false
+                    },
+                    "name": "codex_output_schema"
+                }
+            },
+            "client_metadata": {
+                "x-codex-installation-id": "installation-id-placeholder"
+            }
+        }))
+        .expect("codex backend request should parse");
+
+        let body = responses_to_openai_private(&request).expect("request should normalize");
+
+        assert_eq!(body["model"], "gpt-5.1-codex");
+        assert_eq!(
+            body["instructions"],
+            "You are Codex, a coding agent running locally."
+        );
+        assert_eq!(body["tool_choice"], "auto");
+        assert_eq!(body["parallel_tool_calls"], true);
+        assert_eq!(body["reasoning"]["effort"], "medium");
+        assert_eq!(body["store"], false);
+        assert_eq!(body["stream"], true);
+        assert_eq!(body["include"][0], "reasoning.encrypted_content");
+        assert_eq!(body["service_tier"], "priority");
+        assert_eq!(
+            body["prompt_cache_key"],
+            "00000000-0000-0000-0000-000000000000"
+        );
+        assert_eq!(body["text"]["verbosity"], "medium");
+        assert_eq!(body["text"]["format"]["name"], "codex_output_schema");
+        assert_eq!(
+            body["client_metadata"]["x-codex-installation-id"],
+            "installation-id-placeholder"
+        );
+        assert!(body.get("temperature").is_none());
+        assert!(body.get("top_p").is_none());
+        assert!(body.get("max_output_tokens").is_none());
+
+        assert_eq!(body["input"][0]["type"], "message");
+        assert_eq!(body["input"][0]["content"][0]["type"], "input_text");
+        assert_eq!(body["input"][0]["content"][1]["type"], "input_image");
+        assert_eq!(
+            body["input"][0]["content"][1]["image_url"],
+            "data:image/png;base64,BASE64"
+        );
+        assert_eq!(body["input"][1]["phase"], "commentary");
+        assert_eq!(body["input"][2]["type"], "reasoning");
+        assert_eq!(body["input"][3]["type"], "function_call");
+        assert_eq!(body["input"][4]["type"], "function_call_output");
+        assert_eq!(body["input"][5]["type"], "custom_tool_call");
+        assert_eq!(body["input"][6]["type"], "custom_tool_call_output");
+        assert_eq!(body["input"][7]["type"], "local_shell_call");
+        assert_eq!(body["input"][8]["type"], "tool_search_call");
+        assert_eq!(body["input"][9]["type"], "tool_search_output");
+        assert_eq!(body["input"][10]["type"], "web_search_call");
+        assert_eq!(body["input"][11]["type"], "image_generation_call");
+        assert_eq!(body["input"][12]["type"], "compaction");
+
+        let tool_types = body["tools"]
+            .as_array()
+            .expect("tools array")
+            .iter()
+            .map(|tool| tool["type"].as_str().expect("tool type"))
+            .collect::<Vec<_>>();
+        for expected in [
+            "function",
+            "custom",
+            "local_shell",
+            "web_search",
+            "image_generation",
+            "tool_search",
+            "namespace",
+        ] {
+            assert!(
+                tool_types.contains(&expected),
+                "missing tool type {expected}"
+            );
+        }
+        assert_eq!(body["tools"][1]["format"]["syntax"], "lark");
+        assert_eq!(body["tools"][5]["type"], "tool_search");
+        assert!(body["tools"][5].get("description").is_none());
+        assert!(body["tools"][5].get("parameters").is_none());
+        assert_eq!(body["tools"][6]["tools"][0]["type"], "function");
     }
 }
