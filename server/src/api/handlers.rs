@@ -155,7 +155,7 @@ pub async fn auth_google_callback(
     };
     let account = state
         .accounts
-        .add_oauth_account(user, token, project_id)
+        .add_google_account(user, token, project_id)
         .await
         .map_err(AppError::bad_request)?;
     state

@@ -32,13 +32,13 @@ impl AccountPool {
         Ok(pool)
     }
 
-    pub async fn load(&self) -> Result<usize, String> {
+    pub async fn load(&self) -> Result<(), String> {
         let loaded = self.sqlite.load_accounts()?;
         *self.accounts.lock().await = loaded;
-        Ok(self.accounts.lock().await.len())
+        Ok(())
     }
 
-    pub async fn add_oauth_account(
+    pub async fn add_google_account(
         &self,
         user: UserInfo,
         token: TokenResponse,
@@ -50,34 +50,24 @@ impl AccountPool {
         let expiry_timestamp = now_unix() as i64 + token.expires_in;
 
         let mut accounts = self.accounts.lock().await;
-        let account = if let Some(existing) = accounts.iter_mut().find(|account| {
+        if accounts.iter().any(|account| {
             account.email == user.email && account.provider() == PROVIDER_GOOGLE_PROXY
         }) {
-            existing.account_type = AccountType::Google;
-            existing.access_token = token.access_token;
-            existing.refresh_token = refresh_token;
-            existing.expiry_timestamp = expiry_timestamp;
-            existing.client_id = None;
-            if let Some(project_id) = project_id {
-                existing.project_id = Some(project_id);
-            }
-            existing.upstream_account_id = None;
-            existing.clone()
-        } else {
-            let account = AccountRecord {
-                id: Uuid::new_v4().to_string(),
-                account_type: AccountType::Google,
-                email: user.email,
-                access_token: token.access_token,
-                refresh_token,
-                expiry_timestamp,
-                client_id: None,
-                project_id,
-                upstream_account_id: None,
-            };
-            accounts.push(account.clone());
-            account
+            return Err(format!("Google 账号已经存在: {}", user.email));
+        }
+
+        let account = AccountRecord {
+            id: Uuid::new_v4().to_string(),
+            account_type: AccountType::Google,
+            email: user.email,
+            access_token: token.access_token,
+            refresh_token,
+            expiry_timestamp,
+            client_id: None,
+            project_id,
+            upstream_account_id: None,
         };
+        accounts.push(account.clone());
 
         self.persist_account(&account)?;
         Ok(account)
@@ -88,32 +78,24 @@ impl AccountPool {
         imported: ImportedOpenAIAuth,
     ) -> Result<AccountRecord, String> {
         let mut accounts = self.accounts.lock().await;
-        let account = if let Some(existing) = accounts.iter_mut().find(|account| {
+        if accounts.iter().any(|account| {
             account.email == imported.email && account.provider() == PROVIDER_OPENAI_PROXY
         }) {
-            existing.account_type = AccountType::Openai;
-            existing.access_token = imported.access_token;
-            existing.refresh_token = imported.refresh_token;
-            existing.expiry_timestamp = imported.expiry_timestamp;
-            existing.client_id = Some(imported.client_id);
-            existing.project_id = None;
-            existing.upstream_account_id = imported.account_id;
-            existing.clone()
-        } else {
-            let account = AccountRecord {
-                id: Uuid::new_v4().to_string(),
-                account_type: AccountType::Openai,
-                email: imported.email,
-                access_token: imported.access_token,
-                refresh_token: imported.refresh_token,
-                expiry_timestamp: imported.expiry_timestamp,
-                client_id: Some(imported.client_id),
-                project_id: None,
-                upstream_account_id: imported.account_id,
-            };
-            accounts.push(account.clone());
-            account
+            return Err(format!("OpenAI 账号已经存在: {}", imported.email));
+        }
+
+        let account = AccountRecord {
+            id: Uuid::new_v4().to_string(),
+            account_type: AccountType::Openai,
+            email: imported.email,
+            access_token: imported.access_token,
+            refresh_token: imported.refresh_token,
+            expiry_timestamp: imported.expiry_timestamp,
+            client_id: Some(imported.client_id),
+            project_id: None,
+            upstream_account_id: imported.account_id,
         };
+        accounts.push(account.clone());
 
         self.persist_account(&account)?;
         Ok(account)
