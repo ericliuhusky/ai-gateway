@@ -35,6 +35,10 @@ impl Config {
         self.data_dir().join("log.db")
     }
 
+    pub fn chat_history_sqlite_path(&self) -> PathBuf {
+        self.data_dir().join("chat_history.db")
+    }
+
     pub fn codex_dir(&self) -> PathBuf {
         PathBuf::from(env::var("HOME").expect("HOME environment variable is not set"))
             .join(".codex")

@@ -12,7 +12,15 @@ pub fn responses_to_chat_completions(
     request: &ResponsesRequest,
     model: &str,
 ) -> Result<Value, String> {
-    let mut messages = build_messages(request)?;
+    let messages = build_messages(request)?;
+    responses_to_chat_completions_with_messages(request, model, messages)
+}
+
+pub fn responses_to_chat_completions_with_messages(
+    request: &ResponsesRequest,
+    model: &str,
+    mut messages: Vec<OpenAIMessage>,
+) -> Result<Value, String> {
     for message in &mut messages {
         if message.role == "developer" {
             message.role = "system".to_string();
@@ -41,6 +49,15 @@ pub fn responses_to_chat_completions(
         body.insert("top_p".to_string(), json!(top_p));
     }
     Ok(Value::Object(body))
+}
+
+pub fn normalize_chat_completions_messages(messages: &mut Vec<OpenAIMessage>) {
+    for message in &mut *messages {
+        if message.role == "developer" {
+            message.role = "system".to_string();
+        }
+    }
+    normalize_messages_for_chat_completions(messages);
 }
 
 /// Chat Completions has stricter sequencing rules around tool messages:
@@ -74,6 +91,7 @@ fn normalize_messages_for_chat_completions(messages: &mut Vec<OpenAIMessage>) {
 
     let mut tool_outputs_by_assistant_idx: HashMap<usize, Vec<OpenAIMessage>> = HashMap::new();
     let mut rewritten: Vec<OpenAIMessage> = Vec::with_capacity(original.len());
+    let mut seen_assistants = std::collections::HashSet::new();
 
     // First pass: bucket tool outputs by the assistant tool_calls message they belong to.
     for (idx, mut message) in original.iter().cloned().enumerate() {
@@ -98,10 +116,14 @@ fn normalize_messages_for_chat_completions(messages: &mut Vec<OpenAIMessage>) {
             }
 
             if let Some(&assistant_idx) = tool_call_to_assistant_idx.get(&call_id) {
-                tool_outputs_by_assistant_idx
-                    .entry(assistant_idx)
-                    .or_default()
-                    .push(message);
+                if seen_assistants.contains(&assistant_idx) {
+                    rewritten.push(message);
+                } else {
+                    tool_outputs_by_assistant_idx
+                        .entry(assistant_idx)
+                        .or_default()
+                        .push(message);
+                }
                 continue;
             }
 
@@ -119,6 +141,7 @@ fn normalize_messages_for_chat_completions(messages: &mut Vec<OpenAIMessage>) {
         rewritten.push(message);
 
         if is_assistant {
+            seen_assistants.insert(idx);
             if let Some(tool_outputs) = tool_outputs_by_assistant_idx.remove(&idx) {
                 rewritten.extend(tool_outputs);
             }
@@ -487,5 +510,26 @@ mod tests {
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0]["role"], "user");
         assert!(messages[0].get("tool_call_id").is_none());
+    }
+
+    #[test]
+    fn preserves_already_ordered_tool_outputs_for_chat_completions() {
+        let request: ResponsesRequest = serde_json::from_value(json!({
+            "model": "gpt-5.4",
+            "input": [
+                { "type": "function_call", "call_id": "call_1", "name": "shell", "arguments": "{\"command\":[\"pwd\"]}" },
+                { "type": "function_call_output", "call_id": "call_1", "output": "ok", "name": "shell" }
+            ]
+        }))
+        .expect("request should parse");
+
+        let body = responses_to_chat_completions(&request, "chat-compatible-latest")
+            .expect("request should convert");
+        let messages = body["messages"].as_array().expect("messages array");
+
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0]["role"], "assistant");
+        assert_eq!(messages[1]["role"], "tool");
+        assert_eq!(messages[1]["tool_call_id"], "call_1");
     }
 }
