@@ -387,6 +387,9 @@ impl LogStore {
                     error_message,
                     ingress_protocol,
                     egress_protocol,
+                    method,
+                    path,
+                    egress_request_url,
                     ingress_request_body,
                     ingress_response_body,
                     egress_response_body
@@ -399,9 +402,9 @@ impl LogStore {
 
         let rows = stmt
             .query_map(params![limit as i64], |row| {
-                let ingress_request_body = row.get::<_, Option<String>>(12)?;
-                let ingress_response_body = row.get::<_, Option<String>>(13)?;
-                let egress_response_body = row.get::<_, Option<String>>(14)?;
+                let ingress_request_body = row.get::<_, Option<String>>(15)?;
+                let ingress_response_body = row.get::<_, Option<String>>(16)?;
+                let egress_response_body = row.get::<_, Option<String>>(17)?;
                 let user_input = ingress_request_body
                     .as_deref()
                     .and_then(extract_user_input_field_from_body);
@@ -426,6 +429,9 @@ impl LogStore {
                     error_message: row.get(9)?,
                     ingress_protocol: row.get(10)?,
                     egress_protocol: row.get(11)?,
+                    method: row.get(12)?,
+                    path: row.get(13)?,
+                    egress_request_url: row.get(14)?,
                     user_input: user_input.as_ref().map(|value| value.text.clone()),
                     model_output: model_output.as_ref().map(|value| value.text.clone()),
                 })

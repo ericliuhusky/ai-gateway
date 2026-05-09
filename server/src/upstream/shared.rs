@@ -29,6 +29,15 @@ pub fn build_http_client() -> Client {
     builder.build().unwrap_or_else(|_| Client::new())
 }
 
+pub fn proxy_url_for(url: &Url) -> Option<String> {
+    if cfg!(target_os = "macos") {
+        load_macos_system_proxy()
+            .and_then(|config| select_proxy(url, &config.http_proxy, &config.https_proxy))
+    } else {
+        None
+    }
+}
+
 pub fn should_try_next_endpoint(status: StatusCode) -> bool {
     status == StatusCode::TOO_MANY_REQUESTS
         || status == StatusCode::REQUEST_TIMEOUT
@@ -66,8 +75,8 @@ fn select_proxy(
     }
 
     match url.scheme() {
-        "http" => http_proxy.clone(),
-        "https" => https_proxy.clone().or_else(|| http_proxy.clone()),
+        "http" | "ws" => http_proxy.clone(),
+        "https" | "wss" => https_proxy.clone().or_else(|| http_proxy.clone()),
         _ => None,
     }
 }
@@ -170,6 +179,14 @@ mod tests {
         assert_eq!(
             select_proxy(
                 &Url::parse("https://chatgpt.com/backend-api/codex/responses").expect("valid url"),
+                &http_proxy,
+                &https_proxy
+            ),
+            Some("http://127.0.0.1:7890".to_string())
+        );
+        assert_eq!(
+            select_proxy(
+                &Url::parse("wss://chatgpt.com/backend-api/codex/responses").expect("valid url"),
                 &http_proxy,
                 &https_proxy
             ),

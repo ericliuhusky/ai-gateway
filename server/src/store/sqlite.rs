@@ -109,11 +109,8 @@ impl SqliteStore {
 
     pub fn delete_provider(&self, provider_id: &str) -> Result<(), String> {
         let conn = self.connect()?;
-        conn.execute(
-            "DELETE FROM providers WHERE id = ?1",
-            params![provider_id],
-        )
-        .map_err(|err| format!("delete provider failed: {err}"))?;
+        conn.execute("DELETE FROM providers WHERE id = ?1", params![provider_id])
+            .map_err(|err| format!("delete provider failed: {err}"))?;
         conn.execute(
             "DELETE FROM provider_models WHERE provider_id = ?1",
             params![provider_id],

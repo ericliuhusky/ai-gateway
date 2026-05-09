@@ -46,7 +46,7 @@ use reqwest::Client;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::{Value, json};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use std::{fs, io::ErrorKind, path::Path, sync::Arc};
 use tracing::{info, warn};
 use uuid::Uuid;
@@ -55,7 +55,9 @@ const BUNDLED_CODEX_CONFIG: &str = include_str!("../../../assets/codex-config.to
 const MISSING_FILE_SENTINEL: &str = "__AI_GATEWAY_MISSING__";
 const RESPONSES_PATH: &str = "/openai/v1/responses";
 const OPENAI_PRIVATE_RESPONSES_URL: &str = "https://chatgpt.com/backend-api/codex/responses";
+const OPENAI_PRIVATE_RESPONSES_WS_URL: &str = "wss://chatgpt.com/backend-api/codex/responses";
 const DEFAULT_OPENAI_CLIENT_VERSION: &str = "0.122.0";
+const OPENAI_PRIVATE_WS_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Clone)]
 pub struct AppState {
@@ -868,6 +870,9 @@ async fn handle_responses_websocket_text(
     let started_at = Instant::now();
     apply_selected_model_override(&state, &mut ws_request.request).await;
     let request = &ws_request.request;
+    let provider = resolve_selected_provider(&state)
+        .await
+        .map_err(|err| err.message.clone())?;
     log_http_event(
         &state.logs,
         &id,
@@ -880,7 +885,7 @@ async fn handle_responses_websocket_text(
         None,
         Some(&request.model),
         true,
-        Some("GET"),
+        Some("WS"),
         Some(RESPONSES_PATH),
         None,
         Some(json_for_storage(&request)),
@@ -888,6 +893,29 @@ async fn handle_responses_websocket_text(
         None,
     )
     .await;
+
+    if provider.auth_mode == ProviderAuthMode::Account && provider_uses_openai_account(&provider) {
+        let account = resolve_account_for_provider(&state, &provider)
+            .await
+            .map_err(|err| err.message.clone())?;
+        if let Err(err) = proxy_openai_private_websocket_request(
+            state,
+            socket,
+            provider,
+            account,
+            ws_request.request,
+            id,
+            started_at,
+        )
+        .await
+        {
+            socket
+                .send(WsMessage::Text(responses_ws_error_event(&err)))
+                .await
+                .map_err(|send_err| send_err.to_string())?;
+        }
+        return Ok(());
+    }
 
     let response = match responses_inner(state, ws_request.request, id, started_at).await {
         Ok(response) => response,
@@ -942,6 +970,145 @@ async fn handle_responses_websocket_text(
     Ok(())
 }
 
+async fn proxy_openai_private_websocket_request(
+    state: AppState,
+    socket: &mut WebSocket,
+    provider: ResolvedProvider,
+    account: AccountRecord,
+    request: ResponsesRequest,
+    id: String,
+    started_at: Instant,
+) -> Result<(), String> {
+    let request_body = responses_to_openai_private(&request).map_err(|err| err.to_string())?;
+    log_http_event(
+        &state.logs,
+        &id,
+        LogStage::EgressRequest,
+        None,
+        Some(IngressProtocol::OpenAiResponses.as_str()),
+        Some(EgressProtocol::OpenAiPrivateResponses.as_str()),
+        Some(&provider.name),
+        Some(&account.id),
+        Some(&account.email),
+        Some(&request.model),
+        true,
+        Some("WS"),
+        Some(RESPONSES_PATH),
+        Some(OPENAI_PRIVATE_RESPONSES_WS_URL),
+        Some(json_value_for_storage(&request_body)),
+        None,
+        None,
+    )
+    .await;
+
+    let request_text = serde_json::to_string(&openai_private_response_create_event(request_body))
+        .map_err(|err| format!("serialize websocket request failed: {err}"))?;
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let upstream_client = state.upstream.clone();
+    let access_token = account.access_token().to_string();
+    let upstream_account_id = account.upstream_account_id().map(str::to_string);
+    let request_id = id.clone();
+    let worker = tokio::task::spawn_blocking(move || {
+        upstream_client.stream_openai_responses_websocket_blocking(
+            access_token,
+            upstream_account_id,
+            request_id,
+            request_text,
+            tx,
+        )
+    });
+
+    let mut response_body = String::new();
+    let mut final_response_body: Option<String> = None;
+    let mut saw_terminal_event = false;
+
+    loop {
+        let message = tokio::time::timeout(OPENAI_PRIVATE_WS_IDLE_TIMEOUT, rx.recv())
+            .await
+            .map_err(|_| "idle timeout waiting for upstream websocket event".to_string())?;
+        let Some(message) = message else {
+            break;
+        };
+        let text = message?;
+        let text = normalize_openai_private_ws_event_for_client(&text);
+        append_to_log_buffer(&mut response_body, &text);
+        append_to_log_buffer(&mut response_body, "\n");
+        capture_final_response_from_ws_event(&text, &mut final_response_body);
+        saw_terminal_event |= is_terminal_responses_ws_event(&text);
+        socket
+            .send(WsMessage::Text(text))
+            .await
+            .map_err(|err| err.to_string())?;
+        if saw_terminal_event {
+            break;
+        }
+    }
+
+    let worker_result = worker
+        .await
+        .map_err(|err| format!("upstream websocket worker failed: {err}"))?;
+    if let Err(err) = worker_result
+        && !saw_terminal_event
+    {
+        return Err(err);
+    }
+
+    if !saw_terminal_event {
+        socket
+            .send(WsMessage::Text(responses_ws_error_event(
+                "stream closed before response.completed",
+            )))
+            .await
+            .map_err(|err| err.to_string())?;
+    }
+
+    let elapsed = elapsed_ms(started_at);
+    let logged_response_body =
+        logged_stream_response_body(final_response_body.as_deref(), &response_body);
+    log_http_event(
+        &state.logs,
+        &id,
+        LogStage::IngressResponse,
+        Some(StatusCode::OK),
+        Some(IngressProtocol::OpenAiResponses.as_str()),
+        Some(EgressProtocol::OpenAiPrivateResponses.as_str()),
+        Some(&provider.name),
+        Some(&account.id),
+        Some(&account.email),
+        Some(&request.model),
+        true,
+        Some("WS"),
+        Some(RESPONSES_PATH),
+        Some(OPENAI_PRIVATE_RESPONSES_WS_URL),
+        Some(logged_response_body.clone()),
+        None,
+        Some(elapsed),
+    )
+    .await;
+    log_http_event(
+        &state.logs,
+        &id,
+        LogStage::EgressResponse,
+        Some(StatusCode::OK),
+        Some(IngressProtocol::OpenAiResponses.as_str()),
+        Some(EgressProtocol::OpenAiPrivateResponses.as_str()),
+        Some(&provider.name),
+        Some(&account.id),
+        Some(&account.email),
+        Some(&request.model),
+        true,
+        Some("WS"),
+        Some(RESPONSES_PATH),
+        Some(OPENAI_PRIVATE_RESPONSES_WS_URL),
+        Some(logged_response_body),
+        None,
+        Some(elapsed),
+    )
+    .await;
+
+    Ok(())
+}
+
 #[derive(Debug)]
 struct ResponseCreateWsRequest {
     request: ResponsesRequest,
@@ -971,6 +1138,36 @@ fn response_create_ws_message_to_request(text: &str) -> Result<ResponseCreateWsR
     let request = serde_json::from_value(value)
         .map_err(|err| format!("invalid response.create payload: {err}"))?;
     Ok(ResponseCreateWsRequest { request, generate })
+}
+
+fn openai_private_response_create_event(mut request_body: Value) -> Value {
+    let Some(object) = request_body.as_object_mut() else {
+        return request_body;
+    };
+    object.insert(
+        "type".to_string(),
+        Value::String("response.create".to_string()),
+    );
+    request_body
+}
+
+fn normalize_openai_private_ws_event_for_client(text: &str) -> String {
+    let Ok(value) = serde_json::from_str::<Value>(text) else {
+        return text.to_string();
+    };
+    let Some(event_type) = value.get("type").and_then(Value::as_str) else {
+        return text.to_string();
+    };
+    if event_type != "error" {
+        return text.to_string();
+    }
+
+    let message = value
+        .get("error")
+        .and_then(|error| error.get("message"))
+        .and_then(Value::as_str)
+        .unwrap_or("upstream websocket error");
+    responses_ws_error_event(message)
 }
 
 fn sse_chunk_to_ws_json_messages(buffer: &mut String, chunk: &str) -> Vec<String> {
@@ -1065,6 +1262,9 @@ fn map_debug_log_summary(log: GatewayLogSummary) -> DebugWebLogSummary {
         error_message: log.error_message,
         ingress_protocol: log.ingress_protocol,
         egress_protocol: log.egress_protocol,
+        method: log.method,
+        path: log.path,
+        egress_request_url: log.egress_request_url,
         user_input: log.user_input,
         model_output: log.model_output,
     }
@@ -3185,6 +3385,23 @@ fn capture_final_response_from_sse_line(line: &str, final_response_body: &mut Op
     let Ok(event) = serde_json::from_str::<Value>(payload) else {
         return;
     };
+    capture_final_response_from_event_value(&event, final_response_body);
+}
+
+fn capture_final_response_from_ws_event(
+    event_text: &str,
+    final_response_body: &mut Option<String>,
+) {
+    let Ok(event) = serde_json::from_str::<Value>(event_text) else {
+        return;
+    };
+    capture_final_response_from_event_value(&event, final_response_body);
+}
+
+fn capture_final_response_from_event_value(
+    event: &Value,
+    final_response_body: &mut Option<String>,
+) {
     let Some(event_type) = event.get("type").and_then(Value::as_str) else {
         return;
     };
@@ -3307,7 +3524,8 @@ impl IntoResponse for AppError {
 mod tests {
     use super::{
         ResolvedProvider, capture_final_response_from_sse_chunk, is_terminal_responses_ws_event,
-        logged_stream_response_body, openai_models_response, provider_uses_openai_account,
+        logged_stream_response_body, normalize_openai_private_ws_event_for_client,
+        openai_models_response, openai_private_response_create_event, provider_uses_openai_account,
         quota_from_google_available_models, quota_from_openai_usage, resolve_native_target,
         response_create_ws_message_to_request, responses_ws_completed_event,
         responses_ws_error_event, sse_chunk_to_ws_json_messages,
@@ -3443,6 +3661,29 @@ mod tests {
         assert_eq!(value["response"]["status"], "completed");
         assert_eq!(value["response"]["model"], "gpt-5.4");
         assert_eq!(value["response"]["output"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn wraps_openai_private_websocket_request_as_response_create() {
+        let value = openai_private_response_create_event(json!({
+            "model": "gpt-5.4",
+            "instructions": "You are Codex."
+        }));
+
+        assert_eq!(value["type"], "response.create");
+        assert_eq!(value["model"], "gpt-5.4");
+    }
+
+    #[test]
+    fn normalizes_openai_private_error_event_to_response_failed() {
+        let normalized = normalize_openai_private_ws_event_for_client(
+            r#"{"type":"error","status":400,"error":{"type":"invalid_request_error","message":"boom"}}"#,
+        );
+        let value: serde_json::Value =
+            serde_json::from_str(&normalized).expect("normalized event should be valid json");
+
+        assert_eq!(value["type"], "response.failed");
+        assert_eq!(value["response"]["error"]["message"], "boom");
     }
 
     #[test]

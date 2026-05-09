@@ -321,6 +321,12 @@ pub struct GatewayLogSummary {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub egress_protocol: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub method: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub egress_request_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub user_input: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model_output: Option<String>,

@@ -29,6 +29,9 @@ pub struct DebugLogSummary {
     pub error_message: Option<String>,
     pub ingress_protocol: Option<String>,
     pub egress_protocol: Option<String>,
+    pub method: Option<String>,
+    pub path: Option<String>,
+    pub egress_request_url: Option<String>,
     pub user_input: Option<String>,
     pub model_output: Option<String>,
 }
@@ -234,6 +237,12 @@ fn DebugApp(data: DebugPageData) -> impl IntoView {
                                             </div>
                                             <div class="tag-row">
                                                 <span class="tag">{if log.stream { "流式" } else { "非流式" }}</span>
+                                                {ingress_transport_label(log.method.as_deref(), log.path.as_deref()).map(|label| view! {
+                                                    <span class="tag">{label}</span>
+                                                })}
+                                                {egress_transport_label(log.stream, log.egress_request_url.as_deref()).map(|label| view! {
+                                                    <span class="tag">{label}</span>
+                                                })}
                                                 <span class="tag">{log.model.clone().unwrap_or_else(|| "未知模型".to_string())}</span>
                                             </div>
                                             <div class="meta-grid">
@@ -284,6 +293,12 @@ fn DebugApp(data: DebugPageData) -> impl IntoView {
                                                         <span class="pill neutral">
                                                             {if detail.stream { "流式" } else { "非流式" }}
                                                         </span>
+                                                        {ingress_transport_label(detail.method.as_deref(), detail.path.as_deref()).map(|label| view! {
+                                                            <span class="pill neutral">{label}</span>
+                                                        })}
+                                                        {egress_transport_label(detail.stream, detail.egress_request_url.as_deref()).map(|label| view! {
+                                                            <span class="pill neutral">{label}</span>
+                                                        })}
                                                         {detail.model.as_ref().map(|model| view! {
                                                             <span class="pill neutral">{model.clone()}</span>
                                                         })}
@@ -303,6 +318,8 @@ fn DebugApp(data: DebugPageData) -> impl IntoView {
                                                 <KeyValue label="账户" value=detail.account_email.clone().or(detail.account_id.clone())/>
                                                 <KeyValue label="入口协议" value=detail.ingress_protocol.clone()/>
                                                 <KeyValue label="出口协议" value=detail.egress_protocol.clone()/>
+                                                <KeyValue label="入口传输" value=ingress_transport_label(detail.method.as_deref(), detail.path.as_deref()).map(str::to_string)/>
+                                                <KeyValue label="上游传输" value=egress_transport_label(detail.stream, detail.egress_request_url.as_deref()).map(str::to_string)/>
                                                 <KeyValue label="请求方法" value=detail.method.clone()/>
                                                 <KeyValue label="路径" value=detail.path.clone()/>
                                                 <KeyValue label="上游地址" value=detail.egress_request_url.clone()/>
@@ -1036,6 +1053,25 @@ fn truncate_preview(text: &str, limit: usize) -> String {
         count += 1;
     }
     preview
+}
+
+fn ingress_transport_label(method: Option<&str>, path: Option<&str>) -> Option<&'static str> {
+    match (method, path) {
+        (Some("WS"), Some("/openai/v1/responses")) => Some("入口 WebSocket"),
+        (Some("POST"), Some("/openai/v1/responses")) => Some("入口 HTTP"),
+        _ => None,
+    }
+}
+
+fn egress_transport_label(stream: bool, egress_request_url: Option<&str>) -> Option<&'static str> {
+    let url = egress_request_url?;
+    if url.starts_with("wss://") {
+        Some("上游 WebSocket")
+    } else if stream {
+        Some("上游 SSE")
+    } else {
+        Some("上游 HTTP")
+    }
 }
 
 #[component]
