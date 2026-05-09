@@ -1073,8 +1073,7 @@ mod tests {
     #[tokio::test]
     async fn prunes_oldest_rows_after_limit() {
         let db_path = unique_test_db_path("prune");
-        let store =
-            LogStore::with_options(db_path.clone(), 3, 2, 128).expect("create log store");
+        let store = LogStore::with_options(db_path.clone(), 3, 2, 128).expect("create log store");
 
         for idx in 0..4 {
             store
@@ -1121,8 +1120,7 @@ mod tests {
     #[tokio::test]
     async fn merges_request_and_response_into_single_row() {
         let db_path = unique_test_db_path("merge");
-        let store =
-            LogStore::with_options(db_path.clone(), 10, 8, 8).expect("create log store");
+        let store = LogStore::with_options(db_path.clone(), 10, 8, 8).expect("create log store");
 
         store
             .record(LogEvent {
@@ -1192,8 +1190,7 @@ mod tests {
     #[tokio::test]
     async fn truncates_error_message() {
         let db_path = unique_test_db_path("truncate");
-        let store =
-            LogStore::with_options(db_path.clone(), 10, 8, 8).expect("create log store");
+        let store = LogStore::with_options(db_path.clone(), 10, 8, 8).expect("create log store");
 
         store
             .record(LogEvent {
@@ -1239,8 +1236,7 @@ mod tests {
     #[tokio::test]
     async fn preserves_large_request_body_without_truncation() {
         let db_path = unique_test_db_path("large_body");
-        let store =
-            LogStore::with_options(db_path.clone(), 10, 8, 8).expect("create log store");
+        let store = LogStore::with_options(db_path.clone(), 10, 8, 8).expect("create log store");
         let body = "x".repeat(250_000);
 
         store
@@ -1286,8 +1282,7 @@ mod tests {
     #[tokio::test]
     async fn skips_recording_when_disabled() {
         let db_path = unique_test_db_path("disabled");
-        let store =
-            LogStore::with_options(db_path.clone(), 10, 8, 128).expect("create log store");
+        let store = LogStore::with_options(db_path.clone(), 10, 8, 128).expect("create log store");
 
         store.set_enabled(false).await.expect("disable log store");
         store
@@ -1331,8 +1326,7 @@ mod tests {
     #[tokio::test]
     async fn clears_logs_without_changing_enabled_setting() {
         let db_path = unique_test_db_path("clear");
-        let store =
-            LogStore::with_options(db_path.clone(), 10, 8, 128).expect("create log store");
+        let store = LogStore::with_options(db_path.clone(), 10, 8, 128).expect("create log store");
 
         store
             .record(LogEvent {

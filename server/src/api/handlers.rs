@@ -47,17 +47,9 @@ use reqwest::Client;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::{Value, json};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use std::{fs, io::ErrorKind, path::Path, sync::Arc};
 use uuid::Uuid;
-
-const BUNDLED_CODEX_CONFIG: &str = include_str!("../../../assets/codex-config.toml");
-const MISSING_FILE_SENTINEL: &str = "__AI_GATEWAY_MISSING__";
-const RESPONSES_PATH: &str = "/openai/v1/responses";
-const OPENAI_PRIVATE_RESPONSES_URL: &str = "https://chatgpt.com/backend-api/codex/responses";
-const OPENAI_PRIVATE_RESPONSES_WS_URL: &str = "wss://chatgpt.com/backend-api/codex/responses";
-const DEFAULT_OPENAI_CLIENT_VERSION: &str = "0.122.0";
-const OPENAI_PRIVATE_WS_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Clone)]
 pub struct AppState {
@@ -119,7 +111,8 @@ pub struct OAuthCallbackQuery {
 
 fn auth_success_html(provider_name: &str, email: &str) -> Html<String> {
     Html(format!(
-        "<html lang='zh-CN'><head><meta charset='utf-8'></head><body style='font-family:sans-serif;padding:32px'><h1>{provider_name} 登录成功</h1><p>账号 <strong>{email}</strong> 已加入代理池。</p><p>你现在可以关闭此页面，并调用 <code>{RESPONSES_PATH}</code>。</p></body></html>"
+        "<html lang='zh-CN'><head><meta charset='utf-8'></head><body style='font-family:sans-serif;padding:32px'><h1>{provider_name} 登录成功</h1><p>账号 <strong>{email}</strong> 已加入代理池。</p><p>你现在可以关闭此页面，并调用 <code>{responses_path}</code>。</p></body></html>",
+        responses_path = Config::responses_path()
     ))
 }
 
@@ -505,14 +498,14 @@ pub async fn apply_codex_config(State(state): State<AppState>) -> Result<Json<Va
         .map_err(|err| AppError::bad_request(format!("failed to create CodeX dir: {err}")))?;
 
     if !backup_path.exists() {
-        backup_or_mark_missing(&target_path, &backup_path, "CodeX config")?;
+        backup_if_exists(&target_path, &backup_path, "CodeX config")?;
     }
 
     if !auth_backup_path.exists() {
-        backup_or_mark_missing(&auth_path, &auth_backup_path, "CodeX auth")?;
+        backup_if_exists(&auth_path, &auth_backup_path, "CodeX auth")?;
     }
 
-    fs::write(&target_path, BUNDLED_CODEX_CONFIG)
+    fs::write(&target_path, config.bundled_codex_config())
         .map_err(|err| AppError::bad_request(format!("failed to write CodeX config: {err}")))?;
     remove_file_if_exists(&auth_path, "CodeX auth")?;
 
@@ -719,7 +712,7 @@ pub async fn responses(
         Some(&request.model),
         request.stream,
         Some("POST"),
-        Some(RESPONSES_PATH),
+        Some(Config::responses_path()),
         None,
         Some(json_for_storage(&request)),
         None,
@@ -747,7 +740,7 @@ pub async fn responses(
                 Some(&model),
                 stream,
                 Some("POST"),
-                Some(RESPONSES_PATH),
+                Some(Config::responses_path()),
                 None,
                 Some(json_value_for_storage(&error_body)),
                 Some(err.message.clone()),
@@ -767,7 +760,7 @@ pub async fn responses(
                 Some(&model),
                 stream,
                 Some("POST"),
-                Some(RESPONSES_PATH),
+                Some(Config::responses_path()),
                 None,
                 Some(json_value_for_storage(&error_body)),
                 Some(err.message.clone()),
@@ -872,7 +865,7 @@ async fn handle_responses_websocket_text(
         Some(&request.model),
         true,
         Some("WS"),
-        Some(RESPONSES_PATH),
+        Some(Config::responses_path()),
         None,
         Some(json_for_storage(&request)),
         None,
@@ -979,8 +972,8 @@ async fn proxy_openai_private_websocket_request(
         Some(&request.model),
         true,
         Some("WS"),
-        Some(RESPONSES_PATH),
-        Some(OPENAI_PRIVATE_RESPONSES_WS_URL),
+        Some(Config::responses_path()),
+        Some(Config::openai_private_responses_ws_url()),
         Some(json_value_for_storage(&request_body)),
         None,
         None,
@@ -1009,7 +1002,7 @@ async fn proxy_openai_private_websocket_request(
     let mut saw_terminal_event = false;
 
     loop {
-        let message = tokio::time::timeout(OPENAI_PRIVATE_WS_IDLE_TIMEOUT, rx.recv())
+        let message = tokio::time::timeout(Config::openai_private_ws_idle_timeout(), rx.recv())
             .await
             .map_err(|_| "idle timeout waiting for upstream websocket event".to_string())?;
         let Some(message) = message else {
@@ -1064,8 +1057,8 @@ async fn proxy_openai_private_websocket_request(
         Some(&request.model),
         true,
         Some("WS"),
-        Some(RESPONSES_PATH),
-        Some(OPENAI_PRIVATE_RESPONSES_WS_URL),
+        Some(Config::responses_path()),
+        Some(Config::openai_private_responses_ws_url()),
         Some(logged_response_body.clone()),
         None,
         Some(elapsed),
@@ -1084,8 +1077,8 @@ async fn proxy_openai_private_websocket_request(
         Some(&request.model),
         true,
         Some("WS"),
-        Some(RESPONSES_PATH),
-        Some(OPENAI_PRIVATE_RESPONSES_WS_URL),
+        Some(Config::responses_path()),
+        Some(Config::openai_private_responses_ws_url()),
         Some(logged_response_body),
         None,
         Some(elapsed),
@@ -1345,7 +1338,7 @@ async fn responses_inner(
             request.stream,
             Some("POST"),
             None,
-            Some(OPENAI_PRIVATE_RESPONSES_URL),
+            Some(Config::openai_private_responses_url()),
             Some(json_value_for_storage(&request_body)),
             None,
             None,
@@ -1383,7 +1376,7 @@ async fn responses_inner(
                 false,
                 Some("POST"),
                 None,
-                Some(OPENAI_PRIVATE_RESPONSES_URL),
+                Some(Config::openai_private_responses_url()),
                 Some(stored_body.clone()),
                 None,
                 Some(elapsed),
@@ -1402,7 +1395,7 @@ async fn responses_inner(
                 Some(&request.model),
                 false,
                 Some("POST"),
-                Some(RESPONSES_PATH),
+                Some(Config::responses_path()),
                 None,
                 Some(stored_body),
                 None,
@@ -1459,8 +1452,8 @@ async fn responses_inner(
                             Some(&model),
                             true,
                             Some("POST"),
-                            Some(RESPONSES_PATH),
-                            Some(OPENAI_PRIVATE_RESPONSES_URL),
+                            Some(Config::responses_path()),
+                            Some(Config::openai_private_responses_url()),
                             Some(response_body.clone()),
                             Some(error_message.clone()),
                             Some(elapsed_ms(started_at)),
@@ -1489,7 +1482,7 @@ async fn responses_inner(
                 true,
                 Some("POST"),
                 None,
-                Some(OPENAI_PRIVATE_RESPONSES_URL),
+                Some(Config::openai_private_responses_url()),
                 Some(logged_response_body.clone()),
                 None,
                 Some(elapsed),
@@ -1508,7 +1501,7 @@ async fn responses_inner(
                 Some(&model),
                 true,
                 Some("POST"),
-                Some(RESPONSES_PATH),
+                Some(Config::responses_path()),
                 None,
                 Some(logged_response_body),
                 None,
@@ -1630,7 +1623,7 @@ async fn responses_inner(
                 Some(&request.model),
                 false,
                 Some("POST"),
-                Some(RESPONSES_PATH),
+                Some(Config::responses_path()),
                 None,
                 Some(response_body),
                 None,
@@ -1702,7 +1695,7 @@ async fn responses_inner(
                         Some(&model),
                         true,
                         Some("POST"),
-                        Some(RESPONSES_PATH),
+                        Some(Config::responses_path()),
                         Some(&upstream_url),
                         Some(client_body.clone()),
                         Some(error_message),
@@ -1732,7 +1725,7 @@ async fn responses_inner(
                             Some(&model),
                             true,
                             Some("POST"),
-                            Some(RESPONSES_PATH),
+                            Some(Config::responses_path()),
                             Some(&upstream_url),
                             Some(upstream_body.clone()),
                             Some(error_message),
@@ -1797,7 +1790,7 @@ async fn responses_inner(
                                         match encode_event(&output_item_added) {
                                             Ok(event) => {
                                                 append_to_log_buffer(&mut client_body, &event);
-                            
+
                                                 yield Ok(Bytes::from(event));
                                             }
                                             Err(err) => {
@@ -1819,7 +1812,7 @@ async fn responses_inner(
                                         match encode_event(&content_part_added) {
                                             Ok(event) => {
                                                 append_to_log_buffer(&mut client_body, &event);
-                            
+
                                                 yield Ok(Bytes::from(event));
                                             }
                                             Err(err) => {
@@ -1841,7 +1834,7 @@ async fn responses_inner(
                                     match encode_event(&delta) {
                                         Ok(event) => {
                                             append_to_log_buffer(&mut client_body, &event);
-                        
+
                                             yield Ok(Bytes::from(event));
                                         }
                                         Err(err) => {
@@ -1887,7 +1880,7 @@ async fn responses_inner(
                                     match encode_event(&added) {
                                         Ok(event) => {
                                             append_to_log_buffer(&mut client_body, &event);
-                        
+
                                             yield Ok(Bytes::from(event));
                                         }
                                         Err(err) => {
@@ -1904,7 +1897,7 @@ async fn responses_inner(
                                     match encode_event(&done) {
                                         Ok(event) => {
                                             append_to_log_buffer(&mut client_body, &event);
-                        
+
                                             yield Ok(Bytes::from(event));
                                         }
                                         Err(err) => {
@@ -1931,7 +1924,7 @@ async fn responses_inner(
                 match encode_event(&text_done) {
                     Ok(event) => {
                         append_to_log_buffer(&mut client_body, &event);
-    
+
                         yield Ok(Bytes::from(event));
                     }
                     Err(err) => {
@@ -1953,7 +1946,7 @@ async fn responses_inner(
                 match encode_event(&content_part_done) {
                     Ok(event) => {
                         append_to_log_buffer(&mut client_body, &event);
-    
+
                         yield Ok(Bytes::from(event));
                     }
                     Err(err) => {
@@ -1981,7 +1974,7 @@ async fn responses_inner(
                 match encode_event(&output_item_done) {
                     Ok(event) => {
                         append_to_log_buffer(&mut client_body, &event);
-    
+
                         yield Ok(Bytes::from(event));
                     }
                     Err(err) => {
@@ -2055,7 +2048,7 @@ async fn responses_inner(
                 Some(&model),
                 true,
                 Some("POST"),
-                Some(RESPONSES_PATH),
+                Some(Config::responses_path()),
                 None,
                 Some(final_client_body),
                 None,
@@ -2190,7 +2183,7 @@ async fn responses_inner(
                 Some(&request.model),
                 false,
                 Some("POST"),
-                Some(RESPONSES_PATH),
+                Some(Config::responses_path()),
                 None,
                 Some(response_body),
                 None,
@@ -2237,7 +2230,7 @@ async fn responses_inner(
                             Some(&model),
                             true,
                             Some("POST"),
-                            Some(RESPONSES_PATH),
+                            Some(Config::responses_path()),
                             Some(&upstream_url_for_stream),
                             Some(response_body.clone()),
                             Some(err.to_string()),
@@ -2263,7 +2256,7 @@ async fn responses_inner(
                 Some(&model),
                 true,
                 Some("POST"),
-                Some(RESPONSES_PATH),
+                Some(Config::responses_path()),
                 None,
                 Some(final_response_body),
                 None,
@@ -2367,7 +2360,7 @@ async fn responses_inner(
             Some(&request.model),
             false,
             Some("POST"),
-            Some(RESPONSES_PATH),
+            Some(Config::responses_path()),
             None,
             Some(stored_body),
             None,
@@ -2418,7 +2411,7 @@ async fn responses_inner(
                         Some(&model),
                         true,
                         Some("POST"),
-                        Some(RESPONSES_PATH),
+                        Some(Config::responses_path()),
                         Some(&upstream_url),
                         Some(response_body.clone()),
                         Some(err.to_string()),
@@ -2467,7 +2460,7 @@ async fn responses_inner(
             Some(&model),
             true,
             Some("POST"),
-            Some(RESPONSES_PATH),
+            Some(Config::responses_path()),
             None,
             Some(logged_response_body),
             None,
@@ -2666,7 +2659,7 @@ async fn fetch_provider_models(
             return google_models_response(&provider.name, &raw);
         }
         if provider.name == PROVIDER_OPENAI_PROXY {
-            let client_version = openai_client_version(state);
+            let client_version = state._config.codex_client_version();
             let raw = state
                 .upstream
                 .fetch_openai_models(
@@ -2746,12 +2739,9 @@ fn codex_config_status(state: &AppState) -> Result<CodexConfigStatus, AppError> 
     })
 }
 
-fn backup_or_mark_missing(source: &Path, backup: &Path, label: &str) -> Result<(), AppError> {
+fn backup_if_exists(source: &Path, backup: &Path, label: &str) -> Result<(), AppError> {
     if source.exists() {
         fs::copy(source, backup)
-            .map_err(|err| AppError::bad_request(format!("failed to back up {label}: {err}")))?;
-    } else {
-        fs::write(backup, MISSING_FILE_SENTINEL)
             .map_err(|err| AppError::bad_request(format!("failed to back up {label}: {err}")))?;
     }
 
@@ -2762,21 +2752,13 @@ fn restore_or_remove_backup(backup: &Path, target: &Path, label: &str) -> Result
     let backup_contents = fs::read(backup)
         .map_err(|err| AppError::bad_request(format!("failed to read {label} backup: {err}")))?;
 
-    if backup_contents == MISSING_FILE_SENTINEL.as_bytes() {
-        if target.exists() {
-            fs::remove_file(target).map_err(|err| {
-                AppError::bad_request(format!("failed to remove {label} file: {err}"))
-            })?;
-        }
-    } else {
-        if let Some(parent) = target.parent() {
-            fs::create_dir_all(parent).map_err(|err| {
-                AppError::bad_request(format!("failed to create {label} directory: {err}"))
-            })?;
-        }
-        fs::write(target, backup_contents)
-            .map_err(|err| AppError::bad_request(format!("failed to restore {label}: {err}")))?;
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent).map_err(|err| {
+            AppError::bad_request(format!("failed to create {label} directory: {err}"))
+        })?;
     }
+    fs::write(target, backup_contents)
+        .map_err(|err| AppError::bad_request(format!("failed to restore {label}: {err}")))?;
 
     Ok(())
 }
@@ -2891,23 +2873,6 @@ fn openai_models_response(_provider: &str, raw: &Value) -> Result<ModelListRespo
         object: "list".to_string(),
         data: data.into_iter().map(|(_, _, item)| item).collect(),
     })
-}
-
-#[derive(Debug, Deserialize)]
-struct CodexModelsCacheVersion {
-    client_version: Option<String>,
-}
-
-fn openai_client_version(state: &AppState) -> String {
-    let cache_path = state._config.codex_models_cache_path();
-    let parsed = fs::read_to_string(&cache_path)
-        .ok()
-        .and_then(|content| serde_json::from_str::<CodexModelsCacheVersion>(&content).ok())
-        .and_then(|cache| cache.client_version)
-        .map(|version| version.trim().to_string())
-        .filter(|version| !version.is_empty());
-
-    parsed.unwrap_or_else(|| DEFAULT_OPENAI_CLIENT_VERSION.to_string())
 }
 
 fn native_model_id(entry: &Value) -> Option<&str> {
