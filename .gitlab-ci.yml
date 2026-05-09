@@ -1,0 +1,191 @@
+workflow:
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v.+$/'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+    - when: never
+
+default:
+  tags:
+    - ai-gateway
+
+stages:
+  - build
+  - publish
+
+variables:
+  PROJECT_PATH: "AIGateway/AIGateway.xcodeproj"
+  SCHEME: "AIGateway"
+  APP_NAME: "AIGateway.app"
+  PACKAGE_FILE_NAME: "AIGateway.app.zip"
+  RELEASE_ASSET_PATH: "/AIGateway.app.zip"
+
+build_macos_zip:
+  stage: build
+  script:
+    - xcodebuild -version
+    - rustc --version
+    - cargo --version
+    - |
+      set -euo pipefail
+
+      BUILD_DIR="$CI_PROJECT_DIR/build"
+      DERIVED_DATA_DIR="$BUILD_DIR/DerivedData"
+      EXPORT_DIR="$BUILD_DIR/export"
+      ZIP_PATH="$EXPORT_DIR/$PACKAGE_FILE_NAME"
+      APP_PATH="$DERIVED_DATA_DIR/Build/Products/Release/$APP_NAME"
+
+      rm -rf "$DERIVED_DATA_DIR" "$EXPORT_DIR"
+      mkdir -p "$EXPORT_DIR"
+
+      BUILD_SETTINGS="$(xcodebuild -project "$CI_PROJECT_DIR/$PROJECT_PATH" -scheme "$SCHEME" -configuration Release -showBuildSettings)"
+      MARKETING_VERSION="$(printf '%s\n' "$BUILD_SETTINGS" | sed -n 's/^[[:space:]]*MARKETING_VERSION = //p' | head -n 1)"
+      CURRENT_PROJECT_VERSION="$(printf '%s\n' "$BUILD_SETTINGS" | sed -n 's/^[[:space:]]*CURRENT_PROJECT_VERSION = //p' | head -n 1)"
+
+      if [ -z "$MARKETING_VERSION" ] || [ -z "$CURRENT_PROJECT_VERSION" ]; then
+        echo "error: failed to read version information from Xcode build settings" >&2
+        exit 1
+      fi
+
+      echo "Building $APP_NAME"
+      echo "Version: $MARKETING_VERSION ($CURRENT_PROJECT_VERSION)"
+
+      xcodebuild \
+        -project "$CI_PROJECT_DIR/$PROJECT_PATH" \
+        -scheme "$SCHEME" \
+        -configuration Release \
+        -derivedDataPath "$DERIVED_DATA_DIR" \
+        CODE_SIGNING_ALLOWED=NO \
+        CODE_SIGNING_REQUIRED=NO \
+        build
+
+      test -d "$APP_PATH"
+      ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$ZIP_PATH"
+  artifacts:
+    expire_in: 7 days
+    paths:
+      - build/export/AIGateway.app.zip
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v.+$/'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+
+publish_gitlab_release:
+  stage: publish
+  needs:
+    - job: build_macos_zip
+      artifacts: true
+  script:
+    - |
+      set -euo pipefail
+
+      TAG_NAME="$CI_COMMIT_TAG"
+      ZIP_PATH="$CI_PROJECT_DIR/build/export/$PACKAGE_FILE_NAME"
+      PACKAGE_URL="${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${SCHEME}/${TAG_NAME}/${PACKAGE_FILE_NAME}"
+      RELEASE_API="${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/releases/${TAG_NAME}"
+      RELEASES_API="${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/releases"
+      RELEASE_LINKS_API="${RELEASE_API}/assets/links"
+
+      test -n "$TAG_NAME"
+      test -f "$ZIP_PATH"
+
+      api_curl() {
+        curl \
+          --silent \
+          --show-error \
+          --location \
+          --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+          "$@"
+      }
+
+      json_payload() {
+        TAG_NAME="$TAG_NAME" python3 -c 'import json, os; tag = os.environ["TAG_NAME"]; print(json.dumps({"name": tag, "tag_name": tag, "description": f"Automated release for {tag}."}))'
+      }
+
+      upload_status="$(mktemp)"
+      upload_code="$(
+        curl \
+          --silent \
+          --show-error \
+          --location \
+          --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+          --upload-file "$ZIP_PATH" \
+          --output "$upload_status" \
+          --write-out "%{http_code}" \
+          "$PACKAGE_URL"
+      )"
+
+      case "$upload_code" in
+        200|201)
+          echo "Uploaded package: $PACKAGE_URL"
+          ;;
+        409)
+          echo "Package already exists, continuing: $PACKAGE_URL"
+          ;;
+        *)
+          cat "$upload_status"
+          rm -f "$upload_status"
+          exit 1
+          ;;
+      esac
+      rm -f "$upload_status"
+
+      release_payload="$(json_payload)"
+      release_status="$(mktemp)"
+      release_code="$(
+        curl \
+          --silent \
+          --show-error \
+          --location \
+          --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+          --header "Content-Type: application/json" \
+          --data "$release_payload" \
+          --output "$release_status" \
+          --write-out "%{http_code}" \
+          "$RELEASES_API"
+      )"
+
+      case "$release_code" in
+        200|201)
+          echo "Created release: $TAG_NAME"
+          ;;
+        409)
+          api_curl \
+            --request PUT \
+            --header "Content-Type: application/json" \
+            --data "$release_payload" \
+            "$RELEASE_API" >/dev/null
+          echo "Updated release: $TAG_NAME"
+          ;;
+        *)
+          cat "$release_status"
+          rm -f "$release_status"
+          exit 1
+          ;;
+      esac
+      rm -f "$release_status"
+
+      existing_links_json="$(api_curl "$RELEASE_LINKS_API")"
+      existing_link_id="$(
+        JSON_INPUT="$existing_links_json" TARGET_NAME="$PACKAGE_FILE_NAME" python3 -c 'import json, os; links = json.loads(os.environ["JSON_INPUT"]); target_name = os.environ["TARGET_NAME"]; print(next((str(link["id"]) for link in links if link.get("name") == target_name and link.get("id") is not None), ""))'
+      )"
+
+      if [ -n "$existing_link_id" ]; then
+        api_curl \
+          --request PUT \
+          --data-urlencode "name=$PACKAGE_FILE_NAME" \
+          --data-urlencode "url=$PACKAGE_URL" \
+          --data-urlencode "direct_asset_path=$RELEASE_ASSET_PATH" \
+          --data-urlencode "link_type=package" \
+          "${RELEASE_LINKS_API}/${existing_link_id}" >/dev/null
+        echo "Updated release asset link: $PACKAGE_FILE_NAME"
+      else
+        api_curl \
+          --request POST \
+          --data-urlencode "name=$PACKAGE_FILE_NAME" \
+          --data-urlencode "url=$PACKAGE_URL" \
+          --data-urlencode "direct_asset_path=$RELEASE_ASSET_PATH" \
+          --data-urlencode "link_type=package" \
+          "$RELEASE_LINKS_API" >/dev/null
+        echo "Created release asset link: $PACKAGE_FILE_NAME"
+      fi
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v.+$/'
