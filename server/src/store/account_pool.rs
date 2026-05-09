@@ -13,7 +13,6 @@ use std::sync::{
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
-use tracing::{info, warn};
 use uuid::Uuid;
 
 #[derive(Clone, Debug)]
@@ -148,21 +147,9 @@ impl AccountPool {
                 .await
             {
                 Ok(account) => {
-                    info!(
-                        account_id = %account.id,
-                        email = %account.email,
-                        project_id = %account.project_id().unwrap_or(""),
-                        index = idx,
-                        "selected account from pool"
-                    );
                     return Ok(account);
                 }
-                Err(err) => {
-                    warn!(
-                        "skipping unhealthy account for provider {}: {}",
-                        provider, err
-                    );
-                }
+                Err(_) => {}
             }
         }
 
@@ -212,12 +199,6 @@ impl AccountPool {
         upstream: &UpstreamClient,
     ) -> Result<AccountRecord, String> {
         if oauth.refresh_needed(account.expiry_timestamp) {
-            info!(
-                account_id = %account.id,
-                email = %account.email,
-                expires_at = account.expiry_timestamp,
-                "refreshing access token before use"
-            );
             let refreshed = if account.provider() == PROVIDER_OPENAI_PROXY {
                 let client_id = account
                     .client_id()
@@ -242,12 +223,6 @@ impl AccountPool {
                         account.upstream_account_id =
                             extract_openai_chatgpt_account_id(account.access_token());
                     }
-                    info!(
-                        account_id = %account.id,
-                        email = %account.email,
-                        expires_at = account.expiry_timestamp,
-                        "refreshed access token"
-                    );
                 }
                 Err(err) => {
                     return Err(format!("refresh failed for {}: {err}", account.email));
@@ -258,29 +233,8 @@ impl AccountPool {
         if account.provider() == PROVIDER_GOOGLE_PROXY
             && account.project_id().unwrap_or("").is_empty()
         {
-            info!(
-                account_id = %account.id,
-                email = %account.email,
-                "fetching missing project_id"
-            );
-            match upstream.fetch_project_id(account.access_token()).await {
-                Ok(project_id) => {
-                    account.set_project_id(project_id);
-                    info!(
-                        account_id = %account.id,
-                        email = %account.email,
-                        project_id = %account.project_id().unwrap_or(""),
-                        "fetched project_id"
-                    );
-                }
-                Err(err) => {
-                    warn!(
-                        account_id = %account.id,
-                        email = %account.email,
-                        error = %err,
-                        "project_id fetch failed; continuing without cloudaicompanionProject"
-                    );
-                }
+            if let Ok(project_id) = upstream.fetch_project_id(account.access_token()).await {
+                account.set_project_id(project_id);
             }
         }
 

@@ -1,8 +1,6 @@
-use crate::upstream::shared::{has_api_prefix, truncate_for_log};
+use crate::upstream::shared::has_api_prefix;
 use reqwest::{Client, Response};
 use serde_json::Value;
-use tracing::info;
-
 #[derive(Clone, Debug)]
 pub struct OpenAiResponsesClient {
     http: Client,
@@ -15,21 +13,13 @@ impl OpenAiResponsesClient {
 
     pub async fn call(
         &self,
-        id: &str,
+        _id: &str,
         base_url: &str,
         api_key: &str,
         body: Value,
         stream: bool,
     ) -> Result<Response, String> {
         let url = responses_api_url(base_url);
-        info!(
-            id = %id,
-            stream = stream,
-            url = %url,
-            request = %truncate_for_log(&body.to_string(), 4_000),
-            "sending upstream request to OpenAI responses provider"
-        );
-
         let response = self
             .http
             .post(&url)
@@ -61,17 +51,11 @@ impl OpenAiResponsesClient {
 
     pub async fn fetch_models(
         &self,
-        id: &str,
+        _id: &str,
         base_url: &str,
         api_key: &str,
     ) -> Result<Value, String> {
         let url = models_api_url(base_url);
-        info!(
-            id = %id,
-            url = %url,
-            "sending upstream request to OpenAI provider /models"
-        );
-
         let response = self
             .http
             .get(&url)

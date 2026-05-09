@@ -1,28 +1,16 @@
 use reqwest::{Client, Proxy, StatusCode, Url};
 use std::{collections::HashMap, process::Command};
-use tracing::{info, warn};
-
 pub fn build_http_client() -> Client {
     let mut builder = Client::builder();
 
     if cfg!(target_os = "macos") {
         if let Some(config) = load_macos_system_proxy() {
-            let http_proxy = config.http_proxy.clone();
-            let https_proxy = config.https_proxy.clone();
-            let http_proxy_for_proxy = http_proxy.clone();
-            let https_proxy_for_proxy = https_proxy.clone();
+            let http_proxy_for_proxy = config.http_proxy.clone();
+            let https_proxy_for_proxy = config.https_proxy.clone();
             let proxy = Proxy::custom(move |url| {
                 select_proxy(url, &http_proxy_for_proxy, &https_proxy_for_proxy)
             });
             builder = builder.proxy(proxy);
-
-            info!(
-                http_proxy = http_proxy.as_deref().unwrap_or("direct"),
-                https_proxy = https_proxy.as_deref().unwrap_or("direct"),
-                "configured upstream HTTP client from macOS system proxy"
-            );
-        } else {
-            info!("no enabled macOS system HTTP/HTTPS proxy detected for upstream HTTP client");
         }
     }
 
@@ -43,16 +31,6 @@ pub fn should_try_next_endpoint(status: StatusCode) -> bool {
         || status == StatusCode::REQUEST_TIMEOUT
         || status == StatusCode::NOT_FOUND
         || status.is_server_error()
-}
-
-pub fn truncate_for_log(value: &str, limit: usize) -> String {
-    let mut chars = value.chars();
-    let truncated: String = chars.by_ref().take(limit).collect();
-    if chars.next().is_some() {
-        format!("{truncated}...<truncated>")
-    } else {
-        truncated
-    }
 }
 
 pub fn has_api_prefix(base_url: &str) -> bool {
@@ -91,11 +69,6 @@ fn should_bypass_proxy(url: &Url) -> bool {
 fn load_macos_system_proxy() -> Option<ProxyConfig> {
     let output = Command::new("scutil").arg("--proxy").output().ok()?;
     if !output.status.success() {
-        warn!(
-            status = ?output.status.code(),
-            stderr = %String::from_utf8_lossy(&output.stderr),
-            "failed to read macOS system proxy via scutil --proxy"
-        );
         return None;
     }
 

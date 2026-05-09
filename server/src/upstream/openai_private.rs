@@ -1,4 +1,4 @@
-use crate::upstream::shared::{proxy_url_for, truncate_for_log};
+use crate::upstream::shared::proxy_url_for;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use native_tls::{TlsConnector as NativeTlsConnector, TlsStream as NativeTlsStream};
 use reqwest::{Client, Response};
@@ -9,7 +9,6 @@ use std::{
     time::Duration as StdDuration,
 };
 use tokio::sync::mpsc;
-use tracing::info;
 use url::Url;
 use uuid::Uuid;
 
@@ -32,20 +31,12 @@ impl OpenAiPrivateClient {
 
     pub async fn call_responses(
         &self,
-        id: &str,
+        _id: &str,
         access_token: &str,
         account_id: Option<&str>,
         body: Value,
         stream: bool,
     ) -> Result<Response, String> {
-        info!(
-            id = %id,
-            stream = stream,
-            url = %OPENAI_RESPONSES_URL,
-            request = %truncate_for_log(&body.to_string(), 4_000),
-            "sending upstream request to OpenAI"
-        );
-
         let mut request = self
             .http
             .post(OPENAI_RESPONSES_URL)
@@ -84,18 +75,11 @@ impl OpenAiPrivateClient {
 
     pub async fn fetch_models(
         &self,
-        id: &str,
+        _id: &str,
         access_token: &str,
         account_id: Option<&str>,
         client_version: &str,
     ) -> Result<Value, String> {
-        info!(
-            id = %id,
-            url = %OPENAI_MODELS_URL,
-            client_version = %client_version,
-            "sending upstream request to OpenAI models"
-        );
-
         let mut request = self
             .http
             .get(OPENAI_MODELS_URL)
@@ -129,16 +113,10 @@ impl OpenAiPrivateClient {
 
     pub async fn fetch_usage(
         &self,
-        id: &str,
+        _id: &str,
         access_token: &str,
         account_id: Option<&str>,
     ) -> Result<Value, String> {
-        info!(
-            id = %id,
-            url = %OPENAI_USAGE_URL,
-            "sending upstream request to OpenAI usage"
-        );
-
         let mut request = self
             .http
             .get(OPENAI_USAGE_URL)

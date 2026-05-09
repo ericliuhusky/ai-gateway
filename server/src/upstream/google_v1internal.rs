@@ -1,8 +1,7 @@
-use crate::upstream::shared::{should_try_next_endpoint, truncate_for_log};
+use crate::upstream::shared::should_try_next_endpoint;
 use reqwest::{Client, Response};
 use serde_json::{Value, json};
 use std::sync::OnceLock;
-use tracing::{info, warn};
 use uuid::Uuid;
 
 const V1_INTERNAL_BASE_URLS: [&str; 3] = [
@@ -44,11 +43,6 @@ impl GoogleV1InternalClient {
 
         for base in V1_INTERNAL_BASE_URLS {
             let url = format!("{base}:loadCodeAssist");
-            info!(
-                url = %url,
-                request = %truncate_for_log(&body.to_string(), 2_000),
-                "requesting project_id from upstream"
-            );
             let response = self
                 .http
                 .post(&url)
@@ -69,25 +63,14 @@ impl GoogleV1InternalClient {
                     .json()
                     .await
                     .map_err(|err| format!("project response parse failed: {err}"))?;
-                info!(
-                    url = %url,
-                    response = %truncate_for_log(&value.to_string(), 2_000),
-                    "received project_id response"
-                );
                 if let Some(project_id) =
                     value.get("cloudaicompanionProject").and_then(Value::as_str)
                 {
                     return Ok(project_id.to_string());
                 }
-            } else {
-                warn!(url = %url, status = %response.status(), "loadCodeAssist request failed");
             }
         }
 
-        warn!(
-            fallback_project_id = GOOGLE_PROJECT_ID_FALLBACK,
-            "failed to fetch cloudaicompanionProject; using fallback project"
-        );
         Ok(GOOGLE_PROJECT_ID_FALLBACK.to_string())
     }
 
@@ -104,12 +87,6 @@ impl GoogleV1InternalClient {
 
         for base in V1_INTERNAL_BASE_URLS {
             let url = format!("{base}:fetchAvailableModels");
-            info!(
-                url = %url,
-                request = %truncate_for_log(&payload.to_string(), 2_000),
-                "requesting Google available models from upstream"
-            );
-
             let response = self
                 .http
                 .post(&url)
@@ -130,22 +107,11 @@ impl GoogleV1InternalClient {
                         .json()
                         .await
                         .map_err(|err| format!("google models parse failed: {err}"))?;
-                    info!(
-                        url = %url,
-                        response = %truncate_for_log(&value.to_string(), 4_000),
-                        "received Google available models response"
-                    );
                     return Ok(value);
                 }
                 Ok(resp) if should_try_next_endpoint(resp.status()) => {
                     let status = resp.status();
                     let body = resp.text().await.unwrap_or_default();
-                    warn!(
-                        url = %url,
-                        status = %status,
-                        response = %truncate_for_log(&body, 4_000),
-                        "Google models endpoint failed, trying next fallback"
-                    );
                     errors.push(format!("{url} -> {status}: {body}"));
                 }
                 Ok(resp) => {
@@ -167,7 +133,7 @@ impl GoogleV1InternalClient {
     pub async fn call(
         &self,
         method: &str,
-        id: &str,
+        _id: &str,
         access_token: &str,
         body: Value,
         stream: bool,
@@ -180,15 +146,6 @@ impl GoogleV1InternalClient {
             } else {
                 format!("{base}:{method}")
             };
-            info!(
-                id = %id,
-                method = %method,
-                stream = stream,
-                url = %url,
-                request = %truncate_for_log(&body.to_string(), 4_000),
-                "sending upstream request"
-            );
-
             let response = self
                 .http
                 .post(&url)
@@ -205,49 +162,19 @@ impl GoogleV1InternalClient {
 
             match response {
                 Ok(resp) if resp.status().is_success() => {
-                    info!(
-                        id = %id,
-                        method = %method,
-                        url = %url,
-                        status = %resp.status(),
-                        "upstream request succeeded"
-                    );
                     return Ok(resp);
                 }
                 Ok(resp) if should_try_next_endpoint(resp.status()) => {
                     let status = resp.status();
                     let response_body = resp.text().await.unwrap_or_default();
-                    warn!(
-                        id = %id,
-                        method = %method,
-                        url = %url,
-                        status = %status,
-                        response = %truncate_for_log(&response_body, 4_000),
-                        "upstream endpoint failed, trying next fallback"
-                    );
                     errors.push(format!("{url} -> {status}: {response_body}"));
                 }
                 Ok(resp) => {
                     let status = resp.status();
                     let response_body = resp.text().await.unwrap_or_default();
-                    warn!(
-                        id = %id,
-                        method = %method,
-                        url = %url,
-                        status = %status,
-                        response = %truncate_for_log(&response_body, 4_000),
-                        "upstream request failed without fallback"
-                    );
                     return Err(format!("upstream returned {status}: {response_body}"));
                 }
                 Err(err) => {
-                    warn!(
-                        id = %id,
-                        method = %method,
-                        url = %url,
-                        error = %err,
-                        "upstream transport error"
-                    );
                     errors.push(format!("{url} -> request failed: {err}"));
                 }
             }

@@ -49,7 +49,6 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use std::time::{Duration, Instant};
 use std::{fs, io::ErrorKind, path::Path, sync::Arc};
-use tracing::{info, warn};
 use uuid::Uuid;
 
 const BUNDLED_CODEX_CONFIG: &str = include_str!("../../../assets/codex-config.toml");
@@ -159,14 +158,7 @@ pub async fn auth_google_callback(
         .map_err(AppError::bad_request)?;
     let project_id = match state.upstream.fetch_project_id(&token.access_token).await {
         Ok(project_id) => Some(project_id),
-        Err(err) => {
-            warn!(
-                email = %user.email,
-                error = %err,
-                "Google login continuing without cloudaicompanionProject"
-            );
-            None
-        }
+        Err(_) => None,
     };
     let account = state
         .accounts
@@ -354,13 +346,6 @@ pub async fn get_provider_quota(
                 {
                     Ok(raw) => raw,
                     Err(err) if is_google_quota_forbidden_error(&err) => {
-                        warn!(
-                            provider = %provider.name,
-                            account_id = %account.id,
-                            email = %account.email,
-                            error = %err,
-                            "Google quota request forbidden; returning displayable quota status"
-                        );
                         return Ok(Json(ProviderQuotaResponse {
                             provider: provider_summary,
                             quota: google_forbidden_quota_summary(),
@@ -805,18 +790,17 @@ async fn responses_websocket_session(state: AppState, mut socket: WebSocket) {
     while let Some(message) = socket.next().await {
         let message = match message {
             Ok(message) => message,
-            Err(err) => {
-                warn!(error = %err, "responses websocket receive failed");
+            Err(_) => {
                 break;
             }
         };
 
         match message {
             WsMessage::Text(text) => {
-                if let Err(err) =
-                    handle_responses_websocket_text(state.clone(), &mut socket, text).await
+                if handle_responses_websocket_text(state.clone(), &mut socket, text)
+                    .await
+                    .is_err()
                 {
-                    warn!(error = %err, "responses websocket request failed");
                     break;
                 }
             }
@@ -1342,14 +1326,6 @@ async fn responses_inner(
     started_at: Instant,
 ) -> Result<Response, AppError> {
     let provider = resolve_selected_provider(&state).await?;
-    info!(
-        id = %id,
-        ingress = IngressProtocol::OpenAiResponses.as_str(),
-        provider = %provider.name,
-        body = %json_for_log(&request),
-        "received /openai/v1/responses request"
-    );
-
     if provider.auth_mode == ProviderAuthMode::Account && provider_uses_openai_account(&provider) {
         let account = resolve_account_for_provider(&state, &provider).await?;
         let request_body = responses_to_openai_private(&request)
@@ -1393,15 +1369,6 @@ async fn responses_inner(
             let response_body: Value = upstream.json().await.map_err(AppError::upstream)?;
             let elapsed = elapsed_ms(started_at);
             let stored_body = json_value_for_storage(&response_body);
-            info!(
-                id = %id,
-                elapsed_ms = elapsed,
-                email = %account.email,
-                provider = %provider.name,
-                egress = %EgressProtocol::OpenAiPrivateResponses.as_str(),
-                response_body = %json_value_for_log(&response_body),
-                "returning OpenAI /openai/v1/responses body"
-            );
             log_http_event(
                 &state.logs,
                 &id,
@@ -1576,14 +1543,6 @@ async fn responses_inner(
         let gemini_request = responses_to_gemini(&request).map_err(AppError::bad_request)?;
         let account = resolve_account_for_provider(&state, &provider).await?;
         let project_id = google_project_id_for_request(&account).to_string();
-        if account.project_id().is_none() {
-            warn!(
-                account_id = %account.id,
-                email = %account.email,
-                fallback_project_id = %project_id,
-                "selected Google account has no cloudaicompanionProject; using fallback project"
-            );
-        }
         let request_body = wrap_v1internal(
             serde_json::to_value(&gemini_request)
                 .map_err(|err| AppError::internal(err.to_string()))?,
@@ -1597,18 +1556,6 @@ async fn responses_inner(
             "generateContent"
         };
         let upstream_url = google_v1internal_url_label(method, request.stream);
-
-        info!(
-            id = %id,
-            model = %request.model,
-            stream = request.stream,
-            email = %account.email,
-            project_id = %project_id,
-            egress = %EgressProtocol::GoogleV1Internal.as_str(),
-            gemini_request = %json_for_log(&gemini_request),
-            upstream_request = %json_value_for_log(&request_body),
-            "proxying request to Gemini upstream"
-        );
 
         log_http_event(
             &state.logs,
@@ -1650,19 +1597,6 @@ async fn responses_inner(
             let elapsed = elapsed_ms(started_at);
             let upstream_body = json_value_for_storage(&gemini_body);
             let response_body = json_for_storage(&response);
-            info!(
-                id = %id,
-                elapsed_ms = elapsed,
-                upstream_response = %json_value_for_log(&gemini_body),
-                "received non-stream Gemini response"
-            );
-            info!(
-                id = %id,
-                elapsed_ms = elapsed,
-                output_items = response.output.len(),
-                response_body = %json_for_log(&response),
-                "returning non-stream /openai/v1/responses body"
-            );
             log_http_event(
                 &state.logs,
                 &id,
@@ -1737,8 +1671,6 @@ async fn responses_inner(
             let mut accumulated_text = String::new();
             let mut completed_output_items: Vec<Value> = Vec::new();
             let mut emitted_tool_calls = std::collections::HashSet::new();
-            let mut upstream_chunk_count = 0usize;
-            let mut emitted_event_count = 0usize;
 
             let created = json!({
                 "type": "response.created",
@@ -1752,7 +1684,7 @@ async fn responses_inner(
             match encode_event(&created) {
                 Ok(event) => {
                     append_to_log_buffer(&mut client_body, &event);
-                    emitted_event_count += 1;
+
                     yield Ok::<Bytes, std::io::Error>(Bytes::from(event));
                 }
                 Err(err) => {
@@ -1828,23 +1760,9 @@ async fn responses_inner(
                         continue;
                     }
 
-                    upstream_chunk_count += 1;
-                    info!(
-                        id = %id_for_stream,
-                        chunk_index = upstream_chunk_count,
-                        upstream_chunk = %truncate_for_log(payload, 3000),
-                        "received upstream SSE chunk"
-                    );
-
                     let gemini_event: Value = match serde_json::from_str(payload) {
                         Ok(value) => value,
-                        Err(err) => {
-                            warn!(
-                                id = %id_for_stream,
-                                chunk_index = upstream_chunk_count,
-                                error = %err,
-                                "failed to parse upstream SSE chunk"
-                            );
+                        Err(_) => {
                             continue;
                         }
                     };
@@ -1879,7 +1797,7 @@ async fn responses_inner(
                                         match encode_event(&output_item_added) {
                                             Ok(event) => {
                                                 append_to_log_buffer(&mut client_body, &event);
-                                                emitted_event_count += 1;
+                            
                                                 yield Ok(Bytes::from(event));
                                             }
                                             Err(err) => {
@@ -1901,7 +1819,7 @@ async fn responses_inner(
                                         match encode_event(&content_part_added) {
                                             Ok(event) => {
                                                 append_to_log_buffer(&mut client_body, &event);
-                                                emitted_event_count += 1;
+                            
                                                 yield Ok(Bytes::from(event));
                                             }
                                             Err(err) => {
@@ -1923,7 +1841,7 @@ async fn responses_inner(
                                     match encode_event(&delta) {
                                         Ok(event) => {
                                             append_to_log_buffer(&mut client_body, &event);
-                                            emitted_event_count += 1;
+                        
                                             yield Ok(Bytes::from(event));
                                         }
                                         Err(err) => {
@@ -1969,7 +1887,7 @@ async fn responses_inner(
                                     match encode_event(&added) {
                                         Ok(event) => {
                                             append_to_log_buffer(&mut client_body, &event);
-                                            emitted_event_count += 1;
+                        
                                             yield Ok(Bytes::from(event));
                                         }
                                         Err(err) => {
@@ -1986,7 +1904,7 @@ async fn responses_inner(
                                     match encode_event(&done) {
                                         Ok(event) => {
                                             append_to_log_buffer(&mut client_body, &event);
-                                            emitted_event_count += 1;
+                        
                                             yield Ok(Bytes::from(event));
                                         }
                                         Err(err) => {
@@ -2013,7 +1931,7 @@ async fn responses_inner(
                 match encode_event(&text_done) {
                     Ok(event) => {
                         append_to_log_buffer(&mut client_body, &event);
-                        emitted_event_count += 1;
+    
                         yield Ok(Bytes::from(event));
                     }
                     Err(err) => {
@@ -2035,7 +1953,7 @@ async fn responses_inner(
                 match encode_event(&content_part_done) {
                     Ok(event) => {
                         append_to_log_buffer(&mut client_body, &event);
-                        emitted_event_count += 1;
+    
                         yield Ok(Bytes::from(event));
                     }
                     Err(err) => {
@@ -2063,7 +1981,7 @@ async fn responses_inner(
                 match encode_event(&output_item_done) {
                     Ok(event) => {
                         append_to_log_buffer(&mut client_body, &event);
-                        emitted_event_count += 1;
+    
                         yield Ok(Bytes::from(event));
                     }
                     Err(err) => {
@@ -2091,7 +2009,7 @@ async fn responses_inner(
             match encode_event(&completed) {
                 Ok(event) => {
                     append_to_log_buffer(&mut client_body, &event);
-                    emitted_event_count += 1;
+
                     yield Ok(Bytes::from(event));
                 }
                 Err(err) => {
@@ -2100,15 +2018,6 @@ async fn responses_inner(
                 }
             }
 
-            info!(
-                id = %id_for_stream,
-                elapsed_ms = started_at.elapsed().as_millis(),
-                upstream_chunks = upstream_chunk_count,
-                emitted_events = emitted_event_count,
-                output_items = completed_output_items.len(),
-                text_len = accumulated_text.len(),
-                "completed streaming /openai/v1/responses request"
-            );
 
             let done = "data: [DONE]\n\n".to_string();
             append_to_log_buffer(&mut client_body, &done);
@@ -2268,15 +2177,6 @@ async fn responses_inner(
 
         if !request.stream {
             let response_body = json_for_storage(&response);
-            info!(
-                id = %id,
-                elapsed_ms = elapsed,
-                provider = %provider.name,
-                egress = %native_target.egress.as_str(),
-                upstream_model = %native_target.upstream_model,
-                response_body = %json_for_log(&response),
-                "returning chat-completions-adapted /openai/v1/responses body"
-            );
             log_http_event(
                 &state.logs,
                 &id,
@@ -2434,15 +2334,6 @@ async fn responses_inner(
         let response_body: Value = upstream.json().await.map_err(AppError::upstream)?;
         let elapsed = elapsed_ms(started_at);
         let stored_body = json_value_for_storage(&response_body);
-        info!(
-            id = %id,
-            elapsed_ms = elapsed,
-            provider = %provider.name,
-            egress = %native_target.egress.as_str(),
-            upstream_model = %native_target.upstream_model,
-            response_body = %json_value_for_log(&response_body),
-            "returning native provider /openai/v1/responses body"
-        );
         log_http_event(
             &state.logs,
             &id,
@@ -2687,8 +2578,7 @@ async fn persist_chat_history_snapshot(
             match state.chat_history.load_messages(previous_response_id) {
                 Ok(Some(messages)) => messages,
                 Ok(None) => return,
-                Err(err) => {
-                    warn!(response_id, error = %err, "load previous chat history failed");
+                Err(_) => {
                     return;
                 }
             }
@@ -2698,16 +2588,14 @@ async fn persist_chat_history_snapshot(
 
     let continuation_messages = match build_chat_history_from_continuation_request(request) {
         Ok(messages) => messages,
-        Err(err) => {
-            warn!(response_id, error = %err.message, "build continuation messages failed");
+        Err(_) => {
             return;
         }
     };
 
     let assistant_messages = match assistant_messages_from_chat_response(chat_body) {
         Ok(messages) => messages,
-        Err(err) => {
-            warn!(response_id, error = %err, "build assistant chat history failed");
+        Err(_) => {
             return;
         }
     };
@@ -2717,9 +2605,7 @@ async fn persist_chat_history_snapshot(
     snapshot.extend(assistant_messages);
     normalize_chat_completions_messages(&mut snapshot);
 
-    if let Err(err) = state.chat_history.save_messages(response_id, &snapshot) {
-        warn!(response_id, error = %err, "save chat history failed");
-    }
+    let _ = state.chat_history.save_messages(response_id, &snapshot);
 }
 
 fn assistant_messages_from_chat_response(
@@ -3463,8 +3349,7 @@ async fn log_http_event(
     error_message: Option<String>,
     elapsed_ms: Option<i64>,
 ) {
-    let stage_name = stage.as_str().to_string();
-    if let Err(err) = logs
+    if let Err(_) = logs
         .record(LogEvent {
             id: id.to_string(),
             stage,
@@ -3484,14 +3369,7 @@ async fn log_http_event(
             elapsed_ms,
         })
         .await
-    {
-        warn!(
-            id = %id,
-            stage = %stage_name,
-            error = %err,
-            "failed to persist gateway log"
-        );
-    }
+    {}
 }
 
 fn gateway_error_payload(message: &str) -> Value {
@@ -3599,27 +3477,6 @@ fn elapsed_ms(started_at: Instant) -> i64 {
 
 fn append_to_log_buffer(buffer: &mut String, chunk: &str) {
     buffer.push_str(chunk);
-}
-
-fn json_for_log<T: serde::Serialize>(value: &T) -> String {
-    match serde_json::to_string(value) {
-        Ok(body) => truncate_for_log(&body, 8_000),
-        Err(err) => format!("<serialize error: {err}>"),
-    }
-}
-
-fn json_value_for_log(value: &Value) -> String {
-    truncate_for_log(&value.to_string(), 8_000)
-}
-
-fn truncate_for_log(value: &str, limit: usize) -> String {
-    let mut chars = value.chars();
-    let truncated: String = chars.by_ref().take(limit).collect();
-    if chars.next().is_some() {
-        format!("{truncated}...<truncated>")
-    } else {
-        truncated
-    }
 }
 
 #[derive(Debug)]
