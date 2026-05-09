@@ -18,7 +18,6 @@ use tokio::sync::Mutex;
 const DEFAULT_MAX_LOG_ROWS: usize = 20_000;
 const DEFAULT_PRUNE_TO_ROWS: usize = 18_000;
 const DEFAULT_ERROR_LIMIT_CHARS: usize = 4_000;
-const DEFAULT_BODY_LIMIT_CHARS: usize = 200_000;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ExtractedText {
@@ -73,7 +72,6 @@ pub struct LogStore {
     max_rows: usize,
     prune_to_rows: usize,
     error_limit_chars: usize,
-    body_limit_chars: usize,
     write_guard: Arc<Mutex<()>>,
     enabled: Arc<AtomicBool>,
 }
@@ -85,7 +83,6 @@ impl LogStore {
             DEFAULT_MAX_LOG_ROWS,
             DEFAULT_PRUNE_TO_ROWS,
             DEFAULT_ERROR_LIMIT_CHARS,
-            DEFAULT_BODY_LIMIT_CHARS,
         )
     }
 
@@ -94,7 +91,6 @@ impl LogStore {
         max_rows: usize,
         prune_to_rows: usize,
         error_limit_chars: usize,
-        body_limit_chars: usize,
     ) -> Result<Self, String> {
         if let Some(parent) = db_path.parent() {
             fs::create_dir_all(parent)
@@ -106,7 +102,6 @@ impl LogStore {
             max_rows,
             prune_to_rows: prune_to_rows.min(max_rows),
             error_limit_chars,
-            body_limit_chars,
             write_guard: Arc::new(Mutex::new(())),
             enabled: Arc::new(AtomicBool::new(true)),
         };
@@ -141,8 +136,8 @@ impl LogStore {
 
         let conn = self.connect()?;
         let created_at = now_unix() as i64;
-        let (body, body_truncated) =
-            truncate_optional(event.body.as_deref(), self.body_limit_chars);
+        let body = event.body;
+        let body_truncated = false;
         let (error_message, error_truncated) =
             truncate_optional(event.error_message.as_deref(), self.error_limit_chars);
 
@@ -1079,7 +1074,7 @@ mod tests {
     async fn prunes_oldest_rows_after_limit() {
         let db_path = unique_test_db_path("prune");
         let store =
-            LogStore::with_options(db_path.clone(), 3, 2, 128, 1024).expect("create log store");
+            LogStore::with_options(db_path.clone(), 3, 2, 128).expect("create log store");
 
         for idx in 0..4 {
             store
@@ -1127,7 +1122,7 @@ mod tests {
     async fn merges_request_and_response_into_single_row() {
         let db_path = unique_test_db_path("merge");
         let store =
-            LogStore::with_options(db_path.clone(), 10, 8, 8, 1024).expect("create log store");
+            LogStore::with_options(db_path.clone(), 10, 8, 8).expect("create log store");
 
         store
             .record(LogEvent {
@@ -1198,7 +1193,7 @@ mod tests {
     async fn truncates_error_message() {
         let db_path = unique_test_db_path("truncate");
         let store =
-            LogStore::with_options(db_path.clone(), 10, 8, 8, 1024).expect("create log store");
+            LogStore::with_options(db_path.clone(), 10, 8, 8).expect("create log store");
 
         store
             .record(LogEvent {
@@ -1242,10 +1237,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn preserves_large_request_body_without_truncation() {
+        let db_path = unique_test_db_path("large_body");
+        let store =
+            LogStore::with_options(db_path.clone(), 10, 8, 8).expect("create log store");
+        let body = "x".repeat(250_000);
+
+        store
+            .record(LogEvent {
+                id: "large-body".to_string(),
+                stage: LogStage::IngressRequest,
+                status_code: None,
+                ingress_protocol: Some("openai-responses".to_string()),
+                egress_protocol: None,
+                provider_name: None,
+                account_id: None,
+                account_email: None,
+                model: Some("gpt-5.4".to_string()),
+                stream: false,
+                method: Some("POST".to_string()),
+                path: Some("/openai/v1/responses".to_string()),
+                url: None,
+                body: Some(body.clone()),
+                error_message: None,
+                elapsed_ms: None,
+            })
+            .await
+            .expect("insert row");
+
+        let conn = rusqlite::Connection::open(&db_path).expect("open test db");
+        let (stored_body, body_truncated): (String, i64) = conn
+            .query_row(
+                "SELECT ingress_request_body, ingress_request_body_truncated
+                 FROM gateway_logs
+                 WHERE id = 'large-body'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("load row");
+
+        assert_eq!(stored_body.len(), body.len());
+        assert_eq!(stored_body, body);
+        assert_eq!(body_truncated, 0);
+
+        let _ = fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
     async fn skips_recording_when_disabled() {
         let db_path = unique_test_db_path("disabled");
         let store =
-            LogStore::with_options(db_path.clone(), 10, 8, 128, 1024).expect("create log store");
+            LogStore::with_options(db_path.clone(), 10, 8, 128).expect("create log store");
 
         store.set_enabled(false).await.expect("disable log store");
         store
@@ -1290,7 +1332,7 @@ mod tests {
     async fn clears_logs_without_changing_enabled_setting() {
         let db_path = unique_test_db_path("clear");
         let store =
-            LogStore::with_options(db_path.clone(), 10, 8, 128, 1024).expect("create log store");
+            LogStore::with_options(db_path.clone(), 10, 8, 128).expect("create log store");
 
         store
             .record(LogEvent {
