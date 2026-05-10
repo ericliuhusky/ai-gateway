@@ -1,3 +1,6 @@
+pub const OPENAI_CODEX_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
+pub const OPENAI_USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
+
 fn base_api_url(base_url: &str, endpoint: &str) -> String {
     let trimmed = base_url.trim_end_matches('/');
     if has_api_prefix(trimmed) {

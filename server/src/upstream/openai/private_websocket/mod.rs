@@ -1,7 +1,6 @@
 use crate::upstream::shared::proxy_url_for;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use native_tls::{TlsConnector as NativeTlsConnector, TlsStream as NativeTlsStream};
-use reqwest::{Client, Response};
 use serde_json::Value;
 use std::{
     io::{Read, Write},
@@ -12,200 +11,64 @@ use tokio::sync::mpsc;
 use url::Url;
 use uuid::Uuid;
 
-pub const OPENAI_RESPONSES_URL: &str = "https://chatgpt.com/backend-api/codex/responses";
-pub const OPENAI_MODELS_URL: &str = "https://chatgpt.com/backend-api/codex/models";
-pub const OPENAI_USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
-pub const OPENAI_RESPONSES_WS_URL: &str = "wss://chatgpt.com/backend-api/codex/responses";
-pub const OPENAI_RESPONSES_WS_BETA_HEADER_VALUE: &str = "responses_websockets=2026-02-06";
+const OPENAI_RESPONSES_WS_URL: &str = "wss://chatgpt.com/backend-api/codex/responses";
+const OPENAI_RESPONSES_WS_BETA_HEADER_VALUE: &str = "responses_websockets=2026-02-06";
 const MAX_WS_HEADER_BYTES: usize = 16 * 1024;
 
-#[derive(Clone, Debug)]
-pub struct OpenAiPrivateClient {
-    http: Client,
-}
-
-impl OpenAiPrivateClient {
-    pub fn new(http: Client) -> Self {
-        Self { http }
+pub fn stream_responses_websocket_blocking(
+    access_token: String,
+    account_id: Option<String>,
+    request_id: String,
+    request_text: String,
+    tx: mpsc::UnboundedSender<Result<String, String>>,
+) -> Result<(), String> {
+    let url = Url::parse(OPENAI_RESPONSES_WS_URL)
+        .map_err(|err| format!("invalid OpenAI websocket url: {err}"))?;
+    let transport = connect_blocking_websocket_transport(&url)?;
+    let mut stream = wrap_blocking_tls_stream(transport, &url)?;
+    let request =
+        build_websocket_handshake_request(&url, &access_token, account_id.as_deref(), &request_id);
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|err| format!("write websocket handshake failed: {err}"))?;
+    stream
+        .flush()
+        .map_err(|err| format!("flush websocket handshake failed: {err}"))?;
+    let response_head = read_blocking_http_head(&mut stream, MAX_WS_HEADER_BYTES)?;
+    let status_line = response_head.lines().next().unwrap_or_default();
+    if !status_line.contains(" 101 ") && !status_line.ends_with(" 101") {
+        return Err(format!("openai websocket connect failed: {status_line}"));
     }
 
-    pub async fn call_responses(
-        &self,
-        _id: &str,
-        access_token: &str,
-        account_id: Option<&str>,
-        body: Value,
-        stream: bool,
-    ) -> Result<Response, String> {
-        let mut request = self
-            .http
-            .post(OPENAI_RESPONSES_URL)
-            .bearer_auth(access_token)
-            .header("content-type", "application/json")
-            .header(
-                "accept",
-                if stream {
-                    "text/event-stream"
-                } else {
-                    "application/json"
-                },
-            )
-            .header("user-agent", "CodexBar");
+    write_blocking_websocket_frame(&mut stream, 0x1, request_text.as_bytes())?;
 
-        if let Some(account_id) = account_id.filter(|value| !value.is_empty()) {
-            request = request.header("ChatGPT-Account-Id", account_id);
-        }
-
-        let response = request
-            .json(&body)
-            .send()
-            .await
-            .map_err(|err| format!("openai request failed: {err}"))?;
-
-        if response.status().is_success() {
-            Ok(response)
-        } else {
-            let status = response.status();
-            let response_body = response.text().await.unwrap_or_default();
-            Err(format!(
-                "openai upstream returned {status}: {response_body}"
-            ))
-        }
-    }
-
-    pub async fn fetch_models(
-        &self,
-        _id: &str,
-        access_token: &str,
-        account_id: Option<&str>,
-        client_version: &str,
-    ) -> Result<Value, String> {
-        let mut request = self
-            .http
-            .get(OPENAI_MODELS_URL)
-            .bearer_auth(access_token)
-            .header("accept", "application/json")
-            .header("user-agent", "CodexBar")
-            .query(&[("client_version", client_version)]);
-
-        if let Some(account_id) = account_id.filter(|value| !value.is_empty()) {
-            request = request.header("ChatGPT-Account-Id", account_id);
-        }
-
-        let response = request
-            .send()
-            .await
-            .map_err(|err| format!("openai models request failed: {err}"))?;
-
-        if response.status().is_success() {
-            response
-                .json()
-                .await
-                .map_err(|err| format!("openai models parse failed: {err}"))
-        } else {
-            let status = response.status();
-            let response_body = response.text().await.unwrap_or_default();
-            Err(format!(
-                "openai models upstream returned {status}: {response_body}"
-            ))
-        }
-    }
-
-    pub async fn fetch_usage(
-        &self,
-        _id: &str,
-        access_token: &str,
-        account_id: Option<&str>,
-    ) -> Result<Value, String> {
-        let mut request = self
-            .http
-            .get(OPENAI_USAGE_URL)
-            .bearer_auth(access_token)
-            .header("accept", "application/json");
-
-        if let Some(account_id) = account_id.filter(|value| !value.is_empty()) {
-            request = request.header("ChatGPT-Account-Id", account_id);
-        }
-
-        let response = request
-            .send()
-            .await
-            .map_err(|err| format!("openai usage request failed: {err}"))?;
-
-        if response.status().is_success() {
-            response
-                .json()
-                .await
-                .map_err(|err| format!("openai usage parse failed: {err}"))
-        } else {
-            let status = response.status();
-            let response_body = response.text().await.unwrap_or_default();
-            Err(format!(
-                "openai usage upstream returned {status}: {response_body}"
-            ))
-        }
-    }
-
-    pub fn stream_responses_websocket_blocking(
-        &self,
-        access_token: String,
-        account_id: Option<String>,
-        request_id: String,
-        request_text: String,
-        tx: mpsc::UnboundedSender<Result<String, String>>,
-    ) -> Result<(), String> {
-        let url = Url::parse(OPENAI_RESPONSES_WS_URL)
-            .map_err(|err| format!("invalid OpenAI websocket url: {err}"))?;
-        let transport = connect_blocking_websocket_transport(&url)?;
-        let mut stream = wrap_blocking_tls_stream(transport, &url)?;
-        let request = build_websocket_handshake_request(
-            &url,
-            &access_token,
-            account_id.as_deref(),
-            &request_id,
-        );
-        stream
-            .write_all(request.as_bytes())
-            .map_err(|err| format!("write websocket handshake failed: {err}"))?;
-        stream
-            .flush()
-            .map_err(|err| format!("flush websocket handshake failed: {err}"))?;
-        let response_head = read_blocking_http_head(&mut stream, MAX_WS_HEADER_BYTES)?;
-        let status_line = response_head.lines().next().unwrap_or_default();
-        if !status_line.contains(" 101 ") && !status_line.ends_with(" 101") {
-            return Err(format!("openai websocket connect failed: {status_line}"));
-        }
-
-        write_blocking_websocket_frame(&mut stream, 0x1, request_text.as_bytes())?;
-
-        loop {
-            let (opcode, payload) = read_blocking_websocket_frame(&mut stream)?;
-            match opcode {
-                0x1 => {
-                    let text = String::from_utf8(payload)
-                        .map_err(|err| format!("invalid UTF-8 websocket event: {err}"))?;
-                    let is_terminal =
-                        is_terminal_ws_event_text(&text) || is_wrapped_error_event_text(&text);
-                    if tx.send(Ok(text)).is_err() {
-                        return Err("response event consumer dropped".to_string());
-                    }
-                    if is_terminal {
-                        break;
-                    }
+    loop {
+        let (opcode, payload) = read_blocking_websocket_frame(&mut stream)?;
+        match opcode {
+            0x1 => {
+                let text = String::from_utf8(payload)
+                    .map_err(|err| format!("invalid UTF-8 websocket event: {err}"))?;
+                let is_terminal =
+                    is_terminal_ws_event_text(&text) || is_wrapped_error_event_text(&text);
+                if tx.send(Ok(text)).is_err() {
+                    return Err("response event consumer dropped".to_string());
                 }
-                0x9 => write_blocking_websocket_frame(&mut stream, 0xA, &payload)?,
-                0xA => {}
-                0x2 => return Err("unexpected binary websocket event".to_string()),
-                0x8 => {
-                    return Err("websocket closed by server before response.completed".to_string());
+                if is_terminal {
+                    break;
                 }
-                0x0 => return Err("fragmented websocket frames are not supported".to_string()),
-                other => return Err(format!("unexpected websocket opcode: {other}")),
             }
+            0x9 => write_blocking_websocket_frame(&mut stream, 0xA, &payload)?,
+            0xA => {}
+            0x2 => return Err("unexpected binary websocket event".to_string()),
+            0x8 => {
+                return Err("websocket closed by server before response.completed".to_string());
+            }
+            0x0 => return Err("fragmented websocket frames are not supported".to_string()),
+            other => return Err(format!("unexpected websocket opcode: {other}")),
         }
-
-        Ok(())
     }
+
+    Ok(())
 }
 
 fn build_websocket_handshake_request(

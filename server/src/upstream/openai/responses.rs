@@ -1,81 +1,88 @@
-use super::url::{models_api_url, responses_api_url};
-use reqwest::{Client, Response};
+use super::url::{chat_completions_api_url, models_api_url, responses_api_url};
+use reqwest::{Client, RequestBuilder};
 use serde_json::Value;
-#[derive(Clone, Debug)]
-pub struct OpenAiResponsesClient {
-    http: Client,
+
+pub fn responses_request(
+    http: &Client,
+    base_url: &str,
+    api_key: &str,
+    body: Value,
+    stream: bool,
+    is_private: bool,
+    account_id: Option<&str>,
+    is_chat: bool,
+) -> RequestBuilder {
+    let url = if is_chat {
+        chat_completions_api_url(base_url)
+    } else {
+        responses_api_url(base_url)
+    };
+    let request = http
+        .post(&url)
+        .bearer_auth(api_key)
+        .header("content-type", "application/json")
+        .header(
+            "accept",
+            if stream {
+                "text/event-stream"
+            } else {
+                "application/json"
+            },
+        )
+        .json(&body);
+
+    with_private_headers(request, is_private, account_id)
 }
 
-impl OpenAiResponsesClient {
-    pub fn new(http: Client) -> Self {
-        Self { http }
+pub fn models_request(
+    http: &Client,
+    base_url: &str,
+    api_key: &str,
+    is_private: bool,
+    account_id: Option<&str>,
+    client_version: Option<&str>,
+) -> RequestBuilder {
+    let url = models_api_url(base_url);
+    let mut request = http
+        .get(&url)
+        .bearer_auth(api_key)
+        .header("accept", "application/json");
+
+    if is_private && let Some(client_version) = client_version {
+        request = request.query(&[("client_version", client_version)]);
     }
 
-    pub async fn request(
-        &self,
-        _id: &str,
-        base_url: &str,
-        api_key: &str,
-        body: Value,
-        stream: bool,
-    ) -> Result<Response, String> {
-        let url = responses_api_url(base_url);
-        let response = self
-            .http
-            .post(&url)
-            .bearer_auth(api_key)
-            .header("content-type", "application/json")
-            .header(
-                "accept",
-                if stream {
-                    "text/event-stream"
-                } else {
-                    "application/json"
-                },
-            )
-            .json(&body)
-            .send()
-            .await
-            .map_err(|err| format!("openai responses request failed: {err}"))?;
+    with_private_headers(request, is_private, account_id)
+}
 
-        if response.status().is_success() {
-            Ok(response)
+pub fn usage_request(
+    http: &Client,
+    url: &str,
+    api_key: &str,
+    is_private: bool,
+    account_id: Option<&str>,
+) -> RequestBuilder {
+    let request = http
+        .get(url)
+        .bearer_auth(api_key)
+        .header("accept", "application/json");
+
+    with_private_headers(request, is_private, account_id)
+}
+
+fn with_private_headers(
+    request: RequestBuilder,
+    is_private: bool,
+    account_id: Option<&str>,
+) -> RequestBuilder {
+    if is_private {
+        let request = request.header("user-agent", "CodexBar");
+        if let Some(account_id) = account_id.filter(|value| !value.is_empty()) {
+            request.header("ChatGPT-Account-Id", account_id)
         } else {
-            let status = response.status();
-            let response_body = response.text().await.unwrap_or_default();
-            Err(format!(
-                "openai responses provider returned {status}: {response_body}"
-            ))
+            request
         }
-    }
-
-    pub async fn fetch_models(
-        &self,
-        _id: &str,
-        base_url: &str,
-        api_key: &str,
-    ) -> Result<Value, String> {
-        let url = models_api_url(base_url);
-        let response = self
-            .http
-            .get(&url)
-            .bearer_auth(api_key)
-            .header("accept", "application/json")
-            .send()
-            .await
-            .map_err(|err| format!("openai models request failed: {err}"))?;
-
-        if response.status().is_success() {
-            response
-                .json()
-                .await
-                .map_err(|err| format!("openai models parse failed: {err}"))
-        } else {
-            let status = response.status();
-            let response_body = response.text().await.unwrap_or_default();
-            Err(format!(
-                "openai models upstream returned {status}: {response_body}"
-            ))
-        }
+    } else {
+        request
     }
 }

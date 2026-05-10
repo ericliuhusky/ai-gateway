@@ -1,28 +1,27 @@
 use crate::upstream::{
     google_v1internal::GoogleV1InternalClient,
-    openai::{OpenAiChatClient, OpenAiPrivateClient, OpenAiResponsesClient},
+    openai::{
+        OPENAI_CODEX_BASE_URL, OPENAI_USAGE_URL, models_request, responses_request,
+        stream_private_responses_websocket_blocking, usage_request,
+    },
     shared::build_http_client,
 };
-use reqwest::Response;
+use reqwest::{Client, Response};
 use serde_json::Value;
 use tokio::sync::mpsc;
 
 #[derive(Clone, Debug)]
 pub struct UpstreamClient {
+    http: Client,
     google_v1internal: GoogleV1InternalClient,
-    openai_private: OpenAiPrivateClient,
-    openai_responses: OpenAiResponsesClient,
-    openai_chat: OpenAiChatClient,
 }
 
 impl UpstreamClient {
     pub fn new() -> Self {
         let http = build_http_client();
         Self {
+            http: http.clone(),
             google_v1internal: GoogleV1InternalClient::new(http.clone()),
-            openai_private: OpenAiPrivateClient::new(http.clone()),
-            openai_responses: OpenAiResponsesClient::new(http.clone()),
-            openai_chat: OpenAiChatClient::new(http),
         }
     }
 
@@ -55,38 +54,93 @@ impl UpstreamClient {
 
     pub async fn call_openai_responses(
         &self,
-        id: &str,
+        _id: &str,
         access_token: &str,
         account_id: Option<&str>,
         body: Value,
         stream: bool,
     ) -> Result<Response, String> {
-        self.openai_private
-            .call_responses(id, access_token, account_id, body, stream)
-            .await
+        let response = responses_request(
+            &self.http,
+            OPENAI_CODEX_BASE_URL,
+            access_token,
+            body,
+            stream,
+            true,
+            account_id,
+            false,
+        )
+        .send()
+        .await
+        .map_err(|err| format!("OpenAI responses 私有接口请求失败: {err}"))?;
+
+        if response.status().is_success() {
+            Ok(response)
+        } else {
+            let status = response.status();
+            let response_body = response.text().await.unwrap_or_default();
+            Err(format!(
+                "OpenAI responses 私有接口上游返回状态码 {status}: {response_body}"
+            ))
+        }
     }
 
     pub async fn fetch_openai_models(
         &self,
-        id: &str,
+        _id: &str,
         access_token: &str,
         account_id: Option<&str>,
         client_version: &str,
     ) -> Result<Value, String> {
-        self.openai_private
-            .fetch_models(id, access_token, account_id, client_version)
-            .await
+        let response = models_request(
+            &self.http,
+            OPENAI_CODEX_BASE_URL,
+            access_token,
+            true,
+            account_id,
+            Some(client_version),
+        )
+        .send()
+        .await
+        .map_err(|err| format!("OpenAI 模型请求失败: {err}"))?;
+
+        if response.status().is_success() {
+            response
+                .json()
+                .await
+                .map_err(|err| format!("OpenAI 模型解析失败: {err}"))
+        } else {
+            let status = response.status();
+            let response_body = response.text().await.unwrap_or_default();
+            Err(format!(
+                "OpenAI 模型私有接口上游返回状态码 {status}: {response_body}"
+            ))
+        }
     }
 
     pub async fn fetch_openai_usage(
         &self,
-        id: &str,
+        _id: &str,
         access_token: &str,
         account_id: Option<&str>,
     ) -> Result<Value, String> {
-        self.openai_private
-            .fetch_usage(id, access_token, account_id)
+        let response = usage_request(&self.http, OPENAI_USAGE_URL, access_token, true, account_id)
+            .send()
             .await
+            .map_err(|err| format!("openai usage request failed: {err}"))?;
+
+        if response.status().is_success() {
+            response
+                .json()
+                .await
+                .map_err(|err| format!("openai usage parse failed: {err}"))
+        } else {
+            let status = response.status();
+            let response_body = response.text().await.unwrap_or_default();
+            Err(format!(
+                "openai usage upstream returned {status}: {response_body}"
+            ))
+        }
     }
 
     pub fn stream_openai_responses_websocket_blocking(
@@ -97,7 +151,7 @@ impl UpstreamClient {
         request_text: String,
         tx: mpsc::UnboundedSender<Result<String, String>>,
     ) -> Result<(), String> {
-        self.openai_private.stream_responses_websocket_blocking(
+        stream_private_responses_websocket_blocking(
             access_token,
             account_id,
             request_id,
@@ -108,47 +162,101 @@ impl UpstreamClient {
 
     pub async fn call_openai_responses_upstream(
         &self,
-        id: &str,
+        _id: &str,
         base_url: &str,
         api_key: &str,
         body: Value,
         stream: bool,
     ) -> Result<Response, String> {
-        self.openai_responses
-            .request(id, base_url, api_key, body, stream)
-            .await
+        let response = responses_request(
+            &self.http, base_url, api_key, body, stream, false, None, false,
+        )
+        .send()
+        .await
+        .map_err(|err| format!("OpenAI responses 请求失败: {err}"))?;
+
+        if response.status().is_success() {
+            Ok(response)
+        } else {
+            let status = response.status();
+            let response_body = response.text().await.unwrap_or_default();
+            Err(format!(
+                "OpenAI responses 上游返回状态码 {status}: {response_body}"
+            ))
+        }
     }
 
     pub async fn call_openai_chat_upstream(
         &self,
-        id: &str,
+        _id: &str,
         base_url: &str,
         api_key: &str,
         body: Value,
     ) -> Result<Response, String> {
-        self.openai_chat.request(id, base_url, api_key, body).await
+        let response = responses_request(
+            &self.http, base_url, api_key, body, false, false, None, true,
+        )
+        .send()
+        .await
+        .map_err(|err| format!("OpenAI chat 请求失败: {err}"))?;
+
+        if response.status().is_success() {
+            Ok(response)
+        } else {
+            let status = response.status();
+            let response_body = response.text().await.unwrap_or_default();
+            Err(format!(
+                "OpenAI chat 上游返回状态码 {status}: {response_body}"
+            ))
+        }
     }
 
     pub async fn fetch_openai_models_upstream(
         &self,
-        id: &str,
+        _id: &str,
         base_url: &str,
         api_key: &str,
     ) -> Result<Value, String> {
-        self.openai_responses
-            .fetch_models(id, base_url, api_key)
+        let response = models_request(&self.http, base_url, api_key, false, None, None)
+            .send()
             .await
+            .map_err(|err| format!("OpenAI 模型请求失败: {err}"))?;
+
+        if response.status().is_success() {
+            response
+                .json()
+                .await
+                .map_err(|err| format!("OpenAI 模型解析失败: {err}"))
+        } else {
+            let status = response.status();
+            let response_body = response.text().await.unwrap_or_default();
+            Err(format!(
+                "OpenAI 模型上游返回状态码 {status}: {response_body}"
+            ))
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::upstream::openai::OPENAI_MODELS_URL;
+    use crate::upstream::openai::{OPENAI_CODEX_BASE_URL, models_request};
+
     #[test]
     fn openai_models_endpoint_uses_codex_backend() {
+        let request = models_request(
+            &reqwest::Client::new(),
+            OPENAI_CODEX_BASE_URL,
+            "token",
+            true,
+            None,
+            Some("test"),
+        )
+        .build()
+        .expect("valid request");
+
         assert_eq!(
-            OPENAI_MODELS_URL,
-            "https://chatgpt.com/backend-api/codex/models"
+            request.url().as_str(),
+            "https://chatgpt.com/backend-api/codex/models?client_version=test"
         );
     }
 }
