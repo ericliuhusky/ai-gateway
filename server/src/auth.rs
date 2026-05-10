@@ -1,13 +1,9 @@
-use crate::config::Config;
+use crate::{config::Config, support::time::now_unix};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use reqwest::Client;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use std::{
-    collections::HashMap,
-    sync::Arc,
-    time::{Duration, SystemTime, UNIX_EPOCH},
-};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio::sync::Mutex;
 use url::Url;
 use uuid::Uuid;
@@ -434,13 +430,6 @@ impl OAuthClient {
             .await
             .retain(|_, pending| pending.created_at >= cutoff);
     }
-}
-
-fn now_unix() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
 }
 
 fn decode_openai_claims(token: &str) -> Result<OpenAITokenClaims, String> {

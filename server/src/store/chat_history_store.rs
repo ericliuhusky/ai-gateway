@@ -1,4 +1,4 @@
-use crate::{config::Config, models::OpenAIMessage};
+use crate::{config::Config, models::OpenAIMessage, support::time::now_unix};
 use rusqlite::{Connection, OptionalExtension, params};
 use std::{fs, path::PathBuf, sync::Arc};
 
@@ -93,13 +93,6 @@ impl ChatHistoryStore {
             )
         })
     }
-}
-
-fn now_unix() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
 }
 
 #[cfg(test)]

@@ -5,36 +5,30 @@ use crate::{
     config::Config,
     models::{AccountRecord, AccountType, PROVIDER_GOOGLE_PROXY, PROVIDER_OPENAI_PROXY},
     store::sqlite::SqliteStore,
+    support::time::now_unix,
     upstream::UpstreamClient,
 };
-use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
-};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::Arc;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
 #[derive(Clone, Debug)]
-pub struct AccountPool {
+pub struct AccountStore {
     sqlite: SqliteStore,
-    accounts: Arc<Mutex<Vec<AccountRecord>>>,
-    next_index: Arc<AtomicUsize>,
+    records: Arc<Mutex<Vec<AccountRecord>>>,
 }
 
-impl AccountPool {
+impl AccountStore {
     pub fn new(config: Arc<Config>) -> Result<Self, String> {
-        let pool = Self {
+        Ok(Self {
             sqlite: SqliteStore::new(config.clone())?,
-            accounts: Arc::new(Mutex::new(Vec::new())),
-            next_index: Arc::new(AtomicUsize::new(0)),
-        };
-        Ok(pool)
+            records: Arc::new(Mutex::new(Vec::new())),
+        })
     }
 
     pub async fn load(&self) -> Result<(), String> {
         let loaded = self.sqlite.load_accounts()?;
-        *self.accounts.lock().await = loaded;
+        *self.records.lock().await = loaded;
         Ok(())
     }
 
@@ -49,8 +43,8 @@ impl AccountPool {
             .ok_or_else(|| "google did not return refresh_token".to_string())?;
         let expiry_timestamp = now_unix() as i64 + token.expires_in;
 
-        let mut accounts = self.accounts.lock().await;
-        if accounts.iter().any(|account| {
+        let mut records = self.records.lock().await;
+        if records.iter().any(|account| {
             account.email == user.email && account.provider() == PROVIDER_GOOGLE_PROXY
         }) {
             return Err(format!("Google 账号已经存在: {}", user.email));
@@ -67,7 +61,7 @@ impl AccountPool {
             project_id,
             upstream_account_id: None,
         };
-        accounts.push(account.clone());
+        records.push(account.clone());
 
         self.persist_account(&account)?;
         Ok(account)
@@ -77,8 +71,8 @@ impl AccountPool {
         &self,
         imported: ImportedOpenAIAuth,
     ) -> Result<AccountRecord, String> {
-        let mut accounts = self.accounts.lock().await;
-        if accounts.iter().any(|account| {
+        let mut records = self.records.lock().await;
+        if records.iter().any(|account| {
             account.email == imported.email && account.provider() == PROVIDER_OPENAI_PROXY
         }) {
             return Err(format!("OpenAI 账号已经存在: {}", imported.email));
@@ -95,47 +89,10 @@ impl AccountPool {
             project_id: None,
             upstream_account_id: imported.account_id,
         };
-        accounts.push(account.clone());
+        records.push(account.clone());
 
         self.persist_account(&account)?;
         Ok(account)
-    }
-
-    pub async fn acquire_for_provider(
-        &self,
-        oauth: &OAuthClient,
-        upstream: &UpstreamClient,
-        provider: &str,
-    ) -> Result<AccountRecord, String> {
-        let snapshot: Vec<AccountRecord> = self
-            .accounts
-            .lock()
-            .await
-            .iter()
-            .filter(|account| account.provider() == provider)
-            .cloned()
-            .collect();
-        if snapshot.is_empty() {
-            return Err(format!(
-                "no {provider} accounts in pool; import or login before calling this route"
-            ));
-        }
-
-        let start = self.next_index.fetch_add(1, Ordering::SeqCst);
-        for offset in 0..snapshot.len() {
-            let idx = (start + offset) % snapshot.len();
-            match self
-                .prepare_account_for_use(snapshot[idx].clone(), oauth, upstream)
-                .await
-            {
-                Ok(account) => {
-                    return Ok(account);
-                }
-                Err(_) => {}
-            }
-        }
-
-        Err("no healthy accounts available".to_string())
     }
 
     pub async fn acquire_by_id(
@@ -147,12 +104,12 @@ impl AccountPool {
         let account = self
             .find_by_id(account_id)
             .await
-            .ok_or_else(|| format!("account not found: {account_id}"))?;
+            .ok_or_else(|| format!("账户不存在: {account_id}"))?;
         self.prepare_account_for_use(account, oauth, upstream).await
     }
 
     pub async fn find_by_id(&self, account_id: &str) -> Option<AccountRecord> {
-        self.accounts
+        self.records
             .lock()
             .await
             .iter()
@@ -161,11 +118,11 @@ impl AccountPool {
     }
 
     async fn update_account(&self, account: AccountRecord) -> Result<(), String> {
-        let mut accounts = self.accounts.lock().await;
-        if let Some(existing) = accounts.iter_mut().find(|item| item.id == account.id) {
+        let mut records = self.records.lock().await;
+        if let Some(existing) = records.iter_mut().find(|item| item.id == account.id) {
             *existing = account.clone();
         } else {
-            accounts.push(account.clone());
+            records.push(account.clone());
         }
         self.persist_account(&account)
     }
@@ -227,11 +184,4 @@ impl AccountPool {
         self.update_account(account.clone()).await?;
         Ok(account)
     }
-}
-
-fn now_unix() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
 }

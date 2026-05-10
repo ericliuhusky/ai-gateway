@@ -3,9 +3,9 @@ use crate::models::{
     OpenAIMessage, ResponseOutputContent, ResponseOutputItem, ResponseTool, ResponsesRequest,
     ResponsesResponse, ResponsesUsage,
 };
+use crate::support::time::now_unix;
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 pub fn responses_to_chat_completions(
@@ -395,13 +395,6 @@ pub fn chat_completions_to_responses(model: &str, chat: &Value) -> ResponsesResp
         output,
         usage,
     }
-}
-
-fn now_unix() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
 }
 
 #[cfg(test)]

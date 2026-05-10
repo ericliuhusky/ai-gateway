@@ -2,7 +2,7 @@ use crate::{
     config::Config,
     models::{
         AccountRecord, AccountType, ApiProviderBillingMode, ApiProviderRecord,
-        CachedProviderModels, ProviderAuthMode, SelectedProvider,
+        CachedProviderModels, ProviderAuthMode, SelectedRoute,
     },
 };
 use rusqlite::{Connection, OptionalExtension, params};
@@ -116,30 +116,59 @@ impl SqliteStore {
             params![provider_id],
         )
         .map_err(|err| format!("delete cached provider models failed: {err}"))?;
+        conn.execute(
+            "DELETE FROM provider_selected_models WHERE provider_id = ?1",
+            params![provider_id],
+        )
+        .map_err(|err| format!("delete provider selected model failed: {err}"))?;
         Ok(())
     }
 
-    pub fn load_route(&self) -> Result<SelectedProvider, String> {
+    pub fn load_route(&self) -> Result<SelectedRoute, String> {
         let conn = self.connect()?;
-        conn.query_row(
-            "SELECT provider_id, selected_model, updated_at FROM selected_provider WHERE id = 1",
-            [],
-            |row| {
-                Ok(SelectedProvider {
-                    provider_id: row.get(0)?,
-                    selected_model: row.get(1)?,
-                    updated_at: row.get(2)?,
-                })
-            },
-        )
-        .optional()
-        .map_err(|err| format!("load route failed: {err}"))?
-        .map_or_else(|| Ok(SelectedProvider::default()), Ok)
+        let mut route = conn
+            .query_row(
+                "SELECT provider_id, updated_at FROM selected_provider WHERE id = 1",
+                [],
+                |row| {
+                    Ok(SelectedRoute {
+                        provider_id: row.get(0)?,
+                        selected_model: None,
+                        updated_at: row.get(1)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|err| format!("load route failed: {err}"))?
+            .unwrap_or_default();
+
+        if let Some(provider_id) = route.provider_id.as_deref() {
+            route.selected_model = load_provider_selected_model_record(&conn, provider_id)?;
+        }
+
+        Ok(route)
     }
 
-    pub fn upsert_route(&self, route: &SelectedProvider) -> Result<(), String> {
+    pub fn upsert_route(&self, route: &SelectedRoute) -> Result<(), String> {
         let conn = self.connect()?;
-        upsert_route_record(&conn, route)
+        upsert_route_record(&conn, route)?;
+        if let Some(provider_id) = route.provider_id.as_deref() {
+            set_provider_selected_model_record(
+                &conn,
+                provider_id,
+                route.selected_model.as_deref(),
+                route.updated_at,
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn load_provider_selected_model(
+        &self,
+        provider_id: &str,
+    ) -> Result<Option<String>, String> {
+        let conn = self.connect()?;
+        load_provider_selected_model_record(&conn, provider_id)
     }
 
     pub fn load_cached_models(
@@ -210,6 +239,12 @@ impl SqliteStore {
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 provider_id TEXT,
                 selected_model TEXT,
+                updated_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS provider_selected_models (
+                provider_id TEXT PRIMARY KEY,
+                selected_model TEXT NOT NULL,
                 updated_at INTEGER NOT NULL
             );
 
@@ -293,7 +328,7 @@ fn upsert_provider_record(conn: &Connection, provider: &ApiProviderRecord) -> Re
     Ok(())
 }
 
-fn upsert_route_record(conn: &Connection, route: &SelectedProvider) -> Result<(), String> {
+fn upsert_route_record(conn: &Connection, route: &SelectedRoute) -> Result<(), String> {
     conn.execute(
         "INSERT INTO selected_provider (id, provider_id, selected_model, updated_at)
          VALUES (1, ?1, ?2, ?3)
@@ -301,9 +336,49 @@ fn upsert_route_record(conn: &Connection, route: &SelectedProvider) -> Result<()
             provider_id = excluded.provider_id,
             selected_model = excluded.selected_model,
             updated_at = excluded.updated_at",
-        params![route.provider_id, route.selected_model, route.updated_at],
+        params![route.provider_id, Option::<String>::None, route.updated_at],
     )
     .map_err(|err| format!("upsert route failed: {err}"))?;
+    Ok(())
+}
+
+fn load_provider_selected_model_record(
+    conn: &Connection,
+    provider_id: &str,
+) -> Result<Option<String>, String> {
+    conn.query_row(
+        "SELECT selected_model FROM provider_selected_models WHERE provider_id = ?1",
+        params![provider_id],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(|err| format!("load provider selected model failed: {err}"))
+}
+
+fn set_provider_selected_model_record(
+    conn: &Connection,
+    provider_id: &str,
+    selected_model: Option<&str>,
+    updated_at: i64,
+) -> Result<(), String> {
+    if let Some(selected_model) = selected_model {
+        conn.execute(
+            "INSERT INTO provider_selected_models (provider_id, selected_model, updated_at)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(provider_id) DO UPDATE SET
+                selected_model = excluded.selected_model,
+                updated_at = excluded.updated_at",
+            params![provider_id, selected_model, updated_at],
+        )
+        .map_err(|err| format!("upsert provider selected model failed: {err}"))?;
+    } else {
+        conn.execute(
+            "DELETE FROM provider_selected_models WHERE provider_id = ?1",
+            params![provider_id],
+        )
+        .map_err(|err| format!("delete provider selected model failed: {err}"))?;
+    }
+
     Ok(())
 }
 

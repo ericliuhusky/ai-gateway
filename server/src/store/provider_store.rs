@@ -25,10 +25,10 @@ impl ProviderStore {
         Ok(store)
     }
 
-    pub async fn load(&self) -> Result<usize, String> {
+    pub async fn load(&self) -> Result<(), String> {
         let loaded = self.sqlite.load_providers()?;
         *self.providers.lock().await = loaded;
-        Ok(self.providers.lock().await.len())
+        Ok(())
     }
 
     pub async fn list(&self) -> Vec<ApiProviderSummary> {
@@ -45,7 +45,6 @@ impl ProviderStore {
                 account_email: None,
                 uses_chat_completions: provider.uses_chat_completions,
                 billing_mode: provider.billing_mode.clone(),
-                api_key_preview: mask_api_key(&provider.api_key),
             })
             .collect()
     }
@@ -69,33 +68,23 @@ impl ProviderStore {
         }
 
         let mut providers = self.providers.lock().await;
-        let provider =
-            if let Some(existing) = providers.iter_mut().find(|provider| provider.name == name) {
-                existing.auth_mode = ProviderAuthMode::ApiKey;
-                existing.base_url = base_url;
-                existing.api_key = api_key;
-                existing.account_id = None;
-                existing.uses_chat_completions = request.uses_chat_completions;
-                existing.billing_mode = request
-                    .billing_mode
-                    .unwrap_or_else(|| existing.billing_mode.clone());
-                existing.clone()
-            } else {
-                let provider = ApiProviderRecord {
-                    id: Uuid::new_v4().to_string(),
-                    name,
-                    auth_mode: ProviderAuthMode::ApiKey,
-                    base_url,
-                    api_key,
-                    account_id: None,
-                    uses_chat_completions: request.uses_chat_completions,
-                    billing_mode: request
-                        .billing_mode
-                        .unwrap_or(ApiProviderBillingMode::Metered),
-                };
-                providers.push(provider.clone());
-                provider
-            };
+        if providers.iter().any(|provider| provider.name == name) {
+            return Err(format!("供应商名称已存在: {name}"));
+        }
+
+        let provider = ApiProviderRecord {
+            id: Uuid::new_v4().to_string(),
+            name,
+            auth_mode: ProviderAuthMode::ApiKey,
+            base_url,
+            api_key,
+            account_id: None,
+            uses_chat_completions: request.uses_chat_completions,
+            billing_mode: request
+                .billing_mode
+                .unwrap_or(ApiProviderBillingMode::Metered),
+        };
+        providers.push(provider.clone());
 
         self.persist_provider(&provider)?;
         Ok(provider)
@@ -110,38 +99,23 @@ impl ProviderStore {
             .cloned()
     }
 
-    pub async fn bind_account_provider(
+    pub async fn add_account_provider(
         &self,
         name: &str,
         account_id: &str,
     ) -> Result<ApiProviderRecord, String> {
         let mut providers = self.providers.lock().await;
-        let provider = if let Some(existing) = providers
-            .iter_mut()
-            .find(|provider| provider.account_id.as_deref() == Some(account_id))
-        {
-            existing.name = name.to_string();
-            existing.auth_mode = ProviderAuthMode::Account;
-            existing.base_url.clear();
-            existing.api_key.clear();
-            existing.account_id = Some(account_id.to_string());
-            existing.uses_chat_completions = false;
-            existing.billing_mode = ApiProviderBillingMode::Subscription;
-            existing.clone()
-        } else {
-            let provider = ApiProviderRecord {
-                id: Uuid::new_v4().to_string(),
-                name: name.to_string(),
-                auth_mode: ProviderAuthMode::Account,
-                base_url: String::new(),
-                api_key: String::new(),
-                account_id: Some(account_id.to_string()),
-                uses_chat_completions: false,
-                billing_mode: ApiProviderBillingMode::Subscription,
-            };
-            providers.push(provider.clone());
-            provider
+        let provider = ApiProviderRecord {
+            id: Uuid::new_v4().to_string(),
+            name: name.to_string(),
+            auth_mode: ProviderAuthMode::Account,
+            base_url: String::new(),
+            api_key: String::new(),
+            account_id: Some(account_id.to_string()),
+            uses_chat_completions: false,
+            billing_mode: ApiProviderBillingMode::Subscription,
         };
+        providers.push(provider.clone());
 
         self.persist_provider(&provider)?;
         Ok(provider)
@@ -163,23 +137,11 @@ impl ProviderStore {
     }
 }
 
-fn mask_api_key(api_key: &str) -> String {
-    if api_key.len() <= 8 {
-        return "********".to_string();
-    }
-
-    let prefix = &api_key[..4];
-    let suffix = &api_key[api_key.len().saturating_sub(4)..];
-    format!("{prefix}...{suffix}")
-}
-
 #[cfg(test)]
 mod tests {
     use super::ProviderStore;
     use crate::{
-        models::{
-            ApiProviderBillingMode, PROVIDER_GOOGLE_PROXY, PROVIDER_OPENAI_PROXY, ProviderAuthMode,
-        },
+        models::{ApiProviderBillingMode, PROVIDER_OPENAI_PROXY},
         store::sqlite::SqliteStore,
     };
     use std::{
@@ -190,7 +152,7 @@ mod tests {
     use tokio::sync::Mutex;
 
     #[tokio::test]
-    async fn bind_account_provider_creates_one_provider_per_account() {
+    async fn add_account_provider_creates_one_provider_per_account() {
         let sqlite = test_sqlite_store("multi-account-providers");
         let store = ProviderStore {
             sqlite,
@@ -198,11 +160,11 @@ mod tests {
         };
 
         let first = store
-            .bind_account_provider(PROVIDER_OPENAI_PROXY, "account_1")
+            .add_account_provider(PROVIDER_OPENAI_PROXY, "account_1")
             .await
             .expect("bind first account");
         let second = store
-            .bind_account_provider(PROVIDER_OPENAI_PROXY, "account_2")
+            .add_account_provider(PROVIDER_OPENAI_PROXY, "account_2")
             .await
             .expect("bind second account");
 
@@ -223,30 +185,6 @@ mod tests {
                 .count(),
             2
         );
-    }
-
-    #[tokio::test]
-    async fn bind_account_provider_reuses_existing_provider_for_same_account() {
-        let sqlite = test_sqlite_store("same-account-provider");
-        let store = ProviderStore {
-            sqlite,
-            providers: Arc::new(Mutex::new(Vec::new())),
-        };
-
-        let first = store
-            .bind_account_provider(PROVIDER_GOOGLE_PROXY, "account_1")
-            .await
-            .expect("bind first time");
-        let second = store
-            .bind_account_provider(PROVIDER_GOOGLE_PROXY, "account_1")
-            .await
-            .expect("bind second time");
-
-        assert_eq!(first.id, second.id);
-        assert_eq!(second.account_id.as_deref(), Some("account_1"));
-        assert_eq!(second.auth_mode, ProviderAuthMode::Account);
-        assert_eq!(second.billing_mode, ApiProviderBillingMode::Subscription);
-        assert_eq!(store.list().await.len(), 1);
     }
 
     fn test_sqlite_store(prefix: &str) -> SqliteStore {

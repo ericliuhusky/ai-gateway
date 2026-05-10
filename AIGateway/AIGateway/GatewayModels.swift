@@ -30,7 +30,6 @@ struct GatewayProvider: Codable, Identifiable, Hashable {
     let accountEmail: String?
     let billingMode: GatewayBillingMode
     let usesChatCompletions: Bool
-    let apiKeyPreview: String
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -41,7 +40,6 @@ struct GatewayProvider: Codable, Identifiable, Hashable {
         case accountEmail = "account_email"
         case billingMode = "billing_mode"
         case usesChatCompletions = "uses_chat_completions"
-        case apiKeyPreview = "api_key_preview"
     }
 
     var billingModeLabel: String {

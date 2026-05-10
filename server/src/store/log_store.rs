@@ -1,6 +1,7 @@
 use crate::{
     config::Config,
     models::{GatewayLogDetail, GatewayLogSummary},
+    support::time::now_unix,
 };
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::Value;
@@ -11,7 +12,6 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
-    time::{SystemTime, UNIX_EPOCH},
 };
 use tokio::sync::Mutex;
 
@@ -1049,13 +1049,6 @@ fn truncate_optional(value: Option<&str>, limit: usize) -> (Option<String>, bool
     } else {
         (Some(truncated), false)
     }
-}
-
-fn now_unix() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
 }
 
 #[cfg(test)]

@@ -4,9 +4,9 @@ use crate::models::{
     OpenAIMessage, ResponseOutputContent, ResponseOutputItem, ResponseTool, ResponsesRequest,
     ResponsesResponse, ResponsesUsage,
 };
+use crate::support::time::now_unix;
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 pub fn responses_to_gemini(request: &ResponsesRequest) -> Result<GeminiGenerateRequest, String> {
@@ -261,13 +261,6 @@ fn response_id(raw: &Value) -> String {
         .and_then(Value::as_str)
         .map(ToOwned::to_owned)
         .unwrap_or_else(|| format!("resp_{}", Uuid::new_v4()))
-}
-
-fn now_unix() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
 }
 
 fn build_gemini_message_parts(

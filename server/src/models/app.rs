@@ -76,11 +76,10 @@ pub struct ApiProviderSummary {
     pub account_email: Option<String>,
     pub uses_chat_completions: bool,
     pub billing_mode: ApiProviderBillingMode,
-    pub api_key_preview: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
-pub struct SelectedProvider {
+pub struct SelectedRoute {
     #[serde(default)]
     pub provider_id: Option<String>,
     #[serde(default)]

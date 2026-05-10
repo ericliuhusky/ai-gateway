@@ -4,6 +4,7 @@ mod auth;
 mod config;
 mod models;
 mod store;
+mod support;
 mod upstream;
 
 use api::{AppState, build_router};
@@ -11,13 +12,13 @@ use auth::OAuthClient;
 use config::Config;
 use reqwest::Client;
 use std::sync::Arc;
-use store::{AccountPool, ChatHistoryStore, LogStore, ModelStore, ProviderStore, RouteStore};
+use store::{AccountStore, ChatHistoryStore, LogStore, ModelStore, ProviderStore, RouteStore};
 use upstream::UpstreamClient;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = Arc::new(Config::from_env()?);
-    let accounts = AccountPool::new(config.clone())?;
+    let accounts = AccountStore::new(config.clone())?;
     accounts.load().await?;
     let providers = ProviderStore::new(config.clone())?;
     providers.load().await?;

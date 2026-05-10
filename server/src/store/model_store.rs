@@ -2,11 +2,9 @@ use crate::{
     config::Config,
     models::{CachedProviderModels, ModelListResponse},
     store::sqlite::SqliteStore,
+    support::time::now_unix,
 };
-use std::{
-    sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::sync::Arc;
 
 #[derive(Clone, Debug)]
 pub struct ModelStore {
@@ -39,11 +37,4 @@ impl ModelStore {
             updated_at: now_unix() as i64,
         })
     }
-}
-
-fn now_unix() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
 }

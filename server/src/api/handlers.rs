@@ -15,12 +15,12 @@ use crate::{
         PROVIDER_OPENAI_PROXY, ProviderAuthMode, ProviderQuotaCredits, ProviderQuotaResponse,
         ProviderQuotaSnapshot, ProviderQuotaSummary, ProviderQuotaWindow, QuotaSource,
         QuotaSupportStatus, ResponsesInput, ResponsesInputItem, ResponsesRequest,
-        ResponsesResponse, SelectedProvider, UpdateGatewayLogSettingsRequest,
+        ResponsesResponse, SelectedRoute, UpdateGatewayLogSettingsRequest,
         UpdateSelectedModelRequest, UpdateSelectedProviderRequest, UpstreamRateLimitStatusDetails,
         UpstreamRateLimitStatusPayload, UpstreamRateLimitWindowSnapshot,
     },
     store::{
-        AccountPool, ChatHistoryStore, LogEvent, LogStage, LogStore, ModelStore, ProviderStore,
+        AccountStore, ChatHistoryStore, LogEvent, LogStage, LogStore, ModelStore, ProviderStore,
         RouteStore, log_store::extract_model_output_from_body,
     },
     upstream::{
@@ -56,7 +56,7 @@ pub struct AppState {
     pub _client: Client,
     pub _config: Arc<Config>,
     pub oauth: OAuthClient,
-    pub accounts: AccountPool,
+    pub accounts: AccountStore,
     pub providers: ProviderStore,
     pub routes: RouteStore,
     pub models: ModelStore,
@@ -160,7 +160,7 @@ pub async fn auth_google_callback(
         .map_err(AppError::bad_request)?;
     state
         .providers
-        .bind_account_provider(PROVIDER_GOOGLE_PROXY, &account.id)
+        .add_account_provider(PROVIDER_GOOGLE_PROXY, &account.id)
         .await
         .map_err(AppError::bad_request)?;
 
@@ -205,7 +205,7 @@ pub async fn auth_openai_callback(
         .map_err(AppError::bad_request)?;
     state
         .providers
-        .bind_account_provider(PROVIDER_OPENAI_PROXY, &account.id)
+        .add_account_provider(PROVIDER_OPENAI_PROXY, &account.id)
         .await
         .map_err(AppError::bad_request)?;
 
@@ -289,7 +289,7 @@ pub async fn import_openai_from_local_codex_auth(
         .map_err(AppError::bad_request)?;
     state
         .providers
-        .bind_account_provider(PROVIDER_OPENAI_PROXY, &account.id)
+        .add_account_provider(PROVIDER_OPENAI_PROXY, &account.id)
         .await
         .map_err(AppError::bad_request)?;
 
@@ -2630,7 +2630,7 @@ async fn resolve_selected_provider(state: &AppState) -> Result<ResolvedProvider,
     ))
 }
 
-fn route_payload(route: SelectedProvider) -> Value {
+fn route_payload(route: SelectedRoute) -> Value {
     json!({
         "provider_id": route.provider_id,
         "selected_model": route.selected_model,
@@ -2913,17 +2913,21 @@ async fn resolve_account_for_provider(
     state: &AppState,
     provider: &ResolvedProvider,
 ) -> Result<AccountRecord, AppError> {
-    if let Some(account_id) = provider.account_id.as_deref() {
-        return state
-            .accounts
-            .acquire_by_id(&state.oauth, &state.upstream, account_id)
-            .await
-            .map_err(AppError::bad_request);
-    }
+    let account_id = provider
+        .account_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            AppError::bad_request(format!(
+                "account auth provider `{}` is missing account_id; bind an account first",
+                provider.name
+            ))
+        })?;
 
     state
         .accounts
-        .acquire_for_provider(&state.oauth, &state.upstream, &provider.name)
+        .acquire_by_id(&state.oauth, &state.upstream, account_id)
         .await
         .map_err(AppError::bad_request)
 }
@@ -2962,18 +2966,6 @@ async fn provider_summary_for_resolved(
         account_email: None,
         uses_chat_completions: record.uses_chat_completions,
         billing_mode: record.billing_mode.clone(),
-        api_key_preview: if record.api_key.is_empty() {
-            "********".to_string()
-        } else {
-            let prefix = &record.api_key[..record.api_key.len().min(4)];
-            let suffix_start = record.api_key.len().saturating_sub(4);
-            let suffix = &record.api_key[suffix_start..];
-            if record.api_key.len() <= 8 {
-                "********".to_string()
-            } else {
-                format!("{prefix}...{suffix}")
-            }
-        },
     };
     hydrate_provider_summary(state, &mut summary).await;
     Ok(summary)
