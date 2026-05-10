@@ -1,5 +1,5 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum IngressProtocol {
+pub enum ClientProtocol {
     OpenAiResponses,
 }
 
@@ -11,14 +11,14 @@ pub struct CachedProviderModels {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EgressProtocol {
+pub enum UpstreamProtocol {
     OpenAiPrivateResponses,
     GoogleV1Internal,
     NativeResponses,
     NativeChatCompletions,
 }
 
-impl IngressProtocol {
+impl ClientProtocol {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::OpenAiResponses => "openai-responses",
@@ -26,7 +26,7 @@ impl IngressProtocol {
     }
 }
 
-impl EgressProtocol {
+impl UpstreamProtocol {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::OpenAiPrivateResponses => "openai-private-responses",

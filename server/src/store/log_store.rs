@@ -27,20 +27,20 @@ struct ExtractedText {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LogStage {
-    IngressRequest,
-    EgressRequest,
-    IngressResponse,
-    EgressResponse,
+    ClientRequest,
+    UpstreamRequest,
+    ClientResponse,
+    UpstreamResponse,
     Error,
 }
 
 impl LogStage {
     pub fn as_str(&self) -> &'static str {
         match self {
-            Self::IngressRequest => "ingress_request",
-            Self::EgressRequest => "egress_request",
-            Self::IngressResponse => "ingress_response",
-            Self::EgressResponse => "egress_response",
+            Self::ClientRequest => "client_request",
+            Self::UpstreamRequest => "upstream_request",
+            Self::ClientResponse => "client_response",
+            Self::UpstreamResponse => "upstream_response",
             Self::Error => "error",
         }
     }
@@ -51,8 +51,8 @@ pub struct LogEvent {
     pub id: String,
     pub stage: LogStage,
     pub status_code: Option<u16>,
-    pub ingress_protocol: Option<String>,
-    pub egress_protocol: Option<String>,
+    pub client_protocol: Option<String>,
+    pub upstream_protocol: Option<String>,
     pub provider_name: Option<String>,
     pub account_id: Option<String>,
     pub account_email: Option<String>,
@@ -151,8 +151,8 @@ impl LogStore {
                 account_email,
                 model,
                 stream,
-                ingress_protocol,
-                egress_protocol
+                client_protocol,
+                upstream_protocol
             ) VALUES (?1, ?2, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
             ON CONFLICT(id) DO NOTHING",
             params![
@@ -163,14 +163,14 @@ impl LogStore {
                 event.account_email,
                 event.model,
                 if event.stream { 1_i64 } else { 0_i64 },
-                event.ingress_protocol,
-                event.egress_protocol,
+                event.client_protocol,
+                event.upstream_protocol,
             ],
         )
         .map_err(|err| format!("insert gateway log failed: {err}"))?;
 
         match event.stage {
-            LogStage::IngressRequest => conn.execute(
+            LogStage::ClientRequest => conn.execute(
                 "UPDATE gateway_logs
                  SET updated_at = ?2,
                      provider_name = COALESCE(?3, provider_name),
@@ -178,11 +178,11 @@ impl LogStore {
                      account_email = COALESCE(?5, account_email),
                      model = COALESCE(?6, model),
                      stream = ?7,
-                     ingress_protocol = COALESCE(?8, ingress_protocol),
+                     client_protocol = COALESCE(?8, client_protocol),
                      method = COALESCE(?9, method),
                      path = COALESCE(?10, path),
-                     ingress_request_body = COALESCE(?11, ingress_request_body),
-                     ingress_request_body_truncated = ?12,
+                     client_request_body = COALESCE(?11, client_request_body),
+                     client_request_body_truncated = ?12,
                      error_message = COALESCE(?13, error_message),
                      error_truncated = ?14
                  WHERE id = ?1",
@@ -194,7 +194,7 @@ impl LogStore {
                     event.account_email,
                     event.model,
                     if event.stream { 1_i64 } else { 0_i64 },
-                    event.ingress_protocol,
+                    event.client_protocol,
                     event.method,
                     event.path,
                     body,
@@ -203,7 +203,7 @@ impl LogStore {
                     if error_truncated { 1_i64 } else { 0_i64 },
                 ],
             ),
-            LogStage::EgressRequest => conn.execute(
+            LogStage::UpstreamRequest => conn.execute(
                 "UPDATE gateway_logs
                  SET updated_at = ?2,
                      provider_name = COALESCE(?3, provider_name),
@@ -211,13 +211,13 @@ impl LogStore {
                      account_email = COALESCE(?5, account_email),
                      model = COALESCE(?6, model),
                      stream = ?7,
-                     ingress_protocol = COALESCE(?8, ingress_protocol),
-                     egress_protocol = COALESCE(?15, egress_protocol),
+                     client_protocol = COALESCE(?8, client_protocol),
+                     upstream_protocol = COALESCE(?15, upstream_protocol),
                      method = COALESCE(?9, method),
                      path = COALESCE(?10, path),
-                     egress_request_url = COALESCE(?16, egress_request_url),
-                     egress_request_body = COALESCE(?11, egress_request_body),
-                     egress_request_body_truncated = ?12,
+                     upstream_request_url = COALESCE(?16, upstream_request_url),
+                     upstream_request_body = COALESCE(?11, upstream_request_body),
+                     upstream_request_body_truncated = ?12,
                      error_message = COALESCE(?13, error_message),
                      error_truncated = ?14
                  WHERE id = ?1",
@@ -229,18 +229,18 @@ impl LogStore {
                     event.account_email,
                     event.model,
                     if event.stream { 1_i64 } else { 0_i64 },
-                    event.ingress_protocol,
+                    event.client_protocol,
                     event.method,
                     event.path,
                     body,
                     if body_truncated { 1_i64 } else { 0_i64 },
                     error_message,
                     if error_truncated { 1_i64 } else { 0_i64 },
-                    event.egress_protocol,
+                    event.upstream_protocol,
                     event.url,
                 ],
             ),
-            LogStage::IngressResponse => conn.execute(
+            LogStage::ClientResponse => conn.execute(
                 "UPDATE gateway_logs
                  SET updated_at = ?2,
                      provider_name = COALESCE(?3, provider_name),
@@ -248,12 +248,12 @@ impl LogStore {
                      account_email = COALESCE(?5, account_email),
                      model = COALESCE(?6, model),
                      stream = ?7,
-                     ingress_protocol = COALESCE(?8, ingress_protocol),
-                     egress_protocol = COALESCE(?15, egress_protocol),
-                     egress_request_url = COALESCE(?16, egress_request_url),
-                     ingress_response_status_code = COALESCE(?17, ingress_response_status_code),
-                     ingress_response_body = COALESCE(?11, ingress_response_body),
-                     ingress_response_body_truncated = ?12,
+                     client_protocol = COALESCE(?8, client_protocol),
+                     upstream_protocol = COALESCE(?15, upstream_protocol),
+                     upstream_request_url = COALESCE(?16, upstream_request_url),
+                     client_response_status_code = COALESCE(?17, client_response_status_code),
+                     client_response_body = COALESCE(?11, client_response_body),
+                     client_response_body_truncated = ?12,
                      elapsed_ms = COALESCE(?18, elapsed_ms),
                      error_message = COALESCE(?13, error_message),
                      error_truncated = ?14
@@ -266,20 +266,20 @@ impl LogStore {
                     event.account_email,
                     event.model,
                     if event.stream { 1_i64 } else { 0_i64 },
-                    event.ingress_protocol,
+                    event.client_protocol,
                     event.method,
                     event.path,
                     body,
                     if body_truncated { 1_i64 } else { 0_i64 },
                     error_message,
                     if error_truncated { 1_i64 } else { 0_i64 },
-                    event.egress_protocol,
+                    event.upstream_protocol,
                     event.url,
                     event.status_code.map(i64::from),
                     event.elapsed_ms,
                 ],
             ),
-            LogStage::EgressResponse => conn.execute(
+            LogStage::UpstreamResponse => conn.execute(
                 "UPDATE gateway_logs
                  SET updated_at = ?2,
                      provider_name = COALESCE(?3, provider_name),
@@ -287,13 +287,13 @@ impl LogStore {
                      account_email = COALESCE(?5, account_email),
                      model = COALESCE(?6, model),
                      stream = ?7,
-                     ingress_protocol = COALESCE(?8, ingress_protocol),
-                     egress_protocol = COALESCE(?15, egress_protocol),
+                     client_protocol = COALESCE(?8, client_protocol),
+                     upstream_protocol = COALESCE(?15, upstream_protocol),
                      method = COALESCE(?9, method),
                      path = COALESCE(?10, path),
-                     egress_response_status_code = COALESCE(?17, egress_response_status_code),
-                     egress_response_body = COALESCE(?11, egress_response_body),
-                     egress_response_body_truncated = ?12,
+                     upstream_response_status_code = COALESCE(?17, upstream_response_status_code),
+                     upstream_response_body = COALESCE(?11, upstream_response_body),
+                     upstream_response_body_truncated = ?12,
                      elapsed_ms = COALESCE(?18, elapsed_ms),
                      error_message = COALESCE(?13, error_message),
                      error_truncated = ?14
@@ -306,14 +306,14 @@ impl LogStore {
                     event.account_email,
                     event.model,
                     if event.stream { 1_i64 } else { 0_i64 },
-                    event.ingress_protocol,
+                    event.client_protocol,
                     event.method,
                     event.path,
                     body,
                     if body_truncated { 1_i64 } else { 0_i64 },
                     error_message,
                     if error_truncated { 1_i64 } else { 0_i64 },
-                    event.egress_protocol,
+                    event.upstream_protocol,
                     event.url,
                     event.status_code.map(i64::from),
                     event.elapsed_ms,
@@ -327,11 +327,11 @@ impl LogStore {
                      account_email = COALESCE(?5, account_email),
                      model = COALESCE(?6, model),
                      stream = ?7,
-                     ingress_protocol = COALESCE(?8, ingress_protocol),
-                     egress_protocol = COALESCE(?15, egress_protocol),
+                     client_protocol = COALESCE(?8, client_protocol),
+                     upstream_protocol = COALESCE(?15, upstream_protocol),
                      method = COALESCE(?9, method),
                      path = COALESCE(?10, path),
-                     egress_request_url = COALESCE(?16, egress_request_url),
+                     upstream_request_url = COALESCE(?16, upstream_request_url),
                      error_message = COALESCE(?13, error_message),
                      error_truncated = ?14,
                      elapsed_ms = COALESCE(?18, elapsed_ms)
@@ -344,14 +344,14 @@ impl LogStore {
                     event.account_email,
                     event.model,
                     if event.stream { 1_i64 } else { 0_i64 },
-                    event.ingress_protocol,
+                    event.client_protocol,
                     event.method,
                     event.path,
                     body,
                     if body_truncated { 1_i64 } else { 0_i64 },
                     error_message,
                     if error_truncated { 1_i64 } else { 0_i64 },
-                    event.egress_protocol,
+                    event.upstream_protocol,
                     event.url,
                     event.status_code.map(i64::from),
                     event.elapsed_ms,
@@ -377,17 +377,17 @@ impl LogStore {
                     account_email,
                     model,
                     stream,
-                    COALESCE(egress_response_status_code, ingress_response_status_code) AS status_code,
+                    COALESCE(upstream_response_status_code, client_response_status_code) AS status_code,
                     CASE WHEN error_message IS NOT NULL THEN 1 ELSE 0 END AS has_error,
                     error_message,
-                    ingress_protocol,
-                    egress_protocol,
+                    client_protocol,
+                    upstream_protocol,
                     method,
                     path,
-                    egress_request_url,
-                    ingress_request_body,
-                    ingress_response_body,
-                    egress_response_body
+                    upstream_request_url,
+                    client_request_body,
+                    client_response_body,
+                    upstream_response_body
                 FROM gateway_logs
                 ORDER BY updated_at DESC
                 LIMIT ?1
@@ -397,17 +397,17 @@ impl LogStore {
 
         let rows = stmt
             .query_map(params![limit as i64], |row| {
-                let ingress_request_body = row.get::<_, Option<String>>(15)?;
-                let ingress_response_body = row.get::<_, Option<String>>(16)?;
-                let egress_response_body = row.get::<_, Option<String>>(17)?;
-                let user_input = ingress_request_body
+                let client_request_body = row.get::<_, Option<String>>(15)?;
+                let client_response_body = row.get::<_, Option<String>>(16)?;
+                let upstream_response_body = row.get::<_, Option<String>>(17)?;
+                let user_input = client_request_body
                     .as_deref()
                     .and_then(extract_user_input_field_from_body);
-                let model_output = ingress_response_body
+                let model_output = client_response_body
                     .as_deref()
                     .and_then(extract_model_output_field_from_body)
                     .or_else(|| {
-                        egress_response_body
+                        upstream_response_body
                             .as_deref()
                             .and_then(extract_model_output_field_from_body)
                     });
@@ -422,11 +422,11 @@ impl LogStore {
                     status_code: row.get::<_, Option<i64>>(7)?.map(|value| value as u16),
                     has_error: row.get::<_, i64>(8)? != 0,
                     error_message: row.get(9)?,
-                    ingress_protocol: row.get(10)?,
-                    egress_protocol: row.get(11)?,
+                    client_protocol: row.get(10)?,
+                    upstream_protocol: row.get(11)?,
                     method: row.get(12)?,
                     path: row.get(13)?,
-                    egress_request_url: row.get(14)?,
+                    upstream_request_url: row.get(14)?,
                     user_input: user_input.as_ref().map(|value| value.text.clone()),
                     model_output: model_output.as_ref().map(|value| value.text.clone()),
                 })
@@ -450,21 +450,21 @@ impl LogStore {
                 account_email,
                 model,
                 stream,
-                ingress_protocol,
-                egress_protocol,
+                client_protocol,
+                upstream_protocol,
                 method,
                 path,
-                egress_request_url,
-                ingress_request_body,
-                ingress_request_body_truncated,
-                egress_request_body,
-                egress_request_body_truncated,
-                ingress_response_status_code,
-                ingress_response_body,
-                ingress_response_body_truncated,
-                egress_response_status_code,
-                egress_response_body,
-                egress_response_body_truncated,
+                upstream_request_url,
+                client_request_body,
+                client_request_body_truncated,
+                upstream_request_body,
+                upstream_request_body_truncated,
+                client_response_status_code,
+                client_response_body,
+                client_response_body_truncated,
+                upstream_response_status_code,
+                upstream_response_body,
+                upstream_response_body_truncated,
                 error_message,
                 error_truncated,
                 elapsed_ms
@@ -473,17 +473,17 @@ impl LogStore {
             ",
             params![id],
             |row| {
-                let ingress_request_body = row.get::<_, Option<String>>(13)?;
-                let ingress_response_body = row.get::<_, Option<String>>(18)?;
-                let egress_response_body = row.get::<_, Option<String>>(21)?;
-                let user_input = ingress_request_body
+                let client_request_body = row.get::<_, Option<String>>(13)?;
+                let client_response_body = row.get::<_, Option<String>>(18)?;
+                let upstream_response_body = row.get::<_, Option<String>>(21)?;
+                let user_input = client_request_body
                     .as_deref()
                     .and_then(extract_user_input_field_from_body);
-                let model_output = ingress_response_body
+                let model_output = client_response_body
                     .as_deref()
                     .and_then(extract_model_output_field_from_body)
                     .or_else(|| {
-                        egress_response_body
+                        upstream_response_body
                             .as_deref()
                             .and_then(extract_model_output_field_from_body)
                     });
@@ -496,25 +496,25 @@ impl LogStore {
                     account_email: row.get(5)?,
                     model: row.get(6)?,
                     stream: row.get::<_, i64>(7)? != 0,
-                    ingress_protocol: row.get(8)?,
-                    egress_protocol: row.get(9)?,
+                    client_protocol: row.get(8)?,
+                    upstream_protocol: row.get(9)?,
                     method: row.get(10)?,
                     path: row.get(11)?,
-                    egress_request_url: row.get(12)?,
-                    ingress_request_body: ingress_request_body.clone(),
-                    ingress_request_body_truncated: row.get::<_, i64>(14)? != 0,
-                    egress_request_body: row.get(15)?,
-                    egress_request_body_truncated: row.get::<_, i64>(16)? != 0,
-                    ingress_response_status_code: row
+                    upstream_request_url: row.get(12)?,
+                    client_request_body: client_request_body.clone(),
+                    client_request_body_truncated: row.get::<_, i64>(14)? != 0,
+                    upstream_request_body: row.get(15)?,
+                    upstream_request_body_truncated: row.get::<_, i64>(16)? != 0,
+                    client_response_status_code: row
                         .get::<_, Option<i64>>(17)?
                         .map(|value| value as u16),
-                    ingress_response_body: ingress_response_body.clone(),
-                    ingress_response_body_truncated: row.get::<_, i64>(19)? != 0,
-                    egress_response_status_code: row
+                    client_response_body: client_response_body.clone(),
+                    client_response_body_truncated: row.get::<_, i64>(19)? != 0,
+                    upstream_response_status_code: row
                         .get::<_, Option<i64>>(20)?
                         .map(|value| value as u16),
-                    egress_response_body: egress_response_body.clone(),
-                    egress_response_body_truncated: row.get::<_, i64>(22)? != 0,
+                    upstream_response_body: upstream_response_body.clone(),
+                    upstream_response_body_truncated: row.get::<_, i64>(22)? != 0,
                     error_message: row.get(23)?,
                     error_truncated: row.get::<_, i64>(24)? != 0,
                     elapsed_ms: row.get(25)?,
@@ -571,21 +571,21 @@ impl LogStore {
                 account_email TEXT,
                 model TEXT,
                 stream INTEGER NOT NULL DEFAULT 0,
-                ingress_protocol TEXT,
-                egress_protocol TEXT,
+                client_protocol TEXT,
+                upstream_protocol TEXT,
                 method TEXT,
                 path TEXT,
-                egress_request_url TEXT,
-                ingress_request_body TEXT,
-                ingress_request_body_truncated INTEGER NOT NULL DEFAULT 0,
-                egress_request_body TEXT,
-                egress_request_body_truncated INTEGER NOT NULL DEFAULT 0,
-                ingress_response_status_code INTEGER,
-                ingress_response_body TEXT,
-                ingress_response_body_truncated INTEGER NOT NULL DEFAULT 0,
-                egress_response_status_code INTEGER,
-                egress_response_body TEXT,
-                egress_response_body_truncated INTEGER NOT NULL DEFAULT 0,
+                upstream_request_url TEXT,
+                client_request_body TEXT,
+                client_request_body_truncated INTEGER NOT NULL DEFAULT 0,
+                upstream_request_body TEXT,
+                upstream_request_body_truncated INTEGER NOT NULL DEFAULT 0,
+                client_response_status_code INTEGER,
+                client_response_body TEXT,
+                client_response_body_truncated INTEGER NOT NULL DEFAULT 0,
+                upstream_response_status_code INTEGER,
+                upstream_response_body TEXT,
+                upstream_response_body_truncated INTEGER NOT NULL DEFAULT 0,
                 error_message TEXT,
                 error_truncated INTEGER NOT NULL DEFAULT 0,
                 elapsed_ms INTEGER
@@ -1072,10 +1072,10 @@ mod tests {
             store
                 .record(LogEvent {
                     id: idx.to_string(),
-                    stage: LogStage::IngressRequest,
+                    stage: LogStage::ClientRequest,
                     status_code: None,
-                    ingress_protocol: Some("openai-responses".to_string()),
-                    egress_protocol: None,
+                    client_protocol: Some("openai-responses".to_string()),
+                    upstream_protocol: None,
                     provider_name: None,
                     account_id: None,
                     account_email: None,
@@ -1118,10 +1118,10 @@ mod tests {
         store
             .record(LogEvent {
                 id: "same".to_string(),
-                stage: LogStage::IngressRequest,
+                stage: LogStage::ClientRequest,
                 status_code: None,
-                ingress_protocol: Some("openai-responses".to_string()),
-                egress_protocol: None,
+                client_protocol: Some("openai-responses".to_string()),
+                upstream_protocol: None,
                 provider_name: Some("demo".to_string()),
                 account_id: None,
                 account_email: Some("demo@example.com".to_string()),
@@ -1140,10 +1140,10 @@ mod tests {
         store
             .record(LogEvent {
                 id: "same".to_string(),
-                stage: LogStage::EgressResponse,
+                stage: LogStage::UpstreamResponse,
                 status_code: Some(200),
-                ingress_protocol: Some("openai-responses".to_string()),
-                egress_protocol: None,
+                client_protocol: Some("openai-responses".to_string()),
+                upstream_protocol: None,
                 provider_name: Some("demo".to_string()),
                 account_id: None,
                 account_email: Some("demo@example.com".to_string()),
@@ -1167,7 +1167,7 @@ mod tests {
 
         let (request_body, response_body, status_code): (String, String, i64) = conn
             .query_row(
-                "SELECT ingress_request_body, egress_response_body, egress_response_status_code
+                "SELECT client_request_body, upstream_response_body, upstream_response_status_code
                  FROM gateway_logs WHERE id = 'same'",
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
@@ -1188,10 +1188,10 @@ mod tests {
         store
             .record(LogEvent {
                 id: "truncate".to_string(),
-                stage: LogStage::EgressResponse,
+                stage: LogStage::UpstreamResponse,
                 status_code: Some(400),
-                ingress_protocol: Some("openai-responses".to_string()),
-                egress_protocol: None,
+                client_protocol: Some("openai-responses".to_string()),
+                upstream_protocol: None,
                 provider_name: Some("demo".to_string()),
                 account_id: None,
                 account_email: None,
@@ -1210,7 +1210,7 @@ mod tests {
         let conn = rusqlite::Connection::open(&db_path).expect("open test db");
         let (body, body_truncated, error_message, error_truncated): (String, i64, String, i64) =
             conn.query_row(
-                "SELECT egress_response_body, egress_response_body_truncated, error_message, error_truncated
+                "SELECT upstream_response_body, upstream_response_body_truncated, error_message, error_truncated
                  FROM gateway_logs
                  LIMIT 1",
                 [],
@@ -1235,10 +1235,10 @@ mod tests {
         store
             .record(LogEvent {
                 id: "large-body".to_string(),
-                stage: LogStage::IngressRequest,
+                stage: LogStage::ClientRequest,
                 status_code: None,
-                ingress_protocol: Some("openai-responses".to_string()),
-                egress_protocol: None,
+                client_protocol: Some("openai-responses".to_string()),
+                upstream_protocol: None,
                 provider_name: None,
                 account_id: None,
                 account_email: None,
@@ -1257,7 +1257,7 @@ mod tests {
         let conn = rusqlite::Connection::open(&db_path).expect("open test db");
         let (stored_body, body_truncated): (String, i64) = conn
             .query_row(
-                "SELECT ingress_request_body, ingress_request_body_truncated
+                "SELECT client_request_body, client_request_body_truncated
                  FROM gateway_logs
                  WHERE id = 'large-body'",
                 [],
@@ -1281,10 +1281,10 @@ mod tests {
         store
             .record(LogEvent {
                 id: "disabled".to_string(),
-                stage: LogStage::IngressRequest,
+                stage: LogStage::ClientRequest,
                 status_code: None,
-                ingress_protocol: Some("openai-responses".to_string()),
-                egress_protocol: None,
+                client_protocol: Some("openai-responses".to_string()),
+                upstream_protocol: None,
                 provider_name: None,
                 account_id: None,
                 account_email: None,
@@ -1324,10 +1324,10 @@ mod tests {
         store
             .record(LogEvent {
                 id: "clear".to_string(),
-                stage: LogStage::IngressRequest,
+                stage: LogStage::ClientRequest,
                 status_code: None,
-                ingress_protocol: Some("openai-responses".to_string()),
-                egress_protocol: None,
+                client_protocol: Some("openai-responses".to_string()),
+                upstream_protocol: None,
                 provider_name: None,
                 account_id: None,
                 account_email: None,

@@ -8,16 +8,16 @@ use crate::{
     auth::OAuthClient,
     config::Config,
     models::{
-        AccountRecord, AccountType, ApiProviderRecord, ApiProviderSummary, CodexConfigStatus,
-        CreateApiProviderRequest, EgressProtocol, GatewayLogDetail, GatewayLogDetailResponse,
+        AccountRecord, AccountType, ApiProviderRecord, ApiProviderSummary, ClientProtocol,
+        CodexConfigStatus, CreateApiProviderRequest, GatewayLogDetail, GatewayLogDetailResponse,
         GatewayLogListResponse, GatewayLogSettings, GatewayLogSettingsResponse, GatewayLogSummary,
-        IngressProtocol, ModelListItem, ModelListResponse, PROVIDER_GOOGLE_PROXY,
-        PROVIDER_OPENAI_PROXY, ProviderAuthMode, ProviderQuotaCredits, ProviderQuotaResponse,
-        ProviderQuotaSnapshot, ProviderQuotaSummary, ProviderQuotaWindow, QuotaSource,
-        QuotaSupportStatus, ResponsesInput, ResponsesInputItem, ResponsesRequest,
-        ResponsesResponse, SelectedRoute, UpdateGatewayLogSettingsRequest,
-        UpdateSelectedModelRequest, UpdateSelectedProviderRequest, UpstreamRateLimitStatusDetails,
-        UpstreamRateLimitStatusPayload, UpstreamRateLimitWindowSnapshot,
+        ModelListItem, ModelListResponse, PROVIDER_GOOGLE_PROXY, PROVIDER_OPENAI_PROXY,
+        ProviderAuthMode, ProviderQuotaCredits, ProviderQuotaResponse, ProviderQuotaSnapshot,
+        ProviderQuotaSummary, ProviderQuotaWindow, QuotaSource, QuotaSupportStatus, ResponsesInput,
+        ResponsesInputItem, ResponsesRequest, ResponsesResponse, SelectedRoute,
+        UpdateGatewayLogSettingsRequest, UpdateSelectedModelRequest, UpdateSelectedProviderRequest,
+        UpstreamProtocol, UpstreamRateLimitStatusDetails, UpstreamRateLimitStatusPayload,
+        UpstreamRateLimitWindowSnapshot,
     },
     store::{
         AccountStore, ChatHistoryStore, LogEvent, LogStage, LogStore, ModelStore, ProviderStore,
@@ -702,9 +702,9 @@ pub async fn responses(
     log_http_event(
         &state.logs,
         &id,
-        LogStage::IngressRequest,
+        LogStage::ClientRequest,
         None,
-        Some(IngressProtocol::OpenAiResponses.as_str()),
+        Some(ClientProtocol::OpenAiResponses.as_str()),
         None,
         None,
         None,
@@ -732,7 +732,7 @@ pub async fn responses(
                 &id,
                 LogStage::Error,
                 Some(err.status),
-                Some(IngressProtocol::OpenAiResponses.as_str()),
+                Some(ClientProtocol::OpenAiResponses.as_str()),
                 None,
                 None,
                 None,
@@ -750,9 +750,9 @@ pub async fn responses(
             log_http_event(
                 &state.logs,
                 &id,
-                LogStage::EgressResponse,
+                LogStage::UpstreamResponse,
                 Some(err.status),
-                Some(IngressProtocol::OpenAiResponses.as_str()),
+                Some(ClientProtocol::OpenAiResponses.as_str()),
                 None,
                 None,
                 None,
@@ -855,9 +855,9 @@ async fn handle_responses_websocket_text(
     log_http_event(
         &state.logs,
         &id,
-        LogStage::IngressRequest,
+        LogStage::ClientRequest,
         None,
-        Some(IngressProtocol::OpenAiResponses.as_str()),
+        Some(ClientProtocol::OpenAiResponses.as_str()),
         None,
         None,
         None,
@@ -962,10 +962,10 @@ async fn proxy_openai_private_websocket_request(
     log_http_event(
         &state.logs,
         &id,
-        LogStage::EgressRequest,
+        LogStage::UpstreamRequest,
         None,
-        Some(IngressProtocol::OpenAiResponses.as_str()),
-        Some(EgressProtocol::OpenAiPrivateResponses.as_str()),
+        Some(ClientProtocol::OpenAiResponses.as_str()),
+        Some(UpstreamProtocol::OpenAiPrivateResponses.as_str()),
         Some(&provider.name),
         Some(&account.id),
         Some(&account.email),
@@ -1047,10 +1047,10 @@ async fn proxy_openai_private_websocket_request(
     log_http_event(
         &state.logs,
         &id,
-        LogStage::IngressResponse,
+        LogStage::ClientResponse,
         Some(StatusCode::OK),
-        Some(IngressProtocol::OpenAiResponses.as_str()),
-        Some(EgressProtocol::OpenAiPrivateResponses.as_str()),
+        Some(ClientProtocol::OpenAiResponses.as_str()),
+        Some(UpstreamProtocol::OpenAiPrivateResponses.as_str()),
         Some(&provider.name),
         Some(&account.id),
         Some(&account.email),
@@ -1067,10 +1067,10 @@ async fn proxy_openai_private_websocket_request(
     log_http_event(
         &state.logs,
         &id,
-        LogStage::EgressResponse,
+        LogStage::UpstreamResponse,
         Some(StatusCode::OK),
-        Some(IngressProtocol::OpenAiResponses.as_str()),
-        Some(EgressProtocol::OpenAiPrivateResponses.as_str()),
+        Some(ClientProtocol::OpenAiResponses.as_str()),
+        Some(UpstreamProtocol::OpenAiPrivateResponses.as_str()),
         Some(&provider.name),
         Some(&account.id),
         Some(&account.email),
@@ -1239,11 +1239,11 @@ fn map_debug_log_summary(log: GatewayLogSummary) -> DebugWebLogSummary {
         status_code: log.status_code,
         has_error: log.has_error,
         error_message: log.error_message,
-        ingress_protocol: log.ingress_protocol,
-        egress_protocol: log.egress_protocol,
+        client_protocol: log.client_protocol,
+        upstream_protocol: log.upstream_protocol,
         method: log.method,
         path: log.path,
-        egress_request_url: log.egress_request_url,
+        upstream_request_url: log.upstream_request_url,
         user_input: log.user_input,
         model_output: log.model_output,
     }
@@ -1259,21 +1259,21 @@ fn map_debug_log_detail(log: GatewayLogDetail) -> DebugWebLogDetail {
         account_email: log.account_email,
         model: log.model,
         stream: log.stream,
-        ingress_protocol: log.ingress_protocol,
-        egress_protocol: log.egress_protocol,
+        client_protocol: log.client_protocol,
+        upstream_protocol: log.upstream_protocol,
         method: log.method,
         path: log.path,
-        egress_request_url: log.egress_request_url,
-        ingress_request_body: log.ingress_request_body,
-        ingress_request_body_truncated: log.ingress_request_body_truncated,
-        egress_request_body: log.egress_request_body,
-        egress_request_body_truncated: log.egress_request_body_truncated,
-        ingress_response_status_code: log.ingress_response_status_code,
-        ingress_response_body: log.ingress_response_body,
-        ingress_response_body_truncated: log.ingress_response_body_truncated,
-        egress_response_status_code: log.egress_response_status_code,
-        egress_response_body: log.egress_response_body,
-        egress_response_body_truncated: log.egress_response_body_truncated,
+        upstream_request_url: log.upstream_request_url,
+        client_request_body: log.client_request_body,
+        client_request_body_truncated: log.client_request_body_truncated,
+        upstream_request_body: log.upstream_request_body,
+        upstream_request_body_truncated: log.upstream_request_body_truncated,
+        client_response_status_code: log.client_response_status_code,
+        client_response_body: log.client_response_body,
+        client_response_body_truncated: log.client_response_body_truncated,
+        upstream_response_status_code: log.upstream_response_status_code,
+        upstream_response_body: log.upstream_response_body,
+        upstream_response_body_truncated: log.upstream_response_body_truncated,
         error_message: log.error_message,
         error_truncated: log.error_truncated,
         elapsed_ms: log.elapsed_ms,
@@ -1327,10 +1327,10 @@ async fn responses_inner(
         log_http_event(
             &state.logs,
             &id,
-            LogStage::EgressRequest,
+            LogStage::UpstreamRequest,
             None,
-            Some(IngressProtocol::OpenAiResponses.as_str()),
-            Some(EgressProtocol::OpenAiPrivateResponses.as_str()),
+            Some(ClientProtocol::OpenAiResponses.as_str()),
+            Some(UpstreamProtocol::OpenAiPrivateResponses.as_str()),
             Some(&provider.name),
             Some(&account.id),
             Some(&account.email),
@@ -1365,10 +1365,10 @@ async fn responses_inner(
             log_http_event(
                 &state.logs,
                 &id,
-                LogStage::IngressResponse,
+                LogStage::ClientResponse,
                 Some(upstream_status),
-                Some(IngressProtocol::OpenAiResponses.as_str()),
-                Some(EgressProtocol::OpenAiPrivateResponses.as_str()),
+                Some(ClientProtocol::OpenAiResponses.as_str()),
+                Some(UpstreamProtocol::OpenAiPrivateResponses.as_str()),
                 Some(&provider.name),
                 Some(&account.id),
                 Some(&account.email),
@@ -1385,9 +1385,9 @@ async fn responses_inner(
             log_http_event(
                 &state.logs,
                 &id,
-                LogStage::EgressResponse,
+                LogStage::UpstreamResponse,
                 Some(StatusCode::OK),
-                Some(IngressProtocol::OpenAiResponses.as_str()),
+                Some(ClientProtocol::OpenAiResponses.as_str()),
                 None,
                 Some(&provider.name),
                 Some(&account.id),
@@ -1444,8 +1444,8 @@ async fn responses_inner(
                             &id_for_stream,
                             LogStage::Error,
                             Some(StatusCode::BAD_GATEWAY),
-                            Some(IngressProtocol::OpenAiResponses.as_str()),
-                            Some(EgressProtocol::OpenAiPrivateResponses.as_str()),
+                            Some(ClientProtocol::OpenAiResponses.as_str()),
+                            Some(UpstreamProtocol::OpenAiPrivateResponses.as_str()),
                             Some(&provider_name),
                             Some(&account_id),
                             Some(&account_email),
@@ -1471,10 +1471,10 @@ async fn responses_inner(
             log_http_event(
                 &logs,
                 &id_for_stream,
-                LogStage::IngressResponse,
+                LogStage::ClientResponse,
                 Some(upstream_status),
-                Some(IngressProtocol::OpenAiResponses.as_str()),
-                Some(EgressProtocol::OpenAiPrivateResponses.as_str()),
+                Some(ClientProtocol::OpenAiResponses.as_str()),
+                Some(UpstreamProtocol::OpenAiPrivateResponses.as_str()),
                 Some(&provider_name),
                 Some(&account_id),
                 Some(&account_email),
@@ -1491,9 +1491,9 @@ async fn responses_inner(
             log_http_event(
                 &logs,
                 &id_for_stream,
-                LogStage::EgressResponse,
+                LogStage::UpstreamResponse,
                 Some(StatusCode::OK),
-                Some(IngressProtocol::OpenAiResponses.as_str()),
+                Some(ClientProtocol::OpenAiResponses.as_str()),
                 None,
                 Some(&provider_name),
                 Some(&account_id),
@@ -1553,10 +1553,10 @@ async fn responses_inner(
         log_http_event(
             &state.logs,
             &id,
-            LogStage::EgressRequest,
+            LogStage::UpstreamRequest,
             None,
-            Some(IngressProtocol::OpenAiResponses.as_str()),
-            Some(EgressProtocol::GoogleV1Internal.as_str()),
+            Some(ClientProtocol::OpenAiResponses.as_str()),
+            Some(UpstreamProtocol::GoogleV1Internal.as_str()),
             Some(&provider.name),
             Some(&account.id),
             Some(&account.email),
@@ -1593,10 +1593,10 @@ async fn responses_inner(
             log_http_event(
                 &state.logs,
                 &id,
-                LogStage::IngressResponse,
+                LogStage::ClientResponse,
                 Some(upstream_status),
-                Some(IngressProtocol::OpenAiResponses.as_str()),
-                Some(EgressProtocol::GoogleV1Internal.as_str()),
+                Some(ClientProtocol::OpenAiResponses.as_str()),
+                Some(UpstreamProtocol::GoogleV1Internal.as_str()),
                 Some(&provider.name),
                 Some(&account.id),
                 Some(&account.email),
@@ -1613,9 +1613,9 @@ async fn responses_inner(
             log_http_event(
                 &state.logs,
                 &id,
-                LogStage::EgressResponse,
+                LogStage::UpstreamResponse,
                 Some(StatusCode::OK),
-                Some(IngressProtocol::OpenAiResponses.as_str()),
+                Some(ClientProtocol::OpenAiResponses.as_str()),
                 None,
                 Some(&provider.name),
                 Some(&account.id),
@@ -1687,8 +1687,8 @@ async fn responses_inner(
                         &id_for_stream,
                         LogStage::Error,
                         Some(StatusCode::INTERNAL_SERVER_ERROR),
-                        Some(IngressProtocol::OpenAiResponses.as_str()),
-                        Some(EgressProtocol::GoogleV1Internal.as_str()),
+                        Some(ClientProtocol::OpenAiResponses.as_str()),
+                        Some(UpstreamProtocol::GoogleV1Internal.as_str()),
                         Some(&provider_name),
                         Some(&account_id),
                         Some(&account_email),
@@ -1717,8 +1717,8 @@ async fn responses_inner(
                             &id_for_stream,
                             LogStage::Error,
                             Some(StatusCode::BAD_GATEWAY),
-                            Some(IngressProtocol::OpenAiResponses.as_str()),
-                            Some(EgressProtocol::GoogleV1Internal.as_str()),
+                            Some(ClientProtocol::OpenAiResponses.as_str()),
+                            Some(UpstreamProtocol::GoogleV1Internal.as_str()),
                             Some(&provider_name),
                             Some(&account_id),
                             Some(&account_email),
@@ -2018,10 +2018,10 @@ async fn responses_inner(
             log_http_event(
                 &logs,
                 &id_for_stream,
-                LogStage::IngressResponse,
+                LogStage::ClientResponse,
                 Some(upstream_status),
-                Some(IngressProtocol::OpenAiResponses.as_str()),
-                Some(EgressProtocol::GoogleV1Internal.as_str()),
+                Some(ClientProtocol::OpenAiResponses.as_str()),
+                Some(UpstreamProtocol::GoogleV1Internal.as_str()),
                 Some(&provider_name),
                 Some(&account_id),
                 Some(&account_email),
@@ -2038,9 +2038,9 @@ async fn responses_inner(
             log_http_event(
                 &logs,
                 &id_for_stream,
-                LogStage::EgressResponse,
+                LogStage::UpstreamResponse,
                 Some(StatusCode::OK),
-                Some(IngressProtocol::OpenAiResponses.as_str()),
+                Some(ClientProtocol::OpenAiResponses.as_str()),
                 None,
                 Some(&provider_name),
                 Some(&account_id),
@@ -2112,10 +2112,10 @@ async fn responses_inner(
         log_http_event(
             &state.logs,
             &id,
-            LogStage::EgressRequest,
+            LogStage::UpstreamRequest,
             None,
-            Some(IngressProtocol::OpenAiResponses.as_str()),
-            Some(native_target.egress.as_str()),
+            Some(ClientProtocol::OpenAiResponses.as_str()),
+            Some(native_target.upstream.as_str()),
             Some(&provider.name),
             None,
             None,
@@ -2150,10 +2150,10 @@ async fn responses_inner(
         log_http_event(
             &state.logs,
             &id,
-            LogStage::IngressResponse,
+            LogStage::ClientResponse,
             Some(upstream_status),
-            Some(IngressProtocol::OpenAiResponses.as_str()),
-            Some(native_target.egress.as_str()),
+            Some(ClientProtocol::OpenAiResponses.as_str()),
+            Some(native_target.upstream.as_str()),
             Some(&provider.name),
             None,
             None,
@@ -2173,9 +2173,9 @@ async fn responses_inner(
             log_http_event(
                 &state.logs,
                 &id,
-                LogStage::EgressResponse,
+                LogStage::UpstreamResponse,
                 Some(StatusCode::OK),
-                Some(IngressProtocol::OpenAiResponses.as_str()),
+                Some(ClientProtocol::OpenAiResponses.as_str()),
                 None,
                 Some(&provider.name),
                 None,
@@ -2202,7 +2202,7 @@ async fn responses_inner(
         let id_for_stream = id.clone();
         let provider_name = provider.name.clone();
         let model = request.model.clone();
-        let egress_protocol = native_target.egress.as_str().to_string();
+        let upstream_protocol = native_target.upstream.as_str().to_string();
         let upstream_url_for_stream = upstream_url.clone();
         let final_response_body = json_for_storage(&response);
         let output = stream! {
@@ -2222,8 +2222,8 @@ async fn responses_inner(
                             &id_for_stream,
                             LogStage::Error,
                             Some(StatusCode::INTERNAL_SERVER_ERROR),
-                            Some(IngressProtocol::OpenAiResponses.as_str()),
-                            Some(&egress_protocol),
+                            Some(ClientProtocol::OpenAiResponses.as_str()),
+                            Some(&upstream_protocol),
                             Some(&provider_name),
                             None,
                             None,
@@ -2246,9 +2246,9 @@ async fn responses_inner(
             log_http_event(
                 &logs,
                 &id_for_stream,
-                LogStage::EgressResponse,
+                LogStage::UpstreamResponse,
                 Some(StatusCode::OK),
-                Some(IngressProtocol::OpenAiResponses.as_str()),
+                Some(ClientProtocol::OpenAiResponses.as_str()),
                 None,
                 Some(&provider_name),
                 None,
@@ -2292,10 +2292,10 @@ async fn responses_inner(
     log_http_event(
         &state.logs,
         &id,
-        LogStage::EgressRequest,
+        LogStage::UpstreamRequest,
         None,
-        Some(IngressProtocol::OpenAiResponses.as_str()),
-        Some(native_target.egress.as_str()),
+        Some(ClientProtocol::OpenAiResponses.as_str()),
+        Some(native_target.upstream.as_str()),
         Some(&provider.name),
         None,
         None,
@@ -2330,10 +2330,10 @@ async fn responses_inner(
         log_http_event(
             &state.logs,
             &id,
-            LogStage::IngressResponse,
+            LogStage::ClientResponse,
             Some(upstream_status),
-            Some(IngressProtocol::OpenAiResponses.as_str()),
-            Some(native_target.egress.as_str()),
+            Some(ClientProtocol::OpenAiResponses.as_str()),
+            Some(native_target.upstream.as_str()),
             Some(&provider.name),
             None,
             None,
@@ -2350,9 +2350,9 @@ async fn responses_inner(
         log_http_event(
             &state.logs,
             &id,
-            LogStage::EgressResponse,
+            LogStage::UpstreamResponse,
             Some(StatusCode::OK),
-            Some(IngressProtocol::OpenAiResponses.as_str()),
+            Some(ClientProtocol::OpenAiResponses.as_str()),
             None,
             Some(&provider.name),
             None,
@@ -2403,8 +2403,8 @@ async fn responses_inner(
                         &id_for_stream,
                         LogStage::Error,
                         Some(StatusCode::BAD_GATEWAY),
-                        Some(IngressProtocol::OpenAiResponses.as_str()),
-                        Some(native_target.egress.as_str()),
+                        Some(ClientProtocol::OpenAiResponses.as_str()),
+                        Some(native_target.upstream.as_str()),
                         Some(&provider_name),
                         None,
                         None,
@@ -2430,10 +2430,10 @@ async fn responses_inner(
         log_http_event(
             &logs,
             &id_for_stream,
-            LogStage::IngressResponse,
+            LogStage::ClientResponse,
             Some(upstream_status),
-            Some(IngressProtocol::OpenAiResponses.as_str()),
-            Some(native_target.egress.as_str()),
+            Some(ClientProtocol::OpenAiResponses.as_str()),
+            Some(native_target.upstream.as_str()),
             Some(&provider_name),
             None,
             None,
@@ -2450,9 +2450,9 @@ async fn responses_inner(
         log_http_event(
             &logs,
             &id_for_stream,
-            LogStage::EgressResponse,
+            LogStage::UpstreamResponse,
             Some(StatusCode::OK),
-            Some(IngressProtocol::OpenAiResponses.as_str()),
+            Some(ClientProtocol::OpenAiResponses.as_str()),
             None,
             Some(&provider_name),
             None,
@@ -3189,7 +3189,7 @@ fn rate_limit_window_from_payload(
 #[derive(Clone, Debug)]
 struct NativeTarget {
     upstream_model: String,
-    egress: EgressProtocol,
+    upstream: UpstreamProtocol,
     uses_chat_completions: bool,
 }
 
@@ -3197,14 +3197,14 @@ fn resolve_native_target(provider: &ApiProviderRecord, requested_model: &str) ->
     if provider.uses_chat_completions {
         return NativeTarget {
             upstream_model: requested_model.to_string(),
-            egress: EgressProtocol::NativeChatCompletions,
+            upstream: UpstreamProtocol::NativeChatCompletions,
             uses_chat_completions: true,
         };
     }
 
     NativeTarget {
         upstream_model: requested_model.to_string(),
-        egress: EgressProtocol::NativeResponses,
+        upstream: UpstreamProtocol::NativeResponses,
         uses_chat_completions: false,
     }
 }
@@ -3292,8 +3292,8 @@ async fn log_http_event(
     id: &str,
     stage: LogStage,
     status_code: Option<StatusCode>,
-    ingress_protocol: Option<&str>,
-    egress_protocol: Option<&str>,
+    client_protocol: Option<&str>,
+    upstream_protocol: Option<&str>,
     provider_name: Option<&str>,
     account_id: Option<&str>,
     account_email: Option<&str>,
@@ -3311,8 +3311,8 @@ async fn log_http_event(
             id: id.to_string(),
             stage,
             status_code: status_code.map(|status| status.as_u16()),
-            ingress_protocol: ingress_protocol.map(ToOwned::to_owned),
-            egress_protocol: egress_protocol.map(ToOwned::to_owned),
+            client_protocol: client_protocol.map(ToOwned::to_owned),
+            upstream_protocol: upstream_protocol.map(ToOwned::to_owned),
             provider_name: provider_name.map(ToOwned::to_owned),
             account_id: account_id.map(ToOwned::to_owned),
             account_email: account_email.map(ToOwned::to_owned),
@@ -3498,7 +3498,7 @@ mod tests {
         responses_ws_error_event, sse_chunk_to_ws_json_messages,
     };
     use crate::models::{
-        ApiProviderBillingMode, ApiProviderRecord, EgressProtocol, ProviderAuthMode,
+        ApiProviderBillingMode, ApiProviderRecord, ProviderAuthMode, UpstreamProtocol,
     };
     use serde_json::json;
 
@@ -3862,7 +3862,7 @@ mod tests {
 
         let target = resolve_native_target(&provider, "gpt-5.4");
 
-        assert_eq!(target.egress, EgressProtocol::NativeResponses);
+        assert_eq!(target.upstream, UpstreamProtocol::NativeResponses);
         assert!(!target.uses_chat_completions);
     }
 
@@ -3881,7 +3881,7 @@ mod tests {
 
         let target = resolve_native_target(&provider, "qwen3-32b");
 
-        assert_eq!(target.egress, EgressProtocol::NativeChatCompletions);
+        assert_eq!(target.upstream, UpstreamProtocol::NativeChatCompletions);
         assert!(target.uses_chat_completions);
         assert_eq!(target.upstream_model, "qwen3-32b");
     }

@@ -316,15 +316,15 @@ pub struct GatewayLogSummary {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_message: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub ingress_protocol: Option<String>,
+    pub client_protocol: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub egress_protocol: Option<String>,
+    pub upstream_protocol: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub method: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub egress_request_url: Option<String>,
+    pub upstream_request_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user_input: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -346,31 +346,31 @@ pub struct GatewayLogDetail {
     pub model: Option<String>,
     pub stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub ingress_protocol: Option<String>,
+    pub client_protocol: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub egress_protocol: Option<String>,
+    pub upstream_protocol: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub method: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub egress_request_url: Option<String>,
+    pub upstream_request_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub ingress_request_body: Option<String>,
-    pub ingress_request_body_truncated: bool,
+    pub client_request_body: Option<String>,
+    pub client_request_body_truncated: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub egress_request_body: Option<String>,
-    pub egress_request_body_truncated: bool,
+    pub upstream_request_body: Option<String>,
+    pub upstream_request_body_truncated: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub ingress_response_status_code: Option<u16>,
+    pub client_response_status_code: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub ingress_response_body: Option<String>,
-    pub ingress_response_body_truncated: bool,
+    pub client_response_body: Option<String>,
+    pub client_response_body_truncated: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub egress_response_status_code: Option<u16>,
+    pub upstream_response_status_code: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub egress_response_body: Option<String>,
-    pub egress_response_body_truncated: bool,
+    pub upstream_response_body: Option<String>,
+    pub upstream_response_body_truncated: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_message: Option<String>,
     pub error_truncated: bool,

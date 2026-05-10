@@ -27,11 +27,11 @@ pub struct DebugLogSummary {
     pub status_code: Option<u16>,
     pub has_error: bool,
     pub error_message: Option<String>,
-    pub ingress_protocol: Option<String>,
-    pub egress_protocol: Option<String>,
+    pub client_protocol: Option<String>,
+    pub upstream_protocol: Option<String>,
     pub method: Option<String>,
     pub path: Option<String>,
-    pub egress_request_url: Option<String>,
+    pub upstream_request_url: Option<String>,
     pub user_input: Option<String>,
     pub model_output: Option<String>,
 }
@@ -46,21 +46,21 @@ pub struct DebugLogDetail {
     pub account_email: Option<String>,
     pub model: Option<String>,
     pub stream: bool,
-    pub ingress_protocol: Option<String>,
-    pub egress_protocol: Option<String>,
+    pub client_protocol: Option<String>,
+    pub upstream_protocol: Option<String>,
     pub method: Option<String>,
     pub path: Option<String>,
-    pub egress_request_url: Option<String>,
-    pub ingress_request_body: Option<String>,
-    pub ingress_request_body_truncated: bool,
-    pub egress_request_body: Option<String>,
-    pub egress_request_body_truncated: bool,
-    pub ingress_response_status_code: Option<u16>,
-    pub ingress_response_body: Option<String>,
-    pub ingress_response_body_truncated: bool,
-    pub egress_response_status_code: Option<u16>,
-    pub egress_response_body: Option<String>,
-    pub egress_response_body_truncated: bool,
+    pub upstream_request_url: Option<String>,
+    pub client_request_body: Option<String>,
+    pub client_request_body_truncated: bool,
+    pub upstream_request_body: Option<String>,
+    pub upstream_request_body_truncated: bool,
+    pub client_response_status_code: Option<u16>,
+    pub client_response_body: Option<String>,
+    pub client_response_body_truncated: bool,
+    pub upstream_response_status_code: Option<u16>,
+    pub upstream_response_body: Option<String>,
+    pub upstream_response_body_truncated: bool,
     pub error_message: Option<String>,
     pub error_truncated: bool,
     pub elapsed_ms: Option<i64>,
@@ -78,8 +78,8 @@ enum ComparisonKind {
 
 #[derive(Clone, Copy, Debug)]
 enum DiffSide {
-    Ingress,
-    Egress,
+    Client,
+    Upstream,
 }
 
 #[derive(Clone, Debug)]
@@ -91,8 +91,8 @@ enum JsonDiffNode {
         after: Option<Value>,
     },
     Summary {
-        ingress_value: Option<Value>,
-        egress_value: Option<Value>,
+        client_value: Option<Value>,
+        upstream_value: Option<Value>,
         count: usize,
     },
 }
@@ -147,7 +147,7 @@ fn DebugApp(data: DebugPageData) -> impl IntoView {
                     <p class="eyebrow">"debug-web"</p>
                     <h1>"网关日志调试台"</h1>
                     <p class="hero-copy">
-                        "这里直接托管在 /debug，下钻查看日志 id 的完整入口、出口与错误链路。"
+                        "这里直接托管在 /debug，下钻查看日志 id 的完整客户端侧、上游侧与错误链路。"
                     </p>
                 </div>
                 <div class="hero-actions">
@@ -237,10 +237,10 @@ fn DebugApp(data: DebugPageData) -> impl IntoView {
                                             </div>
                                             <div class="tag-row">
                                                 <span class="tag">{if log.stream { "流式" } else { "非流式" }}</span>
-                                                {ingress_transport_label(log.method.as_deref(), log.path.as_deref()).map(|label| view! {
+                                                {client_transport_label(log.method.as_deref(), log.path.as_deref()).map(|label| view! {
                                                     <span class="tag">{label}</span>
                                                 })}
-                                                {egress_transport_label(log.stream, log.egress_request_url.as_deref()).map(|label| view! {
+                                                {upstream_transport_label(log.stream, log.upstream_request_url.as_deref()).map(|label| view! {
                                                     <span class="tag">{label}</span>
                                                 })}
                                                 <span class="tag">{log.model.clone().unwrap_or_else(|| "未知模型".to_string())}</span>
@@ -270,7 +270,7 @@ fn DebugApp(data: DebugPageData) -> impl IntoView {
                     <div class="panel-header">
                         <div>
                             <h2>"日志详情"</h2>
-                            <p>"直接查看这次请求的入口、出口、响应和错误字段。"</p>
+                            <p>"直接查看这次请求的客户端侧、上游侧、响应和错误字段。"</p>
                         </div>
                     </div>
                     {match data.selected_detail.clone() {
@@ -293,10 +293,10 @@ fn DebugApp(data: DebugPageData) -> impl IntoView {
                                                         <span class="pill neutral">
                                                             {if detail.stream { "流式" } else { "非流式" }}
                                                         </span>
-                                                        {ingress_transport_label(detail.method.as_deref(), detail.path.as_deref()).map(|label| view! {
+                                                        {client_transport_label(detail.method.as_deref(), detail.path.as_deref()).map(|label| view! {
                                                             <span class="pill neutral">{label}</span>
                                                         })}
-                                                        {egress_transport_label(detail.stream, detail.egress_request_url.as_deref()).map(|label| view! {
+                                                        {upstream_transport_label(detail.stream, detail.upstream_request_url.as_deref()).map(|label| view! {
                                                             <span class="pill neutral">{label}</span>
                                                         })}
                                                         {detail.model.as_ref().map(|model| view! {
@@ -305,7 +305,7 @@ fn DebugApp(data: DebugPageData) -> impl IntoView {
                                                     </div>
                                                 </div>
                                                 <div class="event-meta">
-                                                    {detail.egress_response_status_code.or(detail.ingress_response_status_code).map(|code| view! {
+                                                    {detail.upstream_response_status_code.or(detail.client_response_status_code).map(|code| view! {
                                                         <span class="badge ok">{code.to_string()}</span>
                                                     })}
                                                     {detail.elapsed_ms.map(|elapsed| view! {
@@ -316,13 +316,13 @@ fn DebugApp(data: DebugPageData) -> impl IntoView {
                                             <dl class="kv-grid">
                                                 <KeyValue label="供应商" value=detail.provider_name.clone()/>
                                                 <KeyValue label="账户" value=detail.account_email.clone().or(detail.account_id.clone())/>
-                                                <KeyValue label="入口协议" value=detail.ingress_protocol.clone()/>
-                                                <KeyValue label="出口协议" value=detail.egress_protocol.clone()/>
-                                                <KeyValue label="入口传输" value=ingress_transport_label(detail.method.as_deref(), detail.path.as_deref()).map(str::to_string)/>
-                                                <KeyValue label="上游传输" value=egress_transport_label(detail.stream, detail.egress_request_url.as_deref()).map(str::to_string)/>
+                                                <KeyValue label="客户端协议" value=detail.client_protocol.clone()/>
+                                                <KeyValue label="上游协议" value=detail.upstream_protocol.clone()/>
+                                                <KeyValue label="客户端传输" value=client_transport_label(detail.method.as_deref(), detail.path.as_deref()).map(str::to_string)/>
+                                                <KeyValue label="上游传输" value=upstream_transport_label(detail.stream, detail.upstream_request_url.as_deref()).map(str::to_string)/>
                                                 <KeyValue label="请求方法" value=detail.method.clone()/>
                                                 <KeyValue label="路径" value=detail.path.clone()/>
-                                                <KeyValue label="上游地址" value=detail.egress_request_url.clone()/>
+                                                <KeyValue label="上游地址" value=detail.upstream_request_url.clone()/>
                                             </dl>
                                             {detail.user_input.as_ref().map(|text| view! {
                                                 <JsonScalarBlock
@@ -347,40 +347,40 @@ fn DebugApp(data: DebugPageData) -> impl IntoView {
                                                     <JsonBlock content=message.clone() root_label="error".to_string()/>
                                                 </div>
                                             })}
-                                            {detail.ingress_request_body.as_ref().map(|body| view! {
+                                            {detail.client_request_body.as_ref().map(|body| view! {
                                                 <div class="block">
                                                     <div class="block-title">
-                                                        "入口请求"
-                                                        {if detail.ingress_request_body_truncated { "（已截断）" } else { "" }}
+                                                        "客户端请求"
+                                                        {if detail.client_request_body_truncated { "（已截断）" } else { "" }}
                                                     </div>
-                                                    <JsonBlock content=body.clone() root_label="ingress_request".to_string()/>
+                                                    <JsonBlock content=body.clone() root_label="client_request".to_string()/>
                                                 </div>
                                             })}
-                                            {detail.egress_request_body.as_ref().map(|body| view! {
+                                            {detail.upstream_request_body.as_ref().map(|body| view! {
                                                 <div class="block">
                                                     <div class="block-title">
-                                                        "出口请求"
-                                                        {if detail.egress_request_body_truncated { "（已截断）" } else { "" }}
+                                                        "上游请求"
+                                                        {if detail.upstream_request_body_truncated { "（已截断）" } else { "" }}
                                                     </div>
-                                                    <JsonBlock content=body.clone() root_label="egress_request".to_string()/>
+                                                    <JsonBlock content=body.clone() root_label="upstream_request".to_string()/>
                                                 </div>
                                             })}
-                                            {detail.ingress_response_body.as_ref().map(|body| view! {
+                                            {detail.client_response_body.as_ref().map(|body| view! {
                                                 <div class="block">
                                                     <div class="block-title">
-                                                        {format!("入口响应{}", detail.ingress_response_status_code.map(|code| format!(" ({code})")).unwrap_or_default())}
-                                                        {if detail.ingress_response_body_truncated { "（已截断）" } else { "" }}
+                                                        {format!("客户端响应{}", detail.client_response_status_code.map(|code| format!(" ({code})")).unwrap_or_default())}
+                                                        {if detail.client_response_body_truncated { "（已截断）" } else { "" }}
                                                     </div>
-                                                    <JsonBlock content=body.clone() root_label="ingress_response".to_string()/>
+                                                    <JsonBlock content=body.clone() root_label="client_response".to_string()/>
                                                 </div>
                                             })}
-                                            {detail.egress_response_body.as_ref().map(|body| view! {
+                                            {detail.upstream_response_body.as_ref().map(|body| view! {
                                                 <div class="block">
                                                     <div class="block-title">
-                                                        {format!("出口响应{}", detail.egress_response_status_code.map(|code| format!(" ({code})")).unwrap_or_default())}
-                                                        {if detail.egress_response_body_truncated { "（已截断）" } else { "" }}
+                                                        {format!("上游响应{}", detail.upstream_response_status_code.map(|code| format!(" ({code})")).unwrap_or_default())}
+                                                        {if detail.upstream_response_body_truncated { "（已截断）" } else { "" }}
                                                     </div>
-                                                    <JsonBlock content=body.clone() root_label="egress_response".to_string()/>
+                                                    <JsonBlock content=body.clone() root_label="upstream_response".to_string()/>
                                                 </div>
                                             })}
                                         </article>
@@ -410,17 +410,17 @@ fn ComparisonSection(detail: DebugLogDetail, kind: ComparisonKind) -> impl IntoV
     let (title, left_title, right_title, left_body, right_body) = match kind {
         ComparisonKind::Request => (
             "请求对比",
-            "入口请求",
-            "出口请求",
-            detail.ingress_request_body.clone(),
-            detail.egress_request_body.clone(),
+            "客户端请求",
+            "上游请求",
+            detail.client_request_body.clone(),
+            detail.upstream_request_body.clone(),
         ),
         ComparisonKind::Response => (
             "响应对比",
-            "入口响应",
-            "出口响应",
-            detail.ingress_response_body.clone(),
-            detail.egress_response_body.clone(),
+            "客户端响应",
+            "上游响应",
+            detail.client_response_body.clone(),
+            detail.upstream_response_body.clone(),
         ),
     };
 
@@ -606,8 +606,8 @@ fn JsonDiffBlock(
             <div class="diff-head">
                 <strong>{title}</strong>
                 <div class="diff-legend">
-                    <span class="diff-side before"><span class="side-dot ingress"></span>{left_label}</span>
-                    <span class="diff-side after"><span class="side-dot egress"></span>{right_label}</span>
+                    <span class="diff-side before"><span class="side-dot client"></span>{left_label}</span>
+                    <span class="diff-side after"><span class="side-dot upstream"></span>{right_label}</span>
                     <span class="diff-side present">"绿色=存在"</span>
                     <span class="diff-side missing">"红色=缺失"</span>
                 </div>
@@ -717,29 +717,29 @@ fn JsonDiffNodeView(label: Option<String>, node: JsonDiffNode) -> impl IntoView 
                 <span class="json-punct">{": "}</span>
                 <div class="json-diff-scalar">
                     {before.map(|value| view! {
-                        <JsonSideValueRow side=DiffSide::Ingress state_class="compare" value=Some(value)/>
+                        <JsonSideValueRow side=DiffSide::Client state_class="compare" value=Some(value)/>
                     })}
                     {after.map(|value| view! {
-                        <JsonSideValueRow side=DiffSide::Egress state_class="compare" value=Some(value)/>
+                        <JsonSideValueRow side=DiffSide::Upstream state_class="compare" value=Some(value)/>
                     })}
                 </div>
             </div>
         }
         .into_any(),
         JsonDiffNode::Summary {
-            ingress_value,
-            egress_value,
+            client_value,
+            upstream_value,
             count,
         } => {
-            let ingress_state_class = summary_value_state_class(ingress_value.as_ref(), egress_value.as_ref(), true);
-            let egress_state_class = summary_value_state_class(ingress_value.as_ref(), egress_value.as_ref(), false);
+            let client_state_class = summary_value_state_class(client_value.as_ref(), upstream_value.as_ref(), true);
+            let upstream_state_class = summary_value_state_class(client_value.as_ref(), upstream_value.as_ref(), false);
             view! {
                 <div class="json-diff-leaf">
                     {label.map(|label| view! { <span class="json-key">{label}</span> })}
                     <span class="json-punct">{": "}</span>
                     <div class="json-diff-scalar">
-                        <JsonSideValueRow side=DiffSide::Ingress state_class=ingress_state_class value=ingress_value/>
-                        <JsonSideValueRow side=DiffSide::Egress state_class=egress_state_class value=egress_value/>
+                        <JsonSideValueRow side=DiffSide::Client state_class=client_state_class value=client_value/>
+                        <JsonSideValueRow side=DiffSide::Upstream state_class=upstream_state_class value=upstream_value/>
                         {if count > 1 {
                             view! {
                                 <div class="json-diff-summary-count">{format!("共 {} 处", count)}</div>
@@ -762,8 +762,8 @@ fn JsonDiffChangeView(label: String, change: JsonDiffChange) -> impl IntoView {
                 <span class="json-key">{label}</span>
                 <span class="json-punct">{": "}</span>
                 <div class="json-diff-scalar">
-                    <JsonSideValueRow side=DiffSide::Ingress state_class="missing" value=None/>
-                    <JsonSideValueRow side=DiffSide::Egress state_class="present" value=Some(value)/>
+                    <JsonSideValueRow side=DiffSide::Client state_class="missing" value=None/>
+                    <JsonSideValueRow side=DiffSide::Upstream state_class="present" value=Some(value)/>
                 </div>
             </div>
         }
@@ -773,8 +773,8 @@ fn JsonDiffChangeView(label: String, change: JsonDiffChange) -> impl IntoView {
                 <span class="json-key">{label}</span>
                 <span class="json-punct">{": "}</span>
                 <div class="json-diff-scalar">
-                    <JsonSideValueRow side=DiffSide::Ingress state_class="present" value=Some(value)/>
-                    <JsonSideValueRow side=DiffSide::Egress state_class="missing" value=None/>
+                    <JsonSideValueRow side=DiffSide::Client state_class="present" value=Some(value)/>
+                    <JsonSideValueRow side=DiffSide::Upstream state_class="missing" value=None/>
                 </div>
             </div>
         }
@@ -793,15 +793,15 @@ fn JsonSideValueRow(
     value: Option<Value>,
 ) -> impl IntoView {
     let (label, dot_class, row_class) = match side {
-        DiffSide::Ingress => (
-            "入口",
-            "side-dot ingress",
-            format!("json-diff-value ingress {state_class}"),
+        DiffSide::Client => (
+            "客户端",
+            "side-dot client",
+            format!("json-diff-value client {state_class}"),
         ),
-        DiffSide::Egress => (
-            "出口",
-            "side-dot egress",
-            format!("json-diff-value egress {state_class}"),
+        DiffSide::Upstream => (
+            "上游",
+            "side-dot upstream",
+            format!("json-diff-value upstream {state_class}"),
         ),
     };
 
@@ -822,11 +822,11 @@ fn JsonSideValueRow(
 }
 
 fn summary_value_state_class(
-    ingress_value: Option<&Value>,
-    egress_value: Option<&Value>,
-    is_ingress: bool,
+    client_value: Option<&Value>,
+    upstream_value: Option<&Value>,
+    is_client: bool,
 ) -> &'static str {
-    match (ingress_value.is_some(), egress_value.is_some(), is_ingress) {
+    match (client_value.is_some(), upstream_value.is_some(), is_client) {
         (true, true, _) => "compare",
         (true, false, true) => "present",
         (true, false, false) => "missing",
@@ -1055,16 +1055,19 @@ fn truncate_preview(text: &str, limit: usize) -> String {
     preview
 }
 
-fn ingress_transport_label(method: Option<&str>, path: Option<&str>) -> Option<&'static str> {
+fn client_transport_label(method: Option<&str>, path: Option<&str>) -> Option<&'static str> {
     match (method, path) {
-        (Some("WS"), Some("/openai/v1/responses")) => Some("入口 WebSocket"),
-        (Some("POST"), Some("/openai/v1/responses")) => Some("入口 HTTP"),
+        (Some("WS"), Some("/openai/v1/responses")) => Some("客户端 WebSocket"),
+        (Some("POST"), Some("/openai/v1/responses")) => Some("客户端 HTTP"),
         _ => None,
     }
 }
 
-fn egress_transport_label(stream: bool, egress_request_url: Option<&str>) -> Option<&'static str> {
-    let url = egress_request_url?;
+fn upstream_transport_label(
+    stream: bool,
+    upstream_request_url: Option<&str>,
+) -> Option<&'static str> {
+    let url = upstream_request_url?;
     if url.starts_with("wss://") {
         Some("上游 WebSocket")
     } else if stream {
@@ -1261,10 +1264,10 @@ fn summarize_text_diff(
         items.push(format!("{groups} 个变更块，已隐藏未变化的大段内容"));
     }
     if removed > 0 {
-        items.push(format!("仅入口存在的文本行 x{removed}"));
+        items.push(format!("仅客户端侧存在的文本行 x{removed}"));
     }
     if added > 0 {
-        items.push(format!("仅出口存在的文本行 x{added}"));
+        items.push(format!("仅上游侧存在的文本行 x{added}"));
     }
     items
 }
@@ -1282,8 +1285,8 @@ fn build_json_diff_summary(node: &JsonDiffNode) -> Option<JsonDiffNode> {
             .map(|(path, summary)| JsonDiffField {
                 key: path,
                 change: JsonDiffChange::Modified(JsonDiffNode::Summary {
-                    ingress_value: summary.into_value(true),
-                    egress_value: summary.into_value(false),
+                    client_value: summary.into_value(true),
+                    upstream_value: summary.into_value(false),
                     count: summary.count,
                 }),
             })
@@ -1293,27 +1296,27 @@ fn build_json_diff_summary(node: &JsonDiffNode) -> Option<JsonDiffNode> {
 
 #[derive(Default)]
 struct SummaryLeaf {
-    ingress_values: Vec<Value>,
-    egress_values: Vec<Value>,
+    client_values: Vec<Value>,
+    upstream_values: Vec<Value>,
     count: usize,
 }
 
 impl SummaryLeaf {
-    fn push(&mut self, ingress_value: Option<Value>, egress_value: Option<Value>) {
-        if let Some(value) = ingress_value {
-            self.ingress_values.push(value);
+    fn push(&mut self, client_value: Option<Value>, upstream_value: Option<Value>) {
+        if let Some(value) = client_value {
+            self.client_values.push(value);
         }
-        if let Some(value) = egress_value {
-            self.egress_values.push(value);
+        if let Some(value) = upstream_value {
+            self.upstream_values.push(value);
         }
         self.count += 1;
     }
 
-    fn into_value(&self, is_ingress: bool) -> Option<Value> {
-        let values = if is_ingress {
-            &self.ingress_values
+    fn into_value(&self, is_client: bool) -> Option<Value> {
+        let values = if is_client {
+            &self.client_values
         } else {
-            &self.egress_values
+            &self.upstream_values
         };
         match values.len() {
             0 => None,
@@ -2021,11 +2024,11 @@ form {
   margin-right: 8px;
 }
 
-.side-dot.ingress {
+.side-dot.client {
   background: #2563eb;
 }
 
-.side-dot.egress {
+.side-dot.upstream {
   background: #e07a2f;
 }
 
@@ -2388,12 +2391,12 @@ pre {
   color: #ffd7d1;
 }
 
-.json-diff-value.ingress.compare {
+.json-diff-value.client.compare {
   background: rgba(31, 117, 220, 0.16);
   color: #d9ebff;
 }
 
-.json-diff-value.egress.compare {
+.json-diff-value.upstream.compare {
   background: rgba(224, 122, 47, 0.18);
   color: #ffe6d5;
 }

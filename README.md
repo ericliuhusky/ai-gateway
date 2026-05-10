@@ -2,21 +2,21 @@
 
 ## 架构词汇
 
-- `Ingress`: 网关对外暴露的入口协议。当前只有 `OpenAI Responses`
-- `Egress`: 网关对上游发起请求时使用的出口协议。当前固定 4 种：
+- `Client`: 调用方看到的网关客户端侧协议。当前只有 `OpenAI Responses`
+- `Upstream`: 网关调用真实供应商时使用的上游协议。当前固定 4 种：
   - `OpenAI private responses`
   - `Google v1internal`
   - `Native responses`
   - `Native chat completions`
 - `Provider`: 具体供应商实例，例如 `openai-proxy`、`google-proxy`、`openai-compatible`
-- `Route`: 当前把入口请求转发到哪个 provider
-- `Adapter`: 从统一 `Responses` 入口适配到具体出口协议的转换层
+- `Route`: 当前把客户端请求转发到哪个 provider
+- `Adapter`: 从统一 `Responses` 客户端协议适配到具体上游协议的转换层
 
-当前实现遵循“单一入口、多个出口”的结构：
+当前实现遵循“单一客户端协议、多个上游协议”的结构：
 
 - 所有推理请求统一从 `POST /openai/v1/responses` 进入
-- 路由层根据当前选中的 provider 决定出口协议
-- adapter 层负责把入口 `Responses` 适配到对应的出口协议
+- 路由层根据当前选中的 provider 决定上游协议
+- adapter 层负责把客户端侧 `Responses` 适配到对应的上游协议
 - upstream 层只负责调用真实上游接口
 
 参考 [`Antigravity-Manager`](https://github.com/lbjlaq/Antigravity-Manager) 的代理实现：
@@ -87,7 +87,7 @@ open http://127.0.0.1:10100/auth/openai/start
 
 ## 原生 API 供应商
 
-除了 `openai-proxy` / `google-proxy` 这类 OAuth 代理供应商，现在也支持登记“原生 key 的 API 供应商”配置。`provider` 是统一入口：
+除了 `openai-proxy` / `google-proxy` 这类 OAuth 代理供应商，现在也支持登记“原生 key 的 API 供应商”配置。`provider` 是统一配置入口：
 
 - `api_key` 型 provider 通过 `POST /providers` 手动创建
 - `account` 型 provider 只能通过 OAuth 登录自动创建或更新
@@ -109,7 +109,7 @@ curl -X POST http://127.0.0.1:10100/providers \
 - `name`: 供应商名，例如 `openai-compatible`、`local-8080`
 - `base_url`: 该供应商的 API 基础地址
 - `api_key`: 上游 API key
-- `uses_chat_completions`: 可选，默认 `false`。设为 `true` 时把统一入口适配到 OpenAI Chat Completions 兼容接口；默认走 OpenAI Responses 原生接口
+- `uses_chat_completions`: 可选，默认 `false`。设为 `true` 时把统一客户端协议适配到 OpenAI Chat Completions 兼容接口；默认走 OpenAI Responses 原生接口
 - `billing_mode`: `metered` 或 `subscription`
   - `metered`: 按量计费，通常按 token、请求次数或实际用量扣费
   - `subscription`: 订阅制 / 套餐制，通常不是每次调用单独计费
@@ -177,8 +177,8 @@ curl -X PUT http://127.0.0.1:10100/selected-provider \
 - 当前这两个 OAuth 供应商被视为“账号型 provider”：
   - `openai-proxy`: 使用 ChatGPT OAuth，会转发到 `https://chatgpt.com/backend-api/codex/responses`
   - `google-proxy`: 使用 Google OAuth，会转发到 Gemini 私有 `v1internal`
-- API key 型 provider 默认走 OpenAI Responses 原生出口协议
-- API key 型 provider 设置 `uses_chat_completions: true` 时，走 OpenAI Chat Completions 兼容出口协议
+- API key 型 provider 默认走 OpenAI Responses 原生上游协议
+- API key 型 provider 设置 `uses_chat_completions: true` 时，走 OpenAI Chat Completions 兼容上游协议
 - OAuth 登录成功后，会自动创建或更新对应 provider，并绑定到刚登录的本地 account
 - 当前设计要求 `account` 和 `provider` 一对一存在：要么同时存在，要么同时不存在
 - 不再提供自动路由；所有 `/openai/v1/models` 和 `/openai/v1/responses` 调用都依赖用户显式选择的 provider
