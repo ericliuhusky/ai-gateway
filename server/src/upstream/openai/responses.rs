@@ -1,4 +1,4 @@
-use crate::upstream::shared::has_api_prefix;
+use super::url::{models_api_url, responses_api_url};
 use reqwest::{Client, Response};
 use serde_json::Value;
 #[derive(Clone, Debug)]
@@ -11,7 +11,7 @@ impl OpenAiResponsesClient {
         Self { http }
     }
 
-    pub async fn call(
+    pub async fn request(
         &self,
         _id: &str,
         base_url: &str,
@@ -77,72 +77,5 @@ impl OpenAiResponsesClient {
                 "openai models upstream returned {status}: {response_body}"
             ))
         }
-    }
-}
-
-pub fn responses_api_url(base_url: &str) -> String {
-    let trimmed = base_url.trim_end_matches('/');
-    if trimmed.ends_with("/responses") {
-        trimmed.to_string()
-    } else if has_api_prefix(trimmed) {
-        format!("{trimmed}/responses")
-    } else {
-        format!("{trimmed}/v1/responses")
-    }
-}
-
-pub fn models_api_url(base_url: &str) -> String {
-    let trimmed = base_url.trim_end_matches('/');
-    if trimmed.ends_with("/models") {
-        trimmed.to_string()
-    } else if has_api_prefix(trimmed) {
-        format!("{trimmed}/models")
-    } else {
-        format!("{trimmed}/v1/models")
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{models_api_url, responses_api_url};
-
-    #[test]
-    fn appends_models_to_v1_base_url() {
-        assert_eq!(
-            models_api_url("https://example.com/api/v3"),
-            "https://example.com/api/v3/models"
-        );
-    }
-
-    #[test]
-    fn appends_models_to_plain_base_url() {
-        assert_eq!(
-            models_api_url("https://api.xcode.best"),
-            "https://api.xcode.best/v1/models"
-        );
-    }
-
-    #[test]
-    fn appends_models_to_explicit_v1_base_url() {
-        assert_eq!(
-            models_api_url("https://api.xcode.best/v1"),
-            "https://api.xcode.best/v1/models"
-        );
-        assert_eq!(
-            responses_api_url("https://api.xcode.best/v1"),
-            "https://api.xcode.best/v1/responses"
-        );
-    }
-
-    #[test]
-    fn preserves_existing_responses_and_models_paths() {
-        assert_eq!(
-            responses_api_url("https://example.com/v1/responses"),
-            "https://example.com/v1/responses"
-        );
-        assert_eq!(
-            models_api_url("https://example.com/v1/models"),
-            "https://example.com/v1/models"
-        );
     }
 }

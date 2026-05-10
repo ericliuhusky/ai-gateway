@@ -33,10 +33,6 @@ pub fn should_try_next_endpoint(status: StatusCode) -> bool {
         || status.is_server_error()
 }
 
-pub fn has_api_prefix(base_url: &str) -> bool {
-    base_url.ends_with("/v1") || base_url.contains("/api/") || base_url.ends_with("/api")
-}
-
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct ProxyConfig {
     http_proxy: Option<String>,

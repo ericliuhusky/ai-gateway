@@ -1,6 +1,6 @@
 use crate::upstream::{
-    google_v1internal::GoogleV1InternalClient, openai_chat::OpenAiChatClient,
-    openai_private::OpenAiPrivateClient, openai_responses::OpenAiResponsesClient,
+    google_v1internal::GoogleV1InternalClient,
+    openai::{OpenAiChatClient, OpenAiPrivateClient, OpenAiResponsesClient},
     shared::build_http_client,
 };
 use reqwest::Response;
@@ -115,7 +115,7 @@ impl UpstreamClient {
         stream: bool,
     ) -> Result<Response, String> {
         self.openai_responses
-            .call(id, base_url, api_key, body, stream)
+            .request(id, base_url, api_key, body, stream)
             .await
     }
 
@@ -126,7 +126,7 @@ impl UpstreamClient {
         api_key: &str,
         body: Value,
     ) -> Result<Response, String> {
-        self.openai_chat.call(id, base_url, api_key, body).await
+        self.openai_chat.request(id, base_url, api_key, body).await
     }
 
     pub async fn fetch_openai_models_upstream(
@@ -143,7 +143,7 @@ impl UpstreamClient {
 
 #[cfg(test)]
 mod tests {
-    use crate::upstream::openai_private::OPENAI_MODELS_URL;
+    use crate::upstream::openai::OPENAI_MODELS_URL;
     #[test]
     fn openai_models_endpoint_uses_codex_backend() {
         assert_eq!(
