@@ -4,8 +4,9 @@ use crate::api::handlers::{
     debug_dashboard, debug_set_log_settings, delete_provider, get_codex_config_status,
     get_log_detail, get_log_settings, get_logs, get_provider_quota, get_route, get_selected_model,
     healthz, import_openai_from_local_codex_auth, list_models, list_providers, responses,
-    responses_websocket, restore_codex_config, set_log_settings, set_route, set_selected_model,
+    restore_codex_config, set_log_settings, set_route, set_selected_model,
 };
+use crate::api::websocket::responses_websocket;
 use axum::{
     Router,
     routing::{delete, get, post},
