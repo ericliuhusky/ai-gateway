@@ -2149,9 +2149,7 @@ async fn responses_inner(
             .upstream
             .openai_send(
                 &public_chat,
-                OpenAiEndpoint::ChatCompletions {
-                    body: request_body,
-                },
+                OpenAiEndpoint::ChatCompletions { body: request_body },
             )
             .await
             .map_err(AppError::upstream_message)?;
