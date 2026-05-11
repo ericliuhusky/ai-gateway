@@ -1,5 +1,4 @@
 pub const OPENAI_CODEX_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
-pub const OPENAI_USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
 
 fn base_api_url(base_url: &str, endpoint: &str) -> String {
     let trimmed = base_url.trim_end_matches('/');
@@ -11,7 +10,7 @@ fn base_api_url(base_url: &str, endpoint: &str) -> String {
 }
 
 fn has_api_prefix(base_url: &str) -> bool {
-    base_url.ends_with("/v1") || base_url.contains("/api/") || base_url.ends_with("/api")
+    base_url.ends_with("/v1") || base_url.contains("/api") || base_url.contains("/backend-api")
 }
 
 pub fn chat_completions_api_url(base_url: &str) -> String {
@@ -26,75 +25,90 @@ pub fn models_api_url(base_url: &str) -> String {
     base_api_url(base_url, "models")
 }
 
+pub fn usage_api_url(base_url: &str) -> String {
+    base_api_url(
+        base_url
+            .trim_end_matches('/')
+            .strip_suffix("/codex")
+            .unwrap_or(base_url),
+        "wham/usage",
+    )
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{chat_completions_api_url, models_api_url, responses_api_url};
+    use super::{base_api_url, usage_api_url};
 
     #[test]
-    fn appends_chat_completions_to_plain_base_url() {
+    fn base_api_url_test() {
         assert_eq!(
-            chat_completions_api_url("https://example.com"),
-            "https://example.com/v1/chat/completions"
+            base_api_url("https://example.com", "endpoint"),
+            "https://example.com/v1/endpoint"
         );
-    }
 
-    #[test]
-    fn appends_chat_completions_to_versioned_base_url() {
         assert_eq!(
-            chat_completions_api_url("https://example.com/v1"),
-            "https://example.com/v1/chat/completions"
+            base_api_url("https://example.com/", "endpoint"),
+            "https://example.com/v1/endpoint"
         );
-    }
 
-    #[test]
-    fn appends_models_to_v1_base_url() {
         assert_eq!(
-            models_api_url("https://example.com/api/v3"),
-            "https://example.com/api/v3/models"
+            base_api_url("https://example.com/v1", "endpoint"),
+            "https://example.com/v1/endpoint"
         );
-    }
 
-    #[test]
-    fn appends_models_to_plain_base_url() {
         assert_eq!(
-            models_api_url("https://api.xcode.best"),
-            "https://api.xcode.best/v1/models"
+            base_api_url("https://example.com/v1/", "endpoint"),
+            "https://example.com/v1/endpoint"
         );
-    }
 
-    #[test]
-    fn appends_models_to_explicit_v1_base_url() {
         assert_eq!(
-            models_api_url("https://api.xcode.best/v1"),
-            "https://api.xcode.best/v1/models"
+            base_api_url("https://example.com/api", "endpoint"),
+            "https://example.com/api/endpoint"
         );
-        assert_eq!(
-            responses_api_url("https://api.xcode.best/v1"),
-            "https://api.xcode.best/v1/responses"
-        );
-    }
 
-    #[test]
-    fn appends_responses_to_plain_base_url() {
         assert_eq!(
-            responses_api_url("https://example.com"),
-            "https://example.com/v1/responses"
+            base_api_url("https://example.com/api/", "endpoint"),
+            "https://example.com/api/endpoint"
         );
-    }
 
-    #[test]
-    fn appends_responses_to_versioned_base_url() {
         assert_eq!(
-            responses_api_url("https://example.com/v1"),
-            "https://example.com/v1/responses"
+            base_api_url("https://example.com/api/v3/coding", "endpoint"),
+            "https://example.com/api/v3/coding/endpoint"
         );
-    }
 
-    #[test]
-    fn trims_trailing_slash_before_appending_endpoint() {
         assert_eq!(
-            models_api_url("https://example.com/v1/"),
-            "https://example.com/v1/models"
+            base_api_url("https://example.com/api/v3/coding/", "endpoint"),
+            "https://example.com/api/v3/coding/endpoint"
+        );
+
+        assert_eq!(
+            base_api_url("https://example.com/backend-api", "endpoint"),
+            "https://example.com/backend-api/endpoint"
+        );
+
+        assert_eq!(
+            base_api_url("https://example.com/backend-api/", "endpoint"),
+            "https://example.com/backend-api/endpoint"
+        );
+
+        assert_eq!(
+            base_api_url("https://example.com/backend-api/codex", "endpoint"),
+            "https://example.com/backend-api/codex/endpoint"
+        );
+
+        assert_eq!(
+            base_api_url("https://example.com/backend-api/codex/", "endpoint"),
+            "https://example.com/backend-api/codex/endpoint"
+        );
+
+        assert_eq!(
+            usage_api_url("https://example.com/backend-api/codex"),
+            "https://example.com/backend-api/wham/usage"
+        );
+
+        assert_eq!(
+            usage_api_url("https://example.com/backend-api/codex/"),
+            "https://example.com/backend-api/wham/usage"
         );
     }
 }

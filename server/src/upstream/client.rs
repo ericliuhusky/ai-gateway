@@ -1,8 +1,8 @@
 use crate::upstream::{
     google_v1internal::GoogleV1InternalClient,
     openai::{
-        OPENAI_CODEX_BASE_URL, OPENAI_USAGE_URL, models_request, responses_request,
-        stream_private_responses_websocket_blocking, usage_request,
+        OPENAI_CODEX_BASE_URL, OpenAiEndpoint, OpenAiRequestBuilder, PrivateOpenAiRequestBuilder,
+        PublicOpenAiRequestBuilder, stream_private_responses_websocket_blocking,
     },
     shared::build_http_client,
 };
@@ -60,16 +60,13 @@ impl UpstreamClient {
         body: Value,
         stream: bool,
     ) -> Result<Response, String> {
-        let response = responses_request(
-            &self.http,
-            OPENAI_CODEX_BASE_URL,
+        let response = PrivateOpenAiRequestBuilder {
+            base_url: OPENAI_CODEX_BASE_URL,
             access_token,
-            body,
-            stream,
-            true,
             account_id,
-            false,
-        )
+            client_version: None,
+        }
+        .build(&self.http, OpenAiEndpoint::Responses { body, stream })
         .send()
         .await
         .map_err(|err| format!("OpenAI responses 私有接口请求失败: {err}"))?;
@@ -92,14 +89,13 @@ impl UpstreamClient {
         account_id: Option<&str>,
         client_version: &str,
     ) -> Result<Value, String> {
-        let response = models_request(
-            &self.http,
-            OPENAI_CODEX_BASE_URL,
+        let response = PrivateOpenAiRequestBuilder {
+            base_url: OPENAI_CODEX_BASE_URL,
             access_token,
-            true,
             account_id,
-            Some(client_version),
-        )
+            client_version: Some(client_version),
+        }
+        .build(&self.http, OpenAiEndpoint::Models)
         .send()
         .await
         .map_err(|err| format!("OpenAI 模型请求失败: {err}"))?;
@@ -124,10 +120,16 @@ impl UpstreamClient {
         access_token: &str,
         account_id: Option<&str>,
     ) -> Result<Value, String> {
-        let response = usage_request(&self.http, OPENAI_USAGE_URL, access_token, true, account_id)
-            .send()
-            .await
-            .map_err(|err| format!("openai usage request failed: {err}"))?;
+        let response = PrivateOpenAiRequestBuilder {
+            base_url: OPENAI_CODEX_BASE_URL,
+            access_token,
+            account_id,
+            client_version: None,
+        }
+        .build(&self.http, OpenAiEndpoint::Usage)
+        .send()
+        .await
+        .map_err(|err| format!("openai usage request failed: {err}"))?;
 
         if response.status().is_success() {
             response
@@ -168,12 +170,11 @@ impl UpstreamClient {
         body: Value,
         stream: bool,
     ) -> Result<Response, String> {
-        let response = responses_request(
-            &self.http, base_url, api_key, body, stream, false, None, false,
-        )
-        .send()
-        .await
-        .map_err(|err| format!("OpenAI responses 请求失败: {err}"))?;
+        let response = PublicOpenAiRequestBuilder { base_url, api_key }
+            .build(&self.http, OpenAiEndpoint::Responses { body, stream })
+            .send()
+            .await
+            .map_err(|err| format!("OpenAI responses 请求失败: {err}"))?;
 
         if response.status().is_success() {
             Ok(response)
@@ -193,12 +194,11 @@ impl UpstreamClient {
         api_key: &str,
         body: Value,
     ) -> Result<Response, String> {
-        let response = responses_request(
-            &self.http, base_url, api_key, body, false, false, None, true,
-        )
-        .send()
-        .await
-        .map_err(|err| format!("OpenAI chat 请求失败: {err}"))?;
+        let response = PublicOpenAiRequestBuilder { base_url, api_key }
+            .build(&self.http, OpenAiEndpoint::ChatCompletions { body })
+            .send()
+            .await
+            .map_err(|err| format!("OpenAI chat 请求失败: {err}"))?;
 
         if response.status().is_success() {
             Ok(response)
@@ -217,7 +217,8 @@ impl UpstreamClient {
         base_url: &str,
         api_key: &str,
     ) -> Result<Value, String> {
-        let response = models_request(&self.http, base_url, api_key, false, None, None)
+        let response = PublicOpenAiRequestBuilder { base_url, api_key }
+            .build(&self.http, OpenAiEndpoint::Models)
             .send()
             .await
             .map_err(|err| format!("OpenAI 模型请求失败: {err}"))?;
@@ -239,18 +240,19 @@ impl UpstreamClient {
 
 #[cfg(test)]
 mod tests {
-    use crate::upstream::openai::{OPENAI_CODEX_BASE_URL, models_request};
+    use crate::upstream::openai::{
+        OPENAI_CODEX_BASE_URL, OpenAiEndpoint, OpenAiRequestBuilder, PrivateOpenAiRequestBuilder,
+    };
 
     #[test]
     fn openai_models_endpoint_uses_codex_backend() {
-        let request = models_request(
-            &reqwest::Client::new(),
-            OPENAI_CODEX_BASE_URL,
-            "token",
-            true,
-            None,
-            Some("test"),
-        )
+        let request = PrivateOpenAiRequestBuilder {
+            base_url: OPENAI_CODEX_BASE_URL,
+            access_token: "token",
+            account_id: None,
+            client_version: Some("test"),
+        }
+        .build(&reqwest::Client::new(), OpenAiEndpoint::Models)
         .build()
         .expect("valid request");
 
