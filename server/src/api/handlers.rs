@@ -24,7 +24,9 @@ use crate::{
         RouteStore, log_store::extract_model_output_from_body,
     },
     upstream::{
-        GOOGLE_PROJECT_ID_FALLBACK, UpstreamClient, chat_completions_api_url, responses_api_url,
+        GOOGLE_PROJECT_ID_FALLBACK, OPENAI_CODEX_BASE_URL, OpenAiEndpoint,
+        PrivateOpenAiRequestBuilder, PublicOpenAiRequestBuilder, UpstreamClient,
+        chat_completions_api_url, responses_api_url,
     },
 };
 use async_stream::stream;
@@ -318,15 +320,18 @@ pub async fn get_provider_quota(
         let account = resolve_account_for_provider(&state, &provider).await?;
         match account.account_type {
             AccountType::Openai => {
-                let raw = state
+                let private_usage = PrivateOpenAiRequestBuilder {
+                    base_url: OPENAI_CODEX_BASE_URL,
+                    access_token: account.access_token(),
+                    account_id: account.upstream_account_id(),
+                    client_version: None,
+                };
+                let upstream = state
                     .upstream
-                    .fetch_openai_usage(
-                        &format!("quota_{}", Uuid::new_v4().simple()),
-                        account.access_token(),
-                        account.upstream_account_id(),
-                    )
+                    .openai_send(&private_usage, OpenAiEndpoint::Usage)
                     .await
                     .map_err(AppError::upstream_message)?;
+                let raw: Value = upstream.json().await.map_err(AppError::upstream)?;
                 let payload: UpstreamRateLimitStatusPayload = serde_json::from_value(raw)
                     .map_err(|err| AppError::upstream_message(err.to_string()))?;
                 quota_from_openai_usage(payload)
@@ -1345,14 +1350,20 @@ async fn responses_inner(
         )
         .await;
 
+        let private_responses = PrivateOpenAiRequestBuilder {
+            base_url: OPENAI_CODEX_BASE_URL,
+            access_token: account.access_token(),
+            account_id: account.upstream_account_id(),
+            client_version: None,
+        };
         let upstream = state
             .upstream
-            .call_openai_responses(
-                &id,
-                account.access_token(),
-                account.upstream_account_id(),
-                request_body,
-                request.stream,
+            .openai_send(
+                &private_responses,
+                OpenAiEndpoint::Responses {
+                    body: request_body,
+                    stream: request.stream,
+                },
             )
             .await
             .map_err(AppError::upstream_message)?;
@@ -2130,13 +2141,17 @@ async fn responses_inner(
         )
         .await;
 
+        let public_chat = PublicOpenAiRequestBuilder {
+            base_url: native_provider.base_url.as_str(),
+            api_key: native_provider.api_key.as_str(),
+        };
         let upstream = state
             .upstream
-            .call_openai_chat_upstream(
-                &id,
-                &native_provider.base_url,
-                &native_provider.api_key,
-                request_body,
+            .openai_send(
+                &public_chat,
+                OpenAiEndpoint::ChatCompletions {
+                    body: request_body,
+                },
             )
             .await
             .map_err(AppError::upstream_message)?;
@@ -2310,14 +2325,18 @@ async fn responses_inner(
     )
     .await;
 
+    let public_responses = PublicOpenAiRequestBuilder {
+        base_url: native_provider.base_url.as_str(),
+        api_key: native_provider.api_key.as_str(),
+    };
     let upstream = state
         .upstream
-        .call_openai_responses_upstream(
-            &id,
-            &native_provider.base_url,
-            &native_provider.api_key,
-            request_body,
-            request.stream,
+        .openai_send(
+            &public_responses,
+            OpenAiEndpoint::Responses {
+                body: request_body,
+                stream: request.stream,
+            },
         )
         .await
         .map_err(AppError::upstream_message)?;
@@ -2660,16 +2679,18 @@ async fn fetch_provider_models(
         }
         if provider.name == PROVIDER_OPENAI_PROXY {
             let client_version = state._config.codex_client_version();
-            let raw = state
+            let private_models = PrivateOpenAiRequestBuilder {
+                base_url: OPENAI_CODEX_BASE_URL,
+                access_token: account.access_token(),
+                account_id: account.upstream_account_id(),
+                client_version: Some(client_version.as_str()),
+            };
+            let upstream = state
                 .upstream
-                .fetch_openai_models(
-                    &format!("models_{}", Uuid::new_v4().simple()),
-                    account.access_token(),
-                    account.upstream_account_id(),
-                    &client_version,
-                )
+                .openai_send(&private_models, OpenAiEndpoint::Models)
                 .await
                 .map_err(AppError::upstream_message)?;
+            let raw: Value = upstream.json().await.map_err(AppError::upstream)?;
             return openai_models_response(&provider.name, &raw);
         }
 
@@ -2683,15 +2704,16 @@ async fn fetch_provider_models(
         .record
         .as_ref()
         .ok_or_else(|| AppError::bad_request(format!("unknown provider: {}", provider.name)))?;
-    let raw = state
+    let public_models = PublicOpenAiRequestBuilder {
+        base_url: native_provider.base_url.as_str(),
+        api_key: native_provider.api_key.as_str(),
+    };
+    let upstream = state
         .upstream
-        .fetch_openai_models_upstream(
-            &format!("models_{}", Uuid::new_v4().simple()),
-            &native_provider.base_url,
-            &native_provider.api_key,
-        )
+        .openai_send(&public_models, OpenAiEndpoint::Models)
         .await
         .map_err(AppError::upstream_message)?;
+    let raw: Value = upstream.json().await.map_err(AppError::upstream)?;
     native_models_response(&provider.name, &raw)
 }
 

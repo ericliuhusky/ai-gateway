@@ -1,7 +1,9 @@
+mod client;
 mod private_websocket;
 mod request_builder;
 mod url;
 
+pub use client::OpenAiClient;
 pub use private_websocket::stream_responses_websocket_blocking as stream_private_responses_websocket_blocking;
 pub use request_builder::{
     OpenAiEndpoint, OpenAiRequestBuilder, PrivateOpenAiRequestBuilder, PublicOpenAiRequestBuilder,
