@@ -5,7 +5,6 @@ use crate::upstream::{
 };
 use reqwest::Response;
 use serde_json::Value;
-use tokio::sync::mpsc;
 
 #[derive(Clone, Debug)]
 pub struct UpstreamClient {
@@ -58,22 +57,5 @@ impl UpstreamClient {
         B: OpenAiRequestBuilder + ?Sized,
     {
         self.openai.send(builder, endpoint).await
-    }
-
-    pub fn stream_openai_responses_websocket_blocking(
-        &self,
-        access_token: String,
-        account_id: Option<String>,
-        request_id: String,
-        request_text: String,
-        tx: mpsc::UnboundedSender<Result<String, String>>,
-    ) -> Result<(), String> {
-        self.openai.stream_responses_websocket_blocking(
-            access_token,
-            account_id,
-            request_id,
-            request_text,
-            tx,
-        )
     }
 }

@@ -6,7 +6,6 @@ use crate::api::handlers::{
     healthz, import_openai_from_local_codex_auth, list_models, list_providers, responses,
     restore_codex_config, set_log_settings, set_route, set_selected_model,
 };
-use crate::api::websocket::responses_websocket;
 use axum::{
     Router,
     routing::{delete, get, post},
@@ -52,9 +51,6 @@ pub fn build_router(state: AppState) -> Router {
         .route("/debug/logging", post(debug_set_log_settings))
         .route("/debug/clear", post(debug_clear_logs))
         .route("/openai/v1/models", get(list_models))
-        .route(
-            "/openai/v1/responses",
-            post(responses).get(responses_websocket),
-        )
+        .route("/openai/v1/responses", post(responses))
         .with_state(state)
 }

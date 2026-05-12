@@ -1,5 +1,5 @@
 use serde::Deserialize;
-use std::{env, fs, net::SocketAddr, path::PathBuf, time::Duration};
+use std::{env, fs, net::SocketAddr, path::PathBuf};
 
 // 服务监听配置。
 const BIND_ADDR: &str = "127.0.0.1:10100";
@@ -10,8 +10,6 @@ const OPENAI_CALLBACK_URL: &str = "http://localhost:1455/auth/callback";
 const DEFAULT_CODEX_CLIENT_VERSION: &str = "0.130.0";
 const RESPONSES_PATH: &str = "/openai/v1/responses";
 const OPENAI_PRIVATE_RESPONSES_URL: &str = "https://chatgpt.com/backend-api/codex/responses";
-const OPENAI_PRIVATE_RESPONSES_WS_URL: &str = "wss://chatgpt.com/backend-api/codex/responses";
-const OPENAI_PRIVATE_WS_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
 // 内置 Codex 资源。
 const BUNDLED_CODEX_CONFIG: &str = include_str!("../../assets/codex-config.toml");
@@ -64,14 +62,6 @@ impl Config {
 
     pub fn openai_private_responses_url() -> &'static str {
         OPENAI_PRIVATE_RESPONSES_URL
-    }
-
-    pub fn openai_private_responses_ws_url() -> &'static str {
-        OPENAI_PRIVATE_RESPONSES_WS_URL
-    }
-
-    pub fn openai_private_ws_idle_timeout() -> Duration {
-        OPENAI_PRIVATE_WS_IDLE_TIMEOUT
     }
 
     // 网关数据文件。

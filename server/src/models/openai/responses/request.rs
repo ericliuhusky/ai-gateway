@@ -1,6 +1,6 @@
 use super::response_item::ResponseItem;
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value, json};
+use serde_json::{Map, Value};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -28,12 +28,13 @@ pub struct ResponsesRequest {
 }
 
 /// Fills missing keys so a partial JSON object matches [`ResponsesRequest`] (strict decode).
-/// Used by WebSocket `response.create` ingestion and unit tests. HTTP handlers decode the body as-is.
+/// Used by unit tests. HTTP handlers decode the body as-is.
+#[cfg(test)]
 pub(crate) fn merge_strict_responses_request_defaults(value: Value) -> Value {
     let Value::Object(mut obj) = value else {
         return value;
     };
-    let defaults: Map<String, Value> = serde_json::from_value(json!({
+    let defaults: Map<String, Value> = serde_json::from_value(serde_json::json!({
         "client_metadata": null,
         "include": [],
         "instructions": "",

@@ -1,6 +1,5 @@
-use super::{OpenAiEndpoint, OpenAiRequestBuilder, stream_private_responses_websocket_blocking};
+use super::{OpenAiEndpoint, OpenAiRequestBuilder};
 use reqwest::{Client, Response};
-use tokio::sync::mpsc;
 
 #[derive(Clone, Debug)]
 pub struct OpenAiClient {
@@ -29,23 +28,6 @@ impl OpenAiClient {
             let response_body = response.text().await.unwrap_or_default();
             Err(format!("OpenAI 上游返回状态码 {status}: {response_body}"))
         }
-    }
-
-    pub fn stream_responses_websocket_blocking(
-        &self,
-        access_token: String,
-        account_id: Option<String>,
-        request_id: String,
-        request_text: String,
-        tx: mpsc::UnboundedSender<Result<String, String>>,
-    ) -> Result<(), String> {
-        stream_private_responses_websocket_blocking(
-            access_token,
-            account_id,
-            request_id,
-            request_text,
-            tx,
-        )
     }
 }
 

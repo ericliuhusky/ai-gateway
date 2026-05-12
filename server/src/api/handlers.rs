@@ -2937,16 +2937,6 @@ fn capture_final_response_from_sse_line(line: &str, final_response_body: &mut Op
     capture_final_response_from_event_value(&event, final_response_body);
 }
 
-pub(super) fn capture_final_response_from_ws_event(
-    event_text: &str,
-    final_response_body: &mut Option<String>,
-) {
-    let Ok(event) = serde_json::from_str::<Value>(event_text) else {
-        return;
-    };
-    capture_final_response_from_event_value(&event, final_response_body);
-}
-
 fn capture_final_response_from_event_value(
     event: &Value,
     final_response_body: &mut Option<String>,
@@ -3059,91 +3049,11 @@ mod tests {
         quota_from_openai_usage, resolve_native_target,
     };
     use crate::adapters::responses::responses_to_openai_private;
-    use crate::api::websocket::{
-        is_terminal_responses_ws_event, normalize_openai_private_ws_event_for_client,
-        openai_private_response_create_event, openai_private_websocket_request_body,
-        response_create_ws_message_to_request, responses_ws_completed_event,
-        responses_ws_error_event, sse_chunk_to_ws_json_messages,
-    };
     use crate::models::{
         ApiProviderBillingMode, ApiProviderRecord, ProviderAuthMode, UpstreamProtocol,
         merge_strict_responses_request_defaults,
     };
     use serde_json::json;
-
-    #[test]
-    fn converts_response_create_websocket_message_to_streaming_request() {
-        let ws_request = response_create_ws_message_to_request(
-            &json!({
-                "type": "response.create",
-                "model": "gpt-5.4",
-                "input": [{ "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "hi" }] }],
-                "previous_response_id": "resp_previous_123",
-                "stream": false,
-                "background": true,
-                "generate": true,
-                "parallel_tool_calls": true,
-                "reasoning": { "effort": "medium", "summary": "auto" },
-                "include": ["reasoning.encrypted_content"],
-                "service_tier": "priority",
-                "prompt_cache_key": "cache-key",
-                "text": { "verbosity": "medium" },
-                "client_metadata": {
-                    "x-codex-window-id": "thread-id:0",
-                    "ws_request_header_traceparent": "00-00000000000000000000000000000000-0000000000000000-01",
-                    "ws_request_header_tracestate": "vendor=value"
-                }
-            })
-            .to_string(),
-        )
-        .expect("response.create should convert");
-        let body = serde_json::to_value(&ws_request.request).expect("request should serialize");
-
-        assert!(ws_request.generate);
-        assert_eq!(
-            ws_request.previous_response_id.as_deref(),
-            Some("resp_previous_123")
-        );
-        assert_eq!(body["model"], "gpt-5.4");
-        assert_eq!(body["stream"], true);
-        assert!(body.get("previous_response_id").is_none());
-        assert!(body.get("background").is_none());
-        assert!(body.get("generate").is_none());
-        assert_eq!(body["parallel_tool_calls"], true);
-        assert_eq!(body["reasoning"]["effort"], "medium");
-        assert_eq!(body["include"][0], "reasoning.encrypted_content");
-        assert_eq!(body["service_tier"], "priority");
-        assert_eq!(body["prompt_cache_key"], "cache-key");
-        assert_eq!(body["text"]["verbosity"], "medium");
-        assert_eq!(body["client_metadata"]["x-codex-window-id"], "thread-id:0");
-        assert_eq!(
-            body["client_metadata"]["ws_request_header_traceparent"],
-            "00-00000000000000000000000000000000-0000000000000000-01"
-        );
-        assert_eq!(body["input"][0]["content"][0]["type"], "input_text");
-    }
-
-    #[test]
-    fn openai_private_websocket_body_carries_previous_response_id() {
-        let ws_request = response_create_ws_message_to_request(
-            &json!({
-                "type": "response.create",
-                "model": "gpt-5.4",
-                "input": [{ "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "continue" }] }],
-                "previous_response_id": "resp_previous_123"
-            })
-            .to_string(),
-        )
-        .expect("response.create should convert");
-
-        let body = openai_private_websocket_request_body(
-            &ws_request.request,
-            ws_request.previous_response_id.as_deref(),
-        )
-        .expect("websocket request body should serialize");
-
-        assert_eq!(body["previous_response_id"], "resp_previous_123");
-    }
 
     #[test]
     fn openai_private_http_body_omits_previous_response_id() {
@@ -3156,109 +3066,6 @@ mod tests {
         let body = responses_to_openai_private(&request).expect("body should serialize");
 
         assert!(body.get("previous_response_id").is_none());
-    }
-
-    #[test]
-    fn converts_response_create_prewarm_generate_false() {
-        let ws_request = response_create_ws_message_to_request(
-            &json!({
-                "type": "response.create",
-                "model": "gpt-5.4",
-                "input": [{ "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "hi" }] }],
-                "generate": false
-            })
-            .to_string(),
-        )
-        .expect("response.create should convert");
-        let body = serde_json::to_value(ws_request.request).expect("request should serialize");
-
-        assert!(!ws_request.generate);
-        assert_eq!(body["stream"], true);
-        assert!(body.get("generate").is_none());
-    }
-
-    #[test]
-    fn rejects_unsupported_websocket_message_type() {
-        let err = response_create_ws_message_to_request(
-            &json!({
-                "type": "session.update",
-                "model": "gpt-5.4",
-                "input": "hi"
-            })
-            .to_string(),
-        )
-        .expect_err("unsupported type should fail");
-
-        assert!(err.contains("unsupported websocket message type"));
-    }
-
-    #[test]
-    fn converts_sse_data_blocks_to_websocket_json_messages() {
-        let mut buffer = String::new();
-        let first = sse_chunk_to_ws_json_messages(
-            &mut buffer,
-            "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\"}}\n\n",
-        );
-        let second = sse_chunk_to_ws_json_messages(
-            &mut buffer,
-            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"你\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"status\":\"completed\"}}\n\ndata: [DONE]\n\n",
-        );
-
-        assert_eq!(first.len(), 1);
-        assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&first[0]).unwrap()["type"],
-            "response.created"
-        );
-        assert_eq!(second.len(), 2);
-        assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&second[0]).unwrap()["delta"],
-            "你"
-        );
-        assert!(is_terminal_responses_ws_event(&second[1]));
-    }
-
-    #[test]
-    fn creates_responses_websocket_failed_event() {
-        let event = responses_ws_error_event("boom");
-        let value: serde_json::Value = serde_json::from_str(&event).expect("valid json");
-
-        assert_eq!(value["type"], "response.failed");
-        assert_eq!(value["response"]["status"], "failed");
-        assert_eq!(value["response"]["error"]["message"], "boom");
-    }
-
-    #[test]
-    fn creates_responses_websocket_completed_event_for_prewarm() {
-        let event = responses_ws_completed_event("gpt-5.4");
-        let value: serde_json::Value = serde_json::from_str(&event).expect("valid json");
-
-        assert_eq!(value["type"], "response.completed");
-        assert_eq!(value["response"]["status"], "completed");
-        assert_eq!(value["response"]["model"], "gpt-5.4");
-        assert_eq!(value["response"]["output"].as_array().unwrap().len(), 0);
-    }
-
-    #[test]
-    fn wraps_openai_private_websocket_request_as_response_create() {
-        let value = openai_private_response_create_event(json!({
-            "model": "gpt-5.4",
-            "instructions": "You are Codex."
-        }));
-
-        assert_eq!(value["type"], "response.create");
-        assert_eq!(value["model"], "gpt-5.4");
-    }
-
-    #[test]
-    fn normalizes_openai_private_error_event_to_response_failed() {
-        let normalized = normalize_openai_private_ws_event_for_client(
-            r#"{"type":"error","status":400,"error":{"type":"invalid_request_error","message":"boom"}}"#,
-        );
-        let value: serde_json::Value =
-            serde_json::from_str(&normalized).expect("normalized event should be valid json");
-
-        assert_eq!(value["type"], "response.failed");
-        assert_eq!(value["response"]["error"]["message"], "boom");
     }
 
     #[test]
