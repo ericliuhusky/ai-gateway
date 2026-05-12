@@ -13,21 +13,8 @@ pub fn responses_to_chat_completions(
     request: &ResponsesRequest,
     model: &str,
 ) -> Result<Value, String> {
-    let messages = build_messages(request)?;
-    responses_to_chat_completions_with_messages(request, model, messages)
-}
-
-pub fn responses_to_chat_completions_with_messages(
-    request: &ResponsesRequest,
-    model: &str,
-    mut messages: Vec<OpenAIMessage>,
-) -> Result<Value, String> {
-    for message in &mut messages {
-        if message.role == "developer" {
-            message.role = "system".to_string();
-        }
-    }
-    normalize_messages_for_chat_completions(&mut messages);
+    let mut messages = build_messages(request)?;
+    normalize_chat_completions_messages(&mut messages);
     let mut body = serde_json::Map::new();
     body.insert("model".to_string(), Value::String(model.to_string()));
     body.insert(
@@ -45,7 +32,7 @@ pub fn responses_to_chat_completions_with_messages(
     Ok(Value::Object(body))
 }
 
-pub fn normalize_chat_completions_messages(messages: &mut Vec<OpenAIMessage>) {
+fn normalize_chat_completions_messages(messages: &mut Vec<OpenAIMessage>) {
     for message in &mut *messages {
         if message.role == "developer" {
             message.role = "system".to_string();

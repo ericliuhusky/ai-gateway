@@ -12,7 +12,7 @@ use auth::OAuthClient;
 use config::Config;
 use reqwest::Client;
 use std::sync::Arc;
-use store::{AccountStore, ChatHistoryStore, LogStore, ModelStore, ProviderStore, RouteStore};
+use store::{AccountStore, LogStore, ModelStore, ProviderStore, RouteStore};
 use upstream::UpstreamClient;
 
 #[tokio::main]
@@ -28,7 +28,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let oauth = OAuthClient::new(config.clone());
     let upstream = UpstreamClient::new();
     let logs = LogStore::new(config.clone())?;
-    let chat_history = ChatHistoryStore::new(config.clone())?;
 
     let state = AppState {
         _client: Client::new(),
@@ -40,7 +39,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         models,
         upstream,
         logs,
-        chat_history,
     };
 
     let app = build_router(state);

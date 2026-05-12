@@ -77,10 +77,6 @@ impl Config {
         self.data_dir().join("log.db")
     }
 
-    pub fn chat_history_sqlite_path(&self) -> PathBuf {
-        self.data_dir().join("chat_history.db")
-    }
-
     // Codex 文件和默认值。
     pub fn bundled_codex_config(&self) -> &'static str {
         BUNDLED_CODEX_CONFIG

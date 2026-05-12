@@ -1,9 +1,8 @@
 use crate::{
     adapters::responses::{
-        chat_completions_to_responses, gemini_to_responses, normalize_chat_completions_messages,
-        request_with_model, responses_to_chat_completions,
-        responses_to_chat_completions_with_messages, responses_to_gemini,
-        responses_to_openai_private, wrap_v1internal,
+        chat_completions_to_responses, gemini_to_responses, request_with_model,
+        responses_to_chat_completions, responses_to_gemini, responses_to_openai_private,
+        wrap_v1internal,
     },
     auth::OAuthClient,
     config::Config,
@@ -13,15 +12,15 @@ use crate::{
         GatewayLogListResponse, GatewayLogSettings, GatewayLogSettingsResponse, GatewayLogSummary,
         ModelListItem, ModelListResponse, PROVIDER_GOOGLE_PROXY, PROVIDER_OPENAI_PROXY,
         ProviderAuthMode, ProviderQuotaCredits, ProviderQuotaResponse, ProviderQuotaSnapshot,
-        ProviderQuotaSummary, ProviderQuotaWindow, QuotaSource, QuotaSupportStatus, ResponseItem,
+        ProviderQuotaSummary, ProviderQuotaWindow, QuotaSource, QuotaSupportStatus,
         ResponsesRequest, ResponsesResponse, SelectedRoute, UpdateGatewayLogSettingsRequest,
         UpdateSelectedModelRequest, UpdateSelectedProviderRequest, UpstreamProtocol,
         UpstreamRateLimitStatusDetails, UpstreamRateLimitStatusPayload,
         UpstreamRateLimitWindowSnapshot,
     },
     store::{
-        AccountStore, ChatHistoryStore, LogEvent, LogStage, LogStore, ModelStore, ProviderStore,
-        RouteStore, log_store::extract_model_output_from_body,
+        AccountStore, LogEvent, LogStage, LogStore, ModelStore, ProviderStore, RouteStore,
+        log_store::extract_model_output_from_body,
     },
     upstream::{
         GOOGLE_PROJECT_ID_FALLBACK, OPENAI_CODEX_BASE_URL, OpenAiEndpoint,
@@ -60,7 +59,6 @@ pub struct AppState {
     pub models: ModelStore,
     pub upstream: UpstreamClient,
     pub logs: LogStore,
-    pub chat_history: ChatHistoryStore,
 }
 
 #[derive(Debug, Deserialize)]
@@ -727,7 +725,7 @@ pub async fn responses(State(state): State<AppState>, body: Bytes) -> Result<Res
 
     let model = request.model.clone();
     let stream = request.stream;
-    match responses_inner(state.clone(), request, id.clone(), started_at, None).await {
+    match responses_inner(state.clone(), request, id.clone(), started_at).await {
         Ok(response) => Ok(response),
         Err(err) => {
             let error_body = gateway_error_payload(&err.message);
@@ -866,7 +864,6 @@ pub(super) async fn responses_inner(
     request: ResponsesRequest,
     id: String,
     started_at: Instant,
-    previous_response_id: Option<String>,
 ) -> Result<Response, AppError> {
     let provider = resolve_selected_provider(&state).await?;
     if provider.auth_mode == ProviderAuthMode::Account && provider_uses_openai_account(&provider) {
@@ -1649,22 +1646,9 @@ pub(super) async fn responses_inner(
         .ok_or_else(|| AppError::bad_request(format!("unknown provider: {}", provider.name)))?;
 
     let native_target = resolve_native_target(&native_provider, &request.model);
-    let previous_response_id = normalized_previous_response_id(previous_response_id.as_deref());
     if native_target.uses_chat_completions {
-        let request_body = if let Some(previous_response_id) = previous_response_id {
-            let messages =
-                reconstruct_chat_continuation_messages(&state, previous_response_id, &request)
-                    .await?;
-            responses_to_chat_completions_with_messages(
-                &request,
-                &native_target.upstream_model,
-                messages,
-            )
-            .map_err(AppError::bad_request)?
-        } else {
-            responses_to_chat_completions(&request, &native_target.upstream_model)
-                .map_err(AppError::bad_request)?
-        };
+        let request_body = responses_to_chat_completions(&request, &native_target.upstream_model)
+            .map_err(AppError::bad_request)?;
         let upstream_url = chat_completions_api_url(&native_provider.base_url);
         log_http_event(
             &state.logs,
@@ -1702,7 +1686,6 @@ pub(super) async fn responses_inner(
         let upstream_status = upstream.status();
         let chat_body: Value = upstream.json().await.map_err(AppError::upstream)?;
         let response = chat_completions_to_responses(&request.model, &chat_body);
-        persist_chat_history_snapshot(&state, &request, previous_response_id, &chat_body).await;
         let elapsed = elapsed_ms(started_at);
         let upstream_body = json_value_for_storage(&chat_body);
 
@@ -2047,129 +2030,6 @@ pub(super) async fn responses_inner(
         )
         .body(Body::from_stream(output))
         .map_err(|err| AppError::internal(err.to_string()))?)
-}
-
-fn normalized_previous_response_id(previous_response_id: Option<&str>) -> Option<&str> {
-    previous_response_id.filter(|value| !value.trim().is_empty())
-}
-
-async fn reconstruct_chat_continuation_messages(
-    state: &AppState,
-    previous_response_id: &str,
-    request: &ResponsesRequest,
-) -> Result<Vec<crate::models::OpenAIMessage>, AppError> {
-    let previous_messages = state
-        .chat_history
-        .load_messages(previous_response_id)
-        .map_err(AppError::internal)?
-        .ok_or_else(|| {
-            AppError::bad_request(format!(
-                "previous_response_id not found in local chat history: {previous_response_id}"
-            ))
-        })?;
-
-    let continuation_messages = build_chat_history_from_continuation_request(request)?;
-
-    let mut messages = previous_messages;
-    messages.extend(continuation_messages);
-    normalize_chat_completions_messages(&mut messages);
-    Ok(messages)
-}
-
-fn build_chat_history_from_continuation_request(
-    request: &ResponsesRequest,
-) -> Result<Vec<crate::models::OpenAIMessage>, AppError> {
-    let mut request = request.clone();
-
-    request.input.retain(|item| {
-        !matches!(
-            item,
-            ResponseItem::Message { role, .. }
-                if role == "developer"
-        )
-    });
-
-    request.instructions = String::new();
-
-    let body =
-        responses_to_chat_completions(&request, &request.model).map_err(AppError::bad_request)?;
-    let messages = body
-        .get("messages")
-        .cloned()
-        .ok_or_else(|| AppError::internal("continuation chat request missing messages"))?;
-
-    let decoded: Vec<crate::models::OpenAIMessage> =
-        serde_json::from_value(messages).map_err(|err| {
-            AppError::internal(format!("decode continuation chat history failed: {err}"))
-        })?;
-
-    Ok(decoded
-        .into_iter()
-        .filter(|message| message.role != "system")
-        .collect())
-}
-
-async fn persist_chat_history_snapshot(
-    state: &AppState,
-    request: &ResponsesRequest,
-    previous_response_id: Option<&str>,
-    chat_body: &Value,
-) {
-    let Some(response_id) = chat_body.get("id").and_then(Value::as_str) else {
-        return;
-    };
-
-    let previous_messages = match previous_response_id {
-        Some(previous_response_id) => {
-            match state.chat_history.load_messages(previous_response_id) {
-                Ok(Some(messages)) => messages,
-                Ok(None) => return,
-                Err(_) => {
-                    return;
-                }
-            }
-        }
-        None => Vec::new(),
-    };
-
-    let continuation_messages = match build_chat_history_from_continuation_request(request) {
-        Ok(messages) => messages,
-        Err(_) => {
-            return;
-        }
-    };
-
-    let assistant_messages = match assistant_messages_from_chat_response(chat_body) {
-        Ok(messages) => messages,
-        Err(_) => {
-            return;
-        }
-    };
-
-    let mut snapshot = previous_messages;
-    snapshot.extend(continuation_messages);
-    snapshot.extend(assistant_messages);
-    normalize_chat_completions_messages(&mut snapshot);
-
-    let _ = state.chat_history.save_messages(response_id, &snapshot);
-}
-
-fn assistant_messages_from_chat_response(
-    chat_body: &Value,
-) -> Result<Vec<crate::models::OpenAIMessage>, String> {
-    let Some(message) = chat_body
-        .get("choices")
-        .and_then(Value::as_array)
-        .and_then(|choices| choices.first())
-        .and_then(|choice| choice.get("message"))
-    else {
-        return Ok(Vec::new());
-    };
-
-    let decoded = serde_json::from_value::<crate::models::OpenAIMessage>(message.clone())
-        .map_err(|err| format!("decode assistant chat message failed: {err}"))?;
-
-    Ok(vec![decoded])
 }
 
 pub(super) async fn resolve_selected_provider(
