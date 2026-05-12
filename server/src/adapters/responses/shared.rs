@@ -2,8 +2,7 @@ use crate::models::{
     OpenAIContent, OpenAIContentBlock, OpenAIImageUrl, OpenAIMessage,
     ResponseCustomToolCallOutputItem, ResponseFunctionCallItem, ResponseFunctionCallOutputItem,
     ResponseFunctionToolCall, ResponseLocalShellCallItem, ResponseMessageInput,
-    ResponseWebSearchCallItem, ResponsesInput, ResponsesInputBlock, ResponsesInputItem,
-    ResponsesRequest, ToolCall, ToolFunction,
+    ResponseWebSearchCallItem, ResponsesInputBlock, ResponsesInputItem, ResponsesRequest, ToolCall, ToolFunction,
 };
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -21,58 +20,47 @@ pub fn build_messages(request: &ResponsesRequest) -> Result<Vec<OpenAIMessage>, 
         });
     }
 
-    match &request.input {
-        ResponsesInput::String(text) => messages.push(OpenAIMessage {
-            role: "user".to_string(),
-            content: Some(OpenAIContent::String(text.clone())),
-            tool_calls: None,
-            tool_call_id: None,
-            name: None,
-        }),
-        ResponsesInput::Array(items) => {
-            for item in items {
-                match item {
-                    ResponsesInputItem::Message(message) => {
-                        messages.push(response_message_to_openai(message))
+    for item in &request.input {
+        match item {
+            ResponsesInputItem::Message(message) => {
+                messages.push(response_message_to_openai(message))
+            }
+            ResponsesInputItem::Block(block) => messages.push(OpenAIMessage {
+                role: "user".to_string(),
+                content: Some(match block {
+                    ResponsesInputBlock::InputText { text, .. } => {
+                        OpenAIContent::String(text.clone())
                     }
-                    ResponsesInputItem::Block(block) => messages.push(OpenAIMessage {
-                        role: "user".to_string(),
-                        content: Some(match block {
-                            ResponsesInputBlock::InputText { text, .. } => {
-                                OpenAIContent::String(text.clone())
-                            }
-                            ResponsesInputBlock::InputImage { image_url, .. } => {
-                                OpenAIContent::Array(vec![OpenAIContentBlock::ImageUrl {
-                                    image_url: OpenAIImageUrl {
-                                        url: image_url.clone(),
-                                    },
-                                }])
-                            }
-                        }),
-                        tool_calls: None,
-                        tool_call_id: None,
-                        name: None,
-                    }),
-                    ResponsesInputItem::FunctionCall(item) => {
-                        messages.push(function_call_item_to_message(item))
+                    ResponsesInputBlock::InputImage { image_url, .. } => {
+                        OpenAIContent::Array(vec![OpenAIContentBlock::ImageUrl {
+                            image_url: OpenAIImageUrl {
+                                url: image_url.clone(),
+                            },
+                        }])
                     }
-                    ResponsesInputItem::LocalShellCall(item) => {
-                        messages.push(local_shell_call_item_to_message(item))
-                    }
-                    ResponsesInputItem::WebSearchCall(item) => {
-                        messages.push(web_search_call_item_to_message(item))
-                    }
-                    ResponsesInputItem::FunctionCallOutput(item) => {
-                        messages.push(function_call_output_item_to_message(item))
-                    }
-                    ResponsesInputItem::CustomToolCallOutput(item) => {
-                        messages.push(custom_tool_call_output_item_to_message(item))
-                    }
-                    ResponsesInputItem::Raw(value) => {
-                        if let Some(message) = raw_input_item_to_message(value) {
-                            messages.push(message);
-                        }
-                    }
+                }),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
+            }),
+            ResponsesInputItem::FunctionCall(item) => {
+                messages.push(function_call_item_to_message(item))
+            }
+            ResponsesInputItem::LocalShellCall(item) => {
+                messages.push(local_shell_call_item_to_message(item))
+            }
+            ResponsesInputItem::WebSearchCall(item) => {
+                messages.push(web_search_call_item_to_message(item))
+            }
+            ResponsesInputItem::FunctionCallOutput(item) => {
+                messages.push(function_call_output_item_to_message(item))
+            }
+            ResponsesInputItem::CustomToolCallOutput(item) => {
+                messages.push(custom_tool_call_output_item_to_message(item))
+            }
+            ResponsesInputItem::Raw(value) => {
+                if let Some(message) = raw_input_item_to_message(value) {
+                    messages.push(message);
                 }
             }
         }

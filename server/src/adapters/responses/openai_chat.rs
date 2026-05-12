@@ -2,6 +2,7 @@ use crate::adapters::responses::shared::{build_messages, clean_tool_schema};
 use crate::models::{
     OpenAIMessage, ResponseOutputContent, ResponseOutputItem, ResponseTool, ResponsesRequest,
     ResponsesResponse, ResponsesUsage,
+    openai_responses::tool_choice_as_value,
 };
 use crate::support::time::now_unix;
 use serde_json::{Value, json};
@@ -36,17 +37,10 @@ pub fn responses_to_chat_completions_with_messages(
     if let Some(tools) = build_openai_tools(&request.tools) {
         body.insert("tools".to_string(), Value::Array(tools));
     }
-    if let Some(tool_choice) = map_openai_tool_choice(Some(&request.tool_choice)) {
+    if let Some(tool_choice) =
+        map_openai_tool_choice(Some(&tool_choice_as_value(&request.tool_choice)))
+    {
         body.insert("tool_choice".to_string(), tool_choice);
-    }
-    if let Some(max_output_tokens) = request.max_output_tokens {
-        body.insert("max_tokens".to_string(), json!(max_output_tokens));
-    }
-    if let Some(temperature) = request.temperature {
-        body.insert("temperature".to_string(), json!(temperature));
-    }
-    if let Some(top_p) = request.top_p {
-        body.insert("top_p".to_string(), json!(top_p));
     }
     Ok(Value::Object(body))
 }
@@ -410,7 +404,11 @@ mod tests {
     fn preserves_lowercase_json_schema_for_chat_tools() {
         let request: ResponsesRequest = serde_json::from_value(merge_strict_responses_request_defaults(json!({
             "model": "gpt-5.4",
-            "input": "hello",
+            "input": [{
+                "type": "message",
+                "role": "user",
+                "content": [{ "type": "input_text", "text": "hello" }]
+            }],
             "tools": [{
                 "type": "function",
                 "name": "shell",

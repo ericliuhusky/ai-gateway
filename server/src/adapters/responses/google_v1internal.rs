@@ -4,6 +4,7 @@ use crate::models::{
     OpenAIMessage, ResponseOutputContent, ResponseOutputItem, ResponseTool, ResponsesRequest,
     ResponsesResponse, ResponsesUsage,
 };
+use crate::models::openai_responses::tool_choice_as_value;
 use crate::support::time::now_unix;
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -48,12 +49,13 @@ pub fn responses_to_gemini(request: &ResponsesRequest) -> Result<GeminiGenerateR
     }
 
     let generation_config = Some(GenerationConfig {
-        max_output_tokens: request.max_output_tokens,
-        temperature: request.temperature.or(Some(1.0)),
-        top_p: request.top_p.or(Some(1.0)),
+        max_output_tokens: None,
+        temperature: Some(1.0),
+        top_p: Some(1.0),
         top_k: Some(40),
     });
-    let (tools, tool_config) = build_tools(&request.tools, Some(&request.tool_choice));
+    let (tools, tool_config) =
+        build_tools(&request.tools, Some(&tool_choice_as_value(&request.tool_choice)));
 
     Ok(GeminiGenerateRequest {
         system_instruction: (!system_parts.is_empty()).then_some(GeminiContent {
@@ -364,7 +366,11 @@ mod tests {
     fn keeps_uppercase_json_schema_for_gemini_tools() {
         let request: ResponsesRequest = serde_json::from_value(merge_strict_responses_request_defaults(json!({
             "model": "gemini-2.5-pro",
-            "input": "hello",
+            "input": [{
+                "type": "message",
+                "role": "user",
+                "content": [{ "type": "input_text", "text": "hello" }]
+            }],
             "tools": [{
                 "type": "function",
                 "name": "shell",

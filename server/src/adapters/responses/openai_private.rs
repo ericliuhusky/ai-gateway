@@ -506,7 +506,11 @@ mod tests {
     fn preserves_namespace_tools_for_openai_private() {
         let request: ResponsesRequest = serde_json::from_value(merge_strict_responses_request_defaults(json!({
             "model": "gpt-5.4",
-            "input": "hello",
+            "input": [{
+                "type": "message",
+                "role": "user",
+                "content": [{ "type": "input_text", "text": "hello" }]
+            }],
             "tools": [{
                 "type": "namespace",
                 "name": "mcp__computer_use__",
@@ -569,7 +573,11 @@ mod tests {
     fn strips_description_from_server_executed_tool_search() {
         let request: ResponsesRequest = serde_json::from_value(merge_strict_responses_request_defaults(json!({
             "model": "gpt-5.4",
-            "input": "hello",
+            "input": [{
+                "type": "message",
+                "role": "user",
+                "content": [{ "type": "input_text", "text": "hello" }]
+            }],
             "tools": [{
                 "type": "tool_search",
                 "description": "Search local tools"
@@ -588,7 +596,11 @@ mod tests {
     fn strips_parameters_from_server_executed_tool_search() {
         let request: ResponsesRequest = serde_json::from_value(merge_strict_responses_request_defaults(json!({
             "model": "gpt-5.4",
-            "input": "hello",
+            "input": [{
+                "type": "message",
+                "role": "user",
+                "content": [{ "type": "input_text", "text": "hello" }]
+            }],
             "tools": [{
                 "type": "tool_search",
                 "parameters": {
@@ -612,7 +624,11 @@ mod tests {
     fn adds_description_and_parameters_to_client_executed_tool_search() {
         let request: ResponsesRequest = serde_json::from_value(merge_strict_responses_request_defaults(json!({
             "model": "gpt-5.4",
-            "input": "hello",
+            "input": [{
+                "type": "message",
+                "role": "user",
+                "content": [{ "type": "input_text", "text": "hello" }]
+            }],
             "tools": [{
                 "type": "tool_search",
                 "execution": "client"
@@ -638,7 +654,11 @@ mod tests {
     fn preserves_deferred_flag_for_function_tools() {
         let request: ResponsesRequest = serde_json::from_value(merge_strict_responses_request_defaults(json!({
             "model": "gpt-5.4",
-            "input": "hello",
+            "input": [{
+                "type": "message",
+                "role": "user",
+                "content": [{ "type": "input_text", "text": "hello" }]
+            }],
             "tools": [{
                 "type": "tool_search"
             }, {

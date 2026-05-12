@@ -376,7 +376,11 @@ mod tests {
     fn rewrites_local_shell_tools_to_function_tools() {
         let request: ResponsesRequest = serde_json::from_value(merge_strict_responses_request_defaults(json!({
             "model": "gpt-5.4",
-            "input": "pwd",
+            "input": [{
+                "type": "message",
+                "role": "user",
+                "content": [{ "type": "input_text", "text": "pwd" }]
+            }],
             "tools": [{
                 "type": "local_shell"
             }]

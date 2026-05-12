@@ -13,8 +13,7 @@ use crate::{
         GatewayLogListResponse, GatewayLogSettings, GatewayLogSettingsResponse, GatewayLogSummary,
         ModelListItem, ModelListResponse, PROVIDER_GOOGLE_PROXY, PROVIDER_OPENAI_PROXY,
         ProviderAuthMode, ProviderQuotaCredits, ProviderQuotaResponse, ProviderQuotaSnapshot,
-        ProviderQuotaSummary, ProviderQuotaWindow, QuotaSource, QuotaSupportStatus, ResponsesInput,
-        ResponsesInputItem, ResponsesRequest, ResponsesResponse, SelectedRoute,
+        ProviderQuotaSummary, ProviderQuotaWindow, QuotaSource, QuotaSupportStatus, ResponsesInputItem, ResponsesRequest, ResponsesResponse, SelectedRoute,
         UpdateGatewayLogSettingsRequest, UpdateSelectedModelRequest, UpdateSelectedProviderRequest,
         UpstreamProtocol, UpstreamRateLimitStatusDetails, UpstreamRateLimitStatusPayload,
         UpstreamRateLimitWindowSnapshot,
@@ -2087,17 +2086,12 @@ fn build_chat_history_from_continuation_request(
     let mut request = request.clone();
     request.previous_response_id = None;
 
-    match &mut request.input {
-        ResponsesInput::Array(items) => {
-            let filtered = items
-                .iter()
-                .filter(|item| !matches!(item, ResponsesInputItem::Message(message) if message.role == "developer"))
-                .cloned()
-                .collect::<Vec<_>>();
-            *items = filtered;
-        }
-        ResponsesInput::String(_) => {}
-    }
+    request.input.retain(|item| {
+        !matches!(
+            item,
+            ResponsesInputItem::Message(message) if message.role == "developer"
+        )
+    });
 
     request.instructions = String::new();
 

@@ -6,10 +6,8 @@ use serde_json::{Map, Value, json};
 pub struct ResponsesRequest {
     pub client_metadata: Option<Map<String, Value>>,
     pub include: Vec<String>,
-    pub input: ResponsesInput,
+    pub input: Vec<ResponsesInputItem>,
     pub instructions: String,
-    #[serde(rename = "max_output_tokens", alias = "max_tokens")]
-    pub max_output_tokens: Option<u32>,
     pub model: String,
     pub parallel_tool_calls: bool,
     pub previous_response_id: Option<String>,
@@ -19,12 +17,9 @@ pub struct ResponsesRequest {
     pub service_tier: Option<String>,
     pub store: bool,
     pub stream: bool,
-    pub temperature: Option<f64>,
     pub text: Option<Value>,
-    pub tool_choice: Value,
+    pub tool_choice: String,
     pub tools: Vec<ResponseTool>,
-    #[serde(rename = "top_p")]
-    pub top_p: Option<f64>,
 }
 
 /// Fills missing keys so a partial JSON object matches [`ResponsesRequest`] (strict decode).
@@ -37,18 +32,15 @@ pub(crate) fn merge_strict_responses_request_defaults(value: Value) -> Value {
         "client_metadata": null,
         "include": [],
         "instructions": "",
-        "max_output_tokens": null,
         "parallel_tool_calls": true,
         "previous_response_id": null,
         "prompt_cache_key": null,
         "reasoning": null,
         "store": false,
         "stream": false,
-        "temperature": null,
         "text": null,
         "tool_choice": "auto",
         "tools": [],
-        "top_p": null,
     }))
     .expect("strict default map is valid json");
     for (k, v) in defaults {
@@ -57,11 +49,9 @@ pub(crate) fn merge_strict_responses_request_defaults(value: Value) -> Value {
     Value::Object(obj)
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(untagged)]
-pub enum ResponsesInput {
-    String(String),
-    Array(Vec<ResponsesInputItem>),
+/// Wraps [`ResponsesRequest::tool_choice`] as [`Value::String`] for adapters that expect [`Value`].
+pub(crate) fn tool_choice_as_value(s: &str) -> Value {
+    Value::String(s.to_owned())
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -436,9 +426,6 @@ mod public_responses_entry_compat_tests {
             ],
             "stream": false,
             "store": false,
-            "max_output_tokens": 8192,
-            "temperature": 0.2,
-            "top_p": 1,
             "prompt_cache_key": "stable-cache-key"
         }));
 
@@ -449,9 +436,9 @@ mod public_responses_entry_compat_tests {
         assert_eq!(body["reasoning"]["effort"], "medium");
         assert_eq!(body["text"]["format"]["type"], "json_schema");
         assert_eq!(body["include"].as_array().expect("include array").len(), 7);
-        assert_eq!(body["max_output_tokens"], 8192);
-        assert_eq!(body["temperature"], 0.2);
-        assert_eq!(body["top_p"], 1.0);
+        assert!(body.get("max_output_tokens").is_none());
+        assert!(body.get("temperature").is_none());
+        assert!(body.get("top_p").is_none());
         assert_eq!(body["prompt_cache_key"], "stable-cache-key");
         assert!(body.get("background").is_none());
         assert!(body.get("context_management").is_none());
@@ -552,10 +539,19 @@ mod public_responses_entry_compat_tests {
 
         let conversation_string = public_entry_roundtrip(json!({
             "model": "MODEL_ID",
-            "input": "Continue this conversation."
+            "input": [{
+                "type": "message",
+                "role": "user",
+                "content": [{ "type": "input_text", "text": "Continue this conversation." }]
+            }]
         }));
         assert!(conversation_string.get("conversation").is_none());
-        assert_eq!(conversation_string["input"], "Continue this conversation.");
+        assert_eq!(conversation_string["input"][0]["type"], "message");
+        assert_eq!(conversation_string["input"][0]["role"], "user");
+        assert_eq!(
+            conversation_string["input"][0]["content"][0]["text"],
+            "Continue this conversation."
+        );
 
         let prompt_template = public_entry_roundtrip(json!({
             "model": "MODEL_ID",
@@ -701,45 +697,15 @@ mod public_responses_entry_compat_tests {
 
     #[test]
     fn accepts_public_tool_choice_union_and_text_format_variants() {
-        for tool_choice in [
-            json!("none"),
-            json!("auto"),
-            json!("required"),
-            json!({
-                "type": "allowed_tools",
-                "mode": "auto",
-                "tools": [
-                    { "type": "function", "name": "get_weather" },
-                    { "type": "mcp", "server_label": "github" },
-                    { "type": "image_generation" }
-                ]
-            }),
-            json!({
-                "type": "allowed_tools",
-                "mode": "required",
-                "tools": [
-                    { "type": "function", "name": "get_weather" },
-                    { "type": "file_search" }
-                ]
-            }),
-            json!({ "type": "file_search" }),
-            json!({ "type": "web_search_preview" }),
-            json!({ "type": "computer" }),
-            json!({ "type": "computer_use_preview" }),
-            json!({ "type": "computer_use" }),
-            json!({ "type": "web_search_preview_2025_03_11" }),
-            json!({ "type": "image_generation" }),
-            json!({ "type": "code_interpreter" }),
-            json!({ "type": "function", "name": "get_weather" }),
-            json!({ "type": "mcp", "server_label": "github", "name": "search_code" }),
-            json!({ "type": "custom", "name": "freeform_transformer" }),
-            json!({ "type": "shell" }),
-            json!({ "type": "apply_patch" }),
-        ] {
+        for tool_choice in ["none", "auto", "required"] {
             let body = public_entry_roundtrip(json!({
                 "model": "MODEL_ID",
-                "input": "hello",
-                "tool_choice": tool_choice.clone()
+                "input": [{
+                    "type": "message",
+                    "role": "user",
+                    "content": [{ "type": "input_text", "text": "hello" }]
+                }],
+                "tool_choice": tool_choice
             }));
             assert_eq!(body["tool_choice"], tool_choice);
         }
@@ -764,7 +730,11 @@ mod public_responses_entry_compat_tests {
         ] {
             let body = public_entry_roundtrip(json!({
                 "model": "MODEL_ID",
-                "input": "hello",
+                "input": [{
+                    "type": "message",
+                    "role": "user",
+                    "content": [{ "type": "input_text", "text": "hello" }]
+                }],
                 "text": text.clone()
             }));
             assert_eq!(body["text"], text);
