@@ -7,4 +7,3 @@ disable_response_storage = true
 name = "ai-gateway"
 base_url = "http://127.0.0.1:10100/openai/v1"
 wire_api = "responses"
-supports_websockets = true
