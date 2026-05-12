@@ -3058,13 +3058,16 @@ mod tests {
         openai_models_response, provider_uses_openai_account, quota_from_google_available_models,
         quota_from_openai_usage, resolve_native_target,
     };
+    use crate::adapters::responses::responses_to_openai_private;
     use crate::api::websocket::{
         is_terminal_responses_ws_event, normalize_openai_private_ws_event_for_client,
-        openai_private_response_create_event, response_create_ws_message_to_request,
-        responses_ws_completed_event, responses_ws_error_event, sse_chunk_to_ws_json_messages,
+        openai_private_response_create_event, openai_private_websocket_request_body,
+        response_create_ws_message_to_request, responses_ws_completed_event,
+        responses_ws_error_event, sse_chunk_to_ws_json_messages,
     };
     use crate::models::{
         ApiProviderBillingMode, ApiProviderRecord, ProviderAuthMode, UpstreamProtocol,
+        merge_strict_responses_request_defaults,
     };
     use serde_json::json;
 
@@ -3118,6 +3121,41 @@ mod tests {
             "00-00000000000000000000000000000000-0000000000000000-01"
         );
         assert_eq!(body["input"][0]["content"][0]["type"], "input_text");
+    }
+
+    #[test]
+    fn openai_private_websocket_body_carries_previous_response_id() {
+        let ws_request = response_create_ws_message_to_request(
+            &json!({
+                "type": "response.create",
+                "model": "gpt-5.4",
+                "input": [{ "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "continue" }] }],
+                "previous_response_id": "resp_previous_123"
+            })
+            .to_string(),
+        )
+        .expect("response.create should convert");
+
+        let body = openai_private_websocket_request_body(
+            &ws_request.request,
+            ws_request.previous_response_id.as_deref(),
+        )
+        .expect("websocket request body should serialize");
+
+        assert_eq!(body["previous_response_id"], "resp_previous_123");
+    }
+
+    #[test]
+    fn openai_private_http_body_omits_previous_response_id() {
+        let request = serde_json::from_value(merge_strict_responses_request_defaults(json!({
+            "model": "gpt-5.4",
+            "input": [{ "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "hi" }] }]
+        })))
+        .expect("request should parse");
+
+        let body = responses_to_openai_private(&request).expect("body should serialize");
+
+        assert!(body.get("previous_response_id").is_none());
     }
 
     #[test]

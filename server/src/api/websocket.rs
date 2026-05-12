@@ -141,6 +141,7 @@ async fn handle_responses_websocket_text(
             provider,
             account,
             ws_request.request,
+            previous_response_id,
             id,
             started_at,
         )
@@ -221,10 +222,13 @@ async fn proxy_openai_private_websocket_request(
     provider: ResolvedProvider,
     account: AccountRecord,
     request: ResponsesRequest,
+    previous_response_id: Option<String>,
     id: String,
     started_at: Instant,
 ) -> Result<(), String> {
-    let request_body = responses_to_openai_private(&request).map_err(|err| err.to_string())?;
+    let request_body =
+        openai_private_websocket_request_body(&request, previous_response_id.as_deref())
+            .map_err(|err| err.to_string())?;
     log_http_event(
         &state.logs,
         &id,
@@ -352,6 +356,24 @@ async fn proxy_openai_private_websocket_request(
     .await;
 
     Ok(())
+}
+
+pub(crate) fn openai_private_websocket_request_body(
+    request: &ResponsesRequest,
+    previous_response_id: Option<&str>,
+) -> Result<Value, serde_json::Error> {
+    let mut request_body = responses_to_openai_private(request)?;
+    if let Some(previous_response_id) =
+        previous_response_id.filter(|value| !value.trim().is_empty())
+    {
+        if let Some(object) = request_body.as_object_mut() {
+            object.insert(
+                "previous_response_id".to_string(),
+                Value::String(previous_response_id.to_string()),
+            );
+        }
+    }
+    Ok(request_body)
 }
 
 #[derive(Debug)]
