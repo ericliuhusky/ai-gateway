@@ -1,9 +1,9 @@
 use crate::adapters::responses::shared::{build_messages, clean_tool_schema_for_gemini};
-use crate::models::openai_responses::tool_choice_as_value;
 use crate::models::{
     GeminiContent, GeminiGenerateRequest, GenerationConfig, OpenAIContent, OpenAIContentBlock,
-    OpenAIMessage, ResponseOutputContent, ResponseOutputItem, ResponseTool, ResponsesRequest,
-    ResponsesResponse, ResponsesUsage,
+    OpenAIMessage, ResponseOutputContent, ResponseOutputItem, ResponsesRequest, ResponsesResponse,
+    ResponsesUsage,
+    responses_request::{response_tool_from_value, tool_choice_as_value},
 };
 use crate::support::time::now_unix;
 use serde_json::{Value, json};
@@ -118,7 +118,7 @@ pub fn gemini_to_responses(model: &str, gemini: &Value) -> ResponsesResponse {
 }
 
 fn build_tools(
-    tools: &[ResponseTool],
+    tools: &[Value],
     tool_choice: Option<&Value>,
 ) -> (Option<Vec<Value>>, Option<Value>) {
     if tools.is_empty() {
@@ -126,7 +126,8 @@ fn build_tools(
     }
     let function_declarations: Vec<Value> = tools
         .iter()
-        .filter_map(|tool| {
+        .filter_map(|tool_value| {
+            let tool = response_tool_from_value(tool_value)?;
             if tool.tool_type != "function" {
                 return None;
             }
@@ -361,7 +362,7 @@ fn map_image_part(url: &str) -> Result<Value, String> {
 mod tests {
     use super::responses_to_gemini;
     use crate::models::ResponsesRequest;
-    use crate::models::openai_responses::merge_strict_responses_request_defaults;
+    use crate::models::responses_request::merge_strict_responses_request_defaults;
     use serde_json::json;
 
     #[test]

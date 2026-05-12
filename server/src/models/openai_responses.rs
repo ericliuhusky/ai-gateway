@@ -1,78 +1,4 @@
-use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value, json};
-
-pub use super::response_item::*;
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ResponsesRequest {
-    pub client_metadata: Option<Map<String, Value>>,
-    pub include: Vec<String>,
-    pub input: Vec<ResponseItem>,
-    pub instructions: String,
-    pub model: String,
-    pub parallel_tool_calls: bool,
-    pub previous_response_id: Option<String>,
-    pub prompt_cache_key: Option<String>,
-    pub reasoning: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub service_tier: Option<String>,
-    pub store: bool,
-    pub stream: bool,
-    pub text: Option<Value>,
-    pub tool_choice: String,
-    pub tools: Vec<ResponseTool>,
-}
-
-/// Fills missing keys so a partial JSON object matches [`ResponsesRequest`] (strict decode).
-/// Used by WebSocket `response.create` ingestion and unit tests. HTTP handlers decode the body as-is.
-pub(crate) fn merge_strict_responses_request_defaults(value: Value) -> Value {
-    let Value::Object(mut obj) = value else {
-        return value;
-    };
-    let defaults: Map<String, Value> = serde_json::from_value(json!({
-        "client_metadata": null,
-        "include": [],
-        "instructions": "",
-        "parallel_tool_calls": true,
-        "previous_response_id": null,
-        "prompt_cache_key": null,
-        "reasoning": null,
-        "store": false,
-        "stream": false,
-        "text": null,
-        "tool_choice": "auto",
-        "tools": [],
-    }))
-    .expect("strict default map is valid json");
-    for (k, v) in defaults {
-        obj.entry(k).or_insert(v);
-    }
-    Value::Object(obj)
-}
-
-/// Wraps [`ResponsesRequest::tool_choice`] as [`Value::String`] for adapters that expect [`Value`].
-pub(crate) fn tool_choice_as_value(s: &str) -> Value {
-    Value::String(s.to_owned())
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct ResponseTool {
-    #[serde(rename = "type")]
-    pub tool_type: String,
-    #[serde(default)]
-    pub name: Option<String>,
-    #[serde(default)]
-    pub description: Option<String>,
-    #[serde(default)]
-    pub parameters: Option<Value>,
-    #[serde(default)]
-    pub function: Option<Value>,
-    #[serde(default)]
-    pub tools: Option<Vec<ResponseTool>>,
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
-}
+use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ResponsesResponse {
@@ -119,11 +45,13 @@ pub struct ResponsesUsage {
 
 #[cfg(test)]
 mod public_responses_entry_compat_tests {
-    use super::ResponsesRequest;
+    use crate::models::responses_request::{
+        ResponsesRequest, merge_strict_responses_request_defaults,
+    };
     use serde_json::{Value, json};
 
     fn public_entry_roundtrip(value: Value) -> Value {
-        let value = super::merge_strict_responses_request_defaults(value);
+        let value = merge_strict_responses_request_defaults(value);
         let request: ResponsesRequest =
             serde_json::from_value(value).expect("public responses request should parse");
         serde_json::to_value(request).expect("public responses request should serialize")
@@ -407,10 +335,7 @@ mod public_responses_entry_compat_tests {
             "include": ["reasoning.encrypted_content"],
             "store": false
         }));
-        assert_eq!(
-            previous_response["previous_response_id"],
-            "resp_previous_123"
-        );
+        assert!(previous_response.get("previous_response_id").is_none());
         assert!(previous_response.get("conversation").is_none());
 
         let conversation_object = public_entry_roundtrip(json!({
@@ -565,7 +490,7 @@ mod public_responses_entry_compat_tests {
             "store": false
         }));
 
-        assert_eq!(body["previous_response_id"], "resp_previous_123");
+        assert!(body.get("previous_response_id").is_none());
         assert_eq!(body["input"][0]["type"], "function_call_output");
         assert_eq!(body["input"][0]["output"][1]["type"], "input_image");
         assert_eq!(body["input"][1]["type"], "other");

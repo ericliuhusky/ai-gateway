@@ -3095,12 +3095,16 @@ mod tests {
             .to_string(),
         )
         .expect("response.create should convert");
-        let body = serde_json::to_value(ws_request.request).expect("request should serialize");
+        let body = serde_json::to_value(&ws_request.request).expect("request should serialize");
 
         assert!(ws_request.generate);
+        assert_eq!(
+            ws_request.request.previous_response_id.as_deref(),
+            Some("resp_previous_123")
+        );
         assert_eq!(body["model"], "gpt-5.4");
         assert_eq!(body["stream"], true);
-        assert_eq!(body["previous_response_id"], "resp_previous_123");
+        assert!(body.get("previous_response_id").is_none());
         assert!(body.get("background").is_none());
         assert!(body.get("generate").is_none());
         assert_eq!(body["parallel_tool_calls"], true);

@@ -1,7 +1,8 @@
 use crate::adapters::responses::shared::{build_messages, clean_tool_schema};
 use crate::models::{
-    OpenAIMessage, ResponseOutputContent, ResponseOutputItem, ResponseTool, ResponsesRequest,
-    ResponsesResponse, ResponsesUsage, openai_responses::tool_choice_as_value,
+    OpenAIMessage, ResponseOutputContent, ResponseOutputItem, ResponsesRequest, ResponsesResponse,
+    ResponsesUsage,
+    responses_request::{response_tool_from_value, tool_choice_as_value},
 };
 use crate::support::time::now_unix;
 use serde_json::{Value, json};
@@ -158,13 +159,14 @@ fn normalize_messages_for_chat_completions(messages: &mut Vec<OpenAIMessage>) {
     *messages = rewritten;
 }
 
-fn build_openai_tools(tools: &[ResponseTool]) -> Option<Vec<Value>> {
+fn build_openai_tools(tools: &[Value]) -> Option<Vec<Value>> {
     if tools.is_empty() {
         return None;
     }
     let mapped: Vec<Value> = tools
         .iter()
-        .filter_map(|tool| {
+        .filter_map(|tool_value| {
+            let tool = response_tool_from_value(tool_value)?;
             let function = tool.function.as_ref();
             let name = normalized_tool_name(
                 &tool.tool_type,
@@ -396,7 +398,7 @@ pub fn chat_completions_to_responses(model: &str, chat: &Value) -> ResponsesResp
 mod tests {
     use super::{chat_completions_to_responses, responses_to_chat_completions};
     use crate::models::ResponsesRequest;
-    use crate::models::openai_responses::merge_strict_responses_request_defaults;
+    use crate::models::responses_request::merge_strict_responses_request_defaults;
     use serde_json::json;
 
     #[test]
