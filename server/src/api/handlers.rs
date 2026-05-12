@@ -727,7 +727,7 @@ pub async fn responses(State(state): State<AppState>, body: Bytes) -> Result<Res
 
     let model = request.model.clone();
     let stream = request.stream;
-    match responses_inner(state.clone(), request, id.clone(), started_at).await {
+    match responses_inner(state.clone(), request, id.clone(), started_at, None).await {
         Ok(response) => Ok(response),
         Err(err) => {
             let error_body = gateway_error_payload(&err.message);
@@ -866,6 +866,7 @@ pub(super) async fn responses_inner(
     request: ResponsesRequest,
     id: String,
     started_at: Instant,
+    previous_response_id: Option<String>,
 ) -> Result<Response, AppError> {
     let provider = resolve_selected_provider(&state).await?;
     if provider.auth_mode == ProviderAuthMode::Account && provider_uses_openai_account(&provider) {
@@ -1648,8 +1649,9 @@ pub(super) async fn responses_inner(
         .ok_or_else(|| AppError::bad_request(format!("unknown provider: {}", provider.name)))?;
 
     let native_target = resolve_native_target(&native_provider, &request.model);
+    let previous_response_id = normalized_previous_response_id(previous_response_id.as_deref());
     if native_target.uses_chat_completions {
-        let request_body = if let Some(previous_response_id) = previous_response_id(&request) {
+        let request_body = if let Some(previous_response_id) = previous_response_id {
             let messages =
                 reconstruct_chat_continuation_messages(&state, previous_response_id, &request)
                     .await?;
@@ -1700,7 +1702,7 @@ pub(super) async fn responses_inner(
         let upstream_status = upstream.status();
         let chat_body: Value = upstream.json().await.map_err(AppError::upstream)?;
         let response = chat_completions_to_responses(&request.model, &chat_body);
-        persist_chat_history_snapshot(&state, &request, &chat_body).await;
+        persist_chat_history_snapshot(&state, &request, previous_response_id, &chat_body).await;
         let elapsed = elapsed_ms(started_at);
         let upstream_body = json_value_for_storage(&chat_body);
 
@@ -2047,11 +2049,8 @@ pub(super) async fn responses_inner(
         .map_err(|err| AppError::internal(err.to_string()))?)
 }
 
-fn previous_response_id(request: &ResponsesRequest) -> Option<&str> {
-    request
-        .previous_response_id
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
+fn normalized_previous_response_id(previous_response_id: Option<&str>) -> Option<&str> {
+    previous_response_id.filter(|value| !value.trim().is_empty())
 }
 
 async fn reconstruct_chat_continuation_messages(
@@ -2081,7 +2080,6 @@ fn build_chat_history_from_continuation_request(
     request: &ResponsesRequest,
 ) -> Result<Vec<crate::models::OpenAIMessage>, AppError> {
     let mut request = request.clone();
-    request.previous_response_id = None;
 
     request.input.retain(|item| {
         !matches!(
@@ -2114,13 +2112,14 @@ fn build_chat_history_from_continuation_request(
 async fn persist_chat_history_snapshot(
     state: &AppState,
     request: &ResponsesRequest,
+    previous_response_id: Option<&str>,
     chat_body: &Value,
 ) {
     let Some(response_id) = chat_body.get("id").and_then(Value::as_str) else {
         return;
     };
 
-    let previous_messages = match previous_response_id(request) {
+    let previous_messages = match previous_response_id {
         Some(previous_response_id) => {
             match state.chat_history.load_messages(previous_response_id) {
                 Ok(Some(messages)) => messages,
@@ -3099,7 +3098,7 @@ mod tests {
 
         assert!(ws_request.generate);
         assert_eq!(
-            ws_request.request.previous_response_id.as_deref(),
+            ws_request.previous_response_id.as_deref(),
             Some("resp_previous_123")
         );
         assert_eq!(body["model"], "gpt-5.4");

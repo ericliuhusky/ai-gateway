@@ -25,10 +25,6 @@ pub struct ResponsesRequest {
     pub text: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_metadata: Option<HashMap<String, String>>,
-    /// WS `response.create` can carry this for local continuation; it is not part of the
-    /// canonical HTTP `ResponsesApiRequest` payload and should not be forwarded upstream.
-    #[serde(default, skip_serializing)]
-    pub previous_response_id: Option<String>,
 }
 
 /// Fills missing keys so a partial JSON object matches [`ResponsesRequest`] (strict decode).
@@ -42,7 +38,6 @@ pub(crate) fn merge_strict_responses_request_defaults(value: Value) -> Value {
         "include": [],
         "instructions": "",
         "parallel_tool_calls": true,
-        "previous_response_id": null,
         "prompt_cache_key": null,
         "reasoning": null,
         "store": false,

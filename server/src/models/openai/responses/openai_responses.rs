@@ -45,9 +45,7 @@ pub struct ResponsesUsage {
 
 #[cfg(test)]
 mod public_responses_entry_compat_tests {
-    use super::request::{
-        ResponsesRequest, merge_strict_responses_request_defaults,
-    };
+    use crate::models::request::{ResponsesRequest, merge_strict_responses_request_defaults};
     use serde_json::{Value, json};
 
     fn public_entry_roundtrip(value: Value) -> Value {
@@ -305,7 +303,7 @@ mod public_responses_entry_compat_tests {
     }
 
     #[test]
-    fn accepts_public_streaming_previous_response_conversation_and_prompt_requests() {
+    fn accepts_public_streaming_conversation_and_prompt_requests() {
         let streaming = public_entry_roundtrip(json!({
             "model": "MODEL_ID",
             "input": [{
@@ -322,21 +320,6 @@ mod public_responses_entry_compat_tests {
         assert_eq!(streaming["stream"], true);
         assert!(streaming.get("stream_options").is_none());
         assert_eq!(streaming["include"][1], "reasoning.encrypted_content");
-
-        let previous_response = public_entry_roundtrip(json!({
-            "model": "MODEL_ID",
-            "previous_response_id": "resp_previous_123",
-            "instructions": "You may replace or update prior system/developer instructions for this request.",
-            "input": [{
-                "type": "message",
-                "role": "user",
-                "content": [{ "type": "input_text", "text": "Continue from the previous response and refine the answer." }]
-            }],
-            "include": ["reasoning.encrypted_content"],
-            "store": false
-        }));
-        assert!(previous_response.get("previous_response_id").is_none());
-        assert!(previous_response.get("conversation").is_none());
 
         let conversation_object = public_entry_roundtrip(json!({
             "model": "MODEL_ID",
@@ -383,7 +366,6 @@ mod public_responses_entry_compat_tests {
     fn accepts_public_agent_loop_tool_outputs_and_output_item_replay() {
         let body = public_entry_roundtrip(json!({
             "model": "MODEL_ID",
-            "previous_response_id": "resp_previous_123",
             "input": [
                 {
                     "type": "function_call_output",
@@ -490,7 +472,6 @@ mod public_responses_entry_compat_tests {
             "store": false
         }));
 
-        assert!(body.get("previous_response_id").is_none());
         assert_eq!(body["input"][0]["type"], "function_call_output");
         assert_eq!(body["input"][0]["output"][1]["type"], "input_image");
         assert_eq!(body["input"][1]["type"], "other");

@@ -7,7 +7,10 @@ use crate::api::handlers::{
 use crate::{
     adapters::responses::responses_to_openai_private,
     config::Config,
-    models::{AccountRecord, ClientProtocol, ProviderAuthMode, ResponsesRequest, UpstreamProtocol},
+    models::{
+        AccountRecord, ClientProtocol, ProviderAuthMode, ResponseCreateWsRequest, ResponsesRequest,
+        UpstreamProtocol, merge_strict_response_create_ws_request_defaults,
+    },
     store::LogStage,
 };
 use axum::{
@@ -86,6 +89,7 @@ async fn handle_responses_websocket_text(
             return Ok(());
         }
     };
+    let previous_response_id = ws_request.previous_response_id.clone();
 
     if !ws_request.generate {
         socket
@@ -150,7 +154,15 @@ async fn handle_responses_websocket_text(
         return Ok(());
     }
 
-    let response = match responses_inner(state, ws_request.request, id, started_at).await {
+    let response = match responses_inner(
+        state,
+        ws_request.request,
+        id,
+        started_at,
+        previous_response_id,
+    )
+    .await
+    {
         Ok(response) => response,
         Err(err) => {
             socket
@@ -343,14 +355,15 @@ async fn proxy_openai_private_websocket_request(
 }
 
 #[derive(Debug)]
-pub(crate) struct ResponseCreateWsRequest {
+pub(crate) struct ParsedResponseCreateWsRequest {
     pub(crate) request: ResponsesRequest,
     pub(crate) generate: bool,
+    pub(crate) previous_response_id: Option<String>,
 }
 
 pub(crate) fn response_create_ws_message_to_request(
     text: &str,
-) -> Result<ResponseCreateWsRequest, String> {
+) -> Result<ParsedResponseCreateWsRequest, String> {
     let mut value: Value =
         serde_json::from_str(text).map_err(|err| format!("invalid websocket JSON: {err}"))?;
     let object = value
@@ -363,17 +376,20 @@ pub(crate) fn response_create_ws_message_to_request(
     }
 
     object.remove("type");
-    let generate = object
-        .remove("generate")
-        .and_then(|value| value.as_bool())
-        .unwrap_or(true);
     object.insert("stream".to_string(), Value::Bool(true));
     object.remove("background");
 
-    let value = crate::models::request::merge_strict_responses_request_defaults(value);
-    let request = serde_json::from_value(value)
+    let value = merge_strict_response_create_ws_request_defaults(value);
+    let ws_request: ResponseCreateWsRequest = serde_json::from_value(value)
         .map_err(|err| format!("invalid response.create payload: {err}"))?;
-    Ok(ResponseCreateWsRequest { request, generate })
+    let generate = ws_request.generate.unwrap_or(true);
+    let previous_response_id = ws_request.previous_response_id.clone();
+    let request = ResponsesRequest::from(ws_request);
+    Ok(ParsedResponseCreateWsRequest {
+        request,
+        generate,
+        previous_response_id,
+    })
 }
 
 pub(crate) fn openai_private_response_create_event(mut request_body: Value) -> Value {
