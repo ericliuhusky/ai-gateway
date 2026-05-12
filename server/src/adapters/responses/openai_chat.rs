@@ -36,7 +36,7 @@ pub fn responses_to_chat_completions_with_messages(
     if let Some(tools) = build_openai_tools(&request.tools) {
         body.insert("tools".to_string(), Value::Array(tools));
     }
-    if let Some(tool_choice) = map_openai_tool_choice(request.tool_choice.as_ref()) {
+    if let Some(tool_choice) = map_openai_tool_choice(Some(&request.tool_choice)) {
         body.insert("tool_choice".to_string(), tool_choice);
     }
     if let Some(max_output_tokens) = request.max_output_tokens {
@@ -165,8 +165,10 @@ fn normalize_messages_for_chat_completions(messages: &mut Vec<OpenAIMessage>) {
     *messages = rewritten;
 }
 
-fn build_openai_tools(tools: &Option<Vec<ResponseTool>>) -> Option<Vec<Value>> {
-    let tools = tools.as_ref()?;
+fn build_openai_tools(tools: &[ResponseTool]) -> Option<Vec<Value>> {
+    if tools.is_empty() {
+        return None;
+    }
     let mapped: Vec<Value> = tools
         .iter()
         .filter_map(|tool| {
@@ -277,7 +279,7 @@ fn generated_tool_schema(tool_type: &str) -> Option<Value> {
 
 fn map_openai_tool_choice(tool_choice: Option<&Value>) -> Option<Value> {
     match tool_choice {
-        None => None,
+        None | Some(Value::Null) => None,
         Some(Value::String(choice)) => Some(Value::String(choice.clone())),
         Some(Value::Object(map)) => {
             let choice_type = map.get("type").and_then(Value::as_str).unwrap_or("");
@@ -401,11 +403,12 @@ pub fn chat_completions_to_responses(model: &str, chat: &Value) -> ResponsesResp
 mod tests {
     use super::{chat_completions_to_responses, responses_to_chat_completions};
     use crate::models::ResponsesRequest;
+    use crate::models::openai_responses::merge_strict_responses_request_defaults;
     use serde_json::json;
 
     #[test]
     fn preserves_lowercase_json_schema_for_chat_tools() {
-        let request: ResponsesRequest = serde_json::from_value(json!({
+        let request: ResponsesRequest = serde_json::from_value(merge_strict_responses_request_defaults(json!({
             "model": "gpt-5.4",
             "input": "hello",
             "tools": [{
@@ -419,7 +422,7 @@ mod tests {
                     }
                 }
             }]
-        }))
+        })))
         .expect("request should parse");
 
         let body = responses_to_chat_completions(&request, "chat-compatible-latest")
@@ -466,13 +469,13 @@ mod tests {
 
     #[test]
     fn reorders_tool_outputs_to_follow_assistant_tool_calls_for_chat_completions() {
-        let request: ResponsesRequest = serde_json::from_value(json!({
+        let request: ResponsesRequest = serde_json::from_value(merge_strict_responses_request_defaults(json!({
             "model": "gpt-5.4",
             "input": [
                 { "type": "function_call_output", "call_id": "call_1", "output": "ok", "name": "shell" },
                 { "type": "function_call", "call_id": "call_1", "name": "shell", "arguments": "{\"command\":[\"pwd\"]}" }
             ]
-        }))
+        })))
         .expect("request should parse");
 
         let body = responses_to_chat_completions(&request, "chat-compatible-latest")
@@ -488,12 +491,12 @@ mod tests {
 
     #[test]
     fn demotes_unmatched_tool_outputs_to_user_messages_for_chat_completions() {
-        let request: ResponsesRequest = serde_json::from_value(json!({
+        let request: ResponsesRequest = serde_json::from_value(merge_strict_responses_request_defaults(json!({
             "model": "gpt-5.4",
             "input": [
                 { "type": "function_call_output", "call_id": "call_orphan", "output": "orphaned", "name": "shell" }
             ]
-        }))
+        })))
         .expect("request should parse");
 
         let body = responses_to_chat_completions(&request, "chat-compatible-latest")
@@ -507,13 +510,13 @@ mod tests {
 
     #[test]
     fn preserves_already_ordered_tool_outputs_for_chat_completions() {
-        let request: ResponsesRequest = serde_json::from_value(json!({
+        let request: ResponsesRequest = serde_json::from_value(merge_strict_responses_request_defaults(json!({
             "model": "gpt-5.4",
             "input": [
                 { "type": "function_call", "call_id": "call_1", "name": "shell", "arguments": "{\"command\":[\"pwd\"]}" },
                 { "type": "function_call_output", "call_id": "call_1", "output": "ok", "name": "shell" }
             ]
-        }))
+        })))
         .expect("request should parse");
 
         let body = responses_to_chat_completions(&request, "chat-compatible-latest")

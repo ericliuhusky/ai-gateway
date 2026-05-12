@@ -469,11 +469,12 @@ fn normalize_openai_codex_tool_choice(tool_choice: &mut Value) {
 mod tests {
     use super::responses_to_openai_private;
     use crate::models::ResponsesRequest;
+    use crate::models::openai_responses::merge_strict_responses_request_defaults;
     use serde_json::json;
 
     #[test]
     fn preserves_custom_tool_calls_for_openai_private() {
-        let request: ResponsesRequest = serde_json::from_value(json!({
+        let request: ResponsesRequest = serde_json::from_value(merge_strict_responses_request_defaults(json!({
             "model": "gpt-5.4",
             "input": [{
                 "type": "custom_tool_call",
@@ -485,7 +486,7 @@ mod tests {
                 "call_id": "call_123",
                 "output": "ok"
             }]
-        }))
+        })))
         .expect("request should parse");
 
         let body = responses_to_openai_private(&request).expect("request should normalize");
@@ -503,7 +504,7 @@ mod tests {
 
     #[test]
     fn preserves_namespace_tools_for_openai_private() {
-        let request: ResponsesRequest = serde_json::from_value(json!({
+        let request: ResponsesRequest = serde_json::from_value(merge_strict_responses_request_defaults(json!({
             "model": "gpt-5.4",
             "input": "hello",
             "tools": [{
@@ -542,7 +543,7 @@ mod tests {
                     }
                 }]
             }]
-        }))
+        })))
         .expect("request should parse");
 
         let body = responses_to_openai_private(&request).expect("request should normalize");
@@ -566,14 +567,14 @@ mod tests {
 
     #[test]
     fn strips_description_from_server_executed_tool_search() {
-        let request: ResponsesRequest = serde_json::from_value(json!({
+        let request: ResponsesRequest = serde_json::from_value(merge_strict_responses_request_defaults(json!({
             "model": "gpt-5.4",
             "input": "hello",
             "tools": [{
                 "type": "tool_search",
                 "description": "Search local tools"
             }]
-        }))
+        })))
         .expect("request should parse");
 
         let body = responses_to_openai_private(&request).expect("request should normalize");
@@ -585,7 +586,7 @@ mod tests {
 
     #[test]
     fn strips_parameters_from_server_executed_tool_search() {
-        let request: ResponsesRequest = serde_json::from_value(json!({
+        let request: ResponsesRequest = serde_json::from_value(merge_strict_responses_request_defaults(json!({
             "model": "gpt-5.4",
             "input": "hello",
             "tools": [{
@@ -597,7 +598,7 @@ mod tests {
                     }
                 }
             }]
-        }))
+        })))
         .expect("request should parse");
 
         let body = responses_to_openai_private(&request).expect("request should normalize");
@@ -609,14 +610,14 @@ mod tests {
 
     #[test]
     fn adds_description_and_parameters_to_client_executed_tool_search() {
-        let request: ResponsesRequest = serde_json::from_value(json!({
+        let request: ResponsesRequest = serde_json::from_value(merge_strict_responses_request_defaults(json!({
             "model": "gpt-5.4",
             "input": "hello",
             "tools": [{
                 "type": "tool_search",
                 "execution": "client"
             }]
-        }))
+        })))
         .expect("request should parse");
 
         let body = responses_to_openai_private(&request).expect("request should normalize");
@@ -635,7 +636,7 @@ mod tests {
 
     #[test]
     fn preserves_deferred_flag_for_function_tools() {
-        let request: ResponsesRequest = serde_json::from_value(json!({
+        let request: ResponsesRequest = serde_json::from_value(merge_strict_responses_request_defaults(json!({
             "model": "gpt-5.4",
             "input": "hello",
             "tools": [{
@@ -653,7 +654,7 @@ mod tests {
                 },
                 "deferred": true
             }]
-        }))
+        })))
         .expect("request should parse");
 
         let body = responses_to_openai_private(&request).expect("request should normalize");
@@ -666,7 +667,7 @@ mod tests {
 
     #[test]
     fn covers_codex_backend_http_request_fields_items_and_tools() {
-        let request: ResponsesRequest = serde_json::from_value(json!({
+        let request: ResponsesRequest = serde_json::from_value(merge_strict_responses_request_defaults(json!({
             "model": "gpt-5.1-codex",
             "instructions": "You are Codex, a coding agent running locally.",
             "input": [
@@ -863,7 +864,7 @@ mod tests {
             "client_metadata": {
                 "x-codex-installation-id": "installation-id-placeholder"
             }
-        }))
+        })))
         .expect("codex backend request should parse");
 
         let body = responses_to_openai_private(&request).expect("request should normalize");

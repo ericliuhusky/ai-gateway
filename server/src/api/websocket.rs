@@ -340,12 +340,12 @@ async fn proxy_openai_private_websocket_request(
 }
 
 #[derive(Debug)]
-struct ResponseCreateWsRequest {
-    request: ResponsesRequest,
-    generate: bool,
+pub(crate) struct ResponseCreateWsRequest {
+    pub(crate) request: ResponsesRequest,
+    pub(crate) generate: bool,
 }
 
-fn response_create_ws_message_to_request(text: &str) -> Result<ResponseCreateWsRequest, String> {
+pub(crate) fn response_create_ws_message_to_request(text: &str) -> Result<ResponseCreateWsRequest, String> {
     let mut value: Value =
         serde_json::from_str(text).map_err(|err| format!("invalid websocket JSON: {err}"))?;
     let object = value
@@ -365,12 +365,13 @@ fn response_create_ws_message_to_request(text: &str) -> Result<ResponseCreateWsR
     object.insert("stream".to_string(), Value::Bool(true));
     object.remove("background");
 
+    let value = crate::models::openai_responses::merge_strict_responses_request_defaults(value);
     let request = serde_json::from_value(value)
         .map_err(|err| format!("invalid response.create payload: {err}"))?;
     Ok(ResponseCreateWsRequest { request, generate })
 }
 
-fn openai_private_response_create_event(mut request_body: Value) -> Value {
+pub(crate) fn openai_private_response_create_event(mut request_body: Value) -> Value {
     let Some(object) = request_body.as_object_mut() else {
         return request_body;
     };
@@ -381,7 +382,7 @@ fn openai_private_response_create_event(mut request_body: Value) -> Value {
     request_body
 }
 
-fn normalize_openai_private_ws_event_for_client(text: &str) -> String {
+pub(crate) fn normalize_openai_private_ws_event_for_client(text: &str) -> String {
     let Ok(value) = serde_json::from_str::<Value>(text) else {
         return text.to_string();
     };
@@ -400,7 +401,7 @@ fn normalize_openai_private_ws_event_for_client(text: &str) -> String {
     responses_ws_error_event(message)
 }
 
-fn sse_chunk_to_ws_json_messages(buffer: &mut String, chunk: &str) -> Vec<String> {
+pub(crate) fn sse_chunk_to_ws_json_messages(buffer: &mut String, chunk: &str) -> Vec<String> {
     buffer.push_str(chunk);
     let mut messages = Vec::new();
 
@@ -432,7 +433,7 @@ fn sse_chunk_to_ws_json_messages(buffer: &mut String, chunk: &str) -> Vec<String
     messages
 }
 
-fn is_terminal_responses_ws_event(event: &str) -> bool {
+pub(crate) fn is_terminal_responses_ws_event(event: &str) -> bool {
     serde_json::from_str::<Value>(event)
         .ok()
         .and_then(|value| {
@@ -449,7 +450,7 @@ fn is_terminal_responses_ws_event(event: &str) -> bool {
         })
 }
 
-fn responses_ws_error_event(message: &str) -> String {
+pub(crate) fn responses_ws_error_event(message: &str) -> String {
     json!({
         "type": "response.failed",
         "response": {
@@ -465,7 +466,7 @@ fn responses_ws_error_event(message: &str) -> String {
     .to_string()
 }
 
-fn responses_ws_completed_event(model: &str) -> String {
+pub(crate) fn responses_ws_completed_event(model: &str) -> String {
     json!({
         "type": "response.completed",
         "response": {

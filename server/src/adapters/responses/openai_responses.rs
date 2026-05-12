@@ -369,17 +369,18 @@ fn stringify_custom_tool_arguments(name: &str, input: Option<Value>) -> String {
 mod tests {
     use super::request_with_model;
     use crate::models::ResponsesRequest;
+    use crate::models::openai_responses::merge_strict_responses_request_defaults;
     use serde_json::json;
 
     #[test]
     fn rewrites_local_shell_tools_to_function_tools() {
-        let request: ResponsesRequest = serde_json::from_value(json!({
+        let request: ResponsesRequest = serde_json::from_value(merge_strict_responses_request_defaults(json!({
             "model": "gpt-5.4",
             "input": "pwd",
             "tools": [{
                 "type": "local_shell"
             }]
-        }))
+        })))
         .expect("request should parse");
 
         let body = request_with_model(&request, "gpt-5.4", "xcode-best")
@@ -395,7 +396,7 @@ mod tests {
 
     #[test]
     fn rewrites_local_shell_call_items_to_function_call_items() {
-        let request: ResponsesRequest = serde_json::from_value(json!({
+        let request: ResponsesRequest = serde_json::from_value(merge_strict_responses_request_defaults(json!({
             "model": "gpt-5.4",
             "input": [{
                 "type": "local_shell_call",
@@ -407,7 +408,7 @@ mod tests {
                     }
                 }
             }]
-        }))
+        })))
         .expect("request should parse");
 
         let body = request_with_model(&request, "gpt-5.4", "xcode-best")
@@ -423,7 +424,7 @@ mod tests {
 
     #[test]
     fn drops_reasoning_items_and_strips_message_phase() {
-        let request: ResponsesRequest = serde_json::from_value(json!({
+        let request: ResponsesRequest = serde_json::from_value(merge_strict_responses_request_defaults(json!({
             "model": "gpt-5.4",
             "input": [
                 {
@@ -442,7 +443,7 @@ mod tests {
                     }]
                 }
             ]
-        }))
+        })))
         .expect("request should parse");
 
         let body = request_with_model(&request, "gpt-5.4", "xcode-best")
@@ -457,7 +458,7 @@ mod tests {
 
     #[test]
     fn rewrites_text_parts_by_message_role() {
-        let request: ResponsesRequest = serde_json::from_value(json!({
+        let request: ResponsesRequest = serde_json::from_value(merge_strict_responses_request_defaults(json!({
             "model": "gpt-5.4",
             "input": [
                 {
@@ -477,7 +478,7 @@ mod tests {
                     }]
                 }
             ]
-        }))
+        })))
         .expect("request should parse");
 
         let body = request_with_model(&request, "gpt-5.4", "xcode-best")
@@ -489,7 +490,7 @@ mod tests {
 
     #[test]
     fn rewrites_custom_tool_call_items_to_function_call_items() {
-        let request: ResponsesRequest = serde_json::from_value(json!({
+        let request: ResponsesRequest = serde_json::from_value(merge_strict_responses_request_defaults(json!({
             "model": "gpt-5.4",
             "input": [
                 {
@@ -499,7 +500,7 @@ mod tests {
                     "input": "*** Begin Patch\n*** End Patch\n"
                 }
             ]
-        }))
+        })))
         .expect("request should parse");
 
         let body = request_with_model(&request, "gpt-5.4", "xcode-best")
@@ -516,7 +517,7 @@ mod tests {
 
     #[test]
     fn rewrites_custom_tool_call_outputs_to_function_call_outputs() {
-        let request: ResponsesRequest = serde_json::from_value(json!({
+        let request: ResponsesRequest = serde_json::from_value(merge_strict_responses_request_defaults(json!({
             "model": "gpt-5.4",
             "input": [
                 {
@@ -531,7 +532,7 @@ mod tests {
                     "output": "ok"
                 }
             ]
-        }))
+        })))
         .expect("request should parse");
 
         let body = request_with_model(&request, "gpt-5.4", "xcode-best")

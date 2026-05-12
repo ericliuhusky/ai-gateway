@@ -2045,9 +2045,8 @@ pub(super) async fn responses_inner(
 
 fn previous_response_id(request: &ResponsesRequest) -> Option<&str> {
     request
-        .extra
-        .get("previous_response_id")
-        .and_then(Value::as_str)
+        .previous_response_id
+        .as_deref()
         .filter(|value| !value.trim().is_empty())
 }
 
@@ -2078,23 +2077,21 @@ fn build_chat_history_from_continuation_request(
     request: &ResponsesRequest,
 ) -> Result<Vec<crate::models::OpenAIMessage>, AppError> {
     let mut request = request.clone();
-    request.extra.remove("previous_response_id");
+    request.previous_response_id = None;
 
-    if let Some(input) = &request.input {
-        match input {
-            ResponsesInput::Array(items) => {
-                let filtered = items
-                    .iter()
-                    .filter(|item| !matches!(item, ResponsesInputItem::Message(message) if message.role == "developer"))
-                    .cloned()
-                    .collect::<Vec<_>>();
-                request.input = Some(ResponsesInput::Array(filtered));
-            }
-            ResponsesInput::String(_) => {}
+    match &mut request.input {
+        ResponsesInput::Array(items) => {
+            let filtered = items
+                .iter()
+                .filter(|item| !matches!(item, ResponsesInputItem::Message(message) if message.role == "developer"))
+                .cloned()
+                .collect::<Vec<_>>();
+            *items = filtered;
         }
+        ResponsesInput::String(_) => {}
     }
 
-    request.instructions = None;
+    request.instructions = String::new();
 
     let body =
         responses_to_chat_completions(&request, &request.model).map_err(AppError::bad_request)?;
@@ -3053,12 +3050,14 @@ impl IntoResponse for AppError {
 #[cfg(test)]
 mod tests {
     use super::{
-        ResolvedProvider, capture_final_response_from_sse_chunk, is_terminal_responses_ws_event,
-        logged_stream_response_body, normalize_openai_private_ws_event_for_client,
-        openai_models_response, openai_private_response_create_event, provider_uses_openai_account,
-        quota_from_google_available_models, quota_from_openai_usage, resolve_native_target,
-        response_create_ws_message_to_request, responses_ws_completed_event,
-        responses_ws_error_event, sse_chunk_to_ws_json_messages,
+        ResolvedProvider, capture_final_response_from_sse_chunk, logged_stream_response_body,
+        openai_models_response, provider_uses_openai_account, quota_from_google_available_models,
+        quota_from_openai_usage, resolve_native_target,
+    };
+    use crate::api::websocket::{
+        is_terminal_responses_ws_event, normalize_openai_private_ws_event_for_client,
+        openai_private_response_create_event, response_create_ws_message_to_request,
+        responses_ws_completed_event, responses_ws_error_event, sse_chunk_to_ws_json_messages,
     };
     use crate::models::{
         ApiProviderBillingMode, ApiProviderRecord, ProviderAuthMode, UpstreamProtocol,

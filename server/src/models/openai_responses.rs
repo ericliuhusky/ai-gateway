@@ -1,27 +1,60 @@
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ResponsesRequest {
-    pub model: String,
-    #[serde(default)]
-    pub input: Option<ResponsesInput>,
-    #[serde(default)]
-    pub instructions: Option<String>,
-    #[serde(default)]
-    pub stream: bool,
+    pub client_metadata: Option<Map<String, Value>>,
+    pub include: Vec<String>,
+    pub input: ResponsesInput,
+    pub instructions: String,
     #[serde(rename = "max_output_tokens", alias = "max_tokens")]
     pub max_output_tokens: Option<u32>,
+    pub model: String,
+    pub parallel_tool_calls: bool,
+    pub previous_response_id: Option<String>,
+    pub prompt_cache_key: Option<String>,
+    pub reasoning: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<String>,
+    pub store: bool,
+    pub stream: bool,
     pub temperature: Option<f64>,
+    pub text: Option<Value>,
+    pub tool_choice: Value,
+    pub tools: Vec<ResponseTool>,
     #[serde(rename = "top_p")]
     pub top_p: Option<f64>,
-    #[serde(default)]
-    pub tools: Option<Vec<ResponseTool>>,
-    #[serde(default)]
-    #[allow(dead_code)]
-    pub tool_choice: Option<Value>,
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
+}
+
+/// Fills missing keys so a partial JSON object matches [`ResponsesRequest`] (strict decode).
+/// Used by WebSocket `response.create` ingestion and unit tests. HTTP handlers decode the body as-is.
+pub(crate) fn merge_strict_responses_request_defaults(value: Value) -> Value {
+    let Value::Object(mut obj) = value else {
+        return value;
+    };
+    let defaults: Map<String, Value> = serde_json::from_value(json!({
+        "client_metadata": null,
+        "include": [],
+        "instructions": "",
+        "max_output_tokens": null,
+        "parallel_tool_calls": true,
+        "previous_response_id": null,
+        "prompt_cache_key": null,
+        "reasoning": null,
+        "store": false,
+        "stream": false,
+        "temperature": null,
+        "text": null,
+        "tool_choice": "auto",
+        "tools": [],
+        "top_p": null,
+    }))
+    .expect("strict default map is valid json");
+    for (k, v) in defaults {
+        obj.entry(k).or_insert(v);
+    }
+    Value::Object(obj)
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -212,6 +245,7 @@ mod public_responses_entry_compat_tests {
     use serde_json::{Value, json};
 
     fn public_entry_roundtrip(value: Value) -> Value {
+        let value = super::merge_strict_responses_request_defaults(value);
         let request: ResponsesRequest =
             serde_json::from_value(value).expect("public responses request should parse");
         serde_json::to_value(request).expect("public responses request should serialize")
@@ -402,20 +436,10 @@ mod public_responses_entry_compat_tests {
             ],
             "stream": false,
             "store": false,
-            "background": false,
-            "context_management": [{ "type": "compaction", "compact_threshold": 120000 }],
             "max_output_tokens": 8192,
-            "max_tool_calls": 32,
             "temperature": 0.2,
             "top_p": 1,
-            "top_logprobs": 5,
-            "truncation": "auto",
-            "service_tier": "auto",
-            "prompt_cache_key": "stable-cache-key",
-            "prompt_cache_retention": "24h",
-            "metadata": { "app": "my-client", "feature": "responses-full-template" },
-            "safety_identifier": "hashed_user_id_123",
-            "user": "legacy_user_bucket"
+            "prompt_cache_key": "stable-cache-key"
         }));
 
         assert_eq!(body["model"], "MODEL_ID");
@@ -425,20 +449,20 @@ mod public_responses_entry_compat_tests {
         assert_eq!(body["reasoning"]["effort"], "medium");
         assert_eq!(body["text"]["format"]["type"], "json_schema");
         assert_eq!(body["include"].as_array().expect("include array").len(), 7);
-        assert_eq!(body["background"], false);
-        assert_eq!(body["context_management"][0]["compact_threshold"], 120000);
         assert_eq!(body["max_output_tokens"], 8192);
-        assert_eq!(body["max_tool_calls"], 32);
         assert_eq!(body["temperature"], 0.2);
         assert_eq!(body["top_p"], 1.0);
-        assert_eq!(body["top_logprobs"], 5);
-        assert_eq!(body["truncation"], "auto");
-        assert_eq!(body["service_tier"], "auto");
         assert_eq!(body["prompt_cache_key"], "stable-cache-key");
-        assert_eq!(body["prompt_cache_retention"], "24h");
-        assert_eq!(body["metadata"]["feature"], "responses-full-template");
-        assert_eq!(body["safety_identifier"], "hashed_user_id_123");
-        assert_eq!(body["user"], "legacy_user_bucket");
+        assert!(body.get("background").is_none());
+        assert!(body.get("context_management").is_none());
+        assert!(body.get("max_tool_calls").is_none());
+        assert!(body.get("top_logprobs").is_none());
+        assert!(body.get("truncation").is_none());
+        assert!(body.get("service_tier").is_none());
+        assert!(body.get("prompt_cache_retention").is_none());
+        assert!(body.get("metadata").is_none());
+        assert!(body.get("safety_identifier").is_none());
+        assert!(body.get("user").is_none());
 
         let types = tool_types(&body);
         for expected in [
@@ -487,14 +511,13 @@ mod public_responses_entry_compat_tests {
                 "content": [{ "type": "input_text", "text": "Stream the answer." }]
             }],
             "stream": true,
-            "stream_options": { "include_obfuscation": false },
             "tools": [{ "type": "web_search_preview", "search_context_size": "low" }],
             "tool_choice": "auto",
             "include": ["web_search_call.action.sources", "reasoning.encrypted_content"],
             "store": false
         }));
         assert_eq!(streaming["stream"], true);
-        assert_eq!(streaming["stream_options"]["include_obfuscation"], false);
+        assert!(streaming.get("stream_options").is_none());
         assert_eq!(streaming["include"][1], "reasoning.encrypted_content");
 
         let previous_response = public_entry_roundtrip(json!({
@@ -517,7 +540,6 @@ mod public_responses_entry_compat_tests {
 
         let conversation_object = public_entry_roundtrip(json!({
             "model": "MODEL_ID",
-            "conversation": { "id": "conv_123" },
             "input": [{
                 "type": "message",
                 "role": "user",
@@ -525,28 +547,18 @@ mod public_responses_entry_compat_tests {
             }],
             "store": true
         }));
-        assert_eq!(conversation_object["conversation"]["id"], "conv_123");
+        assert!(conversation_object.get("conversation").is_none());
         assert_eq!(conversation_object["store"], true);
 
         let conversation_string = public_entry_roundtrip(json!({
             "model": "MODEL_ID",
-            "conversation": "conv_123",
             "input": "Continue this conversation."
         }));
-        assert_eq!(conversation_string["conversation"], "conv_123");
+        assert!(conversation_string.get("conversation").is_none());
         assert_eq!(conversation_string["input"], "Continue this conversation.");
 
         let prompt_template = public_entry_roundtrip(json!({
             "model": "MODEL_ID",
-            "prompt": {
-                "id": "pmpt_123",
-                "version": "1",
-                "variables": {
-                    "project": "codex",
-                    "language": "zh-CN",
-                    "task": "analyze repository"
-                }
-            },
             "input": [{
                 "type": "message",
                 "role": "user",
@@ -554,8 +566,8 @@ mod public_responses_entry_compat_tests {
             }],
             "store": false
         }));
-        assert_eq!(prompt_template["prompt"]["id"], "pmpt_123");
-        assert_eq!(prompt_template["prompt"]["variables"]["language"], "zh-CN");
+        assert!(prompt_template.get("prompt").is_none());
+        assert_eq!(prompt_template["store"], false);
     }
 
     #[test]

@@ -11,10 +11,10 @@ use uuid::Uuid;
 pub fn build_messages(request: &ResponsesRequest) -> Result<Vec<OpenAIMessage>, String> {
     let mut messages = Vec::new();
 
-    if let Some(instructions) = &request.instructions {
+    if !request.instructions.trim().is_empty() {
         messages.push(OpenAIMessage {
             role: "system".to_string(),
-            content: Some(OpenAIContent::String(instructions.clone())),
+            content: Some(OpenAIContent::String(request.instructions.clone())),
             tool_calls: None,
             tool_call_id: None,
             name: None,
@@ -22,14 +22,14 @@ pub fn build_messages(request: &ResponsesRequest) -> Result<Vec<OpenAIMessage>, 
     }
 
     match &request.input {
-        Some(ResponsesInput::String(text)) => messages.push(OpenAIMessage {
+        ResponsesInput::String(text) => messages.push(OpenAIMessage {
             role: "user".to_string(),
             content: Some(OpenAIContent::String(text.clone())),
             tool_calls: None,
             tool_call_id: None,
             name: None,
         }),
-        Some(ResponsesInput::Array(items)) => {
+        ResponsesInput::Array(items) => {
             for item in items {
                 match item {
                     ResponsesInputItem::Message(message) => {
@@ -76,7 +76,6 @@ pub fn build_messages(request: &ResponsesRequest) -> Result<Vec<OpenAIMessage>, 
                 }
             }
         }
-        None => return Err("input cannot be empty".to_string()),
     }
 
     if messages.is_empty() {

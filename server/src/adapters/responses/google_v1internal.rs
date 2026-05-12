@@ -53,7 +53,7 @@ pub fn responses_to_gemini(request: &ResponsesRequest) -> Result<GeminiGenerateR
         top_p: request.top_p.or(Some(1.0)),
         top_k: Some(40),
     });
-    let (tools, tool_config) = build_tools(&request.tools, request.tool_choice.as_ref());
+    let (tools, tool_config) = build_tools(&request.tools, Some(&request.tool_choice));
 
     Ok(GeminiGenerateRequest {
         system_instruction: (!system_parts.is_empty()).then_some(GeminiContent {
@@ -114,12 +114,12 @@ pub fn gemini_to_responses(model: &str, gemini: &Value) -> ResponsesResponse {
 }
 
 fn build_tools(
-    tools: &Option<Vec<ResponseTool>>,
+    tools: &[ResponseTool],
     tool_choice: Option<&Value>,
 ) -> (Option<Vec<Value>>, Option<Value>) {
-    let Some(tools) = tools else {
+    if tools.is_empty() {
         return (None, None);
-    };
+    }
     let function_declarations: Vec<Value> = tools
         .iter()
         .filter_map(|tool| {
@@ -357,11 +357,12 @@ fn map_image_part(url: &str) -> Result<Value, String> {
 mod tests {
     use super::responses_to_gemini;
     use crate::models::ResponsesRequest;
+    use crate::models::openai_responses::merge_strict_responses_request_defaults;
     use serde_json::json;
 
     #[test]
     fn keeps_uppercase_json_schema_for_gemini_tools() {
-        let request: ResponsesRequest = serde_json::from_value(json!({
+        let request: ResponsesRequest = serde_json::from_value(merge_strict_responses_request_defaults(json!({
             "model": "gemini-2.5-pro",
             "input": "hello",
             "tools": [{
@@ -375,7 +376,7 @@ mod tests {
                     }
                 }
             }]
-        }))
+        })))
         .expect("request should parse");
 
         let body = responses_to_gemini(&request).expect("request should convert");
