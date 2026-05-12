@@ -296,7 +296,8 @@ async fn proxy_openai_private_websocket_request(
     }
 
     let elapsed = elapsed_ms(started_at);
-    let logged_response_body = logged_stream_response_body(final_response_body.as_deref(), &response_body);
+    let logged_response_body =
+        logged_stream_response_body(final_response_body.as_deref(), &response_body);
     log_http_event(
         &state.logs,
         &id,
@@ -347,7 +348,9 @@ pub(crate) struct ResponseCreateWsRequest {
     pub(crate) generate: bool,
 }
 
-pub(crate) fn response_create_ws_message_to_request(text: &str) -> Result<ResponseCreateWsRequest, String> {
+pub(crate) fn response_create_ws_message_to_request(
+    text: &str,
+) -> Result<ResponseCreateWsRequest, String> {
     let mut value: Value =
         serde_json::from_str(text).map_err(|err| format!("invalid websocket JSON: {err}"))?;
     let object = value

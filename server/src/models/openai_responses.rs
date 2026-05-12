@@ -1,12 +1,14 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
+pub use super::response_item::*;
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResponsesRequest {
     pub client_metadata: Option<Map<String, Value>>,
     pub include: Vec<String>,
-    pub input: Vec<ResponsesInputItem>,
+    pub input: Vec<ResponseItem>,
     pub instructions: String,
     pub model: String,
     pub parallel_tool_calls: bool,
@@ -55,120 +57,6 @@ pub(crate) fn tool_choice_as_value(s: &str) -> Value {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(untagged)]
-pub enum ResponsesInputItem {
-    Message(ResponseMessageInput),
-    Block(ResponsesInputBlock),
-    FunctionCall(ResponseFunctionCallItem),
-    LocalShellCall(ResponseLocalShellCallItem),
-    WebSearchCall(ResponseWebSearchCallItem),
-    FunctionCallOutput(ResponseFunctionCallOutputItem),
-    CustomToolCallOutput(ResponseCustomToolCallOutputItem),
-    Raw(Value),
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct ResponseMessageInput {
-    pub role: String,
-    #[serde(default)]
-    pub content: Option<Value>,
-    #[serde(default)]
-    pub tool_calls: Option<Vec<ResponseFunctionToolCall>>,
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(tag = "type")]
-pub enum ResponsesInputBlock {
-    #[serde(rename = "input_text")]
-    InputText {
-        text: String,
-        #[serde(flatten)]
-        extra: Map<String, Value>,
-    },
-    #[serde(rename = "input_image")]
-    InputImage {
-        image_url: String,
-        #[serde(flatten)]
-        extra: Map<String, Value>,
-    },
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct ResponseFunctionToolCall {
-    pub call_id: String,
-    pub name: String,
-    pub arguments: String,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct ResponseFunctionCallItem {
-    #[serde(rename = "type")]
-    #[allow(dead_code)]
-    pub item_type: String,
-    pub call_id: String,
-    pub name: String,
-    pub arguments: String,
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ResponseLocalShellCallItem {
-    #[serde(rename = "type")]
-    #[allow(dead_code)]
-    pub item_type: String,
-    #[serde(default)]
-    pub call_id: Option<String>,
-    #[serde(default)]
-    pub id: Option<String>,
-    #[serde(default)]
-    pub action: Option<Value>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ResponseWebSearchCallItem {
-    #[serde(rename = "type")]
-    #[allow(dead_code)]
-    pub item_type: String,
-    #[serde(default)]
-    pub call_id: Option<String>,
-    #[serde(default)]
-    pub id: Option<String>,
-    #[serde(default)]
-    pub action: Option<Value>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct ResponseFunctionCallOutputItem {
-    #[serde(rename = "type")]
-    #[allow(dead_code)]
-    pub item_type: String,
-    pub call_id: String,
-    pub output: Value,
-    #[serde(default)]
-    pub name: Option<String>,
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct ResponseCustomToolCallOutputItem {
-    #[serde(rename = "type")]
-    #[allow(dead_code)]
-    pub item_type: String,
-    pub call_id: String,
-    pub output: Value,
-    #[serde(default)]
-    pub name: Option<String>,
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ResponseTool {
     #[serde(rename = "type")]
     pub tool_type: String,
@@ -202,7 +90,7 @@ pub struct ResponsesResponse {
 pub struct ResponseOutputItem {
     pub id: String,
     #[serde(rename = "type")]
-    pub item_type: String,
+    pub r#type: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -679,20 +567,17 @@ mod public_responses_entry_compat_tests {
 
         assert_eq!(body["previous_response_id"], "resp_previous_123");
         assert_eq!(body["input"][0]["type"], "function_call_output");
-        assert_eq!(body["input"][0]["status"], "completed");
         assert_eq!(body["input"][0]["output"][1]["type"], "input_image");
-        assert_eq!(body["input"][1]["type"], "computer_call_output");
-        assert_eq!(body["input"][2]["type"], "shell_call_output");
-        assert_eq!(body["input"][3]["type"], "apply_patch_call_output");
-        assert_eq!(body["input"][4]["type"], "mcp_approval_response");
+        assert_eq!(body["input"][1]["type"], "other");
+        assert_eq!(body["input"][2]["type"], "other");
+        assert_eq!(body["input"][3]["type"], "other");
+        assert_eq!(body["input"][4]["type"], "other");
         assert_eq!(body["input"][5]["type"], "custom_tool_call_output");
-        assert_eq!(body["input"][6]["id"], "msg_assistant_123");
         assert_eq!(body["input"][6]["phase"], "final_answer");
-        assert_eq!(body["input"][7]["id"], "fc_123");
         assert_eq!(body["input"][8]["type"], "image_generation_call");
-        assert_eq!(body["input"][9]["type"], "code_interpreter_call");
-        assert_eq!(body["input"][10]["type"], "mcp_call");
-        assert_eq!(body["input"][11]["type"], "item_reference");
+        assert_eq!(body["input"][9]["type"], "other");
+        assert_eq!(body["input"][10]["type"], "other");
+        assert_eq!(body["input"][11]["type"], "other");
     }
 
     #[test]

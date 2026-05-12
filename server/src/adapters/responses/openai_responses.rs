@@ -142,7 +142,13 @@ fn normalize_input_item(item: &mut Value, _provider_name: &str) {
 
 fn build_shell_call_arguments(action: Option<&Value>) -> serde_json::Map<String, Value> {
     let mut args = serde_json::Map::new();
-    let Some(exec) = action.and_then(|value| value.get("exec")) else {
+    let Some(exec) = action.and_then(|value| {
+        if value.get("type").and_then(Value::as_str) == Some("exec") {
+            Some(value)
+        } else {
+            value.get("exec")
+        }
+    }) else {
         return args;
     };
     if let Some(command) = exec.get("command") {
@@ -374,18 +380,19 @@ mod tests {
 
     #[test]
     fn rewrites_local_shell_tools_to_function_tools() {
-        let request: ResponsesRequest = serde_json::from_value(merge_strict_responses_request_defaults(json!({
-            "model": "gpt-5.4",
-            "input": [{
-                "type": "message",
-                "role": "user",
-                "content": [{ "type": "input_text", "text": "pwd" }]
-            }],
-            "tools": [{
-                "type": "local_shell"
-            }]
-        })))
-        .expect("request should parse");
+        let request: ResponsesRequest =
+            serde_json::from_value(merge_strict_responses_request_defaults(json!({
+                "model": "gpt-5.4",
+                "input": [{
+                    "type": "message",
+                    "role": "user",
+                    "content": [{ "type": "input_text", "text": "pwd" }]
+                }],
+                "tools": [{
+                    "type": "local_shell"
+                }]
+            })))
+            .expect("request should parse");
 
         let body = request_with_model(&request, "gpt-5.4", "xcode-best")
             .expect("request should normalize");
@@ -400,20 +407,21 @@ mod tests {
 
     #[test]
     fn rewrites_local_shell_call_items_to_function_call_items() {
-        let request: ResponsesRequest = serde_json::from_value(merge_strict_responses_request_defaults(json!({
-            "model": "gpt-5.4",
-            "input": [{
-                "type": "local_shell_call",
-                "call_id": "call_123",
-                "action": {
-                    "exec": {
+        let request: ResponsesRequest =
+            serde_json::from_value(merge_strict_responses_request_defaults(json!({
+                "model": "gpt-5.4",
+                "input": [{
+                    "type": "local_shell_call",
+                    "call_id": "call_123",
+                    "status": "completed",
+                    "action": {
+                        "type": "exec",
                         "command": ["pwd"],
                         "working_directory": "/tmp"
                     }
-                }
-            }]
-        })))
-        .expect("request should parse");
+                }]
+            })))
+            .expect("request should parse");
 
         let body = request_with_model(&request, "gpt-5.4", "xcode-best")
             .expect("request should normalize");
@@ -428,27 +436,28 @@ mod tests {
 
     #[test]
     fn drops_reasoning_items_and_strips_message_phase() {
-        let request: ResponsesRequest = serde_json::from_value(merge_strict_responses_request_defaults(json!({
-            "model": "gpt-5.4",
-            "input": [
-                {
-                    "type": "reasoning",
-                    "summary": [],
-                    "content": null,
-                    "encrypted_content": "abc"
-                },
-                {
-                    "type": "message",
-                    "role": "assistant",
-                    "phase": "commentary",
-                    "content": [{
-                        "type": "output_text",
-                        "text": "checking"
-                    }]
-                }
-            ]
-        })))
-        .expect("request should parse");
+        let request: ResponsesRequest =
+            serde_json::from_value(merge_strict_responses_request_defaults(json!({
+                "model": "gpt-5.4",
+                "input": [
+                    {
+                        "type": "reasoning",
+                        "summary": [],
+                        "content": null,
+                        "encrypted_content": "abc"
+                    },
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "phase": "commentary",
+                        "content": [{
+                            "type": "output_text",
+                            "text": "checking"
+                        }]
+                    }
+                ]
+            })))
+            .expect("request should parse");
 
         let body = request_with_model(&request, "gpt-5.4", "xcode-best")
             .expect("request should normalize");
@@ -461,29 +470,30 @@ mod tests {
     }
 
     #[test]
-    fn rewrites_text_parts_by_message_role() {
-        let request: ResponsesRequest = serde_json::from_value(merge_strict_responses_request_defaults(json!({
-            "model": "gpt-5.4",
-            "input": [
-                {
-                    "type": "message",
-                    "role": "user",
-                    "content": [{
-                        "type": "text",
-                        "text": "question"
-                    }]
-                },
-                {
-                    "type": "message",
-                    "role": "assistant",
-                    "content": [{
-                        "type": "text",
-                        "text": "answer"
-                    }]
-                }
-            ]
-        })))
-        .expect("request should parse");
+    fn preserves_canonical_text_parts_by_message_role() {
+        let request: ResponsesRequest =
+            serde_json::from_value(merge_strict_responses_request_defaults(json!({
+                "model": "gpt-5.4",
+                "input": [
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{
+                            "type": "input_text",
+                            "text": "question"
+                        }]
+                    },
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{
+                            "type": "output_text",
+                            "text": "answer"
+                        }]
+                    }
+                ]
+            })))
+            .expect("request should parse");
 
         let body = request_with_model(&request, "gpt-5.4", "xcode-best")
             .expect("request should normalize");
@@ -494,18 +504,19 @@ mod tests {
 
     #[test]
     fn rewrites_custom_tool_call_items_to_function_call_items() {
-        let request: ResponsesRequest = serde_json::from_value(merge_strict_responses_request_defaults(json!({
-            "model": "gpt-5.4",
-            "input": [
-                {
-                    "type": "custom_tool_call",
-                    "call_id": "call_123",
-                    "name": "apply_patch",
-                    "input": "*** Begin Patch\n*** End Patch\n"
-                }
-            ]
-        })))
-        .expect("request should parse");
+        let request: ResponsesRequest =
+            serde_json::from_value(merge_strict_responses_request_defaults(json!({
+                "model": "gpt-5.4",
+                "input": [
+                    {
+                        "type": "custom_tool_call",
+                        "call_id": "call_123",
+                        "name": "apply_patch",
+                        "input": "*** Begin Patch\n*** End Patch\n"
+                    }
+                ]
+            })))
+            .expect("request should parse");
 
         let body = request_with_model(&request, "gpt-5.4", "xcode-best")
             .expect("request should normalize");
@@ -521,23 +532,24 @@ mod tests {
 
     #[test]
     fn rewrites_custom_tool_call_outputs_to_function_call_outputs() {
-        let request: ResponsesRequest = serde_json::from_value(merge_strict_responses_request_defaults(json!({
-            "model": "gpt-5.4",
-            "input": [
-                {
-                    "type": "custom_tool_call",
-                    "call_id": "call_123",
-                    "name": "apply_patch",
-                    "input": "*** Begin Patch\n*** End Patch\n"
-                },
-                {
-                    "type": "custom_tool_call_output",
-                    "call_id": "call_123",
-                    "output": "ok"
-                }
-            ]
-        })))
-        .expect("request should parse");
+        let request: ResponsesRequest =
+            serde_json::from_value(merge_strict_responses_request_defaults(json!({
+                "model": "gpt-5.4",
+                "input": [
+                    {
+                        "type": "custom_tool_call",
+                        "call_id": "call_123",
+                        "name": "apply_patch",
+                        "input": "*** Begin Patch\n*** End Patch\n"
+                    },
+                    {
+                        "type": "custom_tool_call_output",
+                        "call_id": "call_123",
+                        "output": "ok"
+                    }
+                ]
+            })))
+            .expect("request should parse");
 
         let body = request_with_model(&request, "gpt-5.4", "xcode-best")
             .expect("request should normalize");

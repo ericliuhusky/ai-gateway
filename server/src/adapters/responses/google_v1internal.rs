@@ -1,10 +1,10 @@
 use crate::adapters::responses::shared::{build_messages, clean_tool_schema_for_gemini};
+use crate::models::openai_responses::tool_choice_as_value;
 use crate::models::{
     GeminiContent, GeminiGenerateRequest, GenerationConfig, OpenAIContent, OpenAIContentBlock,
     OpenAIMessage, ResponseOutputContent, ResponseOutputItem, ResponseTool, ResponsesRequest,
     ResponsesResponse, ResponsesUsage,
 };
-use crate::models::openai_responses::tool_choice_as_value;
 use crate::support::time::now_unix;
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -54,8 +54,10 @@ pub fn responses_to_gemini(request: &ResponsesRequest) -> Result<GeminiGenerateR
         top_p: Some(1.0),
         top_k: Some(40),
     });
-    let (tools, tool_config) =
-        build_tools(&request.tools, Some(&tool_choice_as_value(&request.tool_choice)));
+    let (tools, tool_config) = build_tools(
+        &request.tools,
+        Some(&tool_choice_as_value(&request.tool_choice)),
+    );
 
     Ok(GeminiGenerateRequest {
         system_instruction: (!system_parts.is_empty()).then_some(GeminiContent {
@@ -216,7 +218,7 @@ fn extract_output_items(raw: &Value) -> Vec<ResponseOutputItem> {
         if !text.is_empty() {
             output.push(ResponseOutputItem {
                 id: format!("msg_{}", Uuid::new_v4()),
-                item_type: "message".to_string(),
+                r#type: "message".to_string(),
                 role: Some("assistant".to_string()),
                 content: Some(vec![ResponseOutputContent {
                     content_type: "output_text".to_string(),
@@ -231,7 +233,7 @@ fn extract_output_items(raw: &Value) -> Vec<ResponseOutputItem> {
             if let Some(function_call) = part.get("functionCall") {
                 output.push(ResponseOutputItem {
                     id: format!("fc_{}", Uuid::new_v4()),
-                    item_type: "function_call".to_string(),
+                    r#type: "function_call".to_string(),
                     role: None,
                     content: None,
                     call_id: Some(
@@ -364,26 +366,27 @@ mod tests {
 
     #[test]
     fn keeps_uppercase_json_schema_for_gemini_tools() {
-        let request: ResponsesRequest = serde_json::from_value(merge_strict_responses_request_defaults(json!({
-            "model": "gemini-2.5-pro",
-            "input": [{
-                "type": "message",
-                "role": "user",
-                "content": [{ "type": "input_text", "text": "hello" }]
-            }],
-            "tools": [{
-                "type": "function",
-                "name": "shell",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "command": { "type": "array" },
-                        "workdir": { "type": "string", "format": "uri-reference" }
+        let request: ResponsesRequest =
+            serde_json::from_value(merge_strict_responses_request_defaults(json!({
+                "model": "gemini-2.5-pro",
+                "input": [{
+                    "type": "message",
+                    "role": "user",
+                    "content": [{ "type": "input_text", "text": "hello" }]
+                }],
+                "tools": [{
+                    "type": "function",
+                    "name": "shell",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "command": { "type": "array" },
+                            "workdir": { "type": "string", "format": "uri-reference" }
+                        }
                     }
-                }
-            }]
-        })))
-        .expect("request should parse");
+                }]
+            })))
+            .expect("request should parse");
 
         let body = responses_to_gemini(&request).expect("request should convert");
         let parameters = &body.tools.as_ref().expect("tools should exist")[0]["functionDeclarations"]

@@ -1,8 +1,7 @@
 use crate::adapters::responses::shared::{build_messages, clean_tool_schema};
 use crate::models::{
     OpenAIMessage, ResponseOutputContent, ResponseOutputItem, ResponseTool, ResponsesRequest,
-    ResponsesResponse, ResponsesUsage,
-    openai_responses::tool_choice_as_value,
+    ResponsesResponse, ResponsesUsage, openai_responses::tool_choice_as_value,
 };
 use crate::support::time::now_unix;
 use serde_json::{Value, json};
@@ -345,7 +344,7 @@ pub fn chat_completions_to_responses(model: &str, chat: &Value) -> ResponsesResp
                     .unwrap_or_else(|| "{}".to_string());
                 output.push(ResponseOutputItem {
                     id: format!("fc_{}", Uuid::new_v4().simple()),
-                    item_type: "function_call".to_string(),
+                    r#type: "function_call".to_string(),
                     role: None,
                     content: None,
                     call_id: Some(call_id),
@@ -362,7 +361,7 @@ pub fn chat_completions_to_responses(model: &str, chat: &Value) -> ResponsesResp
         if !text.is_empty() {
             output.push(ResponseOutputItem {
                 id: format!("msg_{}", Uuid::new_v4().simple()),
-                item_type: "message".to_string(),
+                r#type: "message".to_string(),
                 role: Some("assistant".to_string()),
                 content: Some(vec![ResponseOutputContent {
                     content_type: "output_text".to_string(),
@@ -402,26 +401,27 @@ mod tests {
 
     #[test]
     fn preserves_lowercase_json_schema_for_chat_tools() {
-        let request: ResponsesRequest = serde_json::from_value(merge_strict_responses_request_defaults(json!({
-            "model": "gpt-5.4",
-            "input": [{
-                "type": "message",
-                "role": "user",
-                "content": [{ "type": "input_text", "text": "hello" }]
-            }],
-            "tools": [{
-                "type": "function",
-                "name": "shell",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "command": { "type": "array" },
-                        "workdir": { "type": "string", "format": "uri-reference" }
+        let request: ResponsesRequest =
+            serde_json::from_value(merge_strict_responses_request_defaults(json!({
+                "model": "gpt-5.4",
+                "input": [{
+                    "type": "message",
+                    "role": "user",
+                    "content": [{ "type": "input_text", "text": "hello" }]
+                }],
+                "tools": [{
+                    "type": "function",
+                    "name": "shell",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "command": { "type": "array" },
+                            "workdir": { "type": "string", "format": "uri-reference" }
+                        }
                     }
-                }
-            }]
-        })))
-        .expect("request should parse");
+                }]
+            })))
+            .expect("request should parse");
 
         let body = responses_to_chat_completions(&request, "chat-compatible-latest")
             .expect("request should convert");
@@ -460,9 +460,9 @@ mod tests {
         let response = chat_completions_to_responses("gpt-5.4", &chat);
 
         assert_eq!(response.output.len(), 2);
-        assert_eq!(response.output[0].item_type, "function_call");
+        assert_eq!(response.output[0].r#type, "function_call");
         assert_eq!(response.output[0].name.as_deref(), Some("shell"));
-        assert_eq!(response.output[1].item_type, "message");
+        assert_eq!(response.output[1].r#type, "message");
     }
 
     #[test]

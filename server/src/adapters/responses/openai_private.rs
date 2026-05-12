@@ -474,20 +474,21 @@ mod tests {
 
     #[test]
     fn preserves_custom_tool_calls_for_openai_private() {
-        let request: ResponsesRequest = serde_json::from_value(merge_strict_responses_request_defaults(json!({
-            "model": "gpt-5.4",
-            "input": [{
-                "type": "custom_tool_call",
-                "call_id": "call_123",
-                "name": "apply_patch",
-                "input": "*** Begin Patch\n*** End Patch\n"
-            }, {
-                "type": "custom_tool_call_output",
-                "call_id": "call_123",
-                "output": "ok"
-            }]
-        })))
-        .expect("request should parse");
+        let request: ResponsesRequest =
+            serde_json::from_value(merge_strict_responses_request_defaults(json!({
+                "model": "gpt-5.4",
+                "input": [{
+                    "type": "custom_tool_call",
+                    "call_id": "call_123",
+                    "name": "apply_patch",
+                    "input": "*** Begin Patch\n*** End Patch\n"
+                }, {
+                    "type": "custom_tool_call_output",
+                    "call_id": "call_123",
+                    "output": "ok"
+                }]
+            })))
+            .expect("request should parse");
 
         let body = responses_to_openai_private(&request).expect("request should normalize");
 
@@ -504,51 +505,52 @@ mod tests {
 
     #[test]
     fn preserves_namespace_tools_for_openai_private() {
-        let request: ResponsesRequest = serde_json::from_value(merge_strict_responses_request_defaults(json!({
-            "model": "gpt-5.4",
-            "input": [{
-                "type": "message",
-                "role": "user",
-                "content": [{ "type": "input_text", "text": "hello" }]
-            }],
-            "tools": [{
-                "type": "namespace",
-                "name": "mcp__computer_use__",
-                "description": "Computer Use tools",
-                "parameters": null,
-                "function": null,
+        let request: ResponsesRequest =
+            serde_json::from_value(merge_strict_responses_request_defaults(json!({
+                "model": "gpt-5.4",
+                "input": [{
+                    "type": "message",
+                    "role": "user",
+                    "content": [{ "type": "input_text", "text": "hello" }]
+                }],
                 "tools": [{
-                    "type": "function",
-                    "name": "get_app_state",
-                    "description": "Get app state",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "app": { "type": "string" }
-                        },
-                        "required": ["app"]
-                    },
-                    "function": null
-                }, {
-                    "type": "function",
-                    "function": {
-                        "name": "click",
-                        "description": "Click an element",
+                    "type": "namespace",
+                    "name": "mcp__computer_use__",
+                    "description": "Computer Use tools",
+                    "parameters": null,
+                    "function": null,
+                    "tools": [{
+                        "type": "function",
+                        "name": "get_app_state",
+                        "description": "Get app state",
                         "parameters": {
                             "type": "object",
                             "properties": {
-                                "app": { "type": "string" },
-                                "x": { "type": "number" },
-                                "y": { "type": "number" }
+                                "app": { "type": "string" }
                             },
                             "required": ["app"]
                         },
-                        "strict": true
-                    }
+                        "function": null
+                    }, {
+                        "type": "function",
+                        "function": {
+                            "name": "click",
+                            "description": "Click an element",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "app": { "type": "string" },
+                                    "x": { "type": "number" },
+                                    "y": { "type": "number" }
+                                },
+                                "required": ["app"]
+                            },
+                            "strict": true
+                        }
+                    }]
                 }]
-            }]
-        })))
-        .expect("request should parse");
+            })))
+            .expect("request should parse");
 
         let body = responses_to_openai_private(&request).expect("request should normalize");
         let namespace = &body["tools"][0];
@@ -571,19 +573,20 @@ mod tests {
 
     #[test]
     fn strips_description_from_server_executed_tool_search() {
-        let request: ResponsesRequest = serde_json::from_value(merge_strict_responses_request_defaults(json!({
-            "model": "gpt-5.4",
-            "input": [{
-                "type": "message",
-                "role": "user",
-                "content": [{ "type": "input_text", "text": "hello" }]
-            }],
-            "tools": [{
-                "type": "tool_search",
-                "description": "Search local tools"
-            }]
-        })))
-        .expect("request should parse");
+        let request: ResponsesRequest =
+            serde_json::from_value(merge_strict_responses_request_defaults(json!({
+                "model": "gpt-5.4",
+                "input": [{
+                    "type": "message",
+                    "role": "user",
+                    "content": [{ "type": "input_text", "text": "hello" }]
+                }],
+                "tools": [{
+                    "type": "tool_search",
+                    "description": "Search local tools"
+                }]
+            })))
+            .expect("request should parse");
 
         let body = responses_to_openai_private(&request).expect("request should normalize");
         let tool = &body["tools"][0];
@@ -594,24 +597,25 @@ mod tests {
 
     #[test]
     fn strips_parameters_from_server_executed_tool_search() {
-        let request: ResponsesRequest = serde_json::from_value(merge_strict_responses_request_defaults(json!({
-            "model": "gpt-5.4",
-            "input": [{
-                "type": "message",
-                "role": "user",
-                "content": [{ "type": "input_text", "text": "hello" }]
-            }],
-            "tools": [{
-                "type": "tool_search",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "query": { "type": "string" }
+        let request: ResponsesRequest =
+            serde_json::from_value(merge_strict_responses_request_defaults(json!({
+                "model": "gpt-5.4",
+                "input": [{
+                    "type": "message",
+                    "role": "user",
+                    "content": [{ "type": "input_text", "text": "hello" }]
+                }],
+                "tools": [{
+                    "type": "tool_search",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": { "type": "string" }
+                        }
                     }
-                }
-            }]
-        })))
-        .expect("request should parse");
+                }]
+            })))
+            .expect("request should parse");
 
         let body = responses_to_openai_private(&request).expect("request should normalize");
         let tool = &body["tools"][0];
@@ -622,19 +626,20 @@ mod tests {
 
     #[test]
     fn adds_description_and_parameters_to_client_executed_tool_search() {
-        let request: ResponsesRequest = serde_json::from_value(merge_strict_responses_request_defaults(json!({
-            "model": "gpt-5.4",
-            "input": [{
-                "type": "message",
-                "role": "user",
-                "content": [{ "type": "input_text", "text": "hello" }]
-            }],
-            "tools": [{
-                "type": "tool_search",
-                "execution": "client"
-            }]
-        })))
-        .expect("request should parse");
+        let request: ResponsesRequest =
+            serde_json::from_value(merge_strict_responses_request_defaults(json!({
+                "model": "gpt-5.4",
+                "input": [{
+                    "type": "message",
+                    "role": "user",
+                    "content": [{ "type": "input_text", "text": "hello" }]
+                }],
+                "tools": [{
+                    "type": "tool_search",
+                    "execution": "client"
+                }]
+            })))
+            .expect("request should parse");
 
         let body = responses_to_openai_private(&request).expect("request should normalize");
         let tool = &body["tools"][0];
@@ -652,30 +657,31 @@ mod tests {
 
     #[test]
     fn preserves_deferred_flag_for_function_tools() {
-        let request: ResponsesRequest = serde_json::from_value(merge_strict_responses_request_defaults(json!({
-            "model": "gpt-5.4",
-            "input": [{
-                "type": "message",
-                "role": "user",
-                "content": [{ "type": "input_text", "text": "hello" }]
-            }],
-            "tools": [{
-                "type": "tool_search"
-            }, {
-                "type": "function",
-                "name": "tool_search_tool",
-                "description": "Search over deferred tools",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "query": { "type": "string" }
+        let request: ResponsesRequest =
+            serde_json::from_value(merge_strict_responses_request_defaults(json!({
+                "model": "gpt-5.4",
+                "input": [{
+                    "type": "message",
+                    "role": "user",
+                    "content": [{ "type": "input_text", "text": "hello" }]
+                }],
+                "tools": [{
+                    "type": "tool_search"
+                }, {
+                    "type": "function",
+                    "name": "tool_search_tool",
+                    "description": "Search over deferred tools",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": { "type": "string" }
+                        },
+                        "required": ["query"]
                     },
-                    "required": ["query"]
-                },
-                "deferred": true
-            }]
-        })))
-        .expect("request should parse");
+                    "deferred": true
+                }]
+            })))
+            .expect("request should parse");
 
         let body = responses_to_openai_private(&request).expect("request should normalize");
         let tool = &body["tools"][1];

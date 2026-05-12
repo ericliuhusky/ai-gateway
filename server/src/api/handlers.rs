@@ -13,9 +13,10 @@ use crate::{
         GatewayLogListResponse, GatewayLogSettings, GatewayLogSettingsResponse, GatewayLogSummary,
         ModelListItem, ModelListResponse, PROVIDER_GOOGLE_PROXY, PROVIDER_OPENAI_PROXY,
         ProviderAuthMode, ProviderQuotaCredits, ProviderQuotaResponse, ProviderQuotaSnapshot,
-        ProviderQuotaSummary, ProviderQuotaWindow, QuotaSource, QuotaSupportStatus, ResponsesInputItem, ResponsesRequest, ResponsesResponse, SelectedRoute,
-        UpdateGatewayLogSettingsRequest, UpdateSelectedModelRequest, UpdateSelectedProviderRequest,
-        UpstreamProtocol, UpstreamRateLimitStatusDetails, UpstreamRateLimitStatusPayload,
+        ProviderQuotaSummary, ProviderQuotaWindow, QuotaSource, QuotaSupportStatus, ResponseItem,
+        ResponsesRequest, ResponsesResponse, SelectedRoute, UpdateGatewayLogSettingsRequest,
+        UpdateSelectedModelRequest, UpdateSelectedProviderRequest, UpstreamProtocol,
+        UpstreamRateLimitStatusDetails, UpstreamRateLimitStatusPayload,
         UpstreamRateLimitWindowSnapshot,
     },
     store::{
@@ -692,16 +693,12 @@ pub async fn debug_clear_logs(
     )))
 }
 
-pub async fn responses(
-    State(state): State<AppState>,
-    body: Bytes,
-) -> Result<Response, AppError> {
+pub async fn responses(State(state): State<AppState>, body: Bytes) -> Result<Response, AppError> {
     let raw_body = std::str::from_utf8(&body)
         .map_err(|_| AppError::bad_request("request body must be valid UTF-8"))?
         .to_owned();
-    let mut request: ResponsesRequest = serde_json::from_str(&raw_body).map_err(|err| {
-        AppError::bad_request(format!("invalid request JSON: {err}"))
-    })?;
+    let mut request: ResponsesRequest = serde_json::from_str(&raw_body)
+        .map_err(|err| AppError::bad_request(format!("invalid request JSON: {err}")))?;
 
     let id = Uuid::new_v4().simple().to_string();
     let started_at = Instant::now();
@@ -2089,7 +2086,8 @@ fn build_chat_history_from_continuation_request(
     request.input.retain(|item| {
         !matches!(
             item,
-            ResponsesInputItem::Message(message) if message.role == "developer"
+            ResponseItem::Message { role, .. }
+                if role == "developer"
         )
     });
 
@@ -2175,7 +2173,9 @@ fn assistant_messages_from_chat_response(
     Ok(vec![decoded])
 }
 
-pub(super) async fn resolve_selected_provider(state: &AppState) -> Result<ResolvedProvider, AppError> {
+pub(super) async fn resolve_selected_provider(
+    state: &AppState,
+) -> Result<ResolvedProvider, AppError> {
     let route = state.routes.get().await;
     if let Some(provider_id) = route.provider_id {
         return resolve_provider_by_id(state, &provider_id).await;
@@ -2194,7 +2194,10 @@ fn route_payload(route: SelectedRoute) -> Value {
     })
 }
 
-pub(super) async fn apply_selected_model_override(state: &AppState, request: &mut ResponsesRequest) {
+pub(super) async fn apply_selected_model_override(
+    state: &AppState,
+    request: &mut ResponsesRequest,
+) {
     if let Some(model) = state.routes.get().await.selected_model {
         request.model = model;
     }
@@ -2796,7 +2799,7 @@ fn synthesized_responses_stream(
                 "item": item.clone()
             })));
 
-            if item.item_type == "message" {
+            if item.r#type == "message" {
                 if let Some(content) = &item.content {
                     for (content_index, part) in content.iter().enumerate() {
                         yield Ok(format!("data: {}\n\n", json!({

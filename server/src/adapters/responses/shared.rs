@@ -1,8 +1,7 @@
 use crate::models::{
-    OpenAIContent, OpenAIContentBlock, OpenAIImageUrl, OpenAIMessage,
-    ResponseCustomToolCallOutputItem, ResponseFunctionCallItem, ResponseFunctionCallOutputItem,
-    ResponseFunctionToolCall, ResponseLocalShellCallItem, ResponseMessageInput,
-    ResponseWebSearchCallItem, ResponsesInputBlock, ResponsesInputItem, ResponsesRequest, ToolCall, ToolFunction,
+    ContentItem, FunctionCallOutputPayload, LocalShellAction, LocalShellExecAction, OpenAIContent,
+    OpenAIContentBlock, OpenAIImageUrl, OpenAIMessage, ResponseItem, ResponsesRequest, ToolCall,
+    ToolFunction, WebSearchAction,
 };
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -22,47 +21,72 @@ pub fn build_messages(request: &ResponsesRequest) -> Result<Vec<OpenAIMessage>, 
 
     for item in &request.input {
         match item {
-            ResponsesInputItem::Message(message) => {
-                messages.push(response_message_to_openai(message))
+            ResponseItem::Other => {}
+            ResponseItem::Message { role, content, .. } => {
+                messages.push(response_message_to_openai(role, content))
             }
-            ResponsesInputItem::Block(block) => messages.push(OpenAIMessage {
-                role: "user".to_string(),
-                content: Some(match block {
-                    ResponsesInputBlock::InputText { text, .. } => {
-                        OpenAIContent::String(text.clone())
-                    }
-                    ResponsesInputBlock::InputImage { image_url, .. } => {
-                        OpenAIContent::Array(vec![OpenAIContentBlock::ImageUrl {
-                            image_url: OpenAIImageUrl {
-                                url: image_url.clone(),
-                            },
-                        }])
-                    }
-                }),
-                tool_calls: None,
+            ResponseItem::FunctionCall {
+                name,
+                arguments,
+                call_id,
+                ..
+            } => messages.push(OpenAIMessage {
+                role: "assistant".to_string(),
+                content: None,
+                tool_calls: Some(vec![ToolCall {
+                    id: call_id.clone(),
+                    tool_type: "function".to_string(),
+                    function: ToolFunction {
+                        name: name.clone(),
+                        arguments: arguments.clone(),
+                    },
+                }]),
                 tool_call_id: None,
                 name: None,
             }),
-            ResponsesInputItem::FunctionCall(item) => {
-                messages.push(function_call_item_to_message(item))
+            ResponseItem::LocalShellCall {
+                call_id, action, ..
+            } => messages.push(local_shell_call_to_message(call_id.as_ref(), action)),
+            ResponseItem::WebSearchCall { id, action, .. } => {
+                messages.push(web_search_call_to_message(id.as_ref(), action))
             }
-            ResponsesInputItem::LocalShellCall(item) => {
-                messages.push(local_shell_call_item_to_message(item))
-            }
-            ResponsesInputItem::WebSearchCall(item) => {
-                messages.push(web_search_call_item_to_message(item))
-            }
-            ResponsesInputItem::FunctionCallOutput(item) => {
-                messages.push(function_call_output_item_to_message(item))
-            }
-            ResponsesInputItem::CustomToolCallOutput(item) => {
-                messages.push(custom_tool_call_output_item_to_message(item))
-            }
-            ResponsesInputItem::Raw(value) => {
-                if let Some(message) = raw_input_item_to_message(value) {
-                    messages.push(message);
-                }
-            }
+            ResponseItem::FunctionCallOutput {
+                call_id, output, ..
+            } => messages.push(function_call_output_to_message(call_id, output)),
+            ResponseItem::CustomToolCallOutput {
+                call_id,
+                name,
+                output,
+            } => messages.push(custom_tool_call_output_to_message(
+                call_id,
+                name.as_ref(),
+                output,
+            )),
+            ResponseItem::CustomToolCall {
+                call_id,
+                name,
+                input,
+                ..
+            } => messages.push(OpenAIMessage {
+                role: "assistant".to_string(),
+                content: None,
+                tool_calls: Some(vec![ToolCall {
+                    id: call_id.clone(),
+                    tool_type: "function".to_string(),
+                    function: ToolFunction {
+                        name: name.clone(),
+                        arguments: input.clone(),
+                    },
+                }]),
+                tool_call_id: None,
+                name: None,
+            }),
+            ResponseItem::Reasoning { .. }
+            | ResponseItem::Compaction { .. }
+            | ResponseItem::ContextCompaction { .. }
+            | ResponseItem::ToolSearchCall { .. }
+            | ResponseItem::ToolSearchOutput { .. }
+            | ResponseItem::ImageGenerationCall { .. } => {}
         }
     }
 
@@ -135,45 +159,80 @@ fn clean_tool_schema_with_case(value: &mut Value, uppercase_types: bool) {
     }
 }
 
-fn response_message_to_openai(message: &ResponseMessageInput) -> OpenAIMessage {
+fn response_message_to_openai(role: &str, content: &[ContentItem]) -> OpenAIMessage {
     OpenAIMessage {
-        role: message.role.clone(),
-        content: message
-            .content
-            .as_ref()
-            .and_then(raw_message_content_to_openai),
-        tool_calls: message.tool_calls.as_ref().map(|tool_calls| {
-            tool_calls
-                .iter()
-                .map(response_tool_call_to_openai)
-                .collect::<Vec<_>>()
-        }),
+        role: role.to_string(),
+        content: content_items_to_openai(content),
+        tool_calls: None,
         tool_call_id: None,
         name: None,
     }
 }
 
-fn response_tool_call_to_openai(tool_call: &ResponseFunctionToolCall) -> ToolCall {
-    ToolCall {
-        id: tool_call.call_id.clone(),
-        tool_type: "function".to_string(),
-        function: ToolFunction {
-            name: tool_call.name.clone(),
-            arguments: tool_call.arguments.clone(),
-        },
+fn content_items_to_openai(items: &[ContentItem]) -> Option<OpenAIContent> {
+    if items.is_empty() {
+        return None;
+    }
+    let mut text_parts = Vec::new();
+    let mut blocks = Vec::new();
+    let mut has_image = false;
+
+    for item in items {
+        match item {
+            ContentItem::InputText { text } | ContentItem::OutputText { text } => {
+                text_parts.push(text.clone());
+                blocks.push(OpenAIContentBlock::Text { text: text.clone() });
+            }
+            ContentItem::InputImage { image_url, .. } => {
+                if let Some(url) = image_url {
+                    has_image = true;
+                    blocks.push(OpenAIContentBlock::ImageUrl {
+                        image_url: OpenAIImageUrl { url: url.clone() },
+                    });
+                }
+            }
+            ContentItem::InputFile { .. } => {}
+        }
+    }
+
+    if has_image {
+        (!blocks.is_empty()).then_some(OpenAIContent::Array(blocks))
+    } else if !text_parts.is_empty() {
+        Some(OpenAIContent::String(text_parts.join("\n")))
+    } else {
+        None
     }
 }
 
-fn function_call_item_to_message(item: &ResponseFunctionCallItem) -> OpenAIMessage {
+fn local_shell_call_to_message(
+    call_id: Option<&String>,
+    action: &LocalShellAction,
+) -> OpenAIMessage {
+    let call_id = call_id
+        .cloned()
+        .unwrap_or_else(|| format!("call_{}", Uuid::new_v4()));
+    let mut args = serde_json::Map::new();
+    let LocalShellAction::Exec(LocalShellExecAction {
+        command,
+        working_directory,
+        ..
+    }) = action;
+    args.insert(
+        "command".to_string(),
+        serde_json::to_value(command).unwrap_or_else(|_| json!([])),
+    );
+    if let Some(wd) = working_directory {
+        args.insert("workdir".to_string(), Value::String(wd.clone()));
+    }
     OpenAIMessage {
         role: "assistant".to_string(),
         content: None,
         tool_calls: Some(vec![ToolCall {
-            id: item.call_id.clone(),
+            id: call_id,
             tool_type: "function".to_string(),
             function: ToolFunction {
-                name: item.name.clone(),
-                arguments: item.arguments.clone(),
+                name: "shell".to_string(),
+                arguments: Value::Object(args).to_string(),
             },
         }]),
         tool_call_id: None,
@@ -181,378 +240,66 @@ fn function_call_item_to_message(item: &ResponseFunctionCallItem) -> OpenAIMessa
     }
 }
 
-fn function_call_output_item_to_message(item: &ResponseFunctionCallOutputItem) -> OpenAIMessage {
+fn web_search_call_to_message(
+    fallback_id: Option<&String>,
+    action: &Option<WebSearchAction>,
+) -> OpenAIMessage {
+    let call_id = fallback_id
+        .cloned()
+        .unwrap_or_else(|| format!("call_{}", Uuid::new_v4()));
+    let mut args = serde_json::Map::new();
+    if let Some(WebSearchAction::Search { query, queries, .. }) = action {
+        if let Some(q) = query {
+            args.insert("query".to_string(), Value::String(q.clone()));
+        } else if let Some(qs) = queries {
+            if let Some(first) = qs.first() {
+                args.insert("query".to_string(), Value::String(first.clone()));
+            }
+        }
+    }
     OpenAIMessage {
-        role: "tool".to_string(),
-        content: Some(OpenAIContent::String(match &item.output {
-            Value::String(text) => text.clone(),
-            other => other.to_string(),
-        })),
-        tool_calls: None,
-        tool_call_id: Some(item.call_id.clone()),
-        name: item.name.clone(),
+        role: "assistant".to_string(),
+        content: None,
+        tool_calls: Some(vec![ToolCall {
+            id: call_id,
+            tool_type: "function".to_string(),
+            function: ToolFunction {
+                name: "google_search".to_string(),
+                arguments: Value::Object(args).to_string(),
+            },
+        }]),
+        tool_call_id: None,
+        name: None,
     }
 }
 
-fn custom_tool_call_output_item_to_message(
-    item: &ResponseCustomToolCallOutputItem,
+fn function_call_output_to_message(
+    call_id: &str,
+    output: &FunctionCallOutputPayload,
 ) -> OpenAIMessage {
     OpenAIMessage {
         role: "tool".to_string(),
-        content: Some(OpenAIContent::String(match &item.output {
-            Value::String(text) => text.clone(),
-            Value::Object(object) => object
-                .get("content")
-                .and_then(Value::as_str)
-                .map(ToOwned::to_owned)
-                .unwrap_or_else(|| item.output.to_string()),
-            other => other.to_string(),
-        })),
+        content: Some(OpenAIContent::String(
+            output.body.to_text().unwrap_or_else(|| output.to_string()),
+        )),
         tool_calls: None,
-        tool_call_id: Some(item.call_id.clone()),
-        name: item.name.clone(),
-    }
-}
-
-fn local_shell_call_item_to_message(item: &ResponseLocalShellCallItem) -> OpenAIMessage {
-    let call_id = item
-        .call_id
-        .clone()
-        .or_else(|| item.id.clone())
-        .unwrap_or_else(|| format!("call_{}", Uuid::new_v4()));
-    let mut args = serde_json::Map::new();
-    if let Some(action) = &item.action {
-        if let Some(exec) = action.get("exec") {
-            if let Some(command) = exec.get("command") {
-                let command_value = if command.is_string() {
-                    json!([command])
-                } else {
-                    command.clone()
-                };
-                args.insert("command".to_string(), command_value);
-            }
-            if let Some(workdir) = exec
-                .get("working_directory")
-                .or_else(|| exec.get("workdir"))
-            {
-                args.insert("workdir".to_string(), workdir.clone());
-            }
-        }
-    }
-    OpenAIMessage {
-        role: "assistant".to_string(),
-        content: None,
-        tool_calls: Some(vec![ToolCall {
-            id: call_id,
-            tool_type: "function".to_string(),
-            function: ToolFunction {
-                name: "shell".to_string(),
-                arguments: Value::Object(args).to_string(),
-            },
-        }]),
-        tool_call_id: None,
+        tool_call_id: Some(call_id.to_string()),
         name: None,
     }
 }
 
-fn web_search_call_item_to_message(item: &ResponseWebSearchCallItem) -> OpenAIMessage {
-    let call_id = item
-        .call_id
-        .clone()
-        .or_else(|| item.id.clone())
-        .unwrap_or_else(|| format!("call_{}", Uuid::new_v4()));
-    let mut args = serde_json::Map::new();
-    if let Some(action) = &item.action {
-        if let Some(query) = action.get("query") {
-            args.insert("query".to_string(), query.clone());
-        }
-    }
-    OpenAIMessage {
-        role: "assistant".to_string(),
-        content: None,
-        tool_calls: Some(vec![ToolCall {
-            id: call_id,
-            tool_type: "function".to_string(),
-            function: ToolFunction {
-                name: "google_search".to_string(),
-                arguments: Value::Object(args).to_string(),
-            },
-        }]),
-        tool_call_id: None,
-        name: None,
-    }
-}
-
-fn raw_input_item_to_message(value: &Value) -> Option<OpenAIMessage> {
-    let object = value.as_object()?;
-    match object
-        .get("type")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-    {
-        "reasoning" => None,
-        "message" => raw_message_to_openai(object),
-        "function_call" => Some(raw_function_call_to_message(object)),
-        "local_shell_call" => Some(raw_local_shell_call_to_message(object)),
-        "web_search_call" => Some(raw_web_search_call_to_message(object)),
-        "function_call_output" => Some(raw_tool_output_to_message(object)),
-        "custom_tool_call_output" => Some(raw_tool_output_to_message(object)),
-        _ => None,
-    }
-}
-
-fn raw_message_to_openai(object: &serde_json::Map<String, Value>) -> Option<OpenAIMessage> {
-    let role = object.get("role")?.as_str()?.to_string();
-    let content = object
-        .get("content")
-        .and_then(raw_message_content_to_openai);
-    let tool_calls = object
-        .get("tool_calls")
-        .and_then(Value::as_array)
-        .map(|tool_calls| {
-            tool_calls
-                .iter()
-                .filter_map(raw_tool_call_to_openai)
-                .collect::<Vec<_>>()
-        })
-        .filter(|tool_calls| !tool_calls.is_empty());
-
-    Some(OpenAIMessage {
-        role,
-        content,
-        tool_calls,
-        tool_call_id: None,
-        name: None,
-    })
-}
-
-fn raw_message_content_to_openai(value: &Value) -> Option<OpenAIContent> {
-    match value {
-        Value::String(text) => Some(OpenAIContent::String(text.clone())),
-        Value::Array(parts) => {
-            let mut text_parts = Vec::new();
-            let mut blocks = Vec::new();
-            let mut has_image = false;
-
-            for part in parts {
-                let Some(part_obj) = part.as_object() else {
-                    continue;
-                };
-                match part_obj
-                    .get("type")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                {
-                    "text" | "input_text" | "output_text" => {
-                        if let Some(text) = part_obj.get("text").and_then(Value::as_str) {
-                            text_parts.push(text.to_string());
-                            blocks.push(OpenAIContentBlock::Text {
-                                text: text.to_string(),
-                            });
-                        }
-                    }
-                    "image_url" => {
-                        let url = part_obj
-                            .get("image_url")
-                            .and_then(Value::as_object)
-                            .and_then(|image| image.get("url"))
-                            .and_then(Value::as_str)
-                            .or_else(|| part_obj.get("image_url").and_then(Value::as_str));
-                        if let Some(url) = url {
-                            has_image = true;
-                            blocks.push(OpenAIContentBlock::ImageUrl {
-                                image_url: OpenAIImageUrl {
-                                    url: url.to_string(),
-                                },
-                            });
-                        }
-                    }
-                    "input_image" => {
-                        if let Some(url) = part_obj.get("image_url").and_then(Value::as_str) {
-                            has_image = true;
-                            blocks.push(OpenAIContentBlock::ImageUrl {
-                                image_url: OpenAIImageUrl {
-                                    url: url.to_string(),
-                                },
-                            });
-                        }
-                    }
-                    _ => {}
-                }
-            }
-
-            if has_image {
-                (!blocks.is_empty()).then_some(OpenAIContent::Array(blocks))
-            } else if !text_parts.is_empty() {
-                Some(OpenAIContent::String(text_parts.join("\n")))
-            } else {
-                None
-            }
-        }
-        _ => None,
-    }
-}
-
-fn raw_tool_call_to_openai(value: &Value) -> Option<ToolCall> {
-    let object = value.as_object()?;
-    let id = object
-        .get("call_id")
-        .or_else(|| object.get("id"))
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    let name = object
-        .get("name")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    let arguments = object
-        .get("arguments")
-        .map(|value| match value {
-            Value::String(text) => text.clone(),
-            other => other.to_string(),
-        })
-        .unwrap_or_else(|| "{}".to_string());
-    if id.is_empty() || name.is_empty() {
-        return None;
-    }
-    Some(ToolCall {
-        id: id.to_string(),
-        tool_type: "function".to_string(),
-        function: ToolFunction {
-            name: name.to_string(),
-            arguments,
-        },
-    })
-}
-
-fn raw_function_call_to_message(object: &serde_json::Map<String, Value>) -> OpenAIMessage {
-    let call_id = object
-        .get("call_id")
-        .or_else(|| object.get("id"))
-        .and_then(Value::as_str)
-        .map(ToOwned::to_owned)
-        .unwrap_or_else(|| format!("call_{}", Uuid::new_v4()));
-    let name = object
-        .get("name")
-        .and_then(Value::as_str)
-        .map(ToOwned::to_owned)
-        .unwrap_or_else(|| "unknown".to_string());
-    let arguments = object
-        .get("arguments")
-        .map(|value| match value {
-            Value::String(text) => text.clone(),
-            other => other.to_string(),
-        })
-        .unwrap_or_else(|| "{}".to_string());
-
-    OpenAIMessage {
-        role: "assistant".to_string(),
-        content: None,
-        tool_calls: Some(vec![ToolCall {
-            id: call_id,
-            tool_type: "function".to_string(),
-            function: ToolFunction { name, arguments },
-        }]),
-        tool_call_id: None,
-        name: None,
-    }
-}
-
-fn raw_local_shell_call_to_message(object: &serde_json::Map<String, Value>) -> OpenAIMessage {
-    let call_id = object
-        .get("call_id")
-        .or_else(|| object.get("id"))
-        .and_then(Value::as_str)
-        .map(ToOwned::to_owned)
-        .unwrap_or_else(|| format!("call_{}", Uuid::new_v4()));
-    let mut args = serde_json::Map::new();
-    if let Some(exec) = object
-        .get("action")
-        .and_then(|action| action.get("exec"))
-        .and_then(Value::as_object)
-    {
-        if let Some(command) = exec.get("command") {
-            let command_value = if command.is_string() {
-                json!([command])
-            } else {
-                command.clone()
-            };
-            args.insert("command".to_string(), command_value);
-        }
-        if let Some(workdir) = exec
-            .get("working_directory")
-            .or_else(|| exec.get("workdir"))
-        {
-            args.insert("workdir".to_string(), workdir.clone());
-        }
-    }
-    OpenAIMessage {
-        role: "assistant".to_string(),
-        content: None,
-        tool_calls: Some(vec![ToolCall {
-            id: call_id,
-            tool_type: "function".to_string(),
-            function: ToolFunction {
-                name: "shell".to_string(),
-                arguments: Value::Object(args).to_string(),
-            },
-        }]),
-        tool_call_id: None,
-        name: None,
-    }
-}
-
-fn raw_web_search_call_to_message(object: &serde_json::Map<String, Value>) -> OpenAIMessage {
-    let call_id = object
-        .get("call_id")
-        .or_else(|| object.get("id"))
-        .and_then(Value::as_str)
-        .map(ToOwned::to_owned)
-        .unwrap_or_else(|| format!("call_{}", Uuid::new_v4()));
-    let mut args = serde_json::Map::new();
-    if let Some(query) = object.get("action").and_then(|action| action.get("query")) {
-        args.insert("query".to_string(), query.clone());
-    }
-    OpenAIMessage {
-        role: "assistant".to_string(),
-        content: None,
-        tool_calls: Some(vec![ToolCall {
-            id: call_id,
-            tool_type: "function".to_string(),
-            function: ToolFunction {
-                name: "google_search".to_string(),
-                arguments: Value::Object(args).to_string(),
-            },
-        }]),
-        tool_call_id: None,
-        name: None,
-    }
-}
-
-fn raw_tool_output_to_message(object: &serde_json::Map<String, Value>) -> OpenAIMessage {
-    let call_id = object
-        .get("call_id")
-        .and_then(Value::as_str)
-        .map(ToOwned::to_owned)
-        .unwrap_or_default();
-    let name = object
-        .get("name")
-        .and_then(Value::as_str)
-        .map(ToOwned::to_owned);
-    let output = object.get("output").cloned().unwrap_or(Value::Null);
-
+fn custom_tool_call_output_to_message(
+    call_id: &str,
+    name: Option<&String>,
+    output: &FunctionCallOutputPayload,
+) -> OpenAIMessage {
     OpenAIMessage {
         role: "tool".to_string(),
-        content: Some(OpenAIContent::String(match output {
-            Value::String(text) => text,
-            Value::Object(ref map) => map
-                .get("content")
-                .and_then(Value::as_str)
-                .map(ToOwned::to_owned)
-                .unwrap_or_else(|| output.to_string()),
-            other => other.to_string(),
-        })),
+        content: Some(OpenAIContent::String(
+            output.body.to_text().unwrap_or_else(|| output.to_string()),
+        )),
         tool_calls: None,
-        tool_call_id: Some(call_id),
-        name,
+        tool_call_id: Some(call_id.to_string()),
+        name: name.cloned(),
     }
 }
