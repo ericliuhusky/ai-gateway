@@ -695,11 +695,17 @@ pub async fn debug_clear_logs(
 
 pub async fn responses(
     State(state): State<AppState>,
-    Json(mut request): Json<ResponsesRequest>,
+    body: Bytes,
 ) -> Result<Response, AppError> {
+    let raw_body = std::str::from_utf8(&body)
+        .map_err(|_| AppError::bad_request("request body must be valid UTF-8"))?
+        .to_owned();
+    let mut request: ResponsesRequest = serde_json::from_str(&raw_body).map_err(|err| {
+        AppError::bad_request(format!("invalid request JSON: {err}"))
+    })?;
+
     let id = Uuid::new_v4().simple().to_string();
     let started_at = Instant::now();
-    apply_selected_model_override(&state, &mut request).await;
     log_http_event(
         &state.logs,
         &id,
@@ -715,11 +721,13 @@ pub async fn responses(
         Some("POST"),
         Some(Config::responses_path()),
         None,
-        Some(json_for_storage(&request)),
+        Some(raw_body),
         None,
         None,
     )
     .await;
+
+    apply_selected_model_override(&state, &mut request).await;
 
     let model = request.model.clone();
     let stream = request.stream;

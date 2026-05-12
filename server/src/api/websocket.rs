@@ -1,8 +1,8 @@
 use crate::api::handlers::{
     AppState, ResolvedProvider, append_to_log_buffer, apply_selected_model_override,
-    capture_final_response_from_ws_event, elapsed_ms, json_for_storage, json_value_for_storage,
-    log_http_event, logged_stream_response_body, provider_uses_openai_account,
-    resolve_account_for_provider, resolve_selected_provider, responses_inner,
+    capture_final_response_from_ws_event, elapsed_ms, json_value_for_storage, log_http_event,
+    logged_stream_response_body, provider_uses_openai_account, resolve_account_for_provider,
+    resolve_selected_provider, responses_inner,
 };
 use crate::{
     adapters::responses::responses_to_openai_private,
@@ -99,11 +99,7 @@ async fn handle_responses_websocket_text(
 
     let id = Uuid::new_v4().simple().to_string();
     let started_at = Instant::now();
-    apply_selected_model_override(&state, &mut ws_request.request).await;
-    let request = &ws_request.request;
-    let provider = resolve_selected_provider(&state)
-        .await
-        .map_err(|err| err.message.clone())?;
+    let client_model = ws_request.request.model.clone();
     log_http_event(
         &state.logs,
         &id,
@@ -114,16 +110,22 @@ async fn handle_responses_websocket_text(
         None,
         None,
         None,
-        Some(&request.model),
+        Some(&client_model),
         true,
         Some("WS"),
         Some(Config::responses_path()),
         None,
-        Some(json_for_storage(&request)),
+        Some(text),
         None,
         None,
     )
     .await;
+
+    apply_selected_model_override(&state, &mut ws_request.request).await;
+
+    let provider = resolve_selected_provider(&state)
+        .await
+        .map_err(|err| err.message.clone())?;
 
     if provider.auth_mode == ProviderAuthMode::Account && provider_uses_openai_account(&provider) {
         let account = resolve_account_for_provider(&state, &provider)
