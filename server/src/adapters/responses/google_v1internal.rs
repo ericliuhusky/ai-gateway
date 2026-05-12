@@ -3,7 +3,7 @@ use crate::models::{
     GeminiContent, GeminiGenerateRequest, GenerationConfig, OpenAIContent, OpenAIContentBlock,
     OpenAIMessage, ResponseOutputContent, ResponseOutputItem, ResponsesRequest, ResponsesResponse,
     ResponsesUsage,
-    responses_request::{response_tool_from_value, tool_choice_as_value},
+    request::{response_tool_from_value, tool_choice_as_value},
 };
 use crate::support::time::now_unix;
 use serde_json::{Value, json};
@@ -362,7 +362,7 @@ fn map_image_part(url: &str) -> Result<Value, String> {
 mod tests {
     use super::responses_to_gemini;
     use crate::models::ResponsesRequest;
-    use crate::models::responses_request::merge_strict_responses_request_defaults;
+    use crate::models::request::merge_strict_responses_request_defaults;
     use serde_json::json;
 
     #[test]

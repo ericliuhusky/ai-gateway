@@ -45,7 +45,7 @@ pub struct ResponsesUsage {
 
 #[cfg(test)]
 mod public_responses_entry_compat_tests {
-    use crate::models::responses_request::{
+    use super::request::{
         ResponsesRequest, merge_strict_responses_request_defaults,
     };
     use serde_json::{Value, json};

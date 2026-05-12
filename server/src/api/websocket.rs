@@ -370,7 +370,7 @@ pub(crate) fn response_create_ws_message_to_request(
     object.insert("stream".to_string(), Value::Bool(true));
     object.remove("background");
 
-    let value = crate::models::responses_request::merge_strict_responses_request_defaults(value);
+    let value = crate::models::request::merge_strict_responses_request_defaults(value);
     let request = serde_json::from_value(value)
         .map_err(|err| format!("invalid response.create payload: {err}"))?;
     Ok(ResponseCreateWsRequest { request, generate })

@@ -2,7 +2,7 @@ use crate::adapters::responses::shared::{build_messages, clean_tool_schema};
 use crate::models::{
     OpenAIMessage, ResponseOutputContent, ResponseOutputItem, ResponsesRequest, ResponsesResponse,
     ResponsesUsage,
-    responses_request::{response_tool_from_value, tool_choice_as_value},
+    request::{response_tool_from_value, tool_choice_as_value},
 };
 use crate::support::time::now_unix;
 use serde_json::{Value, json};
@@ -398,7 +398,7 @@ pub fn chat_completions_to_responses(model: &str, chat: &Value) -> ResponsesResp
 mod tests {
     use super::{chat_completions_to_responses, responses_to_chat_completions};
     use crate::models::ResponsesRequest;
-    use crate::models::responses_request::merge_strict_responses_request_defaults;
+    use crate::models::request::merge_strict_responses_request_defaults;
     use serde_json::json;
 
     #[test]

@@ -469,7 +469,7 @@ fn normalize_openai_codex_tool_choice(tool_choice: &mut Value) {
 mod tests {
     use super::responses_to_openai_private;
     use crate::models::ResponsesRequest;
-    use crate::models::responses_request::merge_strict_responses_request_defaults;
+    use crate::models::request::merge_strict_responses_request_defaults;
     use serde_json::json;
 
     #[test]
