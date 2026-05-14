@@ -1,8 +1,7 @@
 use crate::{
     adapters::responses::{
         chat_completions_to_responses, gemini_to_responses, request_with_model,
-        responses_to_chat_completions, responses_to_gemini, responses_to_openai_private,
-        wrap_v1internal,
+        responses_to_chat_completions, responses_to_gemini, wrap_v1internal,
     },
     auth::OAuthClient,
     config::Config,
@@ -868,8 +867,8 @@ pub(super) async fn responses_inner(
     let provider = resolve_selected_provider(&state).await?;
     if provider.auth_mode == ProviderAuthMode::Account && provider_uses_openai_account(&provider) {
         let account = resolve_account_for_provider(&state, &provider).await?;
-        let request_body = responses_to_openai_private(&request)
-            .map_err(|err| AppError::internal(err.to_string()))?;
+        let request_body =
+            serde_json::to_value(&request).map_err(|err| AppError::internal(err.to_string()))?;
 
         log_http_event(
             &state.logs,
@@ -2908,25 +2907,10 @@ mod tests {
         openai_models_response, provider_uses_openai_account, quota_from_google_available_models,
         quota_from_openai_usage, resolve_native_target,
     };
-    use crate::adapters::responses::responses_to_openai_private;
     use crate::models::{
         ApiProviderBillingMode, ApiProviderRecord, ProviderAuthMode, UpstreamProtocol,
-        merge_strict_responses_request_defaults,
     };
     use serde_json::json;
-
-    #[test]
-    fn openai_private_http_body_omits_previous_response_id() {
-        let request = serde_json::from_value(merge_strict_responses_request_defaults(json!({
-            "model": "gpt-5.4",
-            "input": [{ "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "hi" }] }]
-        })))
-        .expect("request should parse");
-
-        let body = responses_to_openai_private(&request).expect("body should serialize");
-
-        assert!(body.get("previous_response_id").is_none());
-    }
 
     #[test]
     fn parses_openai_codex_models_payload() {
