@@ -1,87 +1,15 @@
-use super::responses::{ResponseTool, ResponsesRequest};
+use super::{
+    ChatRequest, Content, ContentBlock, ImageUrl, Message, ToolCall, ToolFunction, ToolSpec,
+    ToolSpecFunction,
+};
+use super::super::responses::{ResponseTool, ResponsesRequest};
 use crate::models::{
     ContentItem, FunctionCallOutputPayload, LocalShellAction, LocalShellExecAction, ResponseItem,
     WebSearchAction,
 };
-use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ChatRequest {
-    pub messages: Vec<Message>,
-    pub model: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tool_choice: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub tools: Vec<ToolSpec>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct Message {
-    pub role: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub content: Option<Content>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool_calls: Option<Vec<ToolCall>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool_call_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(untagged)]
-pub enum Content {
-    String(String),
-    Array(Vec<ContentBlock>),
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(tag = "type")]
-pub enum ContentBlock {
-    #[serde(rename = "text", alias = "input_text")]
-    Text { text: String },
-    #[serde(rename = "image_url")]
-    ImageUrl { image_url: ImageUrl },
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct ImageUrl {
-    pub url: String,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct ToolCall {
-    pub id: String,
-    #[serde(rename = "type")]
-    pub tool_type: String,
-    pub function: ToolFunction,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct ToolFunction {
-    pub name: String,
-    pub arguments: String,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct ToolSpec {
-    pub r#type: String,
-    pub function: ToolSpecFunction,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct ToolSpecFunction {
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parameters: Option<Value>,
-}
 
 impl ChatRequest {
     pub fn normalize_messages_for_chat_completions(messages: &mut Vec<Message>) {
@@ -282,7 +210,7 @@ pub fn build_messages(request: &ResponsesRequest) -> Result<Vec<Message>, String
                 content: None,
                 tool_calls: Some(vec![ToolCall {
                     id: call_id.clone(),
-                    tool_type: "function".to_string(),
+                    r#type: "function".to_string(),
                     function: ToolFunction {
                         name: name.clone(),
                         arguments: arguments.clone(),
@@ -319,7 +247,7 @@ pub fn build_messages(request: &ResponsesRequest) -> Result<Vec<Message>, String
                 content: None,
                 tool_calls: Some(vec![ToolCall {
                     id: call_id.clone(),
-                    tool_type: "function".to_string(),
+                    r#type: "function".to_string(),
                     function: ToolFunction {
                         name: name.clone(),
                         arguments: input.clone(),
@@ -504,7 +432,7 @@ fn local_shell_call_to_message(
         content: None,
         tool_calls: Some(vec![ToolCall {
             id: call_id,
-            tool_type: "function".to_string(),
+            r#type: "function".to_string(),
             function: ToolFunction {
                 name: "shell".to_string(),
                 arguments: Value::Object(args).to_string(),
@@ -537,7 +465,7 @@ fn web_search_call_to_message(
         content: None,
         tool_calls: Some(vec![ToolCall {
             id: call_id,
-            tool_type: "function".to_string(),
+            r#type: "function".to_string(),
             function: ToolFunction {
                 name: "google_search".to_string(),
                 arguments: Value::Object(args).to_string(),
@@ -581,7 +509,7 @@ fn custom_tool_call_output_to_message(
 
 #[cfg(test)]
 mod tests {
-    use super::{ChatRequest, ToolSpec};
+    use super::super::{ChatRequest, ToolSpec};
     use crate::models::request::{ResponsesRequest, merge_strict_responses_request_defaults};
     use serde_json::json;
 
