@@ -1,9 +1,10 @@
-use crate::adapters::responses::shared::{build_messages, clean_tool_schema_for_gemini};
+use crate::adapters::responses::shared::clean_tool_schema_for_gemini;
 use crate::models::{
-    GeminiContent, GeminiGenerateRequest, GenerationConfig, OpenAIContent, OpenAIContentBlock,
-    OpenAIMessage, ResponseOutputContent, ResponseOutputItem, ResponsesRequest, ResponsesResponse,
+    GeminiContent, GeminiGenerateRequest, GenerationConfig, Content, ContentBlock,
+    Message, ResponseOutputContent, ResponseOutputItem, ResponsesRequest, ResponsesResponse,
     ResponsesUsage,
-    request::{response_tool_from_value, tool_choice_as_value},
+    build_messages,
+    request::{ResponseTool, tool_choice_as_value},
 };
 use crate::support::time::now_unix;
 use serde_json::{Value, json};
@@ -118,7 +119,7 @@ pub fn gemini_to_responses(model: &str, gemini: &Value) -> ResponsesResponse {
 }
 
 fn build_tools(
-    tools: &[Value],
+    tools: &[ResponseTool],
     tool_choice: Option<&Value>,
 ) -> (Option<Vec<Value>>, Option<Value>) {
     if tools.is_empty() {
@@ -126,16 +127,13 @@ fn build_tools(
     }
     let function_declarations: Vec<Value> = tools
         .iter()
-        .filter_map(|tool_value| {
-            let tool = response_tool_from_value(tool_value)?;
-            if tool.tool_type != "function" {
+        .filter_map(|tool| {
+            if tool.r#type != "function" {
                 return None;
             }
-            let function = tool.function.as_ref();
             let name = tool
                 .name
                 .as_deref()
-                .or_else(|| function.and_then(|f| f.get("name")).and_then(Value::as_str))
                 .unwrap_or("")
                 .trim();
             if name.is_empty() {
@@ -144,17 +142,10 @@ fn build_tools(
             let description = tool
                 .description
                 .clone()
-                .or_else(|| {
-                    function
-                        .and_then(|f| f.get("description"))
-                        .and_then(Value::as_str)
-                        .map(ToOwned::to_owned)
-                })
                 .unwrap_or_default();
             let mut parameters = tool
                 .parameters
                 .clone()
-                .or_else(|| function.and_then(|f| f.get("parameters")).cloned())
                 .unwrap_or_else(|| json!({"type":"object","properties":{},"required":[]}));
             clean_tool_schema_for_gemini(&mut parameters);
             Some(json!({ "name": name, "description": description, "parameters": parameters }))
@@ -269,7 +260,7 @@ fn response_id(raw: &Value) -> String {
 }
 
 fn build_gemini_message_parts(
-    message: &OpenAIMessage,
+    message: &Message,
     tool_id_to_name: &mut HashMap<String, String>,
     needs_tool_thought_signature: bool,
 ) -> Result<Vec<Value>, String> {
@@ -278,14 +269,14 @@ fn build_gemini_message_parts(
     if message.role != "tool" && message.role != "function" {
         if let Some(content) = &message.content {
             match content {
-                OpenAIContent::String(text) => parts.push(json!({ "text": text })),
-                OpenAIContent::Array(blocks) => {
+                Content::String(text) => parts.push(json!({ "text": text })),
+                Content::Array(blocks) => {
                     for block in blocks {
                         match block {
-                            OpenAIContentBlock::Text { text } => {
+                            ContentBlock::Text { text } => {
                                 parts.push(json!({ "text": text }))
                             }
-                            OpenAIContentBlock::ImageUrl { image_url } => {
+                            ContentBlock::ImageUrl { image_url } => {
                                 parts.push(map_image_part(&image_url.url)?)
                             }
                         }
@@ -322,11 +313,11 @@ fn build_gemini_message_parts(
             .or_else(|| tool_id_to_name.get(&id).cloned())
             .unwrap_or_else(|| "unknown".to_string());
         let result = match &message.content {
-            Some(OpenAIContent::String(text)) => text.clone(),
-            Some(OpenAIContent::Array(blocks)) => blocks
+            Some(Content::String(text)) => text.clone(),
+            Some(Content::Array(blocks)) => blocks
                 .iter()
                 .filter_map(|block| match block {
-                    OpenAIContentBlock::Text { text } => Some(text.clone()),
+                    ContentBlock::Text { text } => Some(text.clone()),
                     _ => None,
                 })
                 .collect::<Vec<_>>()

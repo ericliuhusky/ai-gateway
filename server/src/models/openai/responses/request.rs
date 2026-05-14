@@ -1,6 +1,6 @@
 use super::response_item::ResponseItem;
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
+use serde_json::Value;
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -10,7 +10,7 @@ pub struct ResponsesRequest {
     #[serde(skip_serializing_if = "String::is_empty")]
     pub instructions: String,
     pub input: Vec<ResponseItem>,
-    pub tools: Vec<Value>,
+    pub tools: Vec<ResponseTool>,
     pub tool_choice: String,
     pub parallel_tool_calls: bool,
     pub reasoning: Option<Value>,
@@ -34,7 +34,7 @@ pub(crate) fn merge_strict_responses_request_defaults(value: Value) -> Value {
     let Value::Object(mut obj) = value else {
         return value;
     };
-    let defaults: Map<String, Value> = serde_json::from_value(serde_json::json!({
+    let defaults: serde_json::Map<String, Value> = serde_json::from_value(serde_json::json!({
         "client_metadata": null,
         "include": [],
         "instructions": "",
@@ -61,22 +61,46 @@ pub(crate) fn tool_choice_as_value(s: &str) -> Value {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ResponseTool {
-    #[serde(rename = "type")]
-    pub tool_type: String,
-    #[serde(default)]
+    pub r#type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parameters: Option<Value>,
-    #[serde(default)]
-    pub function: Option<Value>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<ResponseTool>>,
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
 }
 
-pub(crate) fn response_tool_from_value(value: &Value) -> Option<ResponseTool> {
-    serde_json::from_value(value.clone()).ok()
+#[cfg(test)]
+mod tests {
+    use super::{ResponsesRequest, merge_strict_responses_request_defaults};
+    use serde_json::json;
+
+    #[test]
+    fn omits_absent_tool_function_when_serializing() {
+        let request: ResponsesRequest =
+            serde_json::from_value(merge_strict_responses_request_defaults(json!({
+                "model": "gpt-5.4",
+                "input": [],
+                "tools": [{
+                    "type": "local_shell",
+                    "name": "shell",
+                    "description": "Execute shell commands.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "command": { "type": "array" }
+                        }
+                    }
+                }]
+            })))
+            .expect("request should parse");
+
+        let body = serde_json::to_value(&request).expect("request should serialize");
+        let tool = &body["tools"][0];
+
+        assert!(tool.get("function").is_none());
+        assert_eq!(tool["type"], "local_shell");
+    }
 }
