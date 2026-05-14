@@ -1,13 +1,13 @@
+use super::super::responses::{ResponseTool, ResponsesRequest};
 use super::{
     ChatRequest, Content, ContentBlock, ImageUrl, Message, ToolCall, ToolFunction, ToolSpec,
     ToolSpecFunction,
 };
-use super::super::responses::{ResponseTool, ResponsesRequest};
 use crate::models::{
     ContentItem, FunctionCallOutputPayload, LocalShellAction, LocalShellExecAction, ResponseItem,
     WebSearchAction,
 };
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
@@ -198,7 +198,9 @@ pub fn build_messages(request: &ResponsesRequest) -> Result<Vec<Message>, String
         match item {
             ResponseItem::Other => {}
             ResponseItem::Message { role, content, .. } => {
-                messages.push(response_message_to_openai(role, content))
+                if let Some(message) = response_message_to_openai(role, content) {
+                    messages.push(message);
+                }
             }
             ResponseItem::FunctionCall {
                 name,
@@ -362,14 +364,67 @@ fn reorder_tool_messages_for_chat_completions(messages: &mut Vec<Message>) {
     *messages = rewritten;
 }
 
-fn response_message_to_openai(role: &str, content: &[ContentItem]) -> Message {
-    Message {
+fn strip_think_tags(text: &str) -> String {
+    const START_TAG: &str = "<think>";
+    const END_TAG: &str = "</think>";
+
+    let mut remaining = text;
+    let mut sanitized = String::new();
+
+    loop {
+        let Some(start) = remaining.find(START_TAG) else {
+            sanitized.push_str(remaining);
+            break;
+        };
+
+        sanitized.push_str(&remaining[..start]);
+        let after_start = &remaining[start + START_TAG.len()..];
+
+        let Some(end) = after_start.find(END_TAG) else {
+            break;
+        };
+
+        remaining = &after_start[end + END_TAG.len()..];
+    }
+
+    sanitized
+}
+
+fn sanitize_message_content_for_context(role: &str, content: &[ContentItem]) -> Vec<ContentItem> {
+    if role != "assistant" {
+        return content.to_vec();
+    }
+
+    content
+        .iter()
+        .filter_map(|item| match item {
+            ContentItem::InputText { text } => {
+                let sanitized = strip_think_tags(text);
+                (!sanitized.trim().is_empty()).then_some(ContentItem::InputText { text: sanitized })
+            }
+            ContentItem::OutputText { text } => {
+                let sanitized = strip_think_tags(text);
+                (!sanitized.trim().is_empty())
+                    .then_some(ContentItem::OutputText { text: sanitized })
+            }
+            ContentItem::InputImage { .. } | ContentItem::InputFile { .. } => Some(item.clone()),
+        })
+        .collect()
+}
+
+fn response_message_to_openai(role: &str, content: &[ContentItem]) -> Option<Message> {
+    let sanitized_content = sanitize_message_content_for_context(role, content);
+    if role == "assistant" && sanitized_content.is_empty() {
+        return None;
+    }
+
+    Some(Message {
         role: role.to_string(),
-        content: content_items_to_openai(content),
+        content: content_items_to_openai(&sanitized_content),
         tool_calls: None,
         tool_call_id: None,
         name: None,
-    }
+    })
 }
 
 fn content_items_to_openai(items: &[ContentItem]) -> Option<Content> {
@@ -407,10 +462,7 @@ fn content_items_to_openai(items: &[ContentItem]) -> Option<Content> {
     }
 }
 
-fn local_shell_call_to_message(
-    call_id: Option<&String>,
-    action: &LocalShellAction,
-) -> Message {
+fn local_shell_call_to_message(call_id: Option<&String>, action: &LocalShellAction) -> Message {
     let call_id = call_id
         .cloned()
         .unwrap_or_else(|| format!("call_{}", Uuid::new_v4()));
@@ -476,10 +528,7 @@ fn web_search_call_to_message(
     }
 }
 
-fn function_call_output_to_message(
-    call_id: &str,
-    output: &FunctionCallOutputPayload,
-) -> Message {
+fn function_call_output_to_message(call_id: &str, output: &FunctionCallOutputPayload) -> Message {
     Message {
         role: "tool".to_string(),
         content: Some(Content::String(
@@ -509,8 +558,11 @@ fn custom_tool_call_output_to_message(
 
 #[cfg(test)]
 mod tests {
-    use super::super::{ChatRequest, ToolSpec};
-    use crate::models::request::{ResponsesRequest, merge_strict_responses_request_defaults};
+    use super::{
+        sanitize_message_content_for_context, strip_think_tags, ChatRequest, ContentItem,
+        ToolSpec,
+    };
+    use crate::models::request::{merge_strict_responses_request_defaults, ResponsesRequest};
     use serde_json::json;
 
     #[test]
@@ -606,5 +658,70 @@ mod tests {
         assert_eq!(body["messages"][1]["role"], "assistant");
         assert_eq!(body["messages"][2]["role"], "tool");
         assert_eq!(body["messages"][2]["tool_call_id"], "call_1");
+    }
+
+    #[test]
+    fn strips_multiple_think_blocks_from_text() {
+        let sanitized =
+            strip_think_tags("before<think>hidden</think>middle<think>more</think>after");
+        assert_eq!(sanitized, "beforemiddleafter");
+    }
+
+    #[test]
+    fn drops_assistant_text_items_that_only_contain_think_blocks() {
+        let sanitized = sanitize_message_content_for_context(
+            "assistant",
+            &[
+                ContentItem::OutputText {
+                    text: "<think>hidden</think>".to_string(),
+                },
+                ContentItem::OutputText {
+                    text: "visible<think>secret</think>".to_string(),
+                },
+            ],
+        );
+
+        assert_eq!(sanitized.len(), 1);
+        assert_eq!(
+            sanitized[0],
+            ContentItem::OutputText {
+                text: "visible".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn drops_think_only_assistant_messages_before_tool_outputs() {
+        let request: ResponsesRequest =
+            serde_json::from_value(merge_strict_responses_request_defaults(json!({
+                "model": "gpt-5.4",
+                "input": [
+                    {
+                        "type": "function_call",
+                        "call_id": "call_1",
+                        "name": "shell",
+                        "arguments": "{\"command\":[\"pwd\"]}"
+                    },
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{ "type": "output_text", "text": "<think>running command</think>" }]
+                    },
+                    {
+                        "type": "function_call_output",
+                        "call_id": "call_1",
+                        "output": "ok"
+                    }
+                ]
+            })))
+            .expect("request should parse");
+
+        let chat = ChatRequest::try_from(&request).expect("chat request should map");
+        let body = serde_json::to_value(chat).expect("chat should serialize");
+
+        assert_eq!(body["messages"].as_array().map(Vec::len), Some(2));
+        assert_eq!(body["messages"][0]["role"], "assistant");
+        assert_eq!(body["messages"][1]["role"], "tool");
+        assert_eq!(body["messages"][1]["tool_call_id"], "call_1");
     }
 }
