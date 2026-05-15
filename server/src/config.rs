@@ -14,11 +14,6 @@ const OPENAI_PRIVATE_RESPONSES_URL: &str = "https://chatgpt.com/backend-api/code
 // 内置 Codex 资源。
 const BUNDLED_CODEX_CONFIG: &str = include_str!("../../assets/codex-config.toml");
 
-// Google OAuth 凭据。
-const GOOGLE_CLIENT_ID: &str =
-    "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com";
-const GOOGLE_CLIENT_SECRET: &str = "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";
-
 #[derive(Debug, Deserialize)]
 struct CodexVersion {
     latest_version: Option<String>,
@@ -115,14 +110,5 @@ impl Config {
             .filter(|version| !version.is_empty());
 
         parsed.unwrap_or_else(|| DEFAULT_CODEX_CLIENT_VERSION.to_string())
-    }
-
-    // Google OAuth 凭据。
-    pub fn google_client_id(&self) -> &'static str {
-        GOOGLE_CLIENT_ID
-    }
-
-    pub fn google_client_secret(&self) -> &'static str {
-        GOOGLE_CLIENT_SECRET
     }
 }

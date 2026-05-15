@@ -8,9 +8,6 @@ use tokio::sync::Mutex;
 use url::Url;
 use uuid::Uuid;
 
-const AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
-const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
-const USERINFO_URL: &str = "https://www.googleapis.com/oauth2/v2/userinfo";
 const OPENAI_AUTH_URL: &str = "https://auth.openai.com/oauth/authorize";
 const OPENAI_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
 const OPENAI_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
@@ -20,14 +17,7 @@ const TOKEN_REFRESH_SKEW_SECONDS: i64 = 900;
 pub struct OAuthClient {
     http: Client,
     config: Arc<Config>,
-    pending_google: Arc<Mutex<HashMap<String, PendingGoogleAuth>>>,
     pending_openai: Arc<Mutex<HashMap<String, PendingOpenAIAuth>>>,
-}
-
-#[derive(Debug, Clone)]
-struct PendingGoogleAuth {
-    redirect_uri: String,
-    created_at: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -47,11 +37,6 @@ pub struct TokenResponse {
     pub refresh_token: Option<String>,
     #[serde(default)]
     pub id_token: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct UserInfo {
-    pub email: String,
 }
 
 #[derive(Debug, Clone)]
@@ -109,44 +94,8 @@ impl OAuthClient {
         Self {
             http: Client::new(),
             config,
-            pending_google: Arc::new(Mutex::new(HashMap::new())),
             pending_openai: Arc::new(Mutex::new(HashMap::new())),
         }
-    }
-
-    pub async fn create_auth_url(&self, redirect_uri: String) -> Result<String, String> {
-        let state = Uuid::new_v4().to_string();
-        self.pending_google.lock().await.insert(
-            state.clone(),
-            PendingGoogleAuth {
-                redirect_uri: redirect_uri.clone(),
-                created_at: now_unix(),
-            },
-        );
-
-        let scopes = [
-            "https://www.googleapis.com/auth/cloud-platform",
-            "https://www.googleapis.com/auth/userinfo.email",
-            "https://www.googleapis.com/auth/userinfo.profile",
-            "https://www.googleapis.com/auth/cclog",
-            "https://www.googleapis.com/auth/experimentsandconfigs",
-        ]
-        .join(" ");
-
-        let params = [
-            ("client_id", self.config.google_client_id()),
-            ("redirect_uri", redirect_uri.as_str()),
-            ("response_type", "code"),
-            ("scope", scopes.as_str()),
-            ("access_type", "offline"),
-            ("prompt", "consent"),
-            ("include_granted_scopes", "true"),
-            ("state", state.as_str()),
-        ];
-
-        Url::parse_with_params(AUTH_URL, params)
-            .map(|url| url.to_string())
-            .map_err(|err| format!("failed to create auth url: {err}"))
     }
 
     pub async fn create_openai_auth_url(&self) -> Result<String, String> {
@@ -179,16 +128,6 @@ impl OAuthClient {
             .map_err(|err| format!("failed to create openai auth url: {err}"))
     }
 
-    pub async fn consume_redirect_uri(&self, state: &str) -> Result<String, String> {
-        self.prune_pending_google().await;
-        self.pending_google
-            .lock()
-            .await
-            .remove(state)
-            .map(|entry| entry.redirect_uri)
-            .ok_or_else(|| "invalid or expired oauth state".to_string())
-    }
-
     pub async fn consume_openai_code_verifier(&self, state: &str) -> Result<String, String> {
         self.prune_pending_openai().await;
         self.pending_openai
@@ -197,68 +136,6 @@ impl OAuthClient {
             .remove(state)
             .map(|entry| entry.code_verifier)
             .ok_or_else(|| "invalid or expired openai oauth state".to_string())
-    }
-
-    pub async fn exchange_code(
-        &self,
-        code: &str,
-        redirect_uri: &str,
-    ) -> Result<TokenResponse, String> {
-        let params = [
-            ("client_id", self.config.google_client_id()),
-            ("client_secret", self.config.google_client_secret()),
-            ("code", code),
-            ("redirect_uri", redirect_uri),
-            ("grant_type", "authorization_code"),
-        ];
-
-        let response = self
-            .http
-            .post(TOKEN_URL)
-            .form(&params)
-            .send()
-            .await
-            .map_err(|err| format!("token exchange failed: {err}"))?;
-
-        if response.status().is_success() {
-            response
-                .json::<TokenResponse>()
-                .await
-                .map_err(|err| format!("token parse failed: {err}"))
-        } else {
-            let body = response.text().await.unwrap_or_default();
-            Err(format!("token exchange failed: {body}"))
-        }
-    }
-
-    pub async fn refresh_google_access_token(
-        &self,
-        refresh_token: &str,
-    ) -> Result<TokenResponse, String> {
-        let params = [
-            ("client_id", self.config.google_client_id()),
-            ("client_secret", self.config.google_client_secret()),
-            ("refresh_token", refresh_token),
-            ("grant_type", "refresh_token"),
-        ];
-
-        let response = self
-            .http
-            .post(TOKEN_URL)
-            .form(&params)
-            .send()
-            .await
-            .map_err(|err| format!("token refresh failed: {err}"))?;
-
-        if response.status().is_success() {
-            response
-                .json::<TokenResponse>()
-                .await
-                .map_err(|err| format!("refresh parse failed: {err}"))
-        } else {
-            let body = response.text().await.unwrap_or_default();
-            Err(format!("refresh failed: {body}"))
-        }
     }
 
     pub async fn refresh_openai_access_token(
@@ -391,36 +268,8 @@ impl OAuthClient {
         })
     }
 
-    pub async fn get_user_info(&self, access_token: &str) -> Result<UserInfo, String> {
-        let response = self
-            .http
-            .get(USERINFO_URL)
-            .bearer_auth(access_token)
-            .send()
-            .await
-            .map_err(|err| format!("userinfo request failed: {err}"))?;
-
-        if response.status().is_success() {
-            response
-                .json::<UserInfo>()
-                .await
-                .map_err(|err| format!("userinfo parse failed: {err}"))
-        } else {
-            let body = response.text().await.unwrap_or_default();
-            Err(format!("userinfo failed: {body}"))
-        }
-    }
-
     pub fn refresh_needed(&self, expiry_timestamp: i64) -> bool {
         expiry_timestamp <= now_unix() as i64 + TOKEN_REFRESH_SKEW_SECONDS
-    }
-
-    async fn prune_pending_google(&self) {
-        let cutoff = now_unix().saturating_sub(Duration::from_secs(600).as_secs());
-        self.pending_google
-            .lock()
-            .await
-            .retain(|_, pending| pending.created_at >= cutoff);
     }
 
     async fn prune_pending_openai(&self) {

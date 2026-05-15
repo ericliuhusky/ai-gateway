@@ -3,12 +3,11 @@
 ## 架构词汇
 
 - `Client`: 调用方看到的网关客户端侧协议。当前只有 `OpenAI Responses`
-- `Upstream`: 网关调用真实供应商时使用的上游协议。当前固定 4 种：
+- `Upstream`: 网关调用真实供应商时使用的上游协议。当前固定 3 种：
   - `OpenAI private responses`
-  - `Google v1internal`
   - `Native responses`
   - `Native chat completions`
-- `Provider`: 具体供应商实例，例如 `openai-proxy`、`google-proxy`、`openai-compatible`
+- `Provider`: 具体供应商实例，例如 `openai-proxy`、`openai-compatible`
 - `Route`: 当前把客户端请求转发到哪个 provider
 - `Adapter`: 从统一 `Responses` 客户端协议适配到具体上游协议的转换层
 
@@ -19,15 +18,10 @@
 - adapter 层负责把客户端侧 `Responses` 适配到对应的上游协议
 - upstream 层只负责调用真实上游接口
 
-参考 [`Antigravity-Manager`](https://github.com/lbjlaq/Antigravity-Manager) 的代理实现：
-
-- 用户通过 Google OAuth 登录
-- 用户也可以仿照 Codex / OpenClaw 的方式，通过 ChatGPT OAuth + PKCE 登录
+- 用户可以仿照 Codex / OpenClaw 的方式，通过 ChatGPT OAuth + PKCE 登录
 - 登录成功后账号会写入本地 SQLite 数据库 `~/.ai-gateway/db.sqlite`
 - provider 如果使用账号登录，会绑定本地账号池里的账号
 - access token 过期前自动刷新
-- project_id 缺失时通过私有 `v1internal:loadCodeAssist` 获取
-- `POST /openai/v1/responses` 走私有 `cloudcode-pa.googleapis.com/v1internal`
 
 ## 运行
 
@@ -59,14 +53,6 @@ launchctl print "gui/$(id -u)/ericliu.husky.ai-gateway.server"
 
 ## 登录
 
-浏览器打开：
-
-```bash
-open http://127.0.0.1:10100/auth/google/start
-```
-
-登录成功后，账号会被加入本地账号池。可用下面接口查看：
-
 如果你想直接走浏览器 OAuth，而不是导入本地文件：
 
 ```bash
@@ -87,7 +73,7 @@ open http://127.0.0.1:10100/auth/openai/start
 
 ## 原生 API 供应商
 
-除了 `openai-proxy` / `google-proxy` 这类 OAuth 代理供应商，现在也支持登记“原生 key 的 API 供应商”配置。`provider` 是统一配置入口：
+除了 `openai-proxy` 这类 OAuth 代理供应商，现在也支持登记“原生 key 的 API 供应商”配置。`provider` 是统一配置入口：
 
 - `api_key` 型 provider 通过 `POST /providers` 手动创建
 - `account` 型 provider 只能通过 OAuth 登录自动创建或更新
@@ -174,9 +160,7 @@ curl -X PUT http://127.0.0.1:10100/selected-provider \
 
 ## 路由行为
 
-- 当前这两个 OAuth 供应商被视为“账号型 provider”：
-  - `openai-proxy`: 使用 ChatGPT OAuth，会转发到 `https://chatgpt.com/backend-api/codex/responses`
-  - `google-proxy`: 使用 Google OAuth，会转发到 Gemini 私有 `v1internal`
+- `openai-proxy`: 使用 ChatGPT OAuth，会转发到 `https://chatgpt.com/backend-api/codex/responses`
 - API key 型 provider 默认走 OpenAI Responses 原生上游协议
 - API key 型 provider 设置 `uses_chat_completions: true` 时，走 OpenAI Chat Completions 兼容上游协议
 - OAuth 登录成功后，会自动创建或更新对应 provider，并绑定到刚登录的本地 account
@@ -186,5 +170,5 @@ curl -X PUT http://127.0.0.1:10100/selected-provider \
 
 ## 当前范围
 
-- 已实现：Google 登录、OpenAI 浏览器 OAuth + PKCE 登录、账号持久化、账号轮询、token 刷新、`project_id` 获取、OpenAI Responses -> Gemini v1internal、GPT 请求直连 ChatGPT Codex backend-api、最小函数工具调用映射
+- 已实现：OpenAI 浏览器 OAuth + PKCE 登录、账号持久化、账号轮询、token 刷新、GPT 请求直连 ChatGPT Codex backend-api、最小函数工具调用映射
 - 暂未实现：复杂配额保护、设备指纹、官方客户端全部 Header 指纹、更多管理接口

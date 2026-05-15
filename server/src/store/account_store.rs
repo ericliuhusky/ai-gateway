@@ -1,9 +1,7 @@
 use crate::{
-    auth::{
-        ImportedOpenAIAuth, OAuthClient, TokenResponse, UserInfo, extract_openai_chatgpt_account_id,
-    },
+    auth::{ImportedOpenAIAuth, OAuthClient, extract_openai_chatgpt_account_id},
     config::Config,
-    models::{AccountRecord, AccountType, PROVIDER_GOOGLE_PROXY, PROVIDER_OPENAI_PROXY},
+    models::{AccountRecord, AccountType, PROVIDER_OPENAI_PROXY},
     store::sqlite::SqliteStore,
     support::time::now_unix,
     upstream::UpstreamClient,
@@ -32,41 +30,6 @@ impl AccountStore {
         Ok(())
     }
 
-    pub async fn add_google_account(
-        &self,
-        user: UserInfo,
-        token: TokenResponse,
-        project_id: Option<String>,
-    ) -> Result<AccountRecord, String> {
-        let refresh_token = token
-            .refresh_token
-            .ok_or_else(|| "google did not return refresh_token".to_string())?;
-        let expiry_timestamp = now_unix() as i64 + token.expires_in;
-
-        let mut records = self.records.lock().await;
-        if records.iter().any(|account| {
-            account.email == user.email && account.provider() == PROVIDER_GOOGLE_PROXY
-        }) {
-            return Err(format!("Google 账号已经存在: {}", user.email));
-        }
-
-        let account = AccountRecord {
-            id: Uuid::new_v4().to_string(),
-            account_type: AccountType::Google,
-            email: user.email,
-            access_token: token.access_token,
-            refresh_token,
-            expiry_timestamp,
-            client_id: None,
-            project_id,
-            upstream_account_id: None,
-        };
-        records.push(account.clone());
-
-        self.persist_account(&account)?;
-        Ok(account)
-    }
-
     pub async fn add_openai_account(
         &self,
         imported: ImportedOpenAIAuth,
@@ -86,7 +49,6 @@ impl AccountStore {
             refresh_token: imported.refresh_token,
             expiry_timestamp: imported.expiry_timestamp,
             client_id: Some(imported.client_id),
-            project_id: None,
             upstream_account_id: imported.account_id,
         };
         records.push(account.clone());
@@ -135,21 +97,15 @@ impl AccountStore {
         &self,
         mut account: AccountRecord,
         oauth: &OAuthClient,
-        upstream: &UpstreamClient,
+        _upstream: &UpstreamClient,
     ) -> Result<AccountRecord, String> {
         if oauth.refresh_needed(account.expiry_timestamp) {
-            let refreshed = if account.provider() == PROVIDER_OPENAI_PROXY {
-                let client_id = account
-                    .client_id()
-                    .ok_or_else(|| "openai account missing oauth client id".to_string())?;
-                oauth
-                    .refresh_openai_access_token(client_id, account.refresh_token())
-                    .await
-            } else {
-                oauth
-                    .refresh_google_access_token(account.refresh_token())
-                    .await
-            };
+            let client_id = account
+                .client_id()
+                .ok_or_else(|| "openai account missing oauth client id".to_string())?;
+            let refreshed = oauth
+                .refresh_openai_access_token(client_id, account.refresh_token())
+                .await;
 
             match refreshed {
                 Ok(refreshed) => {
@@ -158,22 +114,12 @@ impl AccountStore {
                     if let Some(refresh_token) = refreshed.refresh_token {
                         *account.refresh_token_mut() = refresh_token;
                     }
-                    if account.provider() == PROVIDER_OPENAI_PROXY {
-                        account.upstream_account_id =
-                            extract_openai_chatgpt_account_id(account.access_token());
-                    }
+                    account.upstream_account_id =
+                        extract_openai_chatgpt_account_id(account.access_token());
                 }
                 Err(err) => {
                     return Err(format!("refresh failed for {}: {err}", account.email));
                 }
-            }
-        }
-
-        if account.provider() == PROVIDER_GOOGLE_PROXY
-            && account.project_id().unwrap_or("").is_empty()
-        {
-            if let Ok(project_id) = upstream.fetch_project_id(account.access_token()).await {
-                account.set_project_id(project_id);
             }
         }
 

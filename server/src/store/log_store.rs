@@ -34,8 +34,7 @@ pub enum LogStage {
     Error,
 }
 
-impl LogStage {
-}
+impl LogStage {}
 
 #[derive(Clone, Debug)]
 pub struct LogEvent {
@@ -102,8 +101,6 @@ impl LogStore {
             .store(store.load_enabled_setting()?, Ordering::Relaxed);
         Ok(store)
     }
-
-
 
     pub fn is_enabled(&self) -> bool {
         self.enabled.load(Ordering::Relaxed)
@@ -744,19 +741,6 @@ fn extract_model_output_from_value(value: &Value, path: &[String]) -> Option<Ext
                 })
         })
         .or_else(|| {
-            value
-                .get("candidates")
-                .and_then(Value::as_array)
-                .and_then(|candidates| {
-                    candidates.first().and_then(|candidate| {
-                        extract_gemini_candidate_text(
-                            candidate,
-                            &child_index_path(&child_path(path, "candidates"), 0),
-                        )
-                    })
-                })
-        })
-        .or_else(|| {
             value.get("response").and_then(|response| {
                 extract_model_output_from_value(response, &child_path(path, "response"))
             })
@@ -795,13 +779,6 @@ fn extract_chat_choice_text(value: &Value, path: &[String]) -> Option<ExtractedT
                 .get("text")
                 .and_then(|text| extract_content_text(text, &child_path(path, "text")))
         })
-}
-
-fn extract_gemini_candidate_text(value: &Value, path: &[String]) -> Option<ExtractedText> {
-    value
-        .get("content")
-        .and_then(|content| content.get("parts"))
-        .and_then(|parts| extract_text_parts(parts, &child_path(path, "content.parts")))
 }
 
 fn extract_output_text(value: &Value, path: &[String]) -> Option<ExtractedText> {
@@ -1371,18 +1348,6 @@ mod tests {
         assert_eq!(
             extract_model_output_from_body(chat).as_deref(),
             Some("chat text")
-        );
-
-        let gemini = r#"{
-            "candidates": [{
-                "content": {
-                    "parts": [{"text": "gemini "}, {"text": "text"}]
-                }
-            }]
-        }"#;
-        assert_eq!(
-            extract_model_output_from_body(gemini).as_deref(),
-            Some("gemini text")
         );
     }
 

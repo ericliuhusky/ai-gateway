@@ -54,11 +54,6 @@ pub(crate) fn merge_strict_responses_request_defaults(value: Value) -> Value {
     Value::Object(obj)
 }
 
-/// Wraps [`ResponsesRequest::tool_choice`] as [`Value::String`] for adapters that expect [`Value`].
-pub(crate) fn tool_choice_as_value(s: &str) -> Value {
-    Value::String(s.to_owned())
-}
-
 #[cfg(test)]
 mod tests {
     use super::{ResponsesRequest, merge_strict_responses_request_defaults};

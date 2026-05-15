@@ -1,4 +1,4 @@
-use reqwest::{Client, Proxy, StatusCode, Url};
+use reqwest::{Client, Proxy, Url};
 use std::{collections::HashMap, process::Command};
 pub fn build_http_client() -> Client {
     let mut builder = Client::builder();
@@ -15,14 +15,6 @@ pub fn build_http_client() -> Client {
     }
 
     builder.build().unwrap_or_else(|_| Client::new())
-}
-
-
-pub fn should_try_next_endpoint(status: StatusCode) -> bool {
-    status == StatusCode::TOO_MANY_REQUESTS
-        || status == StatusCode::REQUEST_TIMEOUT
-        || status == StatusCode::NOT_FOUND
-        || status.is_server_error()
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

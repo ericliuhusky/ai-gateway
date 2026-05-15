@@ -1,22 +1,20 @@
 use crate::{
     adapters::responses::{
-        chat_completions_to_responses, gemini_to_responses, request_with_model,
-        responses_to_chat_completions, responses_to_gemini, wrap_v1internal,
+        chat_completions_to_responses, request_with_model, responses_to_chat_completions,
     },
     auth::OAuthClient,
     config::Config,
     models::{
-        AccountRecord, AccountType, ApiProviderRecord, ApiProviderSummary, ClientProtocol,
-        CodexConfigStatus, CreateApiProviderRequest, GatewayLogDetail, GatewayLogDetailResponse,
+        AccountRecord, ApiProviderRecord, ApiProviderSummary, ClientProtocol, CodexConfigStatus,
+        CreateApiProviderRequest, GatewayLogDetail, GatewayLogDetailResponse,
         GatewayLogListResponse, GatewayLogSettings, GatewayLogSettingsResponse, GatewayLogSummary,
-        ModelListItem, ModelListResponse, PROVIDER_GOOGLE_PROXY, PROVIDER_OPENAI_PROXY,
-        ProviderAuthMode, ProviderQuotaCredits, ProviderQuotaResponse, ProviderQuotaSnapshot,
-        ProviderQuotaSummary, ProviderQuotaWindow, QuotaSource, QuotaSupportStatus, ResponseEvents,
-        ResponsesRequest, SelectedRoute, UpdateGatewayLogSettingsRequest,
-        UpdateSelectedModelRequest, UpdateSelectedProviderRequest, UpstreamProtocol,
-        UpstreamRateLimitStatusDetails, UpstreamRateLimitStatusPayload,
-        UpstreamRateLimitWindowSnapshot, response_events_to_response_value,
-        response_events_to_sse_lines,
+        ModelListItem, ModelListResponse, PROVIDER_OPENAI_PROXY, ProviderAuthMode,
+        ProviderQuotaCredits, ProviderQuotaResponse, ProviderQuotaSnapshot, ProviderQuotaSummary,
+        ProviderQuotaWindow, QuotaSource, QuotaSupportStatus, ResponseEvents, ResponsesRequest,
+        SelectedRoute, UpdateGatewayLogSettingsRequest, UpdateSelectedModelRequest,
+        UpdateSelectedProviderRequest, UpstreamProtocol, UpstreamRateLimitStatusDetails,
+        UpstreamRateLimitStatusPayload, UpstreamRateLimitWindowSnapshot,
+        response_events_to_response_value, response_events_to_sse_lines,
     },
     store::{
         AccountStore, LogEvent, LogStage, LogStore, ModelStore, ProviderStore, RouteStore,
@@ -24,16 +22,15 @@ use crate::{
     },
     support::time::now_unix,
     upstream::{
-        GOOGLE_PROJECT_ID_FALLBACK, OPENAI_CODEX_BASE_URL, OpenAiEndpoint,
-        PrivateOpenAiRequestBuilder, PublicOpenAiRequestBuilder, UpstreamClient,
-        chat_completions_api_url, responses_api_url,
+        OPENAI_CODEX_BASE_URL, OpenAiEndpoint, PrivateOpenAiRequestBuilder,
+        PublicOpenAiRequestBuilder, UpstreamClient, chat_completions_api_url, responses_api_url,
     },
 };
 use async_stream::stream;
 use axum::{
     body::{Body, Bytes},
-    extract::{Form, Host, Path as AxumPath, Query, State},
-    http::{HeaderMap, HeaderValue, StatusCode},
+    extract::{Form, Path as AxumPath, Query, State},
+    http::{HeaderValue, StatusCode},
     response::{Html, IntoResponse, Json, Redirect, Response},
 };
 use chrono::{Local, TimeZone};
@@ -72,24 +69,6 @@ pub async fn healthz() -> &'static str {
     "ok"
 }
 
-pub async fn auth_google_start(
-    State(state): State<AppState>,
-    Host(host): Host,
-    headers: HeaderMap,
-) -> Result<Redirect, AppError> {
-    let scheme = headers
-        .get("x-forwarded-proto")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("http");
-    let callback_url = format!("{scheme}://{host}/auth/google/callback");
-    let url = state
-        .oauth
-        .create_auth_url(callback_url)
-        .await
-        .map_err(AppError::bad_request)?;
-    Ok(Redirect::temporary(&url))
-}
-
 pub async fn auth_openai_start(State(state): State<AppState>) -> Result<Redirect, AppError> {
     let url = state
         .oauth
@@ -111,57 +90,6 @@ fn auth_success_html(provider_name: &str, email: &str) -> Html<String> {
         "<html lang='zh-CN'><head><meta charset='utf-8'></head><body style='font-family:sans-serif;padding:32px'><h1>{provider_name} 登录成功</h1><p>账号 <strong>{email}</strong> 已加入代理池。</p><p>你现在可以关闭此页面，并调用 <code>{responses_path}</code>。</p></body></html>",
         responses_path = Config::responses_path()
     ))
-}
-
-pub async fn auth_google_callback(
-    State(state): State<AppState>,
-    Query(query): Query<OAuthCallbackQuery>,
-) -> Result<Html<String>, AppError> {
-    if let Some(error) = query.error {
-        return Err(AppError::bad_request(format!(
-            "google oauth error: {error}"
-        )));
-    }
-
-    let code = query
-        .code
-        .ok_or_else(|| AppError::bad_request("missing oauth code"))?;
-    let state_token = query
-        .state
-        .ok_or_else(|| AppError::bad_request("missing oauth state"))?;
-
-    let redirect_uri = state
-        .oauth
-        .consume_redirect_uri(&state_token)
-        .await
-        .map_err(AppError::bad_request)?;
-
-    let token = state
-        .oauth
-        .exchange_code(&code, &redirect_uri)
-        .await
-        .map_err(AppError::bad_request)?;
-    let user = state
-        .oauth
-        .get_user_info(&token.access_token)
-        .await
-        .map_err(AppError::bad_request)?;
-    let project_id = match state.upstream.fetch_project_id(&token.access_token).await {
-        Ok(project_id) => Some(project_id),
-        Err(_) => None,
-    };
-    let account = state
-        .accounts
-        .add_google_account(user, token, project_id)
-        .await
-        .map_err(AppError::bad_request)?;
-    state
-        .providers
-        .add_account_provider(PROVIDER_GOOGLE_PROXY, &account.id)
-        .await
-        .map_err(AppError::bad_request)?;
-
-    Ok(auth_success_html("Google", &account.email))
 }
 
 pub async fn auth_openai_callback(
@@ -313,44 +241,21 @@ pub async fn get_provider_quota(
 
     let quota = if provider.auth_mode == ProviderAuthMode::Account {
         let account = resolve_account_for_provider(&state, &provider).await?;
-        match account.account_type {
-            AccountType::Openai => {
-                let private_usage = PrivateOpenAiRequestBuilder {
-                    base_url: OPENAI_CODEX_BASE_URL,
-                    access_token: account.access_token(),
-                    account_id: account.upstream_account_id(),
-                    client_version: None,
-                };
-                let upstream = state
-                    .upstream
-                    .openai_send(&private_usage, OpenAiEndpoint::Usage)
-                    .await
-                    .map_err(AppError::upstream_message)?;
-                let raw: Value = upstream.json().await.map_err(AppError::upstream)?;
-                let payload: UpstreamRateLimitStatusPayload = serde_json::from_value(raw)
-                    .map_err(|err| AppError::upstream_message(err.to_string()))?;
-                quota_from_openai_usage(payload)
-            }
-            AccountType::Google => {
-                let raw = match state
-                    .upstream
-                    .fetch_google_available_models(account.access_token(), account.project_id())
-                    .await
-                {
-                    Ok(raw) => raw,
-                    Err(err) if is_google_quota_forbidden_error(&err) => {
-                        return Ok(Json(ProviderQuotaResponse {
-                            provider: provider_summary,
-                            quota: google_forbidden_quota_summary(),
-                        }));
-                    }
-                    Err(err) => return Err(AppError::upstream_message(err)),
-                };
-                let payload: GoogleAvailableModelsQuotaPayload = serde_json::from_value(raw)
-                    .map_err(|err| AppError::upstream_message(err.to_string()))?;
-                quota_from_google_available_models(payload)
-            }
-        }
+        let private_usage = PrivateOpenAiRequestBuilder {
+            base_url: OPENAI_CODEX_BASE_URL,
+            access_token: account.access_token(),
+            account_id: account.upstream_account_id(),
+            client_version: None,
+        };
+        let upstream = state
+            .upstream
+            .openai_send(&private_usage, OpenAiEndpoint::Usage)
+            .await
+            .map_err(AppError::upstream_message)?;
+        let raw: Value = upstream.json().await.map_err(AppError::upstream)?;
+        let payload: UpstreamRateLimitStatusPayload = serde_json::from_value(raw)
+            .map_err(|err| AppError::upstream_message(err.to_string()))?;
+        quota_from_openai_usage(payload)
     } else {
         unsupported_quota_summary(format!("missing provider record for `{}`", provider.name))
     };
@@ -1086,556 +991,6 @@ pub(super) async fn responses_inner(
             .map_err(|err| AppError::internal(err.to_string()))?);
     }
 
-    if provider.auth_mode == ProviderAuthMode::Account && provider.name == PROVIDER_GOOGLE_PROXY {
-        let gemini_request = responses_to_gemini(&request).map_err(AppError::bad_request)?;
-        let account = resolve_account_for_provider(&state, &provider).await?;
-        let project_id = google_project_id_for_request(&account).to_string();
-        let request_body = wrap_v1internal(
-            serde_json::to_value(&gemini_request)
-                .map_err(|err| AppError::internal(err.to_string()))?,
-            &project_id,
-            &request.model,
-            &account.id,
-        );
-        let method = if request.stream {
-            "streamGenerateContent"
-        } else {
-            "generateContent"
-        };
-        let upstream_url = google_v1internal_url_label(method, request.stream);
-
-        log_http_event(
-            &state.logs,
-            &id,
-            LogStage::UpstreamRequest,
-            None,
-            Some(ClientProtocol::OpenAiResponses.as_str()),
-            Some(UpstreamProtocol::GoogleV1Internal.as_str()),
-            Some(&provider.name),
-            Some(&account.id),
-            Some(&account.email),
-            Some(&request.model),
-            request.stream,
-            Some("POST"),
-            None,
-            Some(&upstream_url),
-            Some(json_value_for_storage(&request_body)),
-            None,
-            None,
-        )
-        .await;
-
-        let upstream = state
-            .upstream
-            .call_v1internal(
-                method,
-                &id,
-                account.access_token(),
-                request_body,
-                request.stream,
-            )
-            .await
-            .map_err(AppError::upstream_message)?;
-        let upstream_status = upstream.status();
-
-        if !request.stream {
-            let gemini_body: Value = upstream.json().await.map_err(AppError::upstream)?;
-            let response_events = gemini_to_responses(&request.model, &gemini_body);
-            let response =
-                response_events_to_response_value(&response_events, &request.model, now_unix());
-            let elapsed = elapsed_ms(started_at);
-            let upstream_body = json_value_for_storage(&gemini_body);
-            let response_body = json_for_storage(&response);
-            log_http_event(
-                &state.logs,
-                &id,
-                LogStage::ClientResponse,
-                Some(upstream_status),
-                Some(ClientProtocol::OpenAiResponses.as_str()),
-                Some(UpstreamProtocol::GoogleV1Internal.as_str()),
-                Some(&provider.name),
-                Some(&account.id),
-                Some(&account.email),
-                Some(&request.model),
-                false,
-                Some("POST"),
-                None,
-                Some(&upstream_url),
-                Some(upstream_body),
-                None,
-                Some(elapsed),
-            )
-            .await;
-            log_http_event(
-                &state.logs,
-                &id,
-                LogStage::UpstreamResponse,
-                Some(StatusCode::OK),
-                Some(ClientProtocol::OpenAiResponses.as_str()),
-                None,
-                Some(&provider.name),
-                Some(&account.id),
-                Some(&account.email),
-                Some(&request.model),
-                false,
-                Some("POST"),
-                Some(Config::responses_path()),
-                None,
-                Some(response_body),
-                None,
-                Some(elapsed),
-            )
-            .await;
-            return Ok((
-                StatusCode::OK,
-                [
-                    ("x-account-email", account.email.as_str()),
-                    ("x-provider", provider.name.as_str()),
-                ],
-                Json(response),
-            )
-                .into_response());
-        }
-
-        let model = request.model.clone();
-        let id_for_stream = id.clone();
-        let provider_name = provider.name.clone();
-        let account_id = account.id.clone();
-        let account_email = account.email.clone();
-        let logs = state.logs.clone();
-        let output = stream! {
-            let encode_event = |value: &Value| -> Result<String, std::io::Error> {
-                serde_json::to_string(value)
-                    .map(|body| format!("data: {body}\n\n"))
-                    .map_err(std::io::Error::other)
-            };
-            let mut stream = upstream.bytes_stream();
-            let mut buffer = String::new();
-            let mut upstream_body = String::new();
-            let mut final_upstream_body: Option<String> = None;
-            let mut client_body = String::new();
-            let response_id = format!("resp_{}", Uuid::new_v4().simple());
-            let message_item_id = format!("msg_{}", Uuid::new_v4().simple());
-            let mut message_item_started = false;
-            let mut accumulated_text = String::new();
-            let mut completed_output_items: Vec<Value> = Vec::new();
-            let mut emitted_tool_calls = std::collections::HashSet::new();
-
-            let created = json!({
-                "type": "response.created",
-                "response": {
-                    "id": &response_id,
-                    "object": "response",
-                    "status": "in_progress",
-                    "output": []
-                }
-            });
-            match encode_event(&created) {
-                Ok(event) => {
-                    append_to_log_buffer(&mut client_body, &event);
-
-                    yield Ok::<Bytes, std::io::Error>(Bytes::from(event));
-                }
-                Err(err) => {
-                    let error_message = err.to_string();
-                    log_http_event(
-                        &logs,
-                        &id_for_stream,
-                        LogStage::Error,
-                        Some(StatusCode::INTERNAL_SERVER_ERROR),
-                        Some(ClientProtocol::OpenAiResponses.as_str()),
-                        Some(UpstreamProtocol::GoogleV1Internal.as_str()),
-                        Some(&provider_name),
-                        Some(&account_id),
-                        Some(&account_email),
-                        Some(&model),
-                        true,
-                        Some("POST"),
-                        Some(Config::responses_path()),
-                        Some(&upstream_url),
-                        Some(client_body.clone()),
-                        Some(error_message),
-                        Some(elapsed_ms(started_at)),
-                    )
-                    .await;
-                    yield Err(err);
-                    return;
-                }
-            }
-
-            while let Some(result) = stream.next().await {
-                let chunk = match result {
-                    Ok(chunk) => chunk,
-                    Err(err) => {
-                        let error_message = err.to_string();
-                        log_http_event(
-                            &logs,
-                            &id_for_stream,
-                            LogStage::Error,
-                            Some(StatusCode::BAD_GATEWAY),
-                            Some(ClientProtocol::OpenAiResponses.as_str()),
-                            Some(UpstreamProtocol::GoogleV1Internal.as_str()),
-                            Some(&provider_name),
-                            Some(&account_id),
-                            Some(&account_email),
-                            Some(&model),
-                            true,
-                            Some("POST"),
-                            Some(Config::responses_path()),
-                            Some(&upstream_url),
-                            Some(upstream_body.clone()),
-                            Some(error_message),
-                            Some(elapsed_ms(started_at)),
-                        )
-                        .await;
-                        yield Err(std::io::Error::other(err));
-                        return;
-                    }
-                };
-
-                let chunk_text = String::from_utf8_lossy(&chunk);
-                append_to_log_buffer(&mut upstream_body, &chunk_text);
-                buffer.push_str(&chunk_text);
-
-                while let Some(line_end) = buffer.find('\n') {
-                    let line: String = buffer.drain(..=line_end).collect();
-                    let line = line.trim();
-                    if !line.starts_with("data: ") {
-                        continue;
-                    }
-
-                    let payload = &line[6..];
-                    if payload == "[DONE]" {
-                        continue;
-                    }
-
-                    let gemini_event: Value = match serde_json::from_str(payload) {
-                        Ok(value) => value,
-                        Err(_) => {
-                            continue;
-                        }
-                    };
-                    final_upstream_body = Some(json_value_for_storage(&gemini_event));
-
-                    let raw = gemini_event.get("response").unwrap_or(&gemini_event);
-                    let candidate = raw
-                        .get("candidates")
-                        .and_then(Value::as_array)
-                        .and_then(|candidates| candidates.first());
-
-                    if let Some(parts) = candidate
-                        .and_then(|candidate| candidate.get("content"))
-                        .and_then(|content| content.get("parts"))
-                        .and_then(Value::as_array)
-                    {
-                        for part in parts {
-                            if let Some(text) = part.get("text").and_then(Value::as_str) {
-                                if !text.is_empty() {
-                                    if !message_item_started {
-                                        let output_item_added = json!({
-                                            "type": "response.output_item.added",
-                                            "output_index": 0,
-                                            "item": {
-                                                "id": &message_item_id,
-                                                "type": "message",
-                                                "role": "assistant",
-                                                "status": "in_progress",
-                                                "content": []
-                                            }
-                                        });
-                                        match encode_event(&output_item_added) {
-                                            Ok(event) => {
-                                                append_to_log_buffer(&mut client_body, &event);
-
-                                                yield Ok(Bytes::from(event));
-                                            }
-                                            Err(err) => {
-                                                yield Err(err);
-                                                return;
-                                            }
-                                        }
-
-                                        let content_part_added = json!({
-                                            "type": "response.content_part.added",
-                                            "item_id": &message_item_id,
-                                            "output_index": 0,
-                                            "content_index": 0,
-                                            "part": {
-                                                "type": "output_text",
-                                                "text": ""
-                                            }
-                                        });
-                                        match encode_event(&content_part_added) {
-                                            Ok(event) => {
-                                                append_to_log_buffer(&mut client_body, &event);
-
-                                                yield Ok(Bytes::from(event));
-                                            }
-                                            Err(err) => {
-                                                yield Err(err);
-                                                return;
-                                            }
-                                        }
-                                        message_item_started = true;
-                                    }
-
-                                    accumulated_text.push_str(text);
-                                    let delta = json!({
-                                        "type": "response.output_text.delta",
-                                        "item_id": &message_item_id,
-                                        "output_index": 0,
-                                        "content_index": 0,
-                                        "delta": text
-                                    });
-                                    match encode_event(&delta) {
-                                        Ok(event) => {
-                                            append_to_log_buffer(&mut client_body, &event);
-
-                                            yield Ok(Bytes::from(event));
-                                        }
-                                        Err(err) => {
-                                            yield Err(err);
-                                            return;
-                                        }
-                                    }
-                                }
-                            }
-
-                            if let Some(function_call) = part.get("functionCall") {
-                                let call_key = function_call
-                                    .get("id")
-                                    .and_then(Value::as_str)
-                                    .map(ToOwned::to_owned)
-                                    .unwrap_or_else(|| function_call.to_string());
-
-                                if emitted_tool_calls.insert(call_key.clone()) {
-                                    let call_id = function_call
-                                        .get("id")
-                                        .and_then(Value::as_str)
-                                        .map(ToOwned::to_owned)
-                                        .unwrap_or_else(|| format!("call_{}", Uuid::new_v4().simple()));
-                                    let tool_item = json!({
-                                        "id": format!("fc_{}", Uuid::new_v4().simple()),
-                                        "type": "function_call",
-                                        "call_id": call_id,
-                                        "name": function_call
-                                            .get("name")
-                                            .and_then(Value::as_str)
-                                            .unwrap_or("unknown"),
-                                        "arguments": function_call
-                                            .get("args")
-                                            .map(Value::to_string)
-                                            .unwrap_or_else(|| "{}".to_string()),
-                                        "status": "completed"
-                                    });
-                                    let added = json!({
-                                        "type": "response.output_item.added",
-                                        "output_index": completed_output_items.len(),
-                                        "item": tool_item
-                                    });
-                                    match encode_event(&added) {
-                                        Ok(event) => {
-                                            append_to_log_buffer(&mut client_body, &event);
-
-                                            yield Ok(Bytes::from(event));
-                                        }
-                                        Err(err) => {
-                                            yield Err(err);
-                                            return;
-                                        }
-                                    }
-
-                                    let done = json!({
-                                        "type": "response.output_item.done",
-                                        "output_index": completed_output_items.len(),
-                                        "item": added["item"].clone()
-                                    });
-                                    match encode_event(&done) {
-                                        Ok(event) => {
-                                            append_to_log_buffer(&mut client_body, &event);
-
-                                            yield Ok(Bytes::from(event));
-                                        }
-                                        Err(err) => {
-                                            yield Err(err);
-                                            return;
-                                        }
-                                    }
-                                    completed_output_items.push(added["item"].clone());
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            if message_item_started {
-                let text_done = json!({
-                    "type": "response.output_text.done",
-                    "item_id": &message_item_id,
-                    "output_index": 0,
-                    "content_index": 0,
-                    "text": &accumulated_text
-                });
-                match encode_event(&text_done) {
-                    Ok(event) => {
-                        append_to_log_buffer(&mut client_body, &event);
-
-                        yield Ok(Bytes::from(event));
-                    }
-                    Err(err) => {
-                        yield Err(err);
-                        return;
-                    }
-                }
-
-                let content_part_done = json!({
-                    "type": "response.content_part.done",
-                    "item_id": &message_item_id,
-                    "output_index": 0,
-                    "content_index": 0,
-                    "part": {
-                        "type": "output_text",
-                        "text": &accumulated_text
-                    }
-                });
-                match encode_event(&content_part_done) {
-                    Ok(event) => {
-                        append_to_log_buffer(&mut client_body, &event);
-
-                        yield Ok(Bytes::from(event));
-                    }
-                    Err(err) => {
-                        yield Err(err);
-                        return;
-                    }
-                }
-
-                let message_item = json!({
-                    "id": &message_item_id,
-                    "type": "message",
-                    "role": "assistant",
-                    "status": "completed",
-                    "content": [{
-                        "type": "output_text",
-                        "text": &accumulated_text
-                    }]
-                });
-                let output_index = completed_output_items.len();
-                let output_item_done = json!({
-                    "type": "response.output_item.done",
-                    "output_index": output_index,
-                    "item": message_item
-                });
-                match encode_event(&output_item_done) {
-                    Ok(event) => {
-                        append_to_log_buffer(&mut client_body, &event);
-
-                        yield Ok(Bytes::from(event));
-                    }
-                    Err(err) => {
-                        yield Err(err);
-                        return;
-                    }
-                }
-                completed_output_items.push(message_item);
-            }
-
-            let completed = json!({
-                "type": "response.completed",
-                "response": {
-                    "id": &response_id,
-                    "object": "response",
-                    "status": "completed",
-                    "model": &model,
-                    "output": completed_output_items
-                }
-            });
-            let final_client_body = completed
-                .get("response")
-                .map(json_value_for_storage)
-                .unwrap_or_else(|| client_body.clone());
-            match encode_event(&completed) {
-                Ok(event) => {
-                    append_to_log_buffer(&mut client_body, &event);
-
-                    yield Ok(Bytes::from(event));
-                }
-                Err(err) => {
-                    yield Err(err);
-                    return;
-                }
-            }
-
-
-            let done = "data: [DONE]\n\n".to_string();
-            append_to_log_buffer(&mut client_body, &done);
-            let elapsed = elapsed_ms(started_at);
-            log_http_event(
-                &logs,
-                &id_for_stream,
-                LogStage::ClientResponse,
-                Some(upstream_status),
-                Some(ClientProtocol::OpenAiResponses.as_str()),
-                Some(UpstreamProtocol::GoogleV1Internal.as_str()),
-                Some(&provider_name),
-                Some(&account_id),
-                Some(&account_email),
-                Some(&model),
-                true,
-                Some("POST"),
-                None,
-                Some(&upstream_url),
-                Some(final_upstream_body.unwrap_or(upstream_body)),
-                None,
-                Some(elapsed),
-            )
-            .await;
-            log_http_event(
-                &logs,
-                &id_for_stream,
-                LogStage::UpstreamResponse,
-                Some(StatusCode::OK),
-                Some(ClientProtocol::OpenAiResponses.as_str()),
-                None,
-                Some(&provider_name),
-                Some(&account_id),
-                Some(&account_email),
-                Some(&model),
-                true,
-                Some("POST"),
-                Some(Config::responses_path()),
-                None,
-                Some(final_client_body),
-                None,
-                Some(elapsed),
-            )
-            .await;
-            yield Ok(Bytes::from(done));
-        };
-
-        return Ok(Response::builder()
-            .status(StatusCode::OK)
-            .header(
-                "content-type",
-                HeaderValue::from_static("text/event-stream"),
-            )
-            .header("cache-control", HeaderValue::from_static("no-cache"))
-            .header("connection", HeaderValue::from_static("keep-alive"))
-            .header(
-                "x-account-email",
-                HeaderValue::from_str(&account.email)
-                    .map_err(|err| AppError::internal(err.to_string()))?,
-            )
-            .header(
-                "x-provider",
-                HeaderValue::from_str(&provider.name)
-                    .map_err(|err| AppError::internal(err.to_string()))?,
-            )
-            .body(Body::from_stream(output))
-            .map_err(|err| AppError::internal(err.to_string()))?);
-    }
-
     if provider.auth_mode == ProviderAuthMode::Account {
         return Err(AppError::bad_request(format!(
             "account auth provider is not supported yet: {}",
@@ -2073,14 +1428,6 @@ async fn fetch_provider_models(
 ) -> Result<ModelListResponse, AppError> {
     if provider.auth_mode == ProviderAuthMode::Account {
         let account = resolve_account_for_provider(state, provider).await?;
-        if provider.name == PROVIDER_GOOGLE_PROXY {
-            let raw = state
-                .upstream
-                .fetch_google_available_models(account.access_token(), account.project_id())
-                .await
-                .map_err(AppError::upstream_message)?;
-            return google_models_response(&provider.name, &raw);
-        }
         if provider.name == PROVIDER_OPENAI_PROXY {
             let client_version = state._config.codex_client_version();
             let private_models = PrivateOpenAiRequestBuilder {
@@ -2220,25 +1567,6 @@ fn normalize_selected_model(model: String) -> Result<String, AppError> {
     Ok(trimmed.to_string())
 }
 
-fn google_models_response(_provider: &str, raw: &Value) -> Result<ModelListResponse, AppError> {
-    let models = raw
-        .get("models")
-        .and_then(Value::as_object)
-        .ok_or_else(|| AppError::upstream_message("google models payload missing `models`"))?;
-
-    let mut data = Vec::with_capacity(models.len());
-    for (id, meta) in models {
-        let _ = meta;
-        data.push(ModelListItem { id: id.clone() });
-    }
-    data.sort_by(|left, right| left.id.cmp(&right.id));
-
-    Ok(ModelListResponse {
-        object: "list".to_string(),
-        data,
-    })
-}
-
 fn native_models_response(_provider: &str, raw: &Value) -> Result<ModelListResponse, AppError> {
     let entries: Vec<&Value> = if let Some(data) = raw.get("data").and_then(Value::as_array) {
         data.iter().collect()
@@ -2364,7 +1692,6 @@ pub(super) fn provider_uses_openai_account(provider: &ResolvedProvider) -> bool 
         .as_ref()
         .and_then(|record| record.account_id.as_ref())
         .is_some()
-        && provider.name != PROVIDER_GOOGLE_PROXY
 }
 
 async fn hydrated_provider_summaries(state: &AppState) -> Vec<ApiProviderSummary> {
@@ -2446,130 +1773,6 @@ fn quota_from_openai_usage(payload: UpstreamRateLimitStatusPayload) -> ProviderQ
             .collect(),
         message: None,
     }
-}
-
-#[derive(Debug, Deserialize)]
-struct GoogleAvailableModelsQuotaPayload {
-    #[serde(default)]
-    models: std::collections::HashMap<String, GoogleAvailableModelQuotaInfo>,
-}
-
-#[derive(Debug, Deserialize)]
-struct GoogleAvailableModelQuotaInfo {
-    #[serde(rename = "quotaInfo")]
-    quota_info: Option<GoogleModelQuotaInfo>,
-    #[serde(rename = "displayName")]
-    display_name: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct GoogleModelQuotaInfo {
-    #[serde(rename = "remainingFraction")]
-    remaining_fraction: Option<f64>,
-    #[serde(rename = "resetTime")]
-    reset_time: Option<String>,
-}
-
-fn quota_from_google_available_models(
-    payload: GoogleAvailableModelsQuotaPayload,
-) -> ProviderQuotaSummary {
-    let mut snapshots: Vec<ProviderQuotaSnapshot> = payload
-        .models
-        .into_iter()
-        .filter(|(name, _)| google_model_has_visible_quota(name))
-        .filter_map(|(name, model)| google_model_quota_snapshot(name, model))
-        .collect();
-
-    snapshots.sort_by(|left, right| {
-        let left_used = left
-            .primary
-            .as_ref()
-            .map_or(0.0, |window| window.used_percent);
-        let right_used = right
-            .primary
-            .as_ref()
-            .map_or(0.0, |window| window.used_percent);
-        right_used
-            .total_cmp(&left_used)
-            .then_with(|| left.limit_id.cmp(&right.limit_id))
-    });
-
-    if snapshots.is_empty() {
-        return ProviderQuotaSummary {
-            source: QuotaSource::GoogleV1InternalModelsApi,
-            status: QuotaSupportStatus::Supported,
-            snapshot: None,
-            additional_snapshots: Vec::new(),
-            message: Some("Google 额度接口已接通，但响应中没有可视化窗口数据。".to_string()),
-        };
-    }
-
-    let snapshot = snapshots.remove(0);
-    ProviderQuotaSummary {
-        source: QuotaSource::GoogleV1InternalModelsApi,
-        status: QuotaSupportStatus::Supported,
-        snapshot: Some(snapshot),
-        additional_snapshots: snapshots,
-        message: None,
-    }
-}
-
-fn google_forbidden_quota_summary() -> ProviderQuotaSummary {
-    ProviderQuotaSummary {
-        source: QuotaSource::GoogleV1InternalModelsApi,
-        status: QuotaSupportStatus::Unsupported,
-        snapshot: None,
-        additional_snapshots: Vec::new(),
-        message: Some("Google 返回 403 Forbidden，当前账号暂时无法读取额度窗口。".to_string()),
-    }
-}
-
-fn is_google_quota_forbidden_error(error: &str) -> bool {
-    let lower = error.to_ascii_lowercase();
-    error.contains("403")
-        || lower.contains("forbidden")
-        || lower.contains("permission_denied")
-        || lower.contains("permission denied")
-}
-
-fn google_model_has_visible_quota(name: &str) -> bool {
-    name.starts_with("gemini")
-        || name.starts_with("claude")
-        || name.starts_with("gpt")
-        || name.starts_with("image")
-        || name.starts_with("imagen")
-}
-
-fn google_model_quota_snapshot(
-    name: String,
-    model: GoogleAvailableModelQuotaInfo,
-) -> Option<ProviderQuotaSnapshot> {
-    let quota = model.quota_info?;
-    let remaining_fraction = quota.remaining_fraction?;
-    let remaining_percent = (remaining_fraction * 100.0).clamp(0.0, 100.0);
-    let used_percent = 100.0 - remaining_percent;
-
-    Some(ProviderQuotaSnapshot {
-        limit_id: Some(name),
-        limit_name: model.display_name,
-        primary: Some(ProviderQuotaWindow {
-            used_percent,
-            window_minutes: None,
-            resets_at: quota
-                .reset_time
-                .as_deref()
-                .and_then(parse_google_reset_time_unix),
-        }),
-        secondary: None,
-        credits: None,
-        plan_type: None,
-    })
-}
-
-fn parse_google_reset_time_unix(reset_time: &str) -> Option<i64> {
-    chrono::DateTime::parse_from_rfc3339(reset_time)
-        .ok()
-        .map(|time| time.timestamp())
 }
 
 fn rate_limit_snapshot_from_payload(
@@ -2773,21 +1976,6 @@ pub(super) fn logged_stream_response_body(
     response_body.to_string()
 }
 
-fn google_v1internal_url_label(method: &str, stream: bool) -> String {
-    if stream {
-        format!("google-v1internal:{method}?alt=sse")
-    } else {
-        format!("google-v1internal:{method}")
-    }
-}
-
-fn google_project_id_for_request(account: &AccountRecord) -> &str {
-    account
-        .project_id()
-        .filter(|project_id| !project_id.trim().is_empty())
-        .unwrap_or(GOOGLE_PROJECT_ID_FALLBACK)
-}
-
 pub(super) fn elapsed_ms(started_at: Instant) -> i64 {
     started_at.elapsed().as_millis().min(i64::MAX as u128) as i64
 }
@@ -2851,8 +2039,8 @@ impl IntoResponse for AppError {
 mod tests {
     use super::{
         ResolvedProvider, capture_final_response_from_sse_chunk, logged_stream_response_body,
-        openai_models_response, provider_uses_openai_account, quota_from_google_available_models,
-        quota_from_openai_usage, resolve_native_target,
+        openai_models_response, provider_uses_openai_account, quota_from_openai_usage,
+        resolve_native_target,
     };
     use crate::models::{
         ApiProviderBillingMode, ApiProviderRecord, ProviderAuthMode, UpstreamProtocol,
@@ -2962,74 +2150,6 @@ mod tests {
             quota.additional_snapshots[0].limit_id.as_deref(),
             Some("codex_other")
         );
-    }
-
-    #[test]
-    fn maps_google_available_models_payload_to_gateway_quota_snapshot() {
-        let payload = serde_json::from_value(json!({
-            "models": {
-                "chat-bison": {
-                    "quotaInfo": {
-                        "remainingFraction": 0.99,
-                        "resetTime": "2026-04-19T12:00:00Z"
-                    }
-                },
-                "gemini-3-pro-preview": {
-                    "displayName": "Gemini 3 Pro",
-                    "quotaInfo": {
-                        "remainingFraction": 0.25,
-                        "resetTime": "2026-04-19T08:30:00Z"
-                    }
-                },
-                "gemini-2.5-flash": {
-                    "displayName": "Gemini 2.5 Flash",
-                    "quotaInfo": {
-                        "remainingFraction": 0.8,
-                        "resetTime": "2026-04-19T09:00:00Z"
-                    }
-                }
-            }
-        }))
-        .expect("payload should parse");
-
-        let quota = quota_from_google_available_models(payload);
-
-        assert_eq!(
-            quota.source,
-            crate::models::QuotaSource::GoogleV1InternalModelsApi
-        );
-        assert_eq!(quota.status, crate::models::QuotaSupportStatus::Supported);
-        assert_eq!(
-            quota
-                .snapshot
-                .as_ref()
-                .and_then(|snapshot| snapshot.limit_id.as_deref()),
-            Some("gemini-3-pro-preview")
-        );
-        assert_eq!(
-            quota
-                .snapshot
-                .as_ref()
-                .and_then(|snapshot| snapshot.limit_name.as_deref()),
-            Some("Gemini 3 Pro")
-        );
-        assert_eq!(
-            quota
-                .snapshot
-                .as_ref()
-                .and_then(|snapshot| snapshot.primary.as_ref())
-                .map(|window| window.used_percent),
-            Some(75.0)
-        );
-        assert_eq!(
-            quota
-                .snapshot
-                .as_ref()
-                .and_then(|snapshot| snapshot.primary.as_ref())
-                .and_then(|window| window.resets_at),
-            Some(1776587400)
-        );
-        assert_eq!(quota.additional_snapshots.len(), 1);
     }
 
     #[test]

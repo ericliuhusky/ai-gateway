@@ -307,7 +307,7 @@ fn web_search_call_to_message(
             id: call_id,
             r#type: "function".to_string(),
             function: ToolFunction {
-                name: "google_search".to_string(),
+                name: "web_search".to_string(),
                 arguments: Value::Object(args).to_string(),
             },
         }]),

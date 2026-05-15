@@ -1,9 +1,9 @@
 use crate::api::handlers::{
-    add_provider, apply_codex_config, auth_google_callback, auth_google_start,
-    auth_openai_callback, auth_openai_start, clear_logs, clear_selected_model, debug_clear_logs,
-    debug_dashboard, debug_set_log_settings, delete_provider, get_codex_config_status,
-    get_log_detail, get_log_settings, get_logs, get_provider_quota, get_route, get_selected_model,
-    healthz, import_openai_from_local_codex_auth, list_models, list_providers, responses,
+    add_provider, apply_codex_config, auth_openai_callback, auth_openai_start, clear_logs,
+    clear_selected_model, debug_clear_logs, debug_dashboard, debug_set_log_settings,
+    delete_provider, get_codex_config_status, get_log_detail, get_log_settings, get_logs,
+    get_provider_quota, get_route, get_selected_model, healthz,
+    import_openai_from_local_codex_auth, list_models, list_providers, responses,
     restore_codex_config, set_log_settings, set_route, set_selected_model,
 };
 use axum::{
@@ -16,8 +16,6 @@ use super::AppState;
 pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
-        .route("/auth/google/start", get(auth_google_start))
-        .route("/auth/google/callback", get(auth_google_callback))
         .route("/auth/openai/start", get(auth_openai_start))
         .route("/auth/callback", get(auth_openai_callback))
         .route("/auth/openai/callback", get(auth_openai_callback))

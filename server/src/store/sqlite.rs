@@ -41,7 +41,7 @@ impl SqliteStore {
         let conn = self.connect()?;
         let mut stmt = conn
             .prepare(
-                "SELECT id, account_type, email, access_token, refresh_token, expiry_timestamp, client_id, project_id, upstream_account_id
+                "SELECT id, account_type, email, access_token, refresh_token, expiry_timestamp, client_id, upstream_account_id
                  FROM accounts
                  ORDER BY rowid ASC",
             )
@@ -57,8 +57,7 @@ impl SqliteStore {
                     refresh_token: row.get(4)?,
                     expiry_timestamp: row.get(5)?,
                     client_id: row.get(6)?,
-                    project_id: row.get(7)?,
-                    upstream_account_id: row.get(8)?,
+                    upstream_account_id: row.get(7)?,
                 })
             })
             .map_err(|err| format!("query accounts failed: {err}"))?;
@@ -220,7 +219,6 @@ impl SqliteStore {
                 refresh_token TEXT NOT NULL,
                 expiry_timestamp INTEGER NOT NULL,
                 client_id TEXT,
-                project_id TEXT,
                 upstream_account_id TEXT
             );
 
@@ -273,8 +271,8 @@ impl SqliteStore {
 fn upsert_account_record(conn: &Connection, account: &AccountRecord) -> Result<(), String> {
     conn.execute(
         "INSERT INTO accounts (
-            id, account_type, email, access_token, refresh_token, expiry_timestamp, client_id, project_id, upstream_account_id
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            id, account_type, email, access_token, refresh_token, expiry_timestamp, client_id, upstream_account_id
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
          ON CONFLICT(id) DO UPDATE SET
             account_type = excluded.account_type,
             email = excluded.email,
@@ -282,7 +280,6 @@ fn upsert_account_record(conn: &Connection, account: &AccountRecord) -> Result<(
             refresh_token = excluded.refresh_token,
             expiry_timestamp = excluded.expiry_timestamp,
             client_id = excluded.client_id,
-            project_id = excluded.project_id,
             upstream_account_id = excluded.upstream_account_id",
         params![
             account.id,
@@ -292,7 +289,6 @@ fn upsert_account_record(conn: &Connection, account: &AccountRecord) -> Result<(
             account.refresh_token,
             account.expiry_timestamp,
             account.client_id,
-            account.project_id,
             account.upstream_account_id
         ],
     )
@@ -385,7 +381,6 @@ fn set_provider_selected_model_record(
 fn account_type_to_str(value: &AccountType) -> &'static str {
     match value {
         AccountType::Openai => "openai",
-        AccountType::Google => "google",
     }
 }
 
@@ -394,7 +389,6 @@ fn account_type_from_str(
 ) -> Result<AccountType, Box<dyn std::error::Error + Send + Sync>> {
     match value {
         "openai" => Ok(AccountType::Openai),
-        "google" => Ok(AccountType::Google),
         other => Err(format!("unknown account_type: {other}").into()),
     }
 }

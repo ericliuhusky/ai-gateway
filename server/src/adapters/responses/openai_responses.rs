@@ -130,7 +130,7 @@ fn normalize_input_item(item: &mut Value, _provider_name: &str) {
             *item = json!({
                 "type": "function_call",
                 "call_id": call_id,
-                "name": "google_search",
+                "name": "web_search",
                 "arguments": Value::Object(build_web_search_arguments(object.get("action"))).to_string(),
             });
             return;
@@ -253,7 +253,7 @@ fn normalize_native_tool_choice(tool_choice: &mut Value) {
 fn normalized_tool_name(tool_type: &str, fallback_name: Option<&str>) -> String {
     match tool_type {
         "local_shell" | "shell_command" => "shell".to_string(),
-        "web_search" => "google_search".to_string(),
+        "web_search" => "web_search".to_string(),
         other => fallback_name
             .filter(|name| !name.trim().is_empty())
             .unwrap_or(other)

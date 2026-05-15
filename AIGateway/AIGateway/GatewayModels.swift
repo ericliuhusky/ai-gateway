@@ -251,14 +251,11 @@ enum ProviderCreationMode: String, CaseIterable, Identifiable {
 
 enum AccountLoginProvider: String, CaseIterable, Identifiable {
     case openai
-    case google
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .google:
-            return "Google"
         case .openai:
             return "OpenAI"
         }

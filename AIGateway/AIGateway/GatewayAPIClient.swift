@@ -84,8 +84,6 @@ struct GatewayAPIClient: Sendable {
 
     func loginURL(for provider: AccountLoginProvider) -> URL {
         switch provider {
-        case .google:
-            return baseURL.appending(path: "auth/google/start")
         case .openai:
             return baseURL.appending(path: "auth/openai/start")
         }

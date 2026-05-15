@@ -13,7 +13,6 @@ pub struct CachedProviderModels {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpstreamProtocol {
     OpenAiPrivateResponses,
-    GoogleV1Internal,
     NativeResponses,
     NativeChatCompletions,
 }
@@ -30,7 +29,6 @@ impl UpstreamProtocol {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::OpenAiPrivateResponses => "openai-private-responses",
-            Self::GoogleV1Internal => "google-v1internal",
             Self::NativeResponses => "native-responses",
             Self::NativeChatCompletions => "native-chat-completions",
         }

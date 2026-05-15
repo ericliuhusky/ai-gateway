@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-pub const PROVIDER_GOOGLE_PROXY: &str = "google-proxy";
 pub const PROVIDER_OPENAI_PROXY: &str = "openai-proxy";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -28,7 +27,6 @@ pub enum ProviderAuthMode {
 #[serde(rename_all = "snake_case")]
 pub enum AccountType {
     Openai,
-    Google,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -125,7 +123,6 @@ pub struct ModelListItem {
 #[serde(rename_all = "snake_case")]
 pub enum QuotaSource {
     ChatgptCodexUsageApi,
-    GoogleV1InternalModelsApi,
     Unsupported,
 }
 
@@ -247,8 +244,6 @@ pub struct AccountRecord {
     pub expiry_timestamp: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub project_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", alias = "account_id")]
     pub upstream_account_id: Option<String>,
 }
@@ -257,7 +252,6 @@ impl AccountRecord {
     pub fn provider(&self) -> &str {
         match self.account_type {
             AccountType::Openai => PROVIDER_OPENAI_PROXY,
-            AccountType::Google => PROVIDER_GOOGLE_PROXY,
         }
     }
 
@@ -279,14 +273,6 @@ impl AccountRecord {
 
     pub fn set_expiry_timestamp(&mut self, expiry_timestamp: i64) {
         self.expiry_timestamp = expiry_timestamp;
-    }
-
-    pub fn project_id(&self) -> Option<&str> {
-        self.project_id.as_deref()
-    }
-
-    pub fn set_project_id(&mut self, project_id: String) {
-        self.project_id = Some(project_id);
     }
 
     pub fn client_id(&self) -> Option<&str> {
