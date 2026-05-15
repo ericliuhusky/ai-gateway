@@ -241,52 +241,13 @@ fn reorder_tool_messages_for_chat_completions(messages: &mut Vec<Message>) {
     *messages = rewritten;
 }
 
-fn strip_think_tags(text: &str) -> String {
-    const START_TAG: &str = "<think>";
-    const END_TAG: &str = "</think>";
-
-    let mut remaining = text;
-    let mut sanitized = String::new();
-
-    loop {
-        let Some(start) = remaining.find(START_TAG) else {
-            sanitized.push_str(remaining);
-            break;
-        };
-
-        sanitized.push_str(&remaining[..start]);
-        let after_start = &remaining[start + START_TAG.len()..];
-
-        let Some(end) = after_start.find(END_TAG) else {
-            break;
-        };
-
-        remaining = &after_start[end + END_TAG.len()..];
-    }
-
-    sanitized
-}
-
-fn sanitize_message_content_for_context(role: &str, content: &[ContentItem]) -> Vec<ContentItem> {
-    if role != "assistant" {
-        return content.to_vec();
-    }
-
-    content
-        .iter()
-        .filter_map(|item| match item {
-            ContentItem::InputText { text } => {
-                let sanitized = strip_think_tags(text);
-                (!sanitized.trim().is_empty()).then_some(ContentItem::InputText { text: sanitized })
-            }
-            ContentItem::OutputText { text } => {
-                let sanitized = strip_think_tags(text);
-                (!sanitized.trim().is_empty())
-                    .then_some(ContentItem::OutputText { text: sanitized })
-            }
-            ContentItem::InputImage { .. } | ContentItem::InputFile { .. } => Some(item.clone()),
-        })
-        .collect()
+fn assistant_content_has_think_markup(content: &[ContentItem]) -> bool {
+    content.iter().any(|item| match item {
+        ContentItem::InputText { text } | ContentItem::OutputText { text } => {
+            text.contains("<think>") || text.contains("</think>")
+        }
+        ContentItem::InputImage { .. } | ContentItem::InputFile { .. } => false,
+    })
 }
 
 fn local_shell_call_to_message(call_id: Option<&String>, action: &LocalShellAction) -> Message {
@@ -404,15 +365,14 @@ impl Message {
     fn from_responses_item(item: &ResponseItem) -> Option<Self> {
         match item {
             ResponseItem::Message { role, content, .. } => {
-                let sanitized_content = sanitize_message_content_for_context(role, content);
-                if role == "assistant" && sanitized_content.is_empty() {
+                if role == "assistant" && assistant_content_has_think_markup(content) {
                     return None;
                 }
 
                 Some(Message {
                     role: role.to_string(),
                     content: Some(Content::Array(
-                        sanitized_content
+                        content
                             .iter()
                             .map(ContentBlock::from_content_item)
                             .collect(),
@@ -492,10 +452,8 @@ impl Message {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        ChatRequest, ChatToolSpec, ContentItem, sanitize_message_content_for_context,
-        strip_think_tags,
-    };
+    use super::{ChatRequest, ChatToolSpec, ContentItem, Message};
+    use crate::models::ResponseItem;
     use crate::models::request::{ResponsesRequest, merge_strict_responses_request_defaults};
     use serde_json::json;
 
@@ -595,17 +553,11 @@ mod tests {
     }
 
     #[test]
-    fn strips_multiple_think_blocks_from_text() {
-        let sanitized =
-            strip_think_tags("before<think>hidden</think>middle<think>more</think>after");
-        assert_eq!(sanitized, "beforemiddleafter");
-    }
-
-    #[test]
-    fn drops_assistant_text_items_that_only_contain_think_blocks() {
-        let sanitized = sanitize_message_content_for_context(
-            "assistant",
-            &[
+    fn omits_assistant_message_when_any_text_has_think_markup() {
+        let msg = Message::from_responses_item(&ResponseItem::Message {
+            id: None,
+            role: "assistant".to_string(),
+            content: vec![
                 ContentItem::OutputText {
                     text: "<think>hidden</think>".to_string(),
                 },
@@ -613,15 +565,29 @@ mod tests {
                     text: "visible<think>secret</think>".to_string(),
                 },
             ],
-        );
+            phase: None,
+        });
 
-        assert_eq!(sanitized.len(), 1);
-        assert_eq!(
-            sanitized[0],
-            ContentItem::OutputText {
-                text: "visible".to_string(),
-            }
-        );
+        assert!(msg.is_none());
+    }
+
+    #[test]
+    fn omits_assistant_message_when_mixed_clean_and_think_markup_text() {
+        let msg = Message::from_responses_item(&ResponseItem::Message {
+            id: None,
+            role: "assistant".to_string(),
+            content: vec![
+                ContentItem::OutputText {
+                    text: "looks clean".to_string(),
+                },
+                ContentItem::OutputText {
+                    text: "<think>x</think>".to_string(),
+                },
+            ],
+            phase: None,
+        });
+
+        assert!(msg.is_none());
     }
 
     #[test]
