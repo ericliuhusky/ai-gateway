@@ -1,4 +1,4 @@
-use super::response_item::ResponseItem;
+use super::{response_item::ResponseItem, tool_spec::ToolSpec};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -10,7 +10,7 @@ pub struct ResponsesRequest {
     #[serde(skip_serializing_if = "String::is_empty")]
     pub instructions: String,
     pub input: Vec<ResponseItem>,
-    pub tools: Vec<ResponseTool>,
+    pub tools: Vec<ToolSpec>,
     pub tool_choice: String,
     pub parallel_tool_calls: bool,
     pub reasoning: Option<Value>,
@@ -59,19 +59,6 @@ pub(crate) fn tool_choice_as_value(s: &str) -> Value {
     Value::String(s.to_owned())
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct ResponseTool {
-    pub r#type: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parameters: Option<Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tools: Option<Vec<ResponseTool>>,
-}
-
 #[cfg(test)]
 mod tests {
     use super::{ResponsesRequest, merge_strict_responses_request_defaults};
@@ -84,15 +71,7 @@ mod tests {
                 "model": "gpt-5.4",
                 "input": [],
                 "tools": [{
-                    "type": "local_shell",
-                    "name": "shell",
-                    "description": "Execute shell commands.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "command": { "type": "array" }
-                        }
-                    }
+                    "type": "local_shell"
                 }]
             })))
             .expect("request should parse");

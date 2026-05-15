@@ -6,3 +6,4 @@ pub mod tool_spec;
 pub use openai_responses::*;
 pub use request::*;
 pub use response_item::*;
+pub use tool_spec::*;

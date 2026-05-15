@@ -202,7 +202,10 @@ fn normalize_native_tools(tools: &mut Value) {
             .get("parameters")
             .cloned()
             .or_else(|| function_obj.and_then(|f| f.get("parameters").cloned()));
-        let strict = function_obj.and_then(|f| f.get("strict").cloned());
+        let strict = tool_obj
+            .get("strict")
+            .cloned()
+            .or_else(|| function_obj.and_then(|f| f.get("strict").cloned()));
         let normalized_name =
             normalized_tool_name(tool_type, name.as_ref().and_then(Value::as_str));
         let generated_parameters = generated_tool_schema(tool_type);

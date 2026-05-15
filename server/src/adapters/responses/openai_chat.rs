@@ -129,6 +129,7 @@ mod tests {
                 "tools": [{
                     "type": "function",
                     "name": "shell",
+                    "description": "Run a command",
                     "parameters": {
                         "type": "object",
                         "properties": {

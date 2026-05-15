@@ -1,10 +1,9 @@
 use crate::adapters::responses::shared::clean_tool_schema_for_gemini;
 use crate::models::{
-    GeminiContent, GeminiGenerateRequest, GenerationConfig, Content, ContentBlock,
-    Message, ResponseOutputContent, ResponseOutputItem, ResponsesRequest, ResponsesResponse,
-    ResponsesUsage,
-    build_messages,
-    request::{ResponseTool, tool_choice_as_value},
+    Content, ContentBlock, GeminiContent, GeminiGenerateRequest, GenerationConfig, Message,
+    ResponseOutputContent, ResponseOutputItem, ResponsesRequest, ResponsesResponse, ResponsesUsage,
+    build_messages, openai::responses::ToolSpec as ResponsesToolSpec,
+    request::tool_choice_as_value,
 };
 use crate::support::time::now_unix;
 use serde_json::{Value, json};
@@ -119,7 +118,7 @@ pub fn gemini_to_responses(model: &str, gemini: &Value) -> ResponsesResponse {
 }
 
 fn build_tools(
-    tools: &[ResponseTool],
+    tools: &[ResponsesToolSpec],
     tool_choice: Option<&Value>,
 ) -> (Option<Vec<Value>>, Option<Value>) {
     if tools.is_empty() {
@@ -128,25 +127,15 @@ fn build_tools(
     let function_declarations: Vec<Value> = tools
         .iter()
         .filter_map(|tool| {
-            if tool.r#type != "function" {
+            let ResponsesToolSpec::Function(tool) = tool else {
                 return None;
-            }
-            let name = tool
-                .name
-                .as_deref()
-                .unwrap_or("")
-                .trim();
+            };
+            let name = tool.name.trim();
             if name.is_empty() {
                 return None;
             }
-            let description = tool
-                .description
-                .clone()
-                .unwrap_or_default();
-            let mut parameters = tool
-                .parameters
-                .clone()
-                .unwrap_or_else(|| json!({"type":"object","properties":{},"required":[]}));
+            let description = tool.description.clone();
+            let mut parameters = tool.parameters.clone();
             clean_tool_schema_for_gemini(&mut parameters);
             Some(json!({ "name": name, "description": description, "parameters": parameters }))
         })
@@ -273,9 +262,7 @@ fn build_gemini_message_parts(
                 Content::Array(blocks) => {
                     for block in blocks {
                         match block {
-                            ContentBlock::Text { text } => {
-                                parts.push(json!({ "text": text }))
-                            }
+                            ContentBlock::Text { text } => parts.push(json!({ "text": text })),
                             ContentBlock::ImageUrl { image_url } => {
                                 parts.push(map_image_part(&image_url.url)?)
                             }
@@ -369,6 +356,7 @@ mod tests {
                 "tools": [{
                     "type": "function",
                     "name": "shell",
+                    "description": "Run a command",
                     "parameters": {
                         "type": "object",
                         "properties": {

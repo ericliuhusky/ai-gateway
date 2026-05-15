@@ -115,17 +115,6 @@ mod public_responses_entry_compat_tests {
                     "defer_loading": false
                 },
                 {
-                    "type": "file_search",
-                    "vector_store_ids": ["vs_123"],
-                    "filters": { "type": "eq", "key": "project", "value": "demo" },
-                    "max_num_results": 20,
-                    "ranking_options": {
-                        "ranker": "auto",
-                        "score_threshold": 0.1,
-                        "hybrid_search": { "embedding_weight": 0.5, "text_weight": 0.5 }
-                    }
-                },
-                {
                     "type": "web_search",
                     "filters": { "allowed_domains": ["example.com"] },
                     "search_context_size": "medium",
@@ -135,27 +124,6 @@ mod public_responses_entry_compat_tests {
                         "region": "California",
                         "city": "San Francisco",
                         "timezone": "America/Los_Angeles"
-                    }
-                },
-                {
-                    "type": "web_search_preview",
-                    "search_content_types": ["text", "image"],
-                    "search_context_size": "medium",
-                    "user_location": {
-                        "type": "approximate",
-                        "country": "US",
-                        "region": "California",
-                        "city": "San Francisco",
-                        "timezone": "America/Los_Angeles"
-                    }
-                },
-                {
-                    "type": "code_interpreter",
-                    "container": {
-                        "type": "auto",
-                        "file_ids": ["file_data_123"],
-                        "memory_limit": "4g",
-                        "network_policy": { "type": "disabled" }
                     }
                 },
                 {
@@ -172,29 +140,6 @@ mod public_responses_entry_compat_tests {
                     "quality": "auto",
                     "size": "auto"
                 },
-                { "type": "computer" },
-                { "type": "computer_use_preview", "display_width": 1024, "display_height": 768, "environment": "browser" },
-                {
-                    "type": "mcp",
-                    "server_label": "github",
-                    "server_url": "https://example.com/mcp",
-                    "server_description": "Example MCP server",
-                    "authorization": "Bearer OAUTH_TOKEN",
-                    "headers": { "x-custom-header": "value" },
-                    "allowed_tools": { "read_only": true, "tool_names": ["search_code", "read_file"] },
-                    "require_approval": {
-                        "always": { "read_only": false },
-                        "never": { "tool_names": ["search_code", "read_file"] }
-                    },
-                    "defer_loading": false
-                },
-                {
-                    "type": "mcp",
-                    "server_label": "googledrive",
-                    "connector_id": "connector_googledrive",
-                    "allowed_tools": ["search", "fetch"],
-                    "require_approval": "never"
-                },
                 {
                     "type": "custom",
                     "name": "freeform_transformer",
@@ -203,10 +148,31 @@ mod public_responses_entry_compat_tests {
                     "defer_loading": false
                 },
                 { "type": "local_shell" },
-                { "type": "shell", "environment": { "type": "local" } },
-                { "type": "apply_patch" },
-                { "type": "tool_search" },
-                { "type": "namespace", "namespace": "example_namespace" }
+                {
+                    "type": "tool_search",
+                    "execution": "search_tools",
+                    "description": "Search available tools.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": { "query": { "type": "string" } },
+                        "required": ["query"]
+                    }
+                },
+                {
+                    "type": "namespace",
+                    "name": "example_namespace",
+                    "description": "Grouped example tools.",
+                    "tools": [{
+                        "type": "function",
+                        "name": "lookup",
+                        "description": "Look up an item.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": { "id": { "type": "string" } },
+                            "required": ["id"]
+                        }
+                    }]
+                }
             ],
             "tool_choice": "auto",
             "parallel_tool_calls": true,
@@ -268,18 +234,10 @@ mod public_responses_entry_compat_tests {
         let types = tool_types(&body);
         for expected in [
             "function",
-            "file_search",
             "web_search",
-            "web_search_preview",
-            "code_interpreter",
             "image_generation",
-            "computer",
-            "computer_use_preview",
-            "mcp",
             "custom",
             "local_shell",
-            "shell",
-            "apply_patch",
             "tool_search",
             "namespace",
         ] {
@@ -312,7 +270,7 @@ mod public_responses_entry_compat_tests {
                 "content": [{ "type": "input_text", "text": "Stream the answer." }]
             }],
             "stream": true,
-            "tools": [{ "type": "web_search_preview", "search_context_size": "low" }],
+            "tools": [{ "type": "web_search", "search_context_size": "low" }],
             "tool_choice": "auto",
             "include": ["web_search_call.action.sources", "reasoning.encrypted_content"],
             "store": false
@@ -462,11 +420,9 @@ mod public_responses_entry_compat_tests {
                 }
             ],
             "tools": [
-                { "type": "function", "name": "get_weather", "parameters": { "type": "object", "properties": { "location": { "type": "string" } }, "required": ["location"], "additionalProperties": false }, "strict": true },
-                { "type": "computer" },
-                { "type": "shell", "environment": { "type": "local" } },
-                { "type": "apply_patch" },
-                { "type": "custom", "name": "freeform_transformer" }
+                { "type": "function", "name": "get_weather", "description": "Get weather for a location.", "parameters": { "type": "object", "properties": { "location": { "type": "string" } }, "required": ["location"], "additionalProperties": false }, "strict": true },
+                { "type": "local_shell" },
+                { "type": "custom", "name": "freeform_transformer", "description": "Accepts freeform text input.", "format": { "type": "text" } }
             ],
             "tool_choice": "auto",
             "store": false
