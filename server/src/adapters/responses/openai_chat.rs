@@ -11,7 +11,11 @@ pub fn responses_to_chat_completions(
 ) -> Result<Value, String> {
     let mut body = ChatRequest::try_from(request)?;
     body.model = model.to_string();
-    serde_json::to_value(body).map_err(|err| err.to_string())
+    let mut value = serde_json::to_value(body).map_err(|err| err.to_string())?;
+    if let Some(object) = value.as_object_mut() {
+        object.insert("stream".to_string(), Value::Bool(request.stream));
+    }
+    Ok(value)
 }
 
 pub fn chat_completions_to_responses(_model: &str, chat: &Value) -> ResponseEvents {
@@ -154,6 +158,26 @@ mod tests {
             parameters["properties"]["workdir"]["format"],
             "uri-reference"
         );
+    }
+
+    #[test]
+    fn forwards_responses_stream_flag_to_chat_completions() {
+        let request: ResponsesRequest =
+            serde_json::from_value(merge_strict_responses_request_defaults(json!({
+                "model": "gpt-5.4",
+                "stream": true,
+                "input": [{
+                    "type": "message",
+                    "role": "user",
+                    "content": [{ "type": "input_text", "text": "hello" }]
+                }]
+            })))
+            .expect("request should parse");
+
+        let body = responses_to_chat_completions(&request, "chat-compatible-latest")
+            .expect("request should convert");
+
+        assert_eq!(body["stream"], true);
     }
 
     #[test]

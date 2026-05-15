@@ -1,7 +1,5 @@
 use crate::{
-    adapters::responses::{
-        chat_completions_to_responses, request_with_model, responses_to_chat_completions,
-    },
+    adapters::responses::{request_with_model, responses_to_chat_completions},
     auth::OAuthClient,
     config::Config,
     models::{
@@ -10,11 +8,10 @@ use crate::{
         GatewayLogListResponse, GatewayLogSettings, GatewayLogSettingsResponse, GatewayLogSummary,
         ModelListItem, ModelListResponse, PROVIDER_OPENAI_PROXY, ProviderAuthMode,
         ProviderQuotaCredits, ProviderQuotaResponse, ProviderQuotaSnapshot, ProviderQuotaSummary,
-        ProviderQuotaWindow, QuotaSource, QuotaSupportStatus, ResponseEvents, ResponsesRequest,
-        SelectedRoute, UpdateGatewayLogSettingsRequest, UpdateSelectedModelRequest,
-        UpdateSelectedProviderRequest, UpstreamProtocol, UpstreamRateLimitStatusDetails,
-        UpstreamRateLimitStatusPayload, UpstreamRateLimitWindowSnapshot,
-        response_events_to_response_value, response_events_to_sse_lines,
+        ProviderQuotaWindow, QuotaSource, QuotaSupportStatus, ResponsesRequest, SelectedRoute,
+        UpdateGatewayLogSettingsRequest, UpdateSelectedModelRequest, UpdateSelectedProviderRequest,
+        UpstreamProtocol, UpstreamRateLimitStatusDetails, UpstreamRateLimitStatusPayload,
+        UpstreamRateLimitWindowSnapshot,
     },
     store::{
         AccountStore, LogEvent, LogStage, LogStore, ModelStore, ProviderStore, RouteStore,
@@ -42,6 +39,7 @@ use reqwest::Client;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use std::time::Instant;
 use std::{fs, io::ErrorKind, path::Path, sync::Arc};
 use uuid::Uuid;
@@ -992,33 +990,6 @@ pub(super) async fn responses_inner(
             .await
             .map_err(AppError::upstream_message)?;
         let upstream_status = upstream.status();
-        let chat_body: Value = upstream.json().await.map_err(AppError::upstream)?;
-        let response_events = chat_completions_to_responses(&request.model, &chat_body);
-        let response =
-            response_events_to_response_value(&response_events, &request.model, now_unix());
-        let elapsed = elapsed_ms(started_at);
-        let upstream_body = json_value_for_storage(&chat_body);
-
-        log_http_event(
-            &state.logs,
-            &id,
-            LogStage::ClientResponse,
-            Some(upstream_status),
-            Some(ClientProtocol::OpenAiResponses.as_str()),
-            Some(native_target.upstream.as_str()),
-            Some(&provider.name),
-            None,
-            None,
-            Some(&request.model),
-            request.stream,
-            Some("POST"),
-            None,
-            Some(&upstream_url),
-            Some(upstream_body),
-            None,
-            Some(elapsed),
-        )
-        .await;
 
         let logs = state.logs.clone();
         let id_for_stream = id.clone();
@@ -1026,17 +997,59 @@ pub(super) async fn responses_inner(
         let model = request.model.clone();
         let upstream_protocol = native_target.upstream.as_str().to_string();
         let upstream_url_for_stream = upstream_url.clone();
-        let final_response_body = json_for_storage(&response);
         let output = stream! {
-            let stream = synthesized_responses_stream(response_events, model.clone(), now_unix());
-            futures_util::pin_mut!(stream);
+            let mut stream = upstream.bytes_stream();
+            let mut chat_sse_buffer = String::new();
             let mut response_body = String::new();
+            let mut final_response_sse_buffer = String::new();
+            let mut final_response_body: Option<String> = None;
+            let mut response_stream =
+                ChatCompletionsResponsesStream::new(model.clone(), now_unix());
 
             while let Some(result) = stream.next().await {
                 match result {
-                    Ok(event) => {
-                        append_to_log_buffer(&mut response_body, &event);
-                        yield Ok::<Bytes, std::io::Error>(Bytes::from(event));
+                    Ok(chunk) => {
+                        let chunk_text = String::from_utf8_lossy(&chunk);
+                        let payloads = drain_sse_payloads(&mut chat_sse_buffer, &chunk_text);
+                        for payload in payloads {
+                            match response_stream.push_chat_payload(&payload) {
+                                Ok(events) => {
+                                    for event in events {
+                                        append_to_log_buffer(&mut response_body, &event);
+                                        capture_final_response_from_sse_chunk(
+                                            &mut final_response_sse_buffer,
+                                            &event,
+                                            &mut final_response_body,
+                                        );
+                                        yield Ok::<Bytes, std::io::Error>(Bytes::from(event));
+                                    }
+                                }
+                                Err(err) => {
+                                    log_http_event(
+                                        &logs,
+                                        &id_for_stream,
+                                        LogStage::Error,
+                                        Some(StatusCode::BAD_GATEWAY),
+                                        Some(ClientProtocol::OpenAiResponses.as_str()),
+                                        Some(&upstream_protocol),
+                                        Some(&provider_name),
+                                        None,
+                                        None,
+                                        Some(&model),
+                                        true,
+                                        Some("POST"),
+                                        Some(Config::responses_path()),
+                                        Some(&upstream_url_for_stream),
+                                        Some(response_body.clone()),
+                                        Some(err),
+                                        Some(elapsed_ms(started_at)),
+                                    )
+                                    .await;
+                                    yield Err(std::io::Error::other("failed to parse chat completions stream"));
+                                    return;
+                                }
+                            }
+                        }
                     }
                     Err(err) => {
                         log_http_event(
@@ -1059,12 +1072,116 @@ pub(super) async fn responses_inner(
                             Some(elapsed_ms(started_at)),
                         )
                         .await;
-                        yield Err(err);
+                        yield Err(std::io::Error::other(err));
                         return;
                     }
                 }
             }
 
+            if !chat_sse_buffer.trim().is_empty() {
+                let payloads = drain_sse_payloads(&mut chat_sse_buffer, "\n\n");
+                for payload in payloads {
+                    match response_stream.push_chat_payload(&payload) {
+                        Ok(events) => {
+                            for event in events {
+                                append_to_log_buffer(&mut response_body, &event);
+                                capture_final_response_from_sse_chunk(
+                                    &mut final_response_sse_buffer,
+                                    &event,
+                                    &mut final_response_body,
+                                );
+                                yield Ok::<Bytes, std::io::Error>(Bytes::from(event));
+                            }
+                        }
+                        Err(err) => {
+                            log_http_event(
+                                &logs,
+                                &id_for_stream,
+                                LogStage::Error,
+                                Some(StatusCode::BAD_GATEWAY),
+                                Some(ClientProtocol::OpenAiResponses.as_str()),
+                                Some(&upstream_protocol),
+                                Some(&provider_name),
+                                None,
+                                None,
+                                Some(&model),
+                                true,
+                                Some("POST"),
+                                Some(Config::responses_path()),
+                                Some(&upstream_url_for_stream),
+                                Some(response_body.clone()),
+                                Some(err),
+                                Some(elapsed_ms(started_at)),
+                            )
+                            .await;
+                            yield Err(std::io::Error::other("failed to parse chat completions stream"));
+                            return;
+                        }
+                    }
+                }
+            }
+
+            match response_stream.finish() {
+                Ok(events) => {
+                    for event in events {
+                        append_to_log_buffer(&mut response_body, &event);
+                        capture_final_response_from_sse_chunk(
+                            &mut final_response_sse_buffer,
+                            &event,
+                            &mut final_response_body,
+                        );
+                        yield Ok::<Bytes, std::io::Error>(Bytes::from(event));
+                    }
+                }
+                Err(err) => {
+                    log_http_event(
+                        &logs,
+                        &id_for_stream,
+                        LogStage::Error,
+                        Some(StatusCode::INTERNAL_SERVER_ERROR),
+                        Some(ClientProtocol::OpenAiResponses.as_str()),
+                        Some(&upstream_protocol),
+                        Some(&provider_name),
+                        None,
+                        None,
+                        Some(&model),
+                        true,
+                        Some("POST"),
+                        Some(Config::responses_path()),
+                        Some(&upstream_url_for_stream),
+                        Some(response_body.clone()),
+                        Some(err),
+                        Some(elapsed_ms(started_at)),
+                    )
+                    .await;
+                    yield Err(std::io::Error::other("failed to finish chat completions stream"));
+                    return;
+                }
+            }
+
+            let elapsed = elapsed_ms(started_at);
+            let logged_response_body =
+                logged_stream_response_body(final_response_body.as_deref(), &response_body);
+            log_http_event(
+                &logs,
+                &id_for_stream,
+                LogStage::ClientResponse,
+                Some(upstream_status),
+                Some(ClientProtocol::OpenAiResponses.as_str()),
+                Some(&upstream_protocol),
+                Some(&provider_name),
+                None,
+                None,
+                Some(&model),
+                true,
+                Some("POST"),
+                None,
+                Some(&upstream_url_for_stream),
+                Some(logged_response_body.clone()),
+                None,
+                Some(elapsed),
+            )
+            .await;
             log_http_event(
                 &logs,
                 &id_for_stream,
@@ -1080,9 +1197,9 @@ pub(super) async fn responses_inner(
                 Some("POST"),
                 Some(Config::responses_path()),
                 None,
-                Some(final_response_body),
+                Some(logged_response_body),
                 None,
-                Some(elapsed_ms(started_at)),
+                Some(elapsed),
             )
             .await;
         };
@@ -1706,23 +1823,381 @@ fn resolve_native_target(provider: &ApiProviderRecord, requested_model: &str) ->
     }
 }
 
-fn synthesized_responses_stream(
-    response: ResponseEvents,
-    model: String,
+#[derive(Debug)]
+struct ChatCompletionsResponsesStream {
+    requested_model: String,
     created_at: u64,
-) -> impl futures_util::Stream<Item = Result<String, std::io::Error>> {
-    stream! {
-        let lines = match response_events_to_sse_lines(&response, &model, created_at) {
-            Ok(lines) => lines,
-            Err(err) => {
-                yield Err(std::io::Error::other(err));
-                return;
-            }
-        };
-        for line in lines {
-            yield Ok(line);
+    response_id: Option<String>,
+    response_model: Option<String>,
+    created_emitted: bool,
+    message_started: bool,
+    finished: bool,
+    message_item_id: String,
+    text: String,
+    tool_calls: BTreeMap<usize, StreamedChatToolCall>,
+    usage: Option<Value>,
+}
+
+#[derive(Debug)]
+struct StreamedChatToolCall {
+    id: String,
+    item_id: String,
+    name: String,
+    arguments: String,
+}
+
+impl ChatCompletionsResponsesStream {
+    fn new(requested_model: String, created_at: u64) -> Self {
+        Self {
+            requested_model,
+            created_at,
+            response_id: None,
+            response_model: None,
+            created_emitted: false,
+            message_started: false,
+            finished: false,
+            message_item_id: format!("msg_{}", Uuid::new_v4().simple()),
+            text: String::new(),
+            tool_calls: BTreeMap::new(),
+            usage: None,
         }
     }
+
+    fn push_chat_payload(&mut self, payload: &str) -> Result<Vec<String>, String> {
+        if payload == "[DONE]" {
+            return self.finish();
+        }
+
+        let chunk: Value = serde_json::from_str(payload).map_err(|err| err.to_string())?;
+        if let Some(id) = chunk.get("id").and_then(Value::as_str) {
+            self.response_id.get_or_insert_with(|| id.to_string());
+        }
+        if let Some(model) = chunk.get("model").and_then(Value::as_str) {
+            self.response_model.get_or_insert_with(|| model.to_string());
+        }
+        if let Some(created) = chunk.get("created").and_then(Value::as_u64) {
+            self.created_at = created;
+        }
+        if let Some(usage) = chunk.get("usage").filter(|usage| !usage.is_null()) {
+            self.usage = Some(chat_usage_to_responses_usage(usage));
+        }
+
+        let mut events = self.ensure_created().map_err(|err| err.to_string())?;
+        let Some(choices) = chunk.get("choices").and_then(Value::as_array) else {
+            return Ok(events);
+        };
+
+        for choice in choices {
+            if choice
+                .get("index")
+                .and_then(Value::as_u64)
+                .is_some_and(|index| index != 0)
+            {
+                continue;
+            }
+
+            if let Some(delta) = choice.get("delta") {
+                if let Some(content) = delta.get("content").and_then(Value::as_str) {
+                    if !content.is_empty() {
+                        events.extend(
+                            self.push_text_delta(content)
+                                .map_err(|err| err.to_string())?,
+                        );
+                    }
+                }
+
+                if let Some(tool_calls) = delta.get("tool_calls").and_then(Value::as_array) {
+                    self.push_tool_call_deltas(tool_calls);
+                }
+            }
+        }
+
+        Ok(events)
+    }
+
+    fn finish(&mut self) -> Result<Vec<String>, String> {
+        if self.finished {
+            return Ok(Vec::new());
+        }
+        self.finished = true;
+
+        let mut events = self.ensure_created().map_err(|err| err.to_string())?;
+        if self.message_started {
+            let message = self.message_item();
+            events.push(
+                encode_response_sse_value(&json!({
+                    "type": "response.output_text.done",
+                    "item_id": self.message_item_id,
+                    "output_index": 0,
+                    "content_index": 0,
+                    "text": self.text
+                }))
+                .map_err(|err| err.to_string())?,
+            );
+            events.push(
+                encode_response_sse_value(&json!({
+                    "type": "response.content_part.done",
+                    "item_id": self.message_item_id,
+                    "output_index": 0,
+                    "content_index": 0,
+                    "part": {
+                        "type": "output_text",
+                        "text": self.text
+                    }
+                }))
+                .map_err(|err| err.to_string())?,
+            );
+            events.push(
+                encode_response_sse_value(&json!({
+                    "type": "response.output_item.done",
+                    "output_index": 0,
+                    "item": message
+                }))
+                .map_err(|err| err.to_string())?,
+            );
+        }
+
+        let mut next_output_index = usize::from(self.message_started);
+        for tool_call in self.tool_calls.values() {
+            let item = tool_call.response_item();
+            events.push(
+                encode_response_sse_value(&json!({
+                    "type": "response.output_item.added",
+                    "output_index": next_output_index,
+                    "item": item
+                }))
+                .map_err(|err| err.to_string())?,
+            );
+            events.push(
+                encode_response_sse_value(&json!({
+                    "type": "response.output_item.done",
+                    "output_index": next_output_index,
+                    "item": item
+                }))
+                .map_err(|err| err.to_string())?,
+            );
+            next_output_index += 1;
+        }
+
+        events.push(
+            encode_response_sse_value(&json!({
+                "type": "response.completed",
+                "response": self.completed_response()
+            }))
+            .map_err(|err| err.to_string())?,
+        );
+        events.push("data: [DONE]\n\n".to_string());
+
+        Ok(events)
+    }
+
+    fn ensure_created(&mut self) -> Result<Vec<String>, serde_json::Error> {
+        if self.created_emitted {
+            return Ok(Vec::new());
+        }
+        self.created_emitted = true;
+        encode_response_sse_value(&json!({
+            "type": "response.created",
+            "response": {
+                "id": self.response_id(),
+                "object": "response",
+                "created_at": self.created_at,
+                "status": "in_progress",
+                "model": self.response_model(),
+                "output": []
+            }
+        }))
+        .map(|event| vec![event])
+    }
+
+    fn push_text_delta(&mut self, delta: &str) -> Result<Vec<String>, serde_json::Error> {
+        let mut events = Vec::new();
+        if !self.message_started {
+            self.message_started = true;
+            events.push(encode_response_sse_value(&json!({
+                "type": "response.output_item.added",
+                "output_index": 0,
+                "item": {
+                    "id": self.message_item_id,
+                    "type": "message",
+                    "role": "assistant",
+                    "content": []
+                }
+            }))?);
+            events.push(encode_response_sse_value(&json!({
+                "type": "response.content_part.added",
+                "item_id": self.message_item_id,
+                "output_index": 0,
+                "content_index": 0,
+                "part": {
+                    "type": "output_text",
+                    "text": ""
+                }
+            }))?);
+        }
+
+        self.text.push_str(delta);
+        events.push(encode_response_sse_value(&json!({
+            "type": "response.output_text.delta",
+            "item_id": self.message_item_id,
+            "output_index": 0,
+            "content_index": 0,
+            "delta": delta
+        }))?);
+
+        Ok(events)
+    }
+
+    fn push_tool_call_deltas(&mut self, tool_call_deltas: &[Value]) {
+        for tool_call_delta in tool_call_deltas {
+            let index = tool_call_delta
+                .get("index")
+                .and_then(Value::as_u64)
+                .unwrap_or(self.tool_calls.len() as u64) as usize;
+            let tool_call = self
+                .tool_calls
+                .entry(index)
+                .or_insert_with(|| StreamedChatToolCall {
+                    id: format!("call_{}", Uuid::new_v4().simple()),
+                    item_id: format!("fc_{}", Uuid::new_v4().simple()),
+                    name: "unknown".to_string(),
+                    arguments: String::new(),
+                });
+
+            if let Some(id) = tool_call_delta.get("id").and_then(Value::as_str) {
+                tool_call.id = id.to_string();
+            }
+            let Some(function) = tool_call_delta.get("function") else {
+                continue;
+            };
+            if let Some(name) = function.get("name").and_then(Value::as_str) {
+                if !name.is_empty() {
+                    tool_call.name = name.to_string();
+                }
+            }
+            if let Some(arguments) = function.get("arguments").and_then(Value::as_str) {
+                tool_call.arguments.push_str(arguments);
+            }
+        }
+    }
+
+    fn completed_response(&mut self) -> Value {
+        let mut output = Vec::new();
+        if self.message_started {
+            output.push(self.message_item());
+        }
+        output.extend(
+            self.tool_calls
+                .values()
+                .map(StreamedChatToolCall::response_item),
+        );
+
+        json!({
+            "id": self.response_id(),
+            "object": "response",
+            "created_at": self.created_at,
+            "status": "completed",
+            "model": self.response_model(),
+            "output": output,
+            "usage": self.usage
+        })
+    }
+
+    fn message_item(&self) -> Value {
+        json!({
+            "id": self.message_item_id,
+            "type": "message",
+            "role": "assistant",
+            "content": [{
+                "type": "output_text",
+                "text": self.text
+            }],
+            "phase": "final_answer"
+        })
+    }
+
+    fn response_id(&mut self) -> String {
+        self.response_id
+            .get_or_insert_with(|| format!("resp_{}", Uuid::new_v4().simple()))
+            .clone()
+    }
+
+    fn response_model(&self) -> &str {
+        self.response_model
+            .as_deref()
+            .unwrap_or(&self.requested_model)
+    }
+}
+
+impl StreamedChatToolCall {
+    fn response_item(&self) -> Value {
+        json!({
+            "id": self.item_id,
+            "type": "function_call",
+            "name": self.name,
+            "arguments": self.arguments,
+            "call_id": self.id
+        })
+    }
+}
+
+fn drain_sse_payloads(buffer: &mut String, chunk: &str) -> Vec<String> {
+    buffer.push_str(chunk);
+    let mut payloads = Vec::new();
+
+    while let Some((boundary_start, boundary_len)) = find_sse_event_boundary(buffer) {
+        let frame = buffer[..boundary_start].to_string();
+        buffer.drain(..boundary_start + boundary_len);
+        if let Some(payload) = sse_payload_from_frame(&frame) {
+            payloads.push(payload);
+        }
+    }
+
+    payloads
+}
+
+fn find_sse_event_boundary(buffer: &str) -> Option<(usize, usize)> {
+    match (buffer.find("\r\n\r\n"), buffer.find("\n\n")) {
+        (Some(crlf), Some(lf)) if crlf < lf => Some((crlf, 4)),
+        (Some(_), Some(lf)) => Some((lf, 2)),
+        (Some(crlf), None) => Some((crlf, 4)),
+        (None, Some(lf)) => Some((lf, 2)),
+        (None, None) => None,
+    }
+}
+
+fn sse_payload_from_frame(frame: &str) -> Option<String> {
+    let data_lines: Vec<&str> = frame
+        .lines()
+        .filter_map(|line| {
+            line.trim_end_matches('\r')
+                .strip_prefix("data:")
+                .map(str::trim_start)
+        })
+        .collect();
+
+    (!data_lines.is_empty()).then(|| data_lines.join("\n"))
+}
+
+fn encode_response_sse_value(value: &Value) -> Result<String, serde_json::Error> {
+    serde_json::to_string(value).map(|body| format!("data: {body}\n\n"))
+}
+
+fn chat_usage_to_responses_usage(usage: &Value) -> Value {
+    json!({
+        "input_tokens": usage
+            .get("prompt_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
+        "output_tokens": usage
+            .get("completion_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
+        "total_tokens": usage
+            .get("total_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+    })
 }
 
 pub(super) async fn log_http_event(
@@ -1774,13 +2249,6 @@ fn gateway_error_payload(message: &str) -> Value {
             "type": "proxy_error"
         }
     })
-}
-
-pub(super) fn json_for_storage<T: serde::Serialize>(value: &T) -> String {
-    match serde_json::to_string(value) {
-        Ok(body) => body,
-        Err(err) => format!("<serialize error: {err}>"),
-    }
 }
 
 pub(super) fn json_value_for_storage(value: &Value) -> String {
@@ -1906,9 +2374,9 @@ impl IntoResponse for AppError {
 #[cfg(test)]
 mod tests {
     use super::{
-        ResolvedProvider, capture_final_response_from_sse_chunk, logged_stream_response_body,
-        openai_models_response, provider_uses_openai_account, quota_from_openai_usage,
-        resolve_native_target,
+        ChatCompletionsResponsesStream, ResolvedProvider, capture_final_response_from_sse_chunk,
+        drain_sse_payloads, logged_stream_response_body, openai_models_response,
+        provider_uses_openai_account, quota_from_openai_usage, resolve_native_target,
     };
     use crate::models::{
         ApiProviderBillingMode, ApiProviderRecord, ProviderAuthMode, UpstreamProtocol,
@@ -2018,6 +2486,50 @@ mod tests {
             quota.additional_snapshots[0].limit_id.as_deref(),
             Some("codex_other")
         );
+    }
+
+    #[test]
+    fn streams_split_chat_completion_sse_as_responses_delta() {
+        let mut buffer = String::new();
+        let frame = concat!(
+            "data: {\"id\":\"chatcmpl_1\",\"created\":1700000000,\"model\":\"chat-model\",",
+            "\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"hi\"},",
+            "\"finish_reason\":null}]}\n\n"
+        );
+        let split_at = frame.find("\"content\"").expect("split marker exists");
+
+        assert!(drain_sse_payloads(&mut buffer, &frame[..split_at]).is_empty());
+        let payloads = drain_sse_payloads(&mut buffer, &frame[split_at..]);
+        assert_eq!(payloads.len(), 1);
+
+        let mut stream = ChatCompletionsResponsesStream::new("requested-model".to_string(), 1);
+        let events = stream
+            .push_chat_payload(&payloads[0])
+            .expect("payload should convert");
+        let joined = events.join("");
+
+        assert!(joined.contains("\"type\":\"response.output_text.delta\""));
+        assert!(joined.contains("\"delta\":\"hi\""));
+    }
+
+    #[test]
+    fn finishes_chat_completion_sse_with_completed_response() {
+        let mut stream = ChatCompletionsResponsesStream::new("requested-model".to_string(), 1);
+        stream
+            .push_chat_payload(concat!(
+                "{\"id\":\"chatcmpl_1\",\"created\":1700000000,\"model\":\"chat-model\",",
+                "\"choices\":[{\"index\":0,\"delta\":{\"content\":\"done\"}}],",
+                "\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2,\"total_tokens\":5}}"
+            ))
+            .expect("payload should convert");
+
+        let events = stream.finish().expect("stream should finish");
+        let joined = events.join("");
+
+        assert!(joined.contains("\"type\":\"response.completed\""));
+        assert!(joined.contains("\"text\":\"done\""));
+        assert!(joined.contains("\"input_tokens\":3"));
+        assert!(joined.ends_with("data: [DONE]\n\n"));
     }
 
     #[test]
