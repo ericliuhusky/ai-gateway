@@ -1,46 +1,298 @@
-use serde::Serialize;
+use super::{ContentItem, ResponseItem};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 
-#[derive(Debug, Clone, Serialize)]
-pub struct ResponsesResponse {
-    pub id: String,
-    pub object: String,
-    pub created_at: u64,
-    pub status: String,
-    pub model: String,
-    pub output: Vec<ResponseOutputItem>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub usage: Option<ResponsesUsage>,
+pub type ResponseEvents = Vec<ResponseEvent>;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum ResponseEvent {
+    Created,
+    OutputItemDone(ResponseItem),
+    OutputItemAdded(ResponseItem),
+    /// Emitted when the server includes `OpenAI-Model` on the stream response.
+    /// This can differ from the requested model when backend safety routing applies.
+    ServerModel(String),
+    /// Emitted when the server recommends additional account verification.
+    ModelVerifications(Vec<ModelVerification>),
+    /// Emitted when `X-Reasoning-Included: true` is present on the response,
+    /// meaning the server already accounted for past reasoning tokens and the
+    /// client should not re-estimate them.
+    ServerReasoningIncluded(bool),
+    Completed {
+        response_id: String,
+        token_usage: Option<TokenUsage>,
+        /// Did the model affirmatively end its turn? Some providers do not set this,
+        /// so we rely on fallback logic when this is `None`.
+        end_turn: Option<bool>,
+    },
+    OutputTextDelta(String),
+    ToolCallInputDelta {
+        item_id: String,
+        call_id: Option<String>,
+        delta: String,
+    },
+    ReasoningSummaryDelta {
+        delta: String,
+        summary_index: i64,
+    },
+    ReasoningContentDelta {
+        delta: String,
+        content_index: i64,
+    },
+    ReasoningSummaryPartAdded {
+        summary_index: i64,
+    },
+    RateLimits(RateLimitSnapshot),
+    ModelsEtag(String),
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct ResponseOutputItem {
-    pub id: String,
-    #[serde(rename = "type")]
-    pub r#type: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub role: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub content: Option<Vec<ResponseOutputContent>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub call_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub arguments: Option<String>,
+#[derive(Debug, Clone, Deserialize, Serialize, Default, PartialEq, Eq)]
+pub struct TokenUsage {
+    pub input_tokens: i64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub cached_input_tokens: i64,
+    pub output_tokens: i64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub reasoning_output_tokens: i64,
+    pub total_tokens: i64,
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct ResponseOutputContent {
-    #[serde(rename = "type")]
-    pub content_type: String,
-    pub text: String,
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelVerification {
+    TrustedAccessForCyber,
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct ResponsesUsage {
-    pub input_tokens: u32,
-    pub output_tokens: u32,
-    pub total_tokens: u32,
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct RateLimitSnapshot {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub primary: Option<RateLimitWindow>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secondary: Option<RateLimitWindow>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credits: Option<CreditsSnapshot>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rate_limit_reached_type: Option<RateLimitReachedType>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct RateLimitWindow {
+    pub used_percent: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window_minutes: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resets_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct CreditsSnapshot {
+    pub has_credits: bool,
+    pub unlimited: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub balance: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RateLimitReachedType {
+    RateLimitReached,
+    WorkspaceOwnerCreditsDepleted,
+    WorkspaceMemberCreditsDepleted,
+    WorkspaceOwnerUsageLimitReached,
+    WorkspaceMemberUsageLimitReached,
+}
+
+pub fn response_events_to_response_value(
+    events: &[ResponseEvent],
+    model: &str,
+    created_at: u64,
+) -> Value {
+    let response_id = response_id_from_events(events);
+    let output = completed_output_items(events);
+    let usage = token_usage_from_events(events);
+
+    json!({
+        "id": response_id,
+        "object": "response",
+        "created_at": created_at,
+        "status": "completed",
+        "model": model,
+        "output": output,
+        "usage": usage,
+    })
+}
+
+pub fn response_events_to_sse_lines(
+    events: &[ResponseEvent],
+    model: &str,
+    created_at: u64,
+) -> Result<Vec<String>, serde_json::Error> {
+    let response_id = response_id_from_events(events);
+    let output = completed_output_items(events);
+    let mut lines = Vec::new();
+
+    lines.push(encode_sse_value(&json!({
+        "type": "response.created",
+        "response": {
+            "id": response_id,
+            "object": "response",
+            "status": "in_progress",
+            "output": []
+        }
+    }))?);
+
+    for (index, item) in output.iter().enumerate() {
+        let item_id = response_item_id(item, index);
+        lines.push(encode_sse_value(&json!({
+            "type": "response.output_item.added",
+            "output_index": index,
+            "item": item
+        }))?);
+
+        if response_item_type(item) == Some("message") {
+            for (content_index, part) in response_item_output_text_parts(item).iter().enumerate() {
+                lines.push(encode_sse_value(&json!({
+                    "type": "response.content_part.added",
+                    "item_id": item_id,
+                    "output_index": index,
+                    "content_index": content_index,
+                    "part": part
+                }))?);
+                lines.push(encode_sse_value(&json!({
+                    "type": "response.output_text.delta",
+                    "item_id": item_id,
+                    "output_index": index,
+                    "content_index": content_index,
+                    "delta": part["text"]
+                }))?);
+                lines.push(encode_sse_value(&json!({
+                    "type": "response.output_text.done",
+                    "item_id": item_id,
+                    "output_index": index,
+                    "content_index": content_index,
+                    "text": part["text"]
+                }))?);
+                lines.push(encode_sse_value(&json!({
+                    "type": "response.content_part.done",
+                    "item_id": item_id,
+                    "output_index": index,
+                    "content_index": content_index,
+                    "part": part
+                }))?);
+            }
+        }
+
+        lines.push(encode_sse_value(&json!({
+            "type": "response.output_item.done",
+            "output_index": index,
+            "item": item
+        }))?);
+    }
+
+    lines.push(encode_sse_value(&json!({
+        "type": "response.completed",
+        "response": response_events_to_response_value(events, model, created_at)
+    }))?);
+    lines.push("data: [DONE]\n\n".to_string());
+
+    Ok(lines)
+}
+
+fn response_id_from_events(events: &[ResponseEvent]) -> String {
+    events
+        .iter()
+        .find_map(|event| match event {
+            ResponseEvent::Completed { response_id, .. } => Some(response_id.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| "resp_unknown".to_string())
+}
+
+fn completed_output_items(events: &[ResponseEvent]) -> Vec<ResponseItem> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            ResponseEvent::OutputItemDone(item) => Some(item.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn token_usage_from_events(events: &[ResponseEvent]) -> Option<TokenUsage> {
+    events.iter().find_map(|event| match event {
+        ResponseEvent::Completed { token_usage, .. } => token_usage.clone(),
+        _ => None,
+    })
+}
+
+fn encode_sse_value(value: &Value) -> Result<String, serde_json::Error> {
+    serde_json::to_string(value).map(|body| format!("data: {body}\n\n"))
+}
+
+fn response_item_type(item: &ResponseItem) -> Option<&'static str> {
+    match item {
+        ResponseItem::Message { .. } => Some("message"),
+        ResponseItem::FunctionCall { .. } => Some("function_call"),
+        ResponseItem::LocalShellCall { .. } => Some("local_shell_call"),
+        ResponseItem::ToolSearchCall { .. } => Some("tool_search_call"),
+        ResponseItem::FunctionCallOutput { .. } => Some("function_call_output"),
+        ResponseItem::CustomToolCall { .. } => Some("custom_tool_call"),
+        ResponseItem::CustomToolCallOutput { .. } => Some("custom_tool_call_output"),
+        ResponseItem::ToolSearchOutput { .. } => Some("tool_search_output"),
+        ResponseItem::WebSearchCall { .. } => Some("web_search_call"),
+        ResponseItem::ImageGenerationCall { .. } => Some("image_generation_call"),
+        ResponseItem::Reasoning { .. } => Some("reasoning"),
+        ResponseItem::Compaction { .. } => Some("compaction"),
+        ResponseItem::ContextCompaction { .. } => Some("context_compaction"),
+        ResponseItem::Other => None,
+    }
+}
+
+fn response_item_id(item: &ResponseItem, index: usize) -> String {
+    match item {
+        ResponseItem::Message { id, .. } => id.clone(),
+        ResponseItem::FunctionCall { id, .. } => id.clone(),
+        ResponseItem::LocalShellCall { id, .. } => id.clone(),
+        ResponseItem::ToolSearchCall { id, .. } => id.clone(),
+        ResponseItem::CustomToolCall { id, .. } => id.clone(),
+        ResponseItem::WebSearchCall { id, .. } => id.clone(),
+        ResponseItem::ImageGenerationCall { id, .. } => Some(id.clone()),
+        ResponseItem::Reasoning { id, .. } => Some(id.clone()),
+        ResponseItem::FunctionCallOutput { .. }
+        | ResponseItem::CustomToolCallOutput { .. }
+        | ResponseItem::ToolSearchOutput { .. }
+        | ResponseItem::Compaction { .. }
+        | ResponseItem::ContextCompaction { .. }
+        | ResponseItem::Other => None,
+    }
+    .unwrap_or_else(|| format!("item_{index}"))
+}
+
+fn response_item_output_text_parts(item: &ResponseItem) -> Vec<Value> {
+    let ResponseItem::Message { content, .. } = item else {
+        return Vec::new();
+    };
+
+    content
+        .iter()
+        .filter_map(|content| match content {
+            ContentItem::OutputText { text } => Some(json!({
+                "type": "output_text",
+                "text": text
+            })),
+            _ => None,
+        })
+        .collect()
+}
+
+fn is_zero(value: &i64) -> bool {
+    *value == 0
 }
 
 #[cfg(test)]

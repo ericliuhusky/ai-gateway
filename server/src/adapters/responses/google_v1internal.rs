@@ -1,22 +1,17 @@
 use crate::adapters::responses::shared::clean_tool_schema_for_gemini;
 use crate::models::{
-    Content, ContentBlock, GeminiContent, GeminiGenerateRequest, GenerationConfig, Message,
-    ResponseOutputContent, ResponseOutputItem, ResponsesRequest, ResponsesResponse, ResponsesUsage,
-    openai::responses::ToolSpec as ResponsesToolSpec, request::tool_choice_as_value,
+    ChatRequest, Content, ContentBlock, ContentItem, GeminiContent, GeminiGenerateRequest,
+    GenerationConfig, Message, MessagePhase, ResponseEvent, ResponseEvents, ResponseItem,
+    ResponsesRequest, TokenUsage, openai::responses::ToolSpec as ResponsesToolSpec,
+    request::tool_choice_as_value,
 };
-use crate::support::time::now_unix;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use uuid::Uuid;
 
 pub fn responses_to_gemini(request: &ResponsesRequest) -> Result<GeminiGenerateRequest, String> {
-    let messages = vec![Message {
-        role: "system".to_string(),
-        content: Some(Content::String(request.instructions.clone())),
-        tool_calls: None,
-        tool_call_id: None,
-        name: None,
-    }];
+    let chat_request = ChatRequest::try_from(request)?;
+    let messages = chat_request.messages;
     let needs_tool_thought_signature = requires_tool_thought_signature(&request.model);
     let mut system_parts = Vec::new();
     let mut contents = Vec::new();
@@ -95,31 +90,25 @@ pub fn wrap_v1internal(body: Value, project_id: &str, model: &str, account_id: &
     })
 }
 
-pub fn gemini_to_responses(model: &str, gemini: &Value) -> ResponsesResponse {
+pub fn gemini_to_responses(_model: &str, gemini: &Value) -> ResponseEvents {
     let raw = gemini.get("response").unwrap_or(gemini);
-    let usage = raw.get("usageMetadata").map(|usage| ResponsesUsage {
+    let usage = raw.get("usageMetadata").map(|usage| TokenUsage {
         input_tokens: usage
             .get("promptTokenCount")
             .and_then(Value::as_u64)
-            .unwrap_or(0) as u32,
+            .unwrap_or(0) as i64,
+        cached_input_tokens: 0,
         output_tokens: usage
             .get("candidatesTokenCount")
             .and_then(Value::as_u64)
-            .unwrap_or(0) as u32,
+            .unwrap_or(0) as i64,
+        reasoning_output_tokens: 0,
         total_tokens: usage
             .get("totalTokenCount")
             .and_then(Value::as_u64)
-            .unwrap_or(0) as u32,
+            .unwrap_or(0) as i64,
     });
-    ResponsesResponse {
-        id: response_id(raw),
-        object: "response".to_string(),
-        created_at: now_unix(),
-        status: "completed".to_string(),
-        model: model.to_string(),
-        output: extract_output_items(raw),
-        usage,
-    }
+    response_events(response_id(raw), extract_output_items(raw), usage)
 }
 
 fn build_tools(
@@ -187,7 +176,7 @@ fn requires_tool_thought_signature(model: &str) -> bool {
     model.to_ascii_lowercase().contains("gemini")
 }
 
-fn extract_output_items(raw: &Value) -> Vec<ResponseOutputItem> {
+fn extract_output_items(raw: &Value) -> Vec<ResponseItem> {
     let mut output = Vec::new();
     if let Some(parts) = raw
         .get("candidates")
@@ -202,43 +191,32 @@ fn extract_output_items(raw: &Value) -> Vec<ResponseOutputItem> {
             .filter_map(|part| part.get("text").and_then(Value::as_str))
             .collect::<String>();
         if !text.is_empty() {
-            output.push(ResponseOutputItem {
-                id: format!("msg_{}", Uuid::new_v4()),
-                r#type: "message".to_string(),
-                role: Some("assistant".to_string()),
-                content: Some(vec![ResponseOutputContent {
-                    content_type: "output_text".to_string(),
-                    text,
-                }]),
-                call_id: None,
-                name: None,
-                arguments: None,
+            output.push(ResponseItem::Message {
+                id: Some(format!("msg_{}", Uuid::new_v4())),
+                role: "assistant".to_string(),
+                content: vec![ContentItem::OutputText { text }],
+                phase: Some(MessagePhase::FinalAnswer),
             });
         }
         for part in parts {
             if let Some(function_call) = part.get("functionCall") {
-                output.push(ResponseOutputItem {
-                    id: format!("fc_{}", Uuid::new_v4()),
-                    r#type: "function_call".to_string(),
-                    role: None,
-                    content: None,
-                    call_id: Some(
-                        function_call
-                            .get("id")
-                            .and_then(Value::as_str)
-                            .map(ToOwned::to_owned)
-                            .unwrap_or_else(|| format!("call_{}", Uuid::new_v4())),
-                    ),
+                output.push(ResponseItem::FunctionCall {
+                    id: Some(format!("fc_{}", Uuid::new_v4())),
                     name: function_call
                         .get("name")
                         .and_then(Value::as_str)
-                        .map(ToOwned::to_owned),
-                    arguments: Some(
-                        function_call
-                            .get("args")
-                            .map(Value::to_string)
-                            .unwrap_or_else(|| "{}".to_string()),
-                    ),
+                        .map(ToOwned::to_owned)
+                        .unwrap_or_else(|| "unknown".to_string()),
+                    namespace: None,
+                    arguments: function_call
+                        .get("args")
+                        .map(Value::to_string)
+                        .unwrap_or_else(|| "{}".to_string()),
+                    call_id: function_call
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .map(ToOwned::to_owned)
+                        .unwrap_or_else(|| format!("call_{}", Uuid::new_v4())),
                 });
             }
         }
@@ -251,6 +229,25 @@ fn response_id(raw: &Value) -> String {
         .and_then(Value::as_str)
         .map(ToOwned::to_owned)
         .unwrap_or_else(|| format!("resp_{}", Uuid::new_v4()))
+}
+
+fn response_events(
+    response_id: String,
+    output: Vec<ResponseItem>,
+    usage: Option<TokenUsage>,
+) -> ResponseEvents {
+    let mut events = Vec::with_capacity(output.len() * 2 + 2);
+    events.push(ResponseEvent::Created);
+    for item in output {
+        events.push(ResponseEvent::OutputItemAdded(item.clone()));
+        events.push(ResponseEvent::OutputItemDone(item));
+    }
+    events.push(ResponseEvent::Completed {
+        response_id,
+        token_usage: usage,
+        end_turn: Some(true),
+    });
+    events
 }
 
 fn build_gemini_message_parts(

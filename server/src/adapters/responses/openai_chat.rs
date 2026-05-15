@@ -1,8 +1,7 @@
 use crate::models::{
-    ChatRequest, ResponseOutputContent, ResponseOutputItem, ResponsesRequest, ResponsesResponse,
-    ResponsesUsage,
+    ChatRequest, ContentItem, MessagePhase, ResponseEvent, ResponseEvents, ResponseItem,
+    ResponsesRequest, TokenUsage,
 };
-use crate::support::time::now_unix;
 use serde_json::Value;
 use uuid::Uuid;
 
@@ -15,20 +14,22 @@ pub fn responses_to_chat_completions(
     serde_json::to_value(body).map_err(|err| err.to_string())
 }
 
-pub fn chat_completions_to_responses(model: &str, chat: &Value) -> ResponsesResponse {
-    let usage = chat.get("usage").map(|usage| ResponsesUsage {
+pub fn chat_completions_to_responses(_model: &str, chat: &Value) -> ResponseEvents {
+    let usage = chat.get("usage").map(|usage| TokenUsage {
         input_tokens: usage
             .get("prompt_tokens")
             .and_then(Value::as_u64)
-            .unwrap_or(0) as u32,
+            .unwrap_or(0) as i64,
+        cached_input_tokens: 0,
         output_tokens: usage
             .get("completion_tokens")
             .and_then(Value::as_u64)
-            .unwrap_or(0) as u32,
+            .unwrap_or(0) as i64,
+        reasoning_output_tokens: 0,
         total_tokens: usage
             .get("total_tokens")
             .and_then(Value::as_u64)
-            .unwrap_or(0) as u32,
+            .unwrap_or(0) as i64,
     });
 
     let mut output = Vec::new();
@@ -59,14 +60,12 @@ pub fn chat_completions_to_responses(model: &str, chat: &Value) -> ResponsesResp
                         other => other.to_string(),
                     })
                     .unwrap_or_else(|| "{}".to_string());
-                output.push(ResponseOutputItem {
-                    id: format!("fc_{}", Uuid::new_v4().simple()),
-                    r#type: "function_call".to_string(),
-                    role: None,
-                    content: None,
-                    call_id: Some(call_id),
-                    name: Some(name),
-                    arguments: Some(arguments),
+                output.push(ResponseItem::FunctionCall {
+                    id: Some(format!("fc_{}", Uuid::new_v4().simple())),
+                    name,
+                    namespace: None,
+                    arguments,
+                    call_id,
                 });
             }
         }
@@ -76,37 +75,40 @@ pub fn chat_completions_to_responses(model: &str, chat: &Value) -> ResponsesResp
             .unwrap_or("")
             .to_string();
         if !text.is_empty() {
-            output.push(ResponseOutputItem {
-                id: format!("msg_{}", Uuid::new_v4().simple()),
-                r#type: "message".to_string(),
-                role: Some("assistant".to_string()),
-                content: Some(vec![ResponseOutputContent {
-                    content_type: "output_text".to_string(),
-                    text,
-                }]),
-                call_id: None,
-                name: None,
-                arguments: None,
+            output.push(ResponseItem::Message {
+                id: Some(format!("msg_{}", Uuid::new_v4().simple())),
+                role: "assistant".to_string(),
+                content: vec![ContentItem::OutputText { text }],
+                phase: Some(MessagePhase::FinalAnswer),
             });
         }
     }
 
-    ResponsesResponse {
-        id: chat
-            .get("id")
-            .and_then(Value::as_str)
-            .map(ToOwned::to_owned)
-            .unwrap_or_else(|| format!("resp_{}", Uuid::new_v4().simple())),
-        object: "response".to_string(),
-        created_at: chat
-            .get("created")
-            .and_then(Value::as_u64)
-            .unwrap_or_else(now_unix),
-        status: "completed".to_string(),
-        model: model.to_string(),
-        output,
-        usage,
+    let response_id = chat
+        .get("id")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| format!("resp_{}", Uuid::new_v4().simple()));
+    response_events(response_id, output, usage)
+}
+
+fn response_events(
+    response_id: String,
+    output: Vec<ResponseItem>,
+    usage: Option<TokenUsage>,
+) -> ResponseEvents {
+    let mut events = Vec::with_capacity(output.len() * 2 + 2);
+    events.push(ResponseEvent::Created);
+    for item in output {
+        events.push(ResponseEvent::OutputItemAdded(item.clone()));
+        events.push(ResponseEvent::OutputItemDone(item));
     }
+    events.push(ResponseEvent::Completed {
+        response_id,
+        token_usage: usage,
+        end_turn: Some(true),
+    });
+    events
 }
 
 #[cfg(test)]
@@ -156,6 +158,8 @@ mod tests {
 
     #[test]
     fn maps_chat_completions_tool_calls_and_text_back_to_responses() {
+        use crate::models::{ResponseEvent, ResponseItem};
+
         let chat = json!({
             "id": "chatcmpl_123",
             "created": 1_700_000_000u64,
@@ -178,12 +182,21 @@ mod tests {
             }]
         });
 
-        let response = chat_completions_to_responses("gpt-5.4", &chat);
+        let events = chat_completions_to_responses("gpt-5.4", &chat);
+        let output: Vec<&ResponseItem> = events
+            .iter()
+            .filter_map(|event| match event {
+                ResponseEvent::OutputItemDone(item) => Some(item),
+                _ => None,
+            })
+            .collect();
 
-        assert_eq!(response.output.len(), 2);
-        assert_eq!(response.output[0].r#type, "function_call");
-        assert_eq!(response.output[0].name.as_deref(), Some("shell"));
-        assert_eq!(response.output[1].r#type, "message");
+        assert_eq!(output.len(), 2);
+        assert!(matches!(
+            output[0],
+            ResponseItem::FunctionCall { name, .. } if name == "shell"
+        ));
+        assert!(matches!(output[1], ResponseItem::Message { .. }));
     }
 
     #[test]

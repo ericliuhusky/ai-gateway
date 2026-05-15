@@ -11,16 +11,18 @@ use crate::{
         GatewayLogListResponse, GatewayLogSettings, GatewayLogSettingsResponse, GatewayLogSummary,
         ModelListItem, ModelListResponse, PROVIDER_GOOGLE_PROXY, PROVIDER_OPENAI_PROXY,
         ProviderAuthMode, ProviderQuotaCredits, ProviderQuotaResponse, ProviderQuotaSnapshot,
-        ProviderQuotaSummary, ProviderQuotaWindow, QuotaSource, QuotaSupportStatus,
-        ResponsesRequest, ResponsesResponse, SelectedRoute, UpdateGatewayLogSettingsRequest,
+        ProviderQuotaSummary, ProviderQuotaWindow, QuotaSource, QuotaSupportStatus, ResponseEvents,
+        ResponsesRequest, SelectedRoute, UpdateGatewayLogSettingsRequest,
         UpdateSelectedModelRequest, UpdateSelectedProviderRequest, UpstreamProtocol,
         UpstreamRateLimitStatusDetails, UpstreamRateLimitStatusPayload,
-        UpstreamRateLimitWindowSnapshot,
+        UpstreamRateLimitWindowSnapshot, response_events_to_response_value,
+        response_events_to_sse_lines,
     },
     store::{
         AccountStore, LogEvent, LogStage, LogStore, ModelStore, ProviderStore, RouteStore,
         log_store::extract_model_output_from_body,
     },
+    support::time::now_unix,
     upstream::{
         GOOGLE_PROJECT_ID_FALLBACK, OPENAI_CODEX_BASE_URL, OpenAiEndpoint,
         PrivateOpenAiRequestBuilder, PublicOpenAiRequestBuilder, UpstreamClient,
@@ -1138,7 +1140,9 @@ pub(super) async fn responses_inner(
 
         if !request.stream {
             let gemini_body: Value = upstream.json().await.map_err(AppError::upstream)?;
-            let response = gemini_to_responses(&request.model, &gemini_body);
+            let response_events = gemini_to_responses(&request.model, &gemini_body);
+            let response =
+                response_events_to_response_value(&response_events, &request.model, now_unix());
             let elapsed = elapsed_ms(started_at);
             let upstream_body = json_value_for_storage(&gemini_body);
             let response_body = json_for_storage(&response);
@@ -1684,7 +1688,9 @@ pub(super) async fn responses_inner(
             .map_err(AppError::upstream_message)?;
         let upstream_status = upstream.status();
         let chat_body: Value = upstream.json().await.map_err(AppError::upstream)?;
-        let response = chat_completions_to_responses(&request.model, &chat_body);
+        let response_events = chat_completions_to_responses(&request.model, &chat_body);
+        let response =
+            response_events_to_response_value(&response_events, &request.model, now_unix());
         let elapsed = elapsed_ms(started_at);
         let upstream_body = json_value_for_storage(&chat_body);
 
@@ -1747,7 +1753,7 @@ pub(super) async fn responses_inner(
         let upstream_url_for_stream = upstream_url.clone();
         let final_response_body = json_for_storage(&response);
         let output = stream! {
-            let stream = synthesized_responses_stream(response);
+            let stream = synthesized_responses_stream(response_events, model.clone(), now_unix());
             futures_util::pin_mut!(stream);
             let mut response_body = String::new();
 
@@ -2630,80 +2636,21 @@ fn resolve_native_target(provider: &ApiProviderRecord, requested_model: &str) ->
 }
 
 fn synthesized_responses_stream(
-    response: ResponsesResponse,
+    response: ResponseEvents,
+    model: String,
+    created_at: u64,
 ) -> impl futures_util::Stream<Item = Result<String, std::io::Error>> {
     stream! {
-        let response_value = match serde_json::to_value(&response) {
-            Ok(value) => value,
+        let lines = match response_events_to_sse_lines(&response, &model, created_at) {
+            Ok(lines) => lines,
             Err(err) => {
                 yield Err(std::io::Error::other(err));
                 return;
             }
         };
-        yield Ok(format!("data: {}\n\n", json!({
-            "type": "response.created",
-            "response": {
-                "id": &response.id,
-                "object": "response",
-                "status": "in_progress",
-                "output": []
-            }
-        })));
-
-        for (index, item) in response.output.iter().enumerate() {
-            yield Ok(format!("data: {}\n\n", json!({
-                "type": "response.output_item.added",
-                "output_index": index,
-                "item": item.clone()
-            })));
-
-            if item.r#type == "message" {
-                if let Some(content) = &item.content {
-                    for (content_index, part) in content.iter().enumerate() {
-                        yield Ok(format!("data: {}\n\n", json!({
-                            "type": "response.content_part.added",
-                            "item_id": &item.id,
-                            "output_index": index,
-                            "content_index": content_index,
-                            "part": part.clone()
-                        })));
-                        yield Ok(format!("data: {}\n\n", json!({
-                            "type": "response.output_text.delta",
-                            "item_id": &item.id,
-                            "output_index": index,
-                            "content_index": content_index,
-                            "delta": &part.text
-                        })));
-                        yield Ok(format!("data: {}\n\n", json!({
-                            "type": "response.output_text.done",
-                            "item_id": &item.id,
-                            "output_index": index,
-                            "content_index": content_index,
-                            "text": &part.text
-                        })));
-                        yield Ok(format!("data: {}\n\n", json!({
-                            "type": "response.content_part.done",
-                            "item_id": &item.id,
-                            "output_index": index,
-                            "content_index": content_index,
-                            "part": part.clone()
-                        })));
-                    }
-                }
-            }
-
-            yield Ok(format!("data: {}\n\n", json!({
-                "type": "response.output_item.done",
-                "output_index": index,
-                "item": item.clone()
-            })));
+        for line in lines {
+            yield Ok(line);
         }
-
-        yield Ok(format!("data: {}\n\n", json!({
-            "type": "response.completed",
-            "response": response_value
-        })));
-        yield Ok("data: [DONE]\n\n".to_string());
     }
 }
 
