@@ -3,12 +3,13 @@ use crate::{
     auth::OAuthClient,
     config::Config,
     models::{
-        AccountRecord, ApiProviderRecord, ApiProviderSummary, ClientProtocol, CodexConfigStatus,
-        CreateApiProviderRequest, GatewayLogDetail, GatewayLogDetailResponse,
-        GatewayLogListResponse, GatewayLogSettings, GatewayLogSettingsResponse, GatewayLogSummary,
-        ModelListItem, ModelListResponse, PROVIDER_OPENAI_PROXY, ProviderAuthMode,
-        ProviderQuotaCredits, ProviderQuotaResponse, ProviderQuotaSnapshot, ProviderQuotaSummary,
-        ProviderQuotaWindow, QuotaSource, QuotaSupportStatus, ResponsesRequest, SelectedRoute,
+        AccountRecord, ApiProviderRecord, ApiProviderSummary, ChatCompletionsResponsesStream,
+        ClientProtocol, CodexConfigStatus, CreateApiProviderRequest, GatewayLogDetail,
+        GatewayLogDetailResponse, GatewayLogListResponse, GatewayLogSettings,
+        GatewayLogSettingsResponse, GatewayLogSummary, ModelListItem, ModelListResponse,
+        PROVIDER_OPENAI_PROXY, ProviderAuthMode, ProviderQuotaCredits, ProviderQuotaResponse,
+        ProviderQuotaSnapshot, ProviderQuotaSummary, ProviderQuotaWindow, QuotaSource,
+        QuotaSupportStatus, ResponsesRequest, ResponsesStreamFrame, SelectedRoute,
         UpdateGatewayLogSettingsRequest, UpdateSelectedModelRequest, UpdateSelectedProviderRequest,
         UpstreamProtocol, UpstreamRateLimitStatusDetails, UpstreamRateLimitStatusPayload,
         UpstreamRateLimitWindowSnapshot,
@@ -39,7 +40,6 @@ use reqwest::Client;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
 use std::time::Instant;
 use std::{fs, io::ErrorKind, path::Path, sync::Arc};
 use uuid::Uuid;
@@ -1013,8 +1013,15 @@ pub(super) async fn responses_inner(
                         let payloads = drain_sse_payloads(&mut chat_sse_buffer, &chunk_text);
                         for payload in payloads {
                             match response_stream.push_chat_payload(&payload) {
-                                Ok(events) => {
-                                    for event in events {
+                                Ok(frames) => {
+                                    for frame in frames {
+                                        let event = match encode_response_frame(frame) {
+                                            Ok(event) => event,
+                                            Err(err) => {
+                                                yield Err(err);
+                                                return;
+                                            }
+                                        };
                                         append_to_log_buffer(&mut response_body, &event);
                                         capture_final_response_from_sse_chunk(
                                             &mut final_response_sse_buffer,
@@ -1082,8 +1089,15 @@ pub(super) async fn responses_inner(
                 let payloads = drain_sse_payloads(&mut chat_sse_buffer, "\n\n");
                 for payload in payloads {
                     match response_stream.push_chat_payload(&payload) {
-                        Ok(events) => {
-                            for event in events {
+                        Ok(frames) => {
+                            for frame in frames {
+                                let event = match encode_response_frame(frame) {
+                                    Ok(event) => event,
+                                    Err(err) => {
+                                        yield Err(err);
+                                        return;
+                                    }
+                                };
                                 append_to_log_buffer(&mut response_body, &event);
                                 capture_final_response_from_sse_chunk(
                                     &mut final_response_sse_buffer,
@@ -1122,8 +1136,15 @@ pub(super) async fn responses_inner(
             }
 
             match response_stream.finish() {
-                Ok(events) => {
-                    for event in events {
+                Ok(frames) => {
+                    for frame in frames {
+                        let event = match encode_response_frame(frame) {
+                            Ok(event) => event,
+                            Err(err) => {
+                                yield Err(err);
+                                return;
+                            }
+                        };
                         append_to_log_buffer(&mut response_body, &event);
                         capture_final_response_from_sse_chunk(
                             &mut final_response_sse_buffer,
@@ -1823,324 +1844,6 @@ fn resolve_native_target(provider: &ApiProviderRecord, requested_model: &str) ->
     }
 }
 
-#[derive(Debug)]
-struct ChatCompletionsResponsesStream {
-    requested_model: String,
-    created_at: u64,
-    response_id: Option<String>,
-    response_model: Option<String>,
-    created_emitted: bool,
-    message_started: bool,
-    finished: bool,
-    message_item_id: String,
-    text: String,
-    tool_calls: BTreeMap<usize, StreamedChatToolCall>,
-    usage: Option<Value>,
-}
-
-#[derive(Debug)]
-struct StreamedChatToolCall {
-    id: String,
-    item_id: String,
-    name: String,
-    arguments: String,
-}
-
-impl ChatCompletionsResponsesStream {
-    fn new(requested_model: String, created_at: u64) -> Self {
-        Self {
-            requested_model,
-            created_at,
-            response_id: None,
-            response_model: None,
-            created_emitted: false,
-            message_started: false,
-            finished: false,
-            message_item_id: format!("msg_{}", Uuid::new_v4().simple()),
-            text: String::new(),
-            tool_calls: BTreeMap::new(),
-            usage: None,
-        }
-    }
-
-    fn push_chat_payload(&mut self, payload: &str) -> Result<Vec<String>, String> {
-        if payload == "[DONE]" {
-            return self.finish();
-        }
-
-        let chunk: Value = serde_json::from_str(payload).map_err(|err| err.to_string())?;
-        if let Some(id) = chunk.get("id").and_then(Value::as_str) {
-            self.response_id.get_or_insert_with(|| id.to_string());
-        }
-        if let Some(model) = chunk.get("model").and_then(Value::as_str) {
-            self.response_model.get_or_insert_with(|| model.to_string());
-        }
-        if let Some(created) = chunk.get("created").and_then(Value::as_u64) {
-            self.created_at = created;
-        }
-        if let Some(usage) = chunk.get("usage").filter(|usage| !usage.is_null()) {
-            self.usage = Some(chat_usage_to_responses_usage(usage));
-        }
-
-        let mut events = self.ensure_created().map_err(|err| err.to_string())?;
-        let Some(choices) = chunk.get("choices").and_then(Value::as_array) else {
-            return Ok(events);
-        };
-
-        for choice in choices {
-            if choice
-                .get("index")
-                .and_then(Value::as_u64)
-                .is_some_and(|index| index != 0)
-            {
-                continue;
-            }
-
-            if let Some(delta) = choice.get("delta") {
-                if let Some(content) = delta.get("content").and_then(Value::as_str) {
-                    if !content.is_empty() {
-                        events.extend(
-                            self.push_text_delta(content)
-                                .map_err(|err| err.to_string())?,
-                        );
-                    }
-                }
-
-                if let Some(tool_calls) = delta.get("tool_calls").and_then(Value::as_array) {
-                    self.push_tool_call_deltas(tool_calls);
-                }
-            }
-        }
-
-        Ok(events)
-    }
-
-    fn finish(&mut self) -> Result<Vec<String>, String> {
-        if self.finished {
-            return Ok(Vec::new());
-        }
-        self.finished = true;
-
-        let mut events = self.ensure_created().map_err(|err| err.to_string())?;
-        if self.message_started {
-            let message = self.message_item();
-            events.push(
-                encode_response_sse_value(&json!({
-                    "type": "response.output_text.done",
-                    "item_id": self.message_item_id,
-                    "output_index": 0,
-                    "content_index": 0,
-                    "text": self.text
-                }))
-                .map_err(|err| err.to_string())?,
-            );
-            events.push(
-                encode_response_sse_value(&json!({
-                    "type": "response.content_part.done",
-                    "item_id": self.message_item_id,
-                    "output_index": 0,
-                    "content_index": 0,
-                    "part": {
-                        "type": "output_text",
-                        "text": self.text
-                    }
-                }))
-                .map_err(|err| err.to_string())?,
-            );
-            events.push(
-                encode_response_sse_value(&json!({
-                    "type": "response.output_item.done",
-                    "output_index": 0,
-                    "item": message
-                }))
-                .map_err(|err| err.to_string())?,
-            );
-        }
-
-        let mut next_output_index = usize::from(self.message_started);
-        for tool_call in self.tool_calls.values() {
-            let item = tool_call.response_item();
-            events.push(
-                encode_response_sse_value(&json!({
-                    "type": "response.output_item.added",
-                    "output_index": next_output_index,
-                    "item": item
-                }))
-                .map_err(|err| err.to_string())?,
-            );
-            events.push(
-                encode_response_sse_value(&json!({
-                    "type": "response.output_item.done",
-                    "output_index": next_output_index,
-                    "item": item
-                }))
-                .map_err(|err| err.to_string())?,
-            );
-            next_output_index += 1;
-        }
-
-        events.push(
-            encode_response_sse_value(&json!({
-                "type": "response.completed",
-                "response": self.completed_response()
-            }))
-            .map_err(|err| err.to_string())?,
-        );
-        events.push("data: [DONE]\n\n".to_string());
-
-        Ok(events)
-    }
-
-    fn ensure_created(&mut self) -> Result<Vec<String>, serde_json::Error> {
-        if self.created_emitted {
-            return Ok(Vec::new());
-        }
-        self.created_emitted = true;
-        encode_response_sse_value(&json!({
-            "type": "response.created",
-            "response": {
-                "id": self.response_id(),
-                "object": "response",
-                "created_at": self.created_at,
-                "status": "in_progress",
-                "model": self.response_model(),
-                "output": []
-            }
-        }))
-        .map(|event| vec![event])
-    }
-
-    fn push_text_delta(&mut self, delta: &str) -> Result<Vec<String>, serde_json::Error> {
-        let mut events = Vec::new();
-        if !self.message_started {
-            self.message_started = true;
-            events.push(encode_response_sse_value(&json!({
-                "type": "response.output_item.added",
-                "output_index": 0,
-                "item": {
-                    "id": self.message_item_id,
-                    "type": "message",
-                    "role": "assistant",
-                    "content": []
-                }
-            }))?);
-            events.push(encode_response_sse_value(&json!({
-                "type": "response.content_part.added",
-                "item_id": self.message_item_id,
-                "output_index": 0,
-                "content_index": 0,
-                "part": {
-                    "type": "output_text",
-                    "text": ""
-                }
-            }))?);
-        }
-
-        self.text.push_str(delta);
-        events.push(encode_response_sse_value(&json!({
-            "type": "response.output_text.delta",
-            "item_id": self.message_item_id,
-            "output_index": 0,
-            "content_index": 0,
-            "delta": delta
-        }))?);
-
-        Ok(events)
-    }
-
-    fn push_tool_call_deltas(&mut self, tool_call_deltas: &[Value]) {
-        for tool_call_delta in tool_call_deltas {
-            let index = tool_call_delta
-                .get("index")
-                .and_then(Value::as_u64)
-                .unwrap_or(self.tool_calls.len() as u64) as usize;
-            let tool_call = self
-                .tool_calls
-                .entry(index)
-                .or_insert_with(|| StreamedChatToolCall {
-                    id: format!("call_{}", Uuid::new_v4().simple()),
-                    item_id: format!("fc_{}", Uuid::new_v4().simple()),
-                    name: "unknown".to_string(),
-                    arguments: String::new(),
-                });
-
-            if let Some(id) = tool_call_delta.get("id").and_then(Value::as_str) {
-                tool_call.id = id.to_string();
-            }
-            let Some(function) = tool_call_delta.get("function") else {
-                continue;
-            };
-            if let Some(name) = function.get("name").and_then(Value::as_str) {
-                if !name.is_empty() {
-                    tool_call.name = name.to_string();
-                }
-            }
-            if let Some(arguments) = function.get("arguments").and_then(Value::as_str) {
-                tool_call.arguments.push_str(arguments);
-            }
-        }
-    }
-
-    fn completed_response(&mut self) -> Value {
-        let mut output = Vec::new();
-        if self.message_started {
-            output.push(self.message_item());
-        }
-        output.extend(
-            self.tool_calls
-                .values()
-                .map(StreamedChatToolCall::response_item),
-        );
-
-        json!({
-            "id": self.response_id(),
-            "object": "response",
-            "created_at": self.created_at,
-            "status": "completed",
-            "model": self.response_model(),
-            "output": output,
-            "usage": self.usage
-        })
-    }
-
-    fn message_item(&self) -> Value {
-        json!({
-            "id": self.message_item_id,
-            "type": "message",
-            "role": "assistant",
-            "content": [{
-                "type": "output_text",
-                "text": self.text
-            }],
-            "phase": "final_answer"
-        })
-    }
-
-    fn response_id(&mut self) -> String {
-        self.response_id
-            .get_or_insert_with(|| format!("resp_{}", Uuid::new_v4().simple()))
-            .clone()
-    }
-
-    fn response_model(&self) -> &str {
-        self.response_model
-            .as_deref()
-            .unwrap_or(&self.requested_model)
-    }
-}
-
-impl StreamedChatToolCall {
-    fn response_item(&self) -> Value {
-        json!({
-            "id": self.item_id,
-            "type": "function_call",
-            "name": self.name,
-            "arguments": self.arguments,
-            "call_id": self.id
-        })
-    }
-}
-
 fn drain_sse_payloads(buffer: &mut String, chunk: &str) -> Vec<String> {
     buffer.push_str(chunk);
     let mut payloads = Vec::new();
@@ -2179,25 +1882,10 @@ fn sse_payload_from_frame(frame: &str) -> Option<String> {
     (!data_lines.is_empty()).then(|| data_lines.join("\n"))
 }
 
-fn encode_response_sse_value(value: &Value) -> Result<String, serde_json::Error> {
-    serde_json::to_string(value).map(|body| format!("data: {body}\n\n"))
-}
-
-fn chat_usage_to_responses_usage(usage: &Value) -> Value {
-    json!({
-        "input_tokens": usage
-            .get("prompt_tokens")
-            .and_then(Value::as_u64)
-            .unwrap_or(0),
-        "output_tokens": usage
-            .get("completion_tokens")
-            .and_then(Value::as_u64)
-            .unwrap_or(0),
-        "total_tokens": usage
-            .get("total_tokens")
-            .and_then(Value::as_u64)
-            .unwrap_or(0)
-    })
+fn encode_response_frame(frame: ResponsesStreamFrame) -> Result<String, std::io::Error> {
+    frame
+        .encode_sse()
+        .map_err(|err| std::io::Error::other(err.to_string()))
 }
 
 pub(super) async fn log_http_event(
@@ -2379,9 +2067,17 @@ mod tests {
         provider_uses_openai_account, quota_from_openai_usage, resolve_native_target,
     };
     use crate::models::{
-        ApiProviderBillingMode, ApiProviderRecord, ProviderAuthMode, UpstreamProtocol,
+        ApiProviderBillingMode, ApiProviderRecord, ProviderAuthMode, ResponsesStreamFrame,
+        UpstreamProtocol,
     };
     use serde_json::json;
+
+    fn encode_frames(frames: Vec<ResponsesStreamFrame>) -> String {
+        frames
+            .into_iter()
+            .map(|frame| frame.encode_sse().expect("frame should encode"))
+            .collect::<String>()
+    }
 
     #[test]
     fn parses_openai_codex_models_payload() {
@@ -2506,7 +2202,7 @@ mod tests {
         let events = stream
             .push_chat_payload(&payloads[0])
             .expect("payload should convert");
-        let joined = events.join("");
+        let joined = encode_frames(events);
 
         assert!(joined.contains("\"type\":\"response.output_text.delta\""));
         assert!(joined.contains("\"delta\":\"hi\""));
@@ -2524,7 +2220,7 @@ mod tests {
             .expect("payload should convert");
 
         let events = stream.finish().expect("stream should finish");
-        let joined = events.join("");
+        let joined = encode_frames(events);
 
         assert!(joined.contains("\"type\":\"response.completed\""));
         assert!(joined.contains("\"text\":\"done\""));
