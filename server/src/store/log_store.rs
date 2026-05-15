@@ -35,15 +35,6 @@ pub enum LogStage {
 }
 
 impl LogStage {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::ClientRequest => "client_request",
-            Self::UpstreamRequest => "upstream_request",
-            Self::ClientResponse => "client_response",
-            Self::UpstreamResponse => "upstream_response",
-            Self::Error => "error",
-        }
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -112,13 +103,7 @@ impl LogStore {
         Ok(store)
     }
 
-    pub fn db_path(&self) -> &PathBuf {
-        &self.db_path
-    }
 
-    pub fn max_rows(&self) -> usize {
-        self.max_rows
-    }
 
     pub fn is_enabled(&self) -> bool {
         self.enabled.load(Ordering::Relaxed)

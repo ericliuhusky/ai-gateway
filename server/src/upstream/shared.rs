@@ -17,14 +17,6 @@ pub fn build_http_client() -> Client {
     builder.build().unwrap_or_else(|_| Client::new())
 }
 
-pub fn proxy_url_for(url: &Url) -> Option<String> {
-    if cfg!(target_os = "macos") {
-        load_macos_system_proxy()
-            .and_then(|config| select_proxy(url, &config.http_proxy, &config.https_proxy))
-    } else {
-        None
-    }
-}
 
 pub fn should_try_next_endpoint(status: StatusCode) -> bool {
     status == StatusCode::TOO_MANY_REQUESTS
