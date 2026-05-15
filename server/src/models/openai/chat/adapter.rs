@@ -26,7 +26,23 @@ impl TryFrom<&ResponsesRequest> for ChatRequest {
     type Error = String;
 
     fn try_from(request: &ResponsesRequest) -> Result<Self, Self::Error> {
-        let mut messages = build_messages(request)?;
+        let mut messages: Vec<Message> = request
+            .input
+            .iter()
+            .filter_map(Message::from_responses_item)
+            .collect();
+        if !request.instructions.trim().is_empty() {
+            messages.insert(
+                0,
+                Message {
+                    role: "system".to_string(),
+                    content: Some(Content::String(request.instructions.clone())),
+                    tool_calls: None,
+                    tool_call_id: None,
+                    name: None,
+                },
+            );
+        }
         Self::normalize_messages_for_chat_completions(&mut messages);
 
         Ok(Self {
@@ -133,99 +149,6 @@ impl ChatToolSpec {
             },
         }
     }
-}
-
-pub fn build_messages(request: &ResponsesRequest) -> Result<Vec<Message>, String> {
-    let mut messages = Vec::new();
-
-    if !request.instructions.trim().is_empty() {
-        messages.push(Message {
-            role: "system".to_string(),
-            content: Some(Content::String(request.instructions.clone())),
-            tool_calls: None,
-            tool_call_id: None,
-            name: None,
-        });
-    }
-
-    for item in &request.input {
-        match item {
-            ResponseItem::Other => {}
-            ResponseItem::Message { role, content, .. } => {
-                if let Some(message) = response_message_to_openai(role, content) {
-                    messages.push(message);
-                }
-            }
-            ResponseItem::FunctionCall {
-                name,
-                arguments,
-                call_id,
-                ..
-            } => messages.push(Message {
-                role: "assistant".to_string(),
-                content: None,
-                tool_calls: Some(vec![ToolCall {
-                    id: call_id.clone(),
-                    r#type: "function".to_string(),
-                    function: ToolFunction {
-                        name: name.clone(),
-                        arguments: arguments.clone(),
-                    },
-                }]),
-                tool_call_id: None,
-                name: None,
-            }),
-            ResponseItem::LocalShellCall {
-                call_id, action, ..
-            } => messages.push(local_shell_call_to_message(call_id.as_ref(), action)),
-            ResponseItem::WebSearchCall { id, action, .. } => {
-                messages.push(web_search_call_to_message(id.as_ref(), action))
-            }
-            ResponseItem::FunctionCallOutput {
-                call_id, output, ..
-            } => messages.push(function_call_output_to_message(call_id, output)),
-            ResponseItem::CustomToolCallOutput {
-                call_id,
-                name,
-                output,
-            } => messages.push(custom_tool_call_output_to_message(
-                call_id,
-                name.as_ref(),
-                output,
-            )),
-            ResponseItem::CustomToolCall {
-                call_id,
-                name,
-                input,
-                ..
-            } => messages.push(Message {
-                role: "assistant".to_string(),
-                content: None,
-                tool_calls: Some(vec![ToolCall {
-                    id: call_id.clone(),
-                    r#type: "function".to_string(),
-                    function: ToolFunction {
-                        name: name.clone(),
-                        arguments: input.clone(),
-                    },
-                }]),
-                tool_call_id: None,
-                name: None,
-            }),
-            ResponseItem::Reasoning { .. }
-            | ResponseItem::Compaction { .. }
-            | ResponseItem::ContextCompaction { .. }
-            | ResponseItem::ToolSearchCall { .. }
-            | ResponseItem::ToolSearchOutput { .. }
-            | ResponseItem::ImageGenerationCall { .. } => {}
-        }
-    }
-
-    if messages.is_empty() {
-        return Err("input cannot be empty".to_string());
-    }
-
-    Ok(messages)
 }
 
 fn reorder_tool_messages_for_chat_completions(messages: &mut Vec<Message>) {
@@ -366,56 +289,6 @@ fn sanitize_message_content_for_context(role: &str, content: &[ContentItem]) -> 
         .collect()
 }
 
-fn response_message_to_openai(role: &str, content: &[ContentItem]) -> Option<Message> {
-    let sanitized_content = sanitize_message_content_for_context(role, content);
-    if role == "assistant" && sanitized_content.is_empty() {
-        return None;
-    }
-
-    Some(Message {
-        role: role.to_string(),
-        content: content_items_to_openai(&sanitized_content),
-        tool_calls: None,
-        tool_call_id: None,
-        name: None,
-    })
-}
-
-fn content_items_to_openai(items: &[ContentItem]) -> Option<Content> {
-    if items.is_empty() {
-        return None;
-    }
-    let mut text_parts = Vec::new();
-    let mut blocks = Vec::new();
-    let mut has_image = false;
-
-    for item in items {
-        match item {
-            ContentItem::InputText { text } | ContentItem::OutputText { text } => {
-                text_parts.push(text.clone());
-                blocks.push(ContentBlock::Text { text: text.clone() });
-            }
-            ContentItem::InputImage { image_url, .. } => {
-                if let Some(url) = image_url {
-                    has_image = true;
-                    blocks.push(ContentBlock::ImageUrl {
-                        image_url: ImageUrl { url: url.clone() },
-                    });
-                }
-            }
-            ContentItem::InputFile { .. } => {}
-        }
-    }
-
-    if has_image {
-        (!blocks.is_empty()).then_some(Content::Array(blocks))
-    } else if !text_parts.is_empty() {
-        Some(Content::String(text_parts.join("\n")))
-    } else {
-        None
-    }
-}
-
 fn local_shell_call_to_message(call_id: Option<&String>, action: &LocalShellAction) -> Message {
     let call_id = call_id
         .cloned()
@@ -507,6 +380,113 @@ fn custom_tool_call_output_to_message(
         tool_calls: None,
         tool_call_id: Some(call_id.to_string()),
         name: name.cloned(),
+    }
+}
+
+impl ContentBlock {
+    fn from_content_item(item: &ContentItem) -> Self {
+        match item {
+            ContentItem::InputText { text } => Self::Text { text: text.clone() },
+            ContentItem::OutputText { text } => Self::Text { text: text.clone() },
+            ContentItem::InputImage { image_url, .. } => Self::ImageUrl {
+                image_url: ImageUrl {
+                    url: image_url.clone().unwrap_or(String::new()),
+                },
+            },
+            ContentItem::InputFile { .. } => Self::Text {
+                text: "".to_string(),
+            },
+        }
+    }
+}
+
+impl Message {
+    fn from_responses_item(item: &ResponseItem) -> Option<Self> {
+        match item {
+            ResponseItem::Message { role, content, .. } => {
+                let sanitized_content = sanitize_message_content_for_context(role, content);
+                if role == "assistant" && sanitized_content.is_empty() {
+                    return None;
+                }
+
+                Some(Message {
+                    role: role.to_string(),
+                    content: Some(Content::Array(
+                        sanitized_content
+                            .iter()
+                            .map(ContentBlock::from_content_item)
+                            .collect(),
+                    )),
+                    tool_calls: None,
+                    tool_call_id: None,
+                    name: None,
+                })
+            }
+            ResponseItem::FunctionCall {
+                name,
+                arguments,
+                call_id,
+                ..
+            } => Some(Self {
+                role: "assistant".to_string(),
+                content: None,
+                tool_calls: Some(vec![ToolCall {
+                    id: call_id.clone(),
+                    r#type: "function".to_string(),
+                    function: ToolFunction {
+                        name: name.clone(),
+                        arguments: arguments.clone(),
+                    },
+                }]),
+                tool_call_id: None,
+                name: None,
+            }),
+            ResponseItem::LocalShellCall {
+                call_id, action, ..
+            } => Some(local_shell_call_to_message(call_id.as_ref(), action)),
+            ResponseItem::WebSearchCall { id, action, .. } => {
+                Some(web_search_call_to_message(id.as_ref(), action))
+            }
+            ResponseItem::FunctionCallOutput {
+                call_id, output, ..
+            } => Some(function_call_output_to_message(call_id, output)),
+            ResponseItem::CustomToolCallOutput {
+                call_id,
+                name,
+                output,
+                ..
+            } => Some(custom_tool_call_output_to_message(
+                call_id,
+                name.as_ref(),
+                output,
+            )),
+            ResponseItem::CustomToolCall {
+                call_id,
+                name,
+                input,
+                ..
+            } => Some(Message {
+                role: "assistant".to_string(),
+                content: None,
+                tool_calls: Some(vec![ToolCall {
+                    id: call_id.clone(),
+                    r#type: "function".to_string(),
+                    function: ToolFunction {
+                        name: name.clone(),
+                        arguments: input.clone(),
+                    },
+                }]),
+                tool_call_id: None,
+                name: None,
+            }),
+            ResponseItem::Reasoning { .. }
+            | ResponseItem::Compaction { .. }
+            | ResponseItem::ContextCompaction { .. }
+            | ResponseItem::ToolSearchCall { .. }
+            | ResponseItem::ToolSearchOutput { .. }
+            | ResponseItem::ImageGenerationCall { .. } => None,
+            ResponseItem::Other => None,
+        }
     }
 }
 

@@ -2,8 +2,7 @@ use crate::adapters::responses::shared::clean_tool_schema_for_gemini;
 use crate::models::{
     Content, ContentBlock, GeminiContent, GeminiGenerateRequest, GenerationConfig, Message,
     ResponseOutputContent, ResponseOutputItem, ResponsesRequest, ResponsesResponse, ResponsesUsage,
-    build_messages, openai::responses::ToolSpec as ResponsesToolSpec,
-    request::tool_choice_as_value,
+    openai::responses::ToolSpec as ResponsesToolSpec, request::tool_choice_as_value,
 };
 use crate::support::time::now_unix;
 use serde_json::{Value, json};
@@ -11,7 +10,13 @@ use std::collections::HashMap;
 use uuid::Uuid;
 
 pub fn responses_to_gemini(request: &ResponsesRequest) -> Result<GeminiGenerateRequest, String> {
-    let messages = build_messages(request)?;
+    let messages = vec![Message {
+        role: "system".to_string(),
+        content: Some(Content::String(request.instructions.clone())),
+        tool_calls: None,
+        tool_call_id: None,
+        name: None,
+    }];
     let needs_tool_thought_signature = requires_tool_thought_signature(&request.model);
     let mut system_parts = Vec::new();
     let mut contents = Vec::new();
