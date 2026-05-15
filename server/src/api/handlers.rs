@@ -772,6 +772,11 @@ pub(super) async fn responses_inner(
     started_at: Instant,
 ) -> Result<Response, AppError> {
     let provider = resolve_selected_provider(&state).await?;
+    if !request.stream {
+        return Err(AppError::bad_request(
+            "responses 接口请求必须使用流式 (\"stream\": true)".to_string(),
+        ));
+    }
     if provider.auth_mode == ProviderAuthMode::Account && provider_uses_openai_account(&provider) {
         let account = resolve_account_for_provider(&state, &provider).await?;
         let request_body =
@@ -810,67 +815,12 @@ pub(super) async fn responses_inner(
                 &private_responses,
                 OpenAiEndpoint::Responses {
                     body: request_body,
-                    stream: request.stream,
+                    stream: true,
                 },
             )
             .await
             .map_err(AppError::upstream_message)?;
         let upstream_status = upstream.status();
-
-        if !request.stream {
-            let response_body: Value = upstream.json().await.map_err(AppError::upstream)?;
-            let elapsed = elapsed_ms(started_at);
-            let stored_body = json_value_for_storage(&response_body);
-            log_http_event(
-                &state.logs,
-                &id,
-                LogStage::ClientResponse,
-                Some(upstream_status),
-                Some(ClientProtocol::OpenAiResponses.as_str()),
-                Some(UpstreamProtocol::OpenAiPrivateResponses.as_str()),
-                Some(&provider.name),
-                Some(&account.id),
-                Some(&account.email),
-                Some(&request.model),
-                false,
-                Some("POST"),
-                None,
-                Some(Config::openai_private_responses_url()),
-                Some(stored_body.clone()),
-                None,
-                Some(elapsed),
-            )
-            .await;
-            log_http_event(
-                &state.logs,
-                &id,
-                LogStage::UpstreamResponse,
-                Some(StatusCode::OK),
-                Some(ClientProtocol::OpenAiResponses.as_str()),
-                None,
-                Some(&provider.name),
-                Some(&account.id),
-                Some(&account.email),
-                Some(&request.model),
-                false,
-                Some("POST"),
-                Some(Config::responses_path()),
-                None,
-                Some(stored_body),
-                None,
-                Some(elapsed),
-            )
-            .await;
-            return Ok((
-                StatusCode::OK,
-                [
-                    ("x-account-email", account.email.as_str()),
-                    ("x-provider", provider.name.as_str()),
-                ],
-                Json(response_body),
-            )
-                .into_response());
-        }
 
         let logs = state.logs.clone();
         let id_for_stream = id.clone();
@@ -1070,36 +1020,6 @@ pub(super) async fn responses_inner(
         )
         .await;
 
-        if !request.stream {
-            let response_body = json_for_storage(&response);
-            log_http_event(
-                &state.logs,
-                &id,
-                LogStage::UpstreamResponse,
-                Some(StatusCode::OK),
-                Some(ClientProtocol::OpenAiResponses.as_str()),
-                None,
-                Some(&provider.name),
-                None,
-                None,
-                Some(&request.model),
-                false,
-                Some("POST"),
-                Some(Config::responses_path()),
-                None,
-                Some(response_body),
-                None,
-                Some(elapsed),
-            )
-            .await;
-            return Ok((
-                StatusCode::OK,
-                [("x-provider", provider.name.as_str())],
-                Json(response),
-            )
-                .into_response());
-        }
-
         let logs = state.logs.clone();
         let id_for_stream = id.clone();
         let provider_name = provider.name.clone();
@@ -1222,64 +1142,12 @@ pub(super) async fn responses_inner(
             &public_responses,
             OpenAiEndpoint::Responses {
                 body: request_body,
-                stream: request.stream,
+                stream: true,
             },
         )
         .await
         .map_err(AppError::upstream_message)?;
     let upstream_status = upstream.status();
-
-    if !request.stream {
-        let response_body: Value = upstream.json().await.map_err(AppError::upstream)?;
-        let elapsed = elapsed_ms(started_at);
-        let stored_body = json_value_for_storage(&response_body);
-        log_http_event(
-            &state.logs,
-            &id,
-            LogStage::ClientResponse,
-            Some(upstream_status),
-            Some(ClientProtocol::OpenAiResponses.as_str()),
-            Some(native_target.upstream.as_str()),
-            Some(&provider.name),
-            None,
-            None,
-            Some(&request.model),
-            false,
-            Some("POST"),
-            None,
-            Some(&upstream_url),
-            Some(stored_body.clone()),
-            None,
-            Some(elapsed),
-        )
-        .await;
-        log_http_event(
-            &state.logs,
-            &id,
-            LogStage::UpstreamResponse,
-            Some(StatusCode::OK),
-            Some(ClientProtocol::OpenAiResponses.as_str()),
-            None,
-            Some(&provider.name),
-            None,
-            None,
-            Some(&request.model),
-            false,
-            Some("POST"),
-            Some(Config::responses_path()),
-            None,
-            Some(stored_body),
-            None,
-            Some(elapsed),
-        )
-        .await;
-        return Ok((
-            StatusCode::OK,
-            [("x-provider", provider.name.as_str())],
-            Json(response_body),
-        )
-            .into_response());
-    }
 
     let logs = state.logs.clone();
     let id_for_stream = id.clone();
