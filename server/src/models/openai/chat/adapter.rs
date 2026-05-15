@@ -37,210 +37,101 @@ impl TryFrom<&ResponsesRequest> for ChatRequest {
             tools: request
                 .tools
                 .iter()
-                .flat_map(ChatToolSpec::from_responses_tool_spec)
+                .map(ChatToolSpec::from_responses_tool_spec)
                 .collect(),
         })
     }
 }
 
 impl ChatToolSpec {
-    pub fn from_responses_tool_spec(tool: &ResponsesToolSpec) -> Vec<Self> {
+    pub fn from_responses_tool_spec(tool: &ResponsesToolSpec) -> Self {
         match tool {
-            ResponsesToolSpec::Function(tool) => chat_tool_spec(
-                tool.name.clone(),
-                Some(tool.description.clone()),
-                Some(tool.parameters.clone()),
-            )
-            .into_iter()
-            .collect(),
-            ResponsesToolSpec::Namespace(namespace) => namespace
-                .tools
-                .iter()
-                .filter_map(|tool| match tool {
-                    super::super::responses::ResponsesApiNamespaceTool::Function(tool) => {
-                        chat_tool_spec(
-                            tool.name.clone(),
-                            Some(tool.description.clone()),
-                            Some(tool.parameters.clone()),
-                        )
-                    }
-                })
-                .collect(),
+            ResponsesToolSpec::Function(tool) => ChatToolSpec {
+                r#type: "function".to_string(),
+                function: ToolSpecFunction {
+                    name: tool.name.clone(),
+                    description: Some(tool.description.clone()),
+                    parameters: Some(tool.parameters.clone()),
+                    tools: None,
+                },
+            },
+            ResponsesToolSpec::Namespace(namespace) => ChatToolSpec {
+                r#type: "function".to_string(),
+                function: ToolSpecFunction {
+                    name: tool.name().to_string(),
+                    description: None,
+                    parameters: None,
+                    tools: Some(
+                        namespace
+                            .tools
+                            .iter()
+                            .map(|tool| match tool {
+                                super::super::responses::ResponsesApiNamespaceTool::Function(
+                                    tool,
+                                ) => ChatToolSpec {
+                                    r#type: "function".to_string(),
+                                    function: ToolSpecFunction {
+                                        name: tool.name.clone(),
+                                        description: Some(tool.description.clone()),
+                                        parameters: Some(tool.parameters.clone()),
+                                        tools: None,
+                                    },
+                                },
+                            })
+                            .collect(),
+                    ),
+                },
+            },
             ResponsesToolSpec::ToolSearch {
                 description,
                 parameters,
                 ..
-            } => chat_tool_spec(
-                tool.name().to_string(),
-                Some(description.clone()),
-                Some(parameters.clone()),
-            )
-            .into_iter()
-            .collect(),
-            ResponsesToolSpec::LocalShell {} => generated_chat_tool_spec("local_shell")
-                .into_iter()
-                .collect(),
-            ResponsesToolSpec::ImageGeneration { .. } => {
-                generated_chat_tool_spec("image_generation")
-                    .into_iter()
-                    .collect()
-            }
-            ResponsesToolSpec::WebSearch { .. } => {
-                generated_chat_tool_spec("web_search").into_iter().collect()
-            }
-            ResponsesToolSpec::Freeform(tool) => chat_tool_spec(
-                tool.name.clone(),
-                Some(tool.description.clone()),
-                Some(json!({
-                    "type": "object",
-                    "properties": {
-                        "input": { "type": "string" }
-                    },
-                    "required": ["input"]
-                })),
-            )
-            .into_iter()
-            .collect(),
-        }
-    }
-}
-
-fn generated_chat_tool_spec(tool_type: &str) -> Option<ChatToolSpec> {
-    chat_tool_spec(
-        normalized_tool_name(tool_type, None),
-        Some(generated_tool_description(tool_type)),
-        generated_tool_schema(tool_type),
-    )
-}
-
-fn chat_tool_spec(
-    name: String,
-    description: Option<String>,
-    parameters: Option<Value>,
-) -> Option<ChatToolSpec> {
-    let name = name.trim().to_string();
-    if name.is_empty() {
-        return None;
-    }
-    let parameters = parameters
-        .map(|mut schema| {
-            clean_tool_schema(&mut schema);
-            schema
-        })
-        .or_else(|| Some(json!({"type":"object","properties":{},"required":[]})));
-    Some(ChatToolSpec {
-        r#type: "function".to_string(),
-        function: ToolSpecFunction {
-            name,
-            description,
-            parameters,
-        },
-    })
-}
-
-fn normalized_tool_name(tool_type: &str, fallback_name: Option<&str>) -> String {
-    match tool_type {
-        "local_shell" | "shell_command" => "shell".to_string(),
-        "web_search" => "google_search".to_string(),
-        other => fallback_name
-            .filter(|name| !name.trim().is_empty())
-            .unwrap_or(other)
-            .to_string(),
-    }
-}
-
-fn generated_tool_description(tool_type: &str) -> String {
-    let description = match tool_type {
-        "local_shell" | "shell_command" => "Execute a local shell command.",
-        "web_search" => "Search the web for current information.",
-        "apply_patch" => "Apply a unified patch to local files.",
-        "view_image" => "Inspect a local image file.",
-        "image_generation" => "Generate an image.",
-        _ => "Execute a tool call.",
-    };
-    description.to_string()
-}
-
-fn generated_tool_schema(tool_type: &str) -> Option<Value> {
-    match tool_type {
-        "local_shell" | "shell_command" => Some(json!({
-            "type": "object",
-            "properties": {
-                "command": {
-                    "type": "array",
-                    "items": { "type": "string" }
+            } => ChatToolSpec {
+                r#type: "function".to_string(),
+                function: ToolSpecFunction {
+                    name: tool.name().to_string(),
+                    description: Some(description.clone()),
+                    parameters: Some(parameters.clone()),
+                    tools: None,
                 },
-                "workdir": { "type": "string" }
             },
-            "required": ["command"]
-        })),
-        "web_search" => Some(json!({
-            "type": "object",
-            "properties": {
-                "query": { "type": "string" }
+            ResponsesToolSpec::LocalShell {} => ChatToolSpec {
+                r#type: "function".to_string(),
+                function: ToolSpecFunction {
+                    name: tool.name().to_string(),
+                    description: None,
+                    parameters: None,
+                    tools: None,
+                },
             },
-            "required": ["query"]
-        })),
-        "apply_patch" => Some(json!({
-            "type": "object",
-            "properties": {
-                "patch": { "type": "string" }
+            ResponsesToolSpec::ImageGeneration { .. } => ChatToolSpec {
+                r#type: "function".to_string(),
+                function: ToolSpecFunction {
+                    name: tool.name().to_string(),
+                    description: None,
+                    parameters: None,
+                    tools: None,
+                },
             },
-            "required": ["patch"]
-        })),
-        "view_image" => Some(json!({
-            "type": "object",
-            "properties": {
-                "path": { "type": "string" }
+            ResponsesToolSpec::WebSearch { .. } => ChatToolSpec {
+                r#type: "function".to_string(),
+                function: ToolSpecFunction {
+                    name: tool.name().to_string(),
+                    description: None,
+                    parameters: None,
+                    tools: None,
+                },
             },
-            "required": ["path"]
-        })),
-        _ => None,
-    }
-}
-
-fn clean_tool_schema(value: &mut Value) {
-    match value {
-        Value::Object(map) => {
-            map.remove("$schema");
-            map.remove("definitions");
-            map.remove("$defs");
-            map.remove("format");
-
-            let looks_like_schema = map.contains_key("type")
-                || map.contains_key("properties")
-                || map.contains_key("items")
-                || map.contains_key("required")
-                || map.contains_key("additionalProperties")
-                || map.contains_key("enum")
-                || map.contains_key("description");
-
-            if !map.contains_key("type") && looks_like_schema {
-                map.insert("type".to_string(), Value::String("object".to_string()));
-            }
-
-            if let Some(properties) = map.get_mut("properties") {
-                if let Value::Object(properties_map) = properties {
-                    for value in properties_map.values_mut() {
-                        clean_tool_schema(value);
-                    }
-                }
-            } else {
-                for value in map.values_mut() {
-                    clean_tool_schema(value);
-                }
-            }
-
-            if let Some(items) = map.get_mut("items") {
-                clean_tool_schema(items);
-            }
+            ResponsesToolSpec::Freeform(tool) => ChatToolSpec {
+                r#type: "function".to_string(),
+                function: ToolSpecFunction {
+                    name: tool.name.clone(),
+                    description: Some(tool.description.clone()),
+                    parameters: None,
+                    tools: None,
+                },
+            },
         }
-        Value::Array(values) => {
-            for value in values {
-                clean_tool_schema(value);
-            }
-        }
-        _ => {}
     }
 }
 
@@ -652,17 +543,15 @@ mod tests {
             })))
             .expect("request should parse");
 
-        let tools = ChatToolSpec::from_responses_tool_spec(&request.tools[0]);
-        let body = serde_json::to_value(&tools[0]).expect("tool should serialize");
+        let tool = ChatToolSpec::from_responses_tool_spec(&request.tools[0]);
+        let body = serde_json::to_value(&tool).expect("tool should serialize");
 
         assert_eq!(body["type"], "function");
         assert_eq!(body["function"]["name"], "shell");
         assert_eq!(body["function"]["description"], "Run a command");
-        assert_eq!(body["function"]["parameters"]["type"], "object");
-        assert!(
-            body["function"]["parameters"]["properties"]["workdir"]
-                .get("format")
-                .is_none()
+        assert_eq!(
+            body["function"]["parameters"]["properties"]["workdir"]["format"],
+            "uri-reference"
         );
     }
 
@@ -687,15 +576,15 @@ mod tests {
             request
                 .tools
                 .iter()
-                .flat_map(ChatToolSpec::from_responses_tool_spec)
+                .map(ChatToolSpec::from_responses_tool_spec)
                 .collect::<Vec<_>>(),
         )
         .expect("tools should serialize");
 
-        assert_eq!(body[0]["function"]["name"], "shell");
-        assert_eq!(body[0]["function"]["parameters"]["required"][0], "command");
-        assert_eq!(body[1]["function"]["name"], "google_search");
-        assert_eq!(body[1]["function"]["parameters"]["required"][0], "query");
+        assert_eq!(body[0]["function"]["name"], "local_shell");
+        assert!(body[0]["function"].get("parameters").is_none());
+        assert_eq!(body[1]["function"]["name"], "web_search");
+        assert!(body[1]["function"].get("parameters").is_none());
     }
 
     #[test]
@@ -718,7 +607,7 @@ mod tests {
 
         assert_eq!(body["model"], "gpt-5.4");
         assert_eq!(body["tool_choice"], "auto");
-        assert_eq!(body["tools"][0]["function"]["name"], "shell");
+        assert_eq!(body["tools"][0]["function"]["name"], "local_shell");
         assert_eq!(body["messages"][0]["role"], "system");
         assert_eq!(body["messages"][1]["role"], "assistant");
         assert_eq!(body["messages"][2]["role"], "tool");

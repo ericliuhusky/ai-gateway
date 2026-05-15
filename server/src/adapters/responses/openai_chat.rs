@@ -148,7 +148,10 @@ mod tests {
         assert_eq!(parameters["type"], "object");
         assert_eq!(parameters["properties"]["command"]["type"], "array");
         assert_eq!(parameters["properties"]["workdir"]["type"], "string");
-        assert!(parameters["properties"]["workdir"].get("format").is_none());
+        assert_eq!(
+            parameters["properties"]["workdir"]["format"],
+            "uri-reference"
+        );
     }
 
     #[test]
