@@ -599,13 +599,13 @@ pub async fn responses(State(state): State<AppState>, body: Bytes) -> Result<Res
     let raw_body = std::str::from_utf8(&body)
         .map_err(|_| AppError::bad_request("request body must be valid UTF-8"))?
         .to_owned();
-    let raw_request: Value = serde_json::from_str(&raw_body)
+    let request_json: Value = serde_json::from_str(&raw_body)
         .map_err(|err| AppError::bad_request(format!("invalid request JSON: {err}")))?;
 
     let id = Uuid::new_v4().simple().to_string();
     let started_at = Instant::now();
-    let model = responses_request_model(&raw_request).map(ToOwned::to_owned);
-    let stream = responses_request_stream(&raw_request);
+    let model = responses_request_model(&request_json).map(ToOwned::to_owned);
+    let stream = responses_request_stream(&request_json);
     log_http_event(
         &state.logs,
         &id,
@@ -627,7 +627,7 @@ pub async fn responses(State(state): State<AppState>, body: Bytes) -> Result<Res
     )
     .await;
 
-    match responses_inner(state.clone(), raw_request, raw_body, id.clone(), started_at).await {
+    match responses_inner(state.clone(), raw_body, id.clone(), started_at).await {
         Ok(response) => Ok(response),
         Err(err) => {
             let error_body = gateway_error_payload(&err.message);
@@ -763,25 +763,16 @@ fn build_debug_redirect_url(
 
 pub(super) async fn responses_inner(
     state: AppState,
-    raw_request: Value,
     raw_body: String,
     id: String,
     started_at: Instant,
 ) -> Result<Response, AppError> {
     let provider = resolve_selected_provider(&state).await?;
     if provider.auth_mode == ProviderAuthMode::Account && provider_uses_openai_account(&provider) {
-        return responses_openai_account_inner(
-            state,
-            provider,
-            raw_request,
-            raw_body,
-            id,
-            started_at,
-        )
-        .await;
+        return responses_openai_account_inner(state, provider, raw_body, id, started_at).await;
     }
 
-    let mut request: ResponsesRequest = serde_json::from_value(raw_request)
+    let mut request: ResponsesRequest = serde_json::from_str(&raw_body)
         .map_err(|err| AppError::bad_request(format!("invalid request JSON: {err}")))?;
     if !request.stream {
         return Err(AppError::bad_request(
@@ -1252,26 +1243,22 @@ pub(super) async fn responses_inner(
 async fn responses_openai_account_inner(
     state: AppState,
     provider: ResolvedProvider,
-    mut raw_request: Value,
     raw_body: String,
     id: String,
     started_at: Instant,
 ) -> Result<Response, AppError> {
-    if !responses_request_stream(&raw_request) {
-        return Err(AppError::bad_request(
-            "responses 接口请求必须使用流式 (\"stream\": true)".to_string(),
-        ));
-    }
+    let mut request_json: Value = serde_json::from_str(&raw_body)
+        .map_err(|err| AppError::bad_request(format!("invalid request JSON: {err}")))?;
 
     let account = resolve_account_for_provider(&state, &provider).await?;
     let model_overridden =
-        apply_selected_model_override_to_raw_request(&state, &mut raw_request).await;
+        apply_selected_model_override_to_raw_request(&state, &mut request_json).await;
     let request_body = if model_overridden {
-        json_value_for_storage(&raw_request)
+        json_value_for_storage(&request_json)
     } else {
         raw_body
     };
-    let model = responses_request_model(&raw_request)
+    let model = responses_request_model(&request_json)
         .unwrap_or_default()
         .to_string();
 
