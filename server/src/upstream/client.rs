@@ -27,4 +27,15 @@ impl UpstreamClient {
     {
         self.openai.send(builder, endpoint).await
     }
+
+    pub async fn openai_send_passthrough<B>(
+        &self,
+        builder: &B,
+        endpoint: OpenAiEndpoint,
+    ) -> Result<Response, String>
+    where
+        B: OpenAiRequestBuilder + ?Sized,
+    {
+        self.openai.send_passthrough(builder, endpoint).await
+    }
 }

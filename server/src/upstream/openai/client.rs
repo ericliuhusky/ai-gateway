@@ -11,15 +11,26 @@ impl OpenAiClient {
         Self { http }
     }
 
+    pub async fn send_passthrough<B>(
+        &self,
+        builder: &B,
+        endpoint: OpenAiEndpoint,
+    ) -> Result<Response, String>
+    where
+        B: OpenAiRequestBuilder + ?Sized,
+    {
+        builder
+            .build(&self.http, endpoint)
+            .send()
+            .await
+            .map_err(|err| format!("OpenAI 请求失败: {err}"))
+    }
+
     pub async fn send<B>(&self, builder: &B, endpoint: OpenAiEndpoint) -> Result<Response, String>
     where
         B: OpenAiRequestBuilder + ?Sized,
     {
-        let response = builder
-            .build(&self.http, endpoint)
-            .send()
-            .await
-            .map_err(|err| format!("OpenAI 请求失败: {err}"))?;
+        let response = self.send_passthrough(builder, endpoint).await?;
 
         if response.status().is_success() {
             Ok(response)
