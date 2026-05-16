@@ -4,6 +4,7 @@ mod url;
 
 pub use client::OpenAiClient;
 pub use request_builder::{
-    OpenAiEndpoint, OpenAiRequestBuilder, PrivateOpenAiRequestBuilder, PublicOpenAiRequestBuilder,
+    OpenAiEndpoint, OpenAiRequestBody, OpenAiRequestBuilder, PrivateOpenAiRequestBuilder,
+    PublicOpenAiRequestBuilder,
 };
 pub use url::{OPENAI_CODEX_BASE_URL, chat_completions_api_url, responses_api_url};

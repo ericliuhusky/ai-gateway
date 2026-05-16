@@ -15,19 +15,25 @@ pub trait OpenAiRequestBuilder {
 
     fn build(&self, http: &Client, endpoint: OpenAiEndpoint) -> RequestBuilder {
         let request = match endpoint {
-            OpenAiEndpoint::Responses { body, stream } => http
-                .post(responses_api_url(self.base_url()))
-                .bearer_auth(self.auth_token())
-                .header("content-type", "application/json")
-                .header(
-                    "accept",
-                    if stream {
-                        "text/event-stream"
-                    } else {
-                        "application/json"
-                    },
-                )
-                .json(&body),
+            OpenAiEndpoint::Responses { body, stream } => {
+                let request = http
+                    .post(responses_api_url(self.base_url()))
+                    .bearer_auth(self.auth_token())
+                    .header("content-type", "application/json")
+                    .header(
+                        "accept",
+                        if stream {
+                            "text/event-stream"
+                        } else {
+                            "application/json"
+                        },
+                    );
+
+                match body {
+                    OpenAiRequestBody::Json(body) => request.json(&body),
+                    OpenAiRequestBody::Raw(body) => request.body(body),
+                }
+            }
             OpenAiEndpoint::ChatCompletions { body } => http
                 .post(chat_completions_api_url(self.base_url()))
                 .bearer_auth(self.auth_token())
@@ -108,9 +114,20 @@ impl OpenAiRequestBuilder for PrivateOpenAiRequestBuilder<'_> {
 }
 
 #[derive(Clone, Debug)]
+pub enum OpenAiRequestBody {
+    Json(Value),
+    Raw(String),
+}
+
+#[derive(Clone, Debug)]
 pub enum OpenAiEndpoint {
-    Responses { body: Value, stream: bool },
-    ChatCompletions { body: Value },
+    Responses {
+        body: OpenAiRequestBody,
+        stream: bool,
+    },
+    ChatCompletions {
+        body: Value,
+    },
     Models,
     Usage,
 }

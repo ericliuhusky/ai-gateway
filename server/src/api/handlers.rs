@@ -20,7 +20,7 @@ use crate::{
     },
     support::time::now_unix,
     upstream::{
-        OPENAI_CODEX_BASE_URL, OpenAiEndpoint, PrivateOpenAiRequestBuilder,
+        OPENAI_CODEX_BASE_URL, OpenAiEndpoint, OpenAiRequestBody, PrivateOpenAiRequestBuilder,
         PublicOpenAiRequestBuilder, UpstreamClient, chat_completions_api_url, responses_api_url,
     },
 };
@@ -599,11 +599,13 @@ pub async fn responses(State(state): State<AppState>, body: Bytes) -> Result<Res
     let raw_body = std::str::from_utf8(&body)
         .map_err(|_| AppError::bad_request("request body must be valid UTF-8"))?
         .to_owned();
-    let mut request: ResponsesRequest = serde_json::from_str(&raw_body)
+    let raw_request: Value = serde_json::from_str(&raw_body)
         .map_err(|err| AppError::bad_request(format!("invalid request JSON: {err}")))?;
 
     let id = Uuid::new_v4().simple().to_string();
     let started_at = Instant::now();
+    let model = responses_request_model(&raw_request).map(ToOwned::to_owned);
+    let stream = responses_request_stream(&raw_request);
     log_http_event(
         &state.logs,
         &id,
@@ -614,22 +616,18 @@ pub async fn responses(State(state): State<AppState>, body: Bytes) -> Result<Res
         None,
         None,
         None,
-        Some(&request.model),
-        request.stream,
+        model.as_deref(),
+        stream,
         Some("POST"),
         Some(Config::responses_path()),
         None,
-        Some(raw_body),
+        Some(raw_body.clone()),
         None,
         None,
     )
     .await;
 
-    apply_selected_model_override(&state, &mut request).await;
-
-    let model = request.model.clone();
-    let stream = request.stream;
-    match responses_inner(state.clone(), request, id.clone(), started_at).await {
+    match responses_inner(state.clone(), raw_request, raw_body, id.clone(), started_at).await {
         Ok(response) => Ok(response),
         Err(err) => {
             let error_body = gateway_error_payload(&err.message);
@@ -644,7 +642,7 @@ pub async fn responses(State(state): State<AppState>, body: Bytes) -> Result<Res
                 None,
                 None,
                 None,
-                Some(&model),
+                model.as_deref(),
                 stream,
                 Some("POST"),
                 Some(Config::responses_path()),
@@ -664,7 +662,7 @@ pub async fn responses(State(state): State<AppState>, body: Bytes) -> Result<Res
                 None,
                 None,
                 None,
-                Some(&model),
+                model.as_deref(),
                 stream,
                 Some("POST"),
                 Some(Config::responses_path()),
@@ -765,179 +763,32 @@ fn build_debug_redirect_url(
 
 pub(super) async fn responses_inner(
     state: AppState,
-    request: ResponsesRequest,
+    raw_request: Value,
+    raw_body: String,
     id: String,
     started_at: Instant,
 ) -> Result<Response, AppError> {
     let provider = resolve_selected_provider(&state).await?;
+    if provider.auth_mode == ProviderAuthMode::Account && provider_uses_openai_account(&provider) {
+        return responses_openai_account_inner(
+            state,
+            provider,
+            raw_request,
+            raw_body,
+            id,
+            started_at,
+        )
+        .await;
+    }
+
+    let mut request: ResponsesRequest = serde_json::from_value(raw_request)
+        .map_err(|err| AppError::bad_request(format!("invalid request JSON: {err}")))?;
     if !request.stream {
         return Err(AppError::bad_request(
             "responses 接口请求必须使用流式 (\"stream\": true)".to_string(),
         ));
     }
-    if provider.auth_mode == ProviderAuthMode::Account && provider_uses_openai_account(&provider) {
-        let account = resolve_account_for_provider(&state, &provider).await?;
-        let request_body =
-            serde_json::to_value(&request).map_err(|err| AppError::internal(err.to_string()))?;
-
-        log_http_event(
-            &state.logs,
-            &id,
-            LogStage::UpstreamRequest,
-            None,
-            Some(ClientProtocol::OpenAiResponses.as_str()),
-            Some(UpstreamProtocol::OpenAiPrivateResponses.as_str()),
-            Some(&provider.name),
-            Some(&account.id),
-            Some(&account.email),
-            Some(&request.model),
-            request.stream,
-            Some("POST"),
-            None,
-            Some(Config::openai_private_responses_url()),
-            Some(json_value_for_storage(&request_body)),
-            None,
-            None,
-        )
-        .await;
-
-        let private_responses = PrivateOpenAiRequestBuilder {
-            base_url: OPENAI_CODEX_BASE_URL,
-            access_token: account.access_token(),
-            account_id: account.upstream_account_id(),
-            client_version: None,
-        };
-        let upstream = state
-            .upstream
-            .openai_send(
-                &private_responses,
-                OpenAiEndpoint::Responses {
-                    body: request_body,
-                    stream: true,
-                },
-            )
-            .await
-            .map_err(AppError::upstream_message)?;
-        let upstream_status = upstream.status();
-
-        let logs = state.logs.clone();
-        let id_for_stream = id.clone();
-        let provider_name = provider.name.clone();
-        let account_id = account.id.clone();
-        let account_email = account.email.clone();
-        let model = request.model.clone();
-        let output = stream! {
-            let mut stream = upstream.bytes_stream();
-            let mut response_body = String::new();
-            let mut final_response_sse_buffer = String::new();
-            let mut final_response_body: Option<String> = None;
-
-            while let Some(result) = stream.next().await {
-                match result {
-                    Ok(chunk) => {
-                        let chunk_text = String::from_utf8_lossy(&chunk);
-                        append_to_log_buffer(&mut response_body, &chunk_text);
-                        capture_final_response_from_sse_chunk(
-                            &mut final_response_sse_buffer,
-                            &chunk_text,
-                            &mut final_response_body,
-                        );
-                        yield Ok::<Bytes, std::io::Error>(chunk);
-                    }
-                    Err(err) => {
-                        let error_message = err.to_string();
-                        log_http_event(
-                            &logs,
-                            &id_for_stream,
-                            LogStage::Error,
-                            Some(StatusCode::BAD_GATEWAY),
-                            Some(ClientProtocol::OpenAiResponses.as_str()),
-                            Some(UpstreamProtocol::OpenAiPrivateResponses.as_str()),
-                            Some(&provider_name),
-                            Some(&account_id),
-                            Some(&account_email),
-                            Some(&model),
-                            true,
-                            Some("POST"),
-                            Some(Config::responses_path()),
-                            Some(Config::openai_private_responses_url()),
-                            Some(response_body.clone()),
-                            Some(error_message.clone()),
-                            Some(elapsed_ms(started_at)),
-                        )
-                        .await;
-                        yield Err(std::io::Error::other(err));
-                        return;
-                    }
-                }
-            }
-
-            let elapsed = elapsed_ms(started_at);
-            let logged_response_body =
-                logged_stream_response_body(final_response_body.as_deref(), &response_body);
-            log_http_event(
-                &logs,
-                &id_for_stream,
-                LogStage::ClientResponse,
-                Some(upstream_status),
-                Some(ClientProtocol::OpenAiResponses.as_str()),
-                Some(UpstreamProtocol::OpenAiPrivateResponses.as_str()),
-                Some(&provider_name),
-                Some(&account_id),
-                Some(&account_email),
-                Some(&model),
-                true,
-                Some("POST"),
-                None,
-                Some(Config::openai_private_responses_url()),
-                Some(logged_response_body.clone()),
-                None,
-                Some(elapsed),
-            )
-            .await;
-            log_http_event(
-                &logs,
-                &id_for_stream,
-                LogStage::UpstreamResponse,
-                Some(StatusCode::OK),
-                Some(ClientProtocol::OpenAiResponses.as_str()),
-                None,
-                Some(&provider_name),
-                Some(&account_id),
-                Some(&account_email),
-                Some(&model),
-                true,
-                Some("POST"),
-                Some(Config::responses_path()),
-                None,
-                Some(logged_response_body),
-                None,
-                Some(elapsed),
-            )
-            .await;
-        };
-
-        return Ok(Response::builder()
-            .status(StatusCode::OK)
-            .header(
-                "content-type",
-                HeaderValue::from_static("text/event-stream"),
-            )
-            .header("cache-control", HeaderValue::from_static("no-cache"))
-            .header("connection", HeaderValue::from_static("keep-alive"))
-            .header(
-                "x-account-email",
-                HeaderValue::from_str(&account.email)
-                    .map_err(|err| AppError::internal(err.to_string()))?,
-            )
-            .header(
-                "x-provider",
-                HeaderValue::from_str(&provider.name)
-                    .map_err(|err| AppError::internal(err.to_string()))?,
-            )
-            .body(Body::from_stream(output))
-            .map_err(|err| AppError::internal(err.to_string()))?);
-    }
+    apply_selected_model_override(&state, &mut request).await;
 
     if provider.auth_mode == ProviderAuthMode::Account {
         return Err(AppError::bad_request(format!(
@@ -1279,7 +1130,7 @@ pub(super) async fn responses_inner(
         .openai_send(
             &public_responses,
             OpenAiEndpoint::Responses {
-                body: request_body,
+                body: OpenAiRequestBody::Json(request_body),
                 stream: true,
             },
         )
@@ -1398,6 +1249,190 @@ pub(super) async fn responses_inner(
         .map_err(|err| AppError::internal(err.to_string()))?)
 }
 
+async fn responses_openai_account_inner(
+    state: AppState,
+    provider: ResolvedProvider,
+    mut raw_request: Value,
+    raw_body: String,
+    id: String,
+    started_at: Instant,
+) -> Result<Response, AppError> {
+    if !responses_request_stream(&raw_request) {
+        return Err(AppError::bad_request(
+            "responses 接口请求必须使用流式 (\"stream\": true)".to_string(),
+        ));
+    }
+
+    let account = resolve_account_for_provider(&state, &provider).await?;
+    let model_overridden =
+        apply_selected_model_override_to_raw_request(&state, &mut raw_request).await;
+    let request_body = if model_overridden {
+        json_value_for_storage(&raw_request)
+    } else {
+        raw_body
+    };
+    let model = responses_request_model(&raw_request)
+        .unwrap_or_default()
+        .to_string();
+
+    log_http_event(
+        &state.logs,
+        &id,
+        LogStage::UpstreamRequest,
+        None,
+        Some(ClientProtocol::OpenAiResponses.as_str()),
+        Some(UpstreamProtocol::OpenAiPrivateResponses.as_str()),
+        Some(&provider.name),
+        Some(&account.id),
+        Some(&account.email),
+        (!model.is_empty()).then_some(model.as_str()),
+        true,
+        Some("POST"),
+        None,
+        Some(Config::openai_private_responses_url()),
+        Some(request_body.clone()),
+        None,
+        None,
+    )
+    .await;
+
+    let private_responses = PrivateOpenAiRequestBuilder {
+        base_url: OPENAI_CODEX_BASE_URL,
+        access_token: account.access_token(),
+        account_id: account.upstream_account_id(),
+        client_version: None,
+    };
+    let upstream = state
+        .upstream
+        .openai_send(
+            &private_responses,
+            OpenAiEndpoint::Responses {
+                body: OpenAiRequestBody::Raw(request_body),
+                stream: true,
+            },
+        )
+        .await
+        .map_err(AppError::upstream_message)?;
+    let upstream_status = upstream.status();
+
+    let logs = state.logs.clone();
+    let id_for_stream = id.clone();
+    let provider_name = provider.name.clone();
+    let account_id = account.id.clone();
+    let account_email = account.email.clone();
+    let output = stream! {
+        let mut stream = upstream.bytes_stream();
+        let mut response_body = String::new();
+        let mut final_response_sse_buffer = String::new();
+        let mut final_response_body: Option<String> = None;
+
+        while let Some(result) = stream.next().await {
+            match result {
+                Ok(chunk) => {
+                    let chunk_text = String::from_utf8_lossy(&chunk);
+                    append_to_log_buffer(&mut response_body, &chunk_text);
+                    capture_final_response_from_sse_chunk(
+                        &mut final_response_sse_buffer,
+                        &chunk_text,
+                        &mut final_response_body,
+                    );
+                    yield Ok::<Bytes, std::io::Error>(chunk);
+                }
+                Err(err) => {
+                    let error_message = err.to_string();
+                    log_http_event(
+                        &logs,
+                        &id_for_stream,
+                        LogStage::Error,
+                        Some(StatusCode::BAD_GATEWAY),
+                        Some(ClientProtocol::OpenAiResponses.as_str()),
+                        Some(UpstreamProtocol::OpenAiPrivateResponses.as_str()),
+                        Some(&provider_name),
+                        Some(&account_id),
+                        Some(&account_email),
+                        (!model.is_empty()).then_some(model.as_str()),
+                        true,
+                        Some("POST"),
+                        Some(Config::responses_path()),
+                        Some(Config::openai_private_responses_url()),
+                        Some(response_body.clone()),
+                        Some(error_message.clone()),
+                        Some(elapsed_ms(started_at)),
+                    )
+                    .await;
+                    yield Err(std::io::Error::other(err));
+                    return;
+                }
+            }
+        }
+
+        let elapsed = elapsed_ms(started_at);
+        let logged_response_body =
+            logged_stream_response_body(final_response_body.as_deref(), &response_body);
+        log_http_event(
+            &logs,
+            &id_for_stream,
+            LogStage::ClientResponse,
+            Some(upstream_status),
+            Some(ClientProtocol::OpenAiResponses.as_str()),
+            Some(UpstreamProtocol::OpenAiPrivateResponses.as_str()),
+            Some(&provider_name),
+            Some(&account_id),
+            Some(&account_email),
+            (!model.is_empty()).then_some(model.as_str()),
+            true,
+            Some("POST"),
+            None,
+            Some(Config::openai_private_responses_url()),
+            Some(logged_response_body.clone()),
+            None,
+            Some(elapsed),
+        )
+        .await;
+        log_http_event(
+            &logs,
+            &id_for_stream,
+            LogStage::UpstreamResponse,
+            Some(StatusCode::OK),
+            Some(ClientProtocol::OpenAiResponses.as_str()),
+            None,
+            Some(&provider_name),
+            Some(&account_id),
+            Some(&account_email),
+            (!model.is_empty()).then_some(model.as_str()),
+            true,
+            Some("POST"),
+            Some(Config::responses_path()),
+            None,
+            Some(logged_response_body),
+            None,
+            Some(elapsed),
+        )
+        .await;
+    };
+
+    Ok(Response::builder()
+        .status(StatusCode::OK)
+        .header(
+            "content-type",
+            HeaderValue::from_static("text/event-stream"),
+        )
+        .header("cache-control", HeaderValue::from_static("no-cache"))
+        .header("connection", HeaderValue::from_static("keep-alive"))
+        .header(
+            "x-account-email",
+            HeaderValue::from_str(&account.email)
+                .map_err(|err| AppError::internal(err.to_string()))?,
+        )
+        .header(
+            "x-provider",
+            HeaderValue::from_str(&provider.name)
+                .map_err(|err| AppError::internal(err.to_string()))?,
+        )
+        .body(Body::from_stream(output))
+        .map_err(|err| AppError::internal(err.to_string()))?)
+}
+
 pub(super) async fn resolve_selected_provider(
     state: &AppState,
 ) -> Result<ResolvedProvider, AppError> {
@@ -1426,6 +1461,31 @@ pub(super) async fn apply_selected_model_override(
     if let Some(model) = state.routes.get().await.selected_model {
         request.model = model;
     }
+}
+
+fn responses_request_model(request: &Value) -> Option<&str> {
+    request.get("model").and_then(Value::as_str)
+}
+
+fn responses_request_stream(request: &Value) -> bool {
+    request
+        .get("stream")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+async fn apply_selected_model_override_to_raw_request(
+    state: &AppState,
+    request: &mut Value,
+) -> bool {
+    let Some(model) = state.routes.get().await.selected_model else {
+        return false;
+    };
+    let Some(object) = request.as_object_mut() else {
+        return false;
+    };
+    object.insert("model".to_string(), Value::String(model));
+    true
 }
 
 async fn fetch_provider_models(
