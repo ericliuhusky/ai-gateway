@@ -30,7 +30,6 @@ pub trait OpenAiRequestBuilder {
                     );
 
                 match body {
-                    OpenAiRequestBody::Json(body) => request.json(&body),
                     OpenAiRequestBody::Raw(body) => request.body(body),
                 }
             }
@@ -115,7 +114,6 @@ impl OpenAiRequestBuilder for PrivateOpenAiRequestBuilder<'_> {
 
 #[derive(Clone, Debug)]
 pub enum OpenAiRequestBody {
-    Json(Value),
     Raw(String),
 }
 

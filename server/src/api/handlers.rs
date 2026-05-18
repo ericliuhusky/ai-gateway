@@ -1,5 +1,5 @@
 use crate::{
-    adapters::responses::{request_with_model, responses_to_chat_completions},
+    adapters::responses::responses_to_chat_completions,
     auth::OAuthClient,
     config::Config,
     models::{
@@ -772,14 +772,19 @@ pub(super) async fn responses_inner(
         return responses_openai_account_inner(state, provider, raw_body, id, started_at).await;
     }
 
-    let mut request: ResponsesRequest = serde_json::from_str(&raw_body)
+    let mut request_json: Value = serde_json::from_str(&raw_body)
         .map_err(|err| AppError::bad_request(format!("invalid request JSON: {err}")))?;
-    if !request.stream {
-        return Err(AppError::bad_request(
-            "responses 接口请求必须使用流式 (\"stream\": true)".to_string(),
-        ));
-    }
-    apply_selected_model_override(&state, &mut request).await;
+    let request_stream = responses_request_stream(&request_json);
+    let model_overridden =
+        apply_selected_model_override_to_raw_request(&state, &mut request_json).await;
+    let request_body = if model_overridden {
+        json_value_for_storage(&request_json)
+    } else {
+        raw_body
+    };
+    let requested_model = responses_request_model(&request_json)
+        .unwrap_or_default()
+        .to_string();
 
     if provider.auth_mode == ProviderAuthMode::Account {
         return Err(AppError::bad_request(format!(
@@ -793,8 +798,15 @@ pub(super) async fn responses_inner(
         .clone()
         .ok_or_else(|| AppError::bad_request(format!("unknown provider: {}", provider.name)))?;
 
-    let native_target = resolve_native_target(&native_provider, &request.model);
+    let native_target = resolve_native_target(&native_provider, &requested_model);
     if native_target.uses_chat_completions {
+        let request: ResponsesRequest = serde_json::from_value(request_json)
+            .map_err(|err| AppError::bad_request(format!("invalid request JSON: {err}")))?;
+        if !request.stream {
+            return Err(AppError::bad_request(
+                "responses 接口请求必须使用流式 (\"stream\": true)".to_string(),
+            ));
+        }
         let request_body = responses_to_chat_completions(&request, &native_target.upstream_model)
             .map_err(AppError::bad_request)?;
         let upstream_url = chat_completions_api_url(&native_provider.base_url);
@@ -1084,12 +1096,6 @@ pub(super) async fn responses_inner(
             .map_err(|err| AppError::internal(err.to_string()))?);
     }
 
-    let request_body = request_with_model(
-        &request,
-        &native_target.upstream_model,
-        &native_provider.name,
-    )
-    .map_err(|err| AppError::internal(err.to_string()))?;
     let upstream_url = responses_api_url(&native_provider.base_url);
     log_http_event(
         &state.logs,
@@ -1101,12 +1107,12 @@ pub(super) async fn responses_inner(
         Some(&provider.name),
         None,
         None,
-        Some(&request.model),
-        request.stream,
+        (!requested_model.is_empty()).then_some(requested_model.as_str()),
+        request_stream,
         Some("POST"),
         None,
         Some(&upstream_url),
-        Some(json_value_for_storage(&request_body)),
+        Some(request_body.clone()),
         None,
         None,
     )
@@ -1118,21 +1124,128 @@ pub(super) async fn responses_inner(
     };
     let upstream = state
         .upstream
-        .openai_send(
+        .openai_send_passthrough(
             &public_responses,
             OpenAiEndpoint::Responses {
-                body: OpenAiRequestBody::Json(request_body),
-                stream: true,
+                body: OpenAiRequestBody::Raw(request_body),
+                stream: request_stream,
             },
         )
         .await
         .map_err(AppError::upstream_message)?;
     let upstream_status = upstream.status();
+    let upstream_headers = upstream.headers().clone();
+    let response_is_stream = is_event_stream_response(&upstream_headers);
+
+    if !upstream_status.is_success() && !response_is_stream {
+        let response_bytes = upstream.bytes().await.map_err(AppError::upstream)?;
+        let response_body = String::from_utf8_lossy(&response_bytes).into_owned();
+        let elapsed = elapsed_ms(started_at);
+        log_http_event(
+            &state.logs,
+            &id,
+            LogStage::ClientResponse,
+            Some(upstream_status),
+            Some(ClientProtocol::OpenAiResponses.as_str()),
+            Some(native_target.upstream.as_str()),
+            Some(&provider.name),
+            None,
+            None,
+            (!requested_model.is_empty()).then_some(requested_model.as_str()),
+            request_stream,
+            Some("POST"),
+            None,
+            Some(&upstream_url),
+            Some(response_body.clone()),
+            None,
+            Some(elapsed),
+        )
+        .await;
+        log_http_event(
+            &state.logs,
+            &id,
+            LogStage::UpstreamResponse,
+            Some(upstream_status),
+            Some(ClientProtocol::OpenAiResponses.as_str()),
+            Some(native_target.upstream.as_str()),
+            Some(&provider.name),
+            None,
+            None,
+            (!requested_model.is_empty()).then_some(requested_model.as_str()),
+            request_stream,
+            Some("POST"),
+            Some(Config::responses_path()),
+            Some(&upstream_url),
+            Some(response_body),
+            None,
+            Some(elapsed),
+        )
+        .await;
+
+        return build_passthrough_response(
+            upstream_status,
+            &upstream_headers,
+            Body::from(response_bytes),
+        );
+    }
 
     let logs = state.logs.clone();
     let id_for_stream = id.clone();
     let provider_name = provider.name.clone();
-    let model = request.model.clone();
+    let model = requested_model.clone();
+    let upstream_protocol = native_target.upstream.as_str().to_string();
+    if !response_is_stream {
+        let response_bytes = upstream.bytes().await.map_err(AppError::upstream)?;
+        let response_body = String::from_utf8_lossy(&response_bytes).into_owned();
+        let elapsed = elapsed_ms(started_at);
+        log_http_event(
+            &logs,
+            &id,
+            LogStage::ClientResponse,
+            Some(upstream_status),
+            Some(ClientProtocol::OpenAiResponses.as_str()),
+            Some(&upstream_protocol),
+            Some(&provider_name),
+            None,
+            None,
+            (!model.is_empty()).then_some(model.as_str()),
+            request_stream,
+            Some("POST"),
+            None,
+            Some(&upstream_url),
+            Some(response_body.clone()),
+            None,
+            Some(elapsed),
+        )
+        .await;
+        log_http_event(
+            &logs,
+            &id,
+            LogStage::UpstreamResponse,
+            Some(upstream_status),
+            Some(ClientProtocol::OpenAiResponses.as_str()),
+            Some(&upstream_protocol),
+            Some(&provider_name),
+            None,
+            None,
+            (!model.is_empty()).then_some(model.as_str()),
+            request_stream,
+            Some("POST"),
+            Some(Config::responses_path()),
+            Some(&upstream_url),
+            Some(response_body),
+            None,
+            Some(elapsed),
+        )
+        .await;
+
+        return build_passthrough_response(
+            upstream_status,
+            &upstream_headers,
+            Body::from(response_bytes),
+        );
+    }
+
     let output = stream! {
         let mut stream = upstream.bytes_stream();
         let mut response_body = String::new();
@@ -1158,12 +1271,12 @@ pub(super) async fn responses_inner(
                         LogStage::Error,
                         Some(StatusCode::BAD_GATEWAY),
                         Some(ClientProtocol::OpenAiResponses.as_str()),
-                        Some(native_target.upstream.as_str()),
+                        Some(&upstream_protocol),
                         Some(&provider_name),
                         None,
                         None,
-                        Some(&model),
-                        true,
+                        (!model.is_empty()).then_some(model.as_str()),
+                        request_stream,
                         Some("POST"),
                         Some(Config::responses_path()),
                         Some(&upstream_url),
@@ -1187,12 +1300,12 @@ pub(super) async fn responses_inner(
             LogStage::ClientResponse,
             Some(upstream_status),
             Some(ClientProtocol::OpenAiResponses.as_str()),
-            Some(native_target.upstream.as_str()),
+            Some(&upstream_protocol),
             Some(&provider_name),
             None,
             None,
-            Some(&model),
-            true,
+            (!model.is_empty()).then_some(model.as_str()),
+            request_stream,
             Some("POST"),
             None,
             Some(&upstream_url),
@@ -1205,17 +1318,17 @@ pub(super) async fn responses_inner(
             &logs,
             &id_for_stream,
             LogStage::UpstreamResponse,
-            Some(StatusCode::OK),
+            Some(upstream_status),
             Some(ClientProtocol::OpenAiResponses.as_str()),
-            None,
+            Some(&upstream_protocol),
             Some(&provider_name),
             None,
             None,
-            Some(&model),
-            true,
+            (!model.is_empty()).then_some(model.as_str()),
+            request_stream,
             Some("POST"),
             Some(Config::responses_path()),
-            None,
+            Some(&upstream_url),
             Some(logged_response_body),
             None,
             Some(elapsed),
@@ -1223,21 +1336,11 @@ pub(super) async fn responses_inner(
         .await;
     };
 
-    Ok(Response::builder()
-        .status(StatusCode::OK)
-        .header(
-            "content-type",
-            HeaderValue::from_static("text/event-stream"),
-        )
-        .header("cache-control", HeaderValue::from_static("no-cache"))
-        .header("connection", HeaderValue::from_static("keep-alive"))
-        .header(
-            "x-provider",
-            HeaderValue::from_str(&provider.name)
-                .map_err(|err| AppError::internal(err.to_string()))?,
-        )
-        .body(Body::from_stream(output))
-        .map_err(|err| AppError::internal(err.to_string()))?)
+    build_passthrough_response(
+        upstream_status,
+        &upstream_headers,
+        Body::from_stream(output),
+    )
 }
 
 async fn responses_openai_account_inner(
@@ -1531,15 +1634,6 @@ fn route_payload(route: SelectedRoute) -> Value {
         "selected_model": route.selected_model,
         "updated_at": route.updated_at,
     })
-}
-
-pub(super) async fn apply_selected_model_override(
-    state: &AppState,
-    request: &mut ResponsesRequest,
-) {
-    if let Some(model) = state.routes.get().await.selected_model {
-        request.model = model;
-    }
 }
 
 fn responses_request_model(request: &Value) -> Option<&str> {
