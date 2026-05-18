@@ -2,7 +2,7 @@ use serde::Deserialize;
 use std::{env, fs, net::SocketAddr, path::PathBuf};
 
 // 服务监听配置。
-const BIND_ADDR: &str = "127.0.0.1:10100";
+const BIND_ADDR: &str = "0.0.0.0:10100";
 const OPENAI_CALLBACK_ADDR: &str = "127.0.0.1:1455";
 const OPENAI_CALLBACK_URL: &str = "http://localhost:1455/auth/callback";
 
