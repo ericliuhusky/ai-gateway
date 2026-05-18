@@ -1,18 +1,148 @@
-use super::super::responses::{ResponsesRequest, ToolSpec as ResponsesToolSpec};
-use super::{
-    ChatRequest, Content, ContentBlock, ImageUrl, Message, ToolCall, ToolFunction,
-    ToolSpec as ChatToolSpec, ToolSpecFunction,
+use super::super::responses::{
+    ResponsesRequest, ResponsesStreamContentPart, ResponsesStreamEvent, ResponsesStreamFrame,
+    ResponsesStreamOutputItem, ResponsesStreamResponse, ResponsesStreamResponseStatus,
+    ToolSpec as ResponsesToolSpec,
+};
+use super::types::{
+    ChatCompletionChunk, ChatCompletionToolCallDelta, ChatCompletionUsage, ChatRequest, Content,
+    ContentBlock, ImageUrl, Message, ToolCall, ToolFunction, ToolSpec as ChatToolSpec,
+    ToolSpecFunction,
 };
 use crate::models::{
-    ContentItem, FunctionCallOutputPayload, LocalShellAction, LocalShellExecAction, ResponseItem,
-    WebSearchAction,
+    ContentItem, FunctionCallOutputPayload, LocalShellAction, LocalShellExecAction, MessagePhase,
+    ResponseEvent, ResponseEvents, ResponseItem, TokenUsage, WebSearchAction,
 };
 use serde_json::{Value, json};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use uuid::Uuid;
 
+pub(crate) fn responses_to_chat_completions(
+    request: &ResponsesRequest,
+    model: &str,
+) -> Result<ChatRequest, String> {
+    let mut body = ChatRequest::try_from(request)?;
+    body.model = model.to_string();
+    Ok(body)
+}
+
+fn chat_completions_to_response_items(chat: &Value) -> (Vec<ResponseItem>, Option<TokenUsage>) {
+    let usage = chat.get("usage").map(chat_usage_to_token_usage);
+    let mut output = Vec::new();
+
+    if let Some(message) = chat_message(chat) {
+        output.extend(chat_tool_calls_to_response_items(message));
+        output.extend(chat_message_text_to_response_item(message));
+    }
+
+    (output, usage)
+}
+
+fn chat_completions_to_responses(chat: &Value) -> ResponseEvents {
+    let (output, usage) = chat_completions_to_response_items(chat);
+    let response_id = chat
+        .get("id")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| format!("resp_{}", Uuid::new_v4().simple()));
+
+    let mut events = Vec::with_capacity(output.len() * 2 + 2);
+    events.push(ResponseEvent::Created);
+    for item in output {
+        events.push(ResponseEvent::OutputItemAdded(item.clone()));
+        events.push(ResponseEvent::OutputItemDone(item));
+    }
+    events.push(ResponseEvent::Completed {
+        response_id,
+        token_usage: usage,
+        end_turn: Some(true),
+    });
+    events
+}
+
+fn chat_usage_to_token_usage(usage: &Value) -> TokenUsage {
+    TokenUsage {
+        input_tokens: usage
+            .get("prompt_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as i64,
+        cached_input_tokens: 0,
+        output_tokens: usage
+            .get("completion_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as i64,
+        reasoning_output_tokens: 0,
+        total_tokens: usage
+            .get("total_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as i64,
+    }
+}
+
+fn chat_message(chat: &Value) -> Option<&Value> {
+    chat.get("choices")
+        .and_then(Value::as_array)
+        .and_then(|choices| choices.first())
+        .and_then(|choice| choice.get("message"))
+}
+
+fn chat_tool_calls_to_response_items(message: &Value) -> Vec<ResponseItem> {
+    message
+        .get("tool_calls")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .map(chat_tool_call_to_response_item)
+        .collect()
+}
+
+fn chat_tool_call_to_response_item(tool_call: &Value) -> ResponseItem {
+    let call_id = tool_call
+        .get("id")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| format!("call_{}", Uuid::new_v4().simple()));
+    let name = tool_call
+        .get("function")
+        .and_then(|function| function.get("name"))
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| "unknown".to_string());
+    let arguments = tool_call
+        .get("function")
+        .and_then(|function| function.get("arguments"))
+        .map(|value| match value {
+            Value::String(text) => text.clone(),
+            other => other.to_string(),
+        })
+        .unwrap_or_else(|| "{}".to_string());
+
+    ResponseItem::FunctionCall {
+        id: Some(format!("fc_{}", Uuid::new_v4().simple())),
+        name,
+        namespace: None,
+        arguments,
+        call_id,
+    }
+}
+
+fn chat_message_text_to_response_item(message: &Value) -> Option<ResponseItem> {
+    let text = message.get("content").and_then(Value::as_str)?;
+    if text.is_empty() {
+        return None;
+    }
+
+    Some(ResponseItem::Message {
+        id: Some(format!("msg_{}", Uuid::new_v4().simple())),
+        role: "assistant".to_string(),
+        content: vec![ContentItem::OutputText {
+            text: text.to_string(),
+        }],
+        phase: Some(MessagePhase::FinalAnswer),
+    })
+}
+
 impl ChatRequest {
-    pub fn normalize_messages_for_chat_completions(messages: &mut Vec<Message>) {
+    fn normalize_messages_for_chat_completions(messages: &mut Vec<Message>) {
         for message in &mut *messages {
             if message.role == "developer" {
                 message.role = "system".to_string();
@@ -48,6 +178,7 @@ impl TryFrom<&ResponsesRequest> for ChatRequest {
         Ok(Self {
             messages,
             model: request.model.clone(),
+            stream: request.stream,
             tool_choice: (!request.tool_choice.trim().is_empty())
                 .then_some(request.tool_choice.clone()),
             tools: request
@@ -60,7 +191,7 @@ impl TryFrom<&ResponsesRequest> for ChatRequest {
 }
 
 impl ChatToolSpec {
-    pub fn from_responses_tool_spec(tool: &ResponsesToolSpec) -> Self {
+    fn from_responses_tool_spec(tool: &ResponsesToolSpec) -> Self {
         match tool {
             ResponsesToolSpec::Function(tool) => ChatToolSpec {
                 r#type: "function".to_string(),
@@ -450,12 +581,374 @@ impl Message {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+struct ChatCompletionChunkResponses {
+    response_id: Option<String>,
+    response_model: Option<String>,
+    created_at: Option<u64>,
+    text_deltas: Vec<String>,
+    tool_call_deltas: Vec<ChatCompletionToolCallDelta>,
+    usage: Option<TokenUsage>,
+}
+
+impl ChatCompletionChunk {
+    fn to_responses(&self) -> ChatCompletionChunkResponses {
+        let mut text_deltas = Vec::new();
+        let mut tool_call_deltas = Vec::new();
+
+        for choice in self.choices.iter().filter(|choice| choice.index == 0) {
+            if let Some(content) = choice
+                .delta
+                .content
+                .as_ref()
+                .filter(|content| !content.is_empty())
+            {
+                text_deltas.push(content.clone());
+            }
+            tool_call_deltas.extend(choice.delta.tool_calls.iter().cloned());
+        }
+
+        ChatCompletionChunkResponses {
+            response_id: self.id.clone(),
+            response_model: self.model.clone(),
+            created_at: self.created,
+            text_deltas,
+            tool_call_deltas,
+            usage: self.usage.as_ref().map(ChatCompletionUsage::to_responses),
+        }
+    }
+}
+
+impl ChatCompletionUsage {
+    fn to_responses(&self) -> TokenUsage {
+        TokenUsage {
+            input_tokens: self.prompt_tokens as i64,
+            cached_input_tokens: 0,
+            output_tokens: self.completion_tokens as i64,
+            reasoning_output_tokens: 0,
+            total_tokens: self.total_tokens as i64,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct ChatCompletionsResponsesStream {
+    requested_model: String,
+    created_at: u64,
+    response_id: Option<String>,
+    response_model: Option<String>,
+    created_emitted: bool,
+    message_started: bool,
+    finished: bool,
+    message_item_id: String,
+    text: String,
+    tool_calls: BTreeMap<usize, StreamedChatToolCall>,
+    usage: Option<TokenUsage>,
+    sequence_number: u64,
+}
+
+#[derive(Debug)]
+struct StreamedChatToolCall {
+    id: String,
+    item_id: String,
+    name: String,
+    arguments: String,
+}
+
+impl ChatCompletionsResponsesStream {
+    pub(crate) fn new(requested_model: String, created_at: u64) -> Self {
+        Self {
+            requested_model,
+            created_at,
+            response_id: None,
+            response_model: None,
+            created_emitted: false,
+            message_started: false,
+            finished: false,
+            message_item_id: format!("msg_{}", Uuid::new_v4().simple()),
+            text: String::new(),
+            tool_calls: BTreeMap::new(),
+            usage: None,
+            sequence_number: 1,
+        }
+    }
+
+    pub(crate) fn push_chat_payload(
+        &mut self,
+        payload: &str,
+    ) -> Result<Vec<ResponsesStreamFrame>, String> {
+        if payload == "[DONE]" {
+            return self.finish();
+        }
+
+        let chunk: ChatCompletionChunk =
+            serde_json::from_str(payload).map_err(|err| err.to_string())?;
+        let response_chunk = chunk.to_responses();
+        if let Some(id) = response_chunk.response_id {
+            self.response_id.get_or_insert(id);
+        }
+        if let Some(model) = response_chunk.response_model {
+            self.response_model.get_or_insert(model);
+        }
+        if let Some(created_at) = response_chunk.created_at {
+            self.created_at = created_at;
+        }
+        if let Some(usage) = response_chunk.usage {
+            self.usage = Some(usage);
+        }
+
+        let mut events = self.ensure_created().map_err(|err| err.to_string())?;
+        for delta in response_chunk.text_deltas {
+            events.extend(
+                self.push_text_delta(&delta)
+                    .map_err(|err| err.to_string())?,
+            );
+        }
+        self.push_tool_call_deltas(&response_chunk.tool_call_deltas);
+
+        Ok(events)
+    }
+
+    pub(crate) fn finish(&mut self) -> Result<Vec<ResponsesStreamFrame>, String> {
+        if self.finished {
+            return Ok(Vec::new());
+        }
+        self.finished = true;
+
+        let mut events = self.ensure_created().map_err(|err| err.to_string())?;
+        if self.message_started {
+            let message = self.message_item();
+            events.push(self.event(ResponsesStreamEvent::OutputTextDone {
+                item_id: self.message_item_id.clone(),
+                output_index: 0,
+                content_index: 0,
+                text: self.text.clone(),
+                sequence_number: 0,
+            }));
+            events.push(self.event(ResponsesStreamEvent::ContentPartDone {
+                item_id: self.message_item_id.clone(),
+                output_index: 0,
+                content_index: 0,
+                part: ResponsesStreamContentPart::OutputText {
+                    text: self.text.clone(),
+                },
+                sequence_number: 0,
+            }));
+            events.push(self.event(ResponsesStreamEvent::OutputItemDone {
+                output_index: 0,
+                item: message,
+                sequence_number: 0,
+            }));
+        }
+
+        let mut next_output_index = usize::from(self.message_started);
+        let tool_calls = self
+            .tool_calls
+            .values()
+            .map(StreamedChatToolCall::response_item)
+            .collect::<Vec<_>>();
+        for item in tool_calls {
+            events.push(self.event(ResponsesStreamEvent::OutputItemAdded {
+                output_index: next_output_index,
+                item: item.clone(),
+                sequence_number: 0,
+            }));
+            events.push(self.event(ResponsesStreamEvent::OutputItemDone {
+                output_index: next_output_index,
+                item,
+                sequence_number: 0,
+            }));
+            next_output_index += 1;
+        }
+
+        let response = self.completed_response();
+        events.push(self.event(ResponsesStreamEvent::Completed {
+            response,
+            sequence_number: 0,
+        }));
+        events.push(ResponsesStreamFrame::Done);
+
+        Ok(events)
+    }
+
+    fn ensure_created(&mut self) -> Result<Vec<ResponsesStreamFrame>, serde_json::Error> {
+        if self.created_emitted {
+            return Ok(Vec::new());
+        }
+        self.created_emitted = true;
+        let response_id = self.response_id();
+        let response_model = self.response_model().to_string();
+        let response = ResponsesStreamResponse {
+            id: response_id,
+            object: "response",
+            created_at: self.created_at,
+            status: ResponsesStreamResponseStatus::InProgress,
+            model: response_model,
+            output: Vec::new(),
+            usage: None,
+            end_turn: None,
+        };
+        Ok(vec![self.event(ResponsesStreamEvent::Created {
+            response,
+            sequence_number: 0,
+        })])
+    }
+
+    fn push_text_delta(
+        &mut self,
+        delta: &str,
+    ) -> Result<Vec<ResponsesStreamFrame>, serde_json::Error> {
+        let mut events = Vec::new();
+        if !self.message_started {
+            self.message_started = true;
+            events.push(self.event(ResponsesStreamEvent::OutputItemAdded {
+                output_index: 0,
+                item: ResponsesStreamOutputItem::Message {
+                    id: self.message_item_id.clone(),
+                    role: "assistant".to_string(),
+                    content: Vec::new(),
+                    phase: None,
+                },
+                sequence_number: 0,
+            }));
+            events.push(self.event(ResponsesStreamEvent::ContentPartAdded {
+                item_id: self.message_item_id.clone(),
+                output_index: 0,
+                content_index: 0,
+                part: ResponsesStreamContentPart::OutputText {
+                    text: String::new(),
+                },
+                sequence_number: 0,
+            }));
+        }
+
+        self.text.push_str(delta);
+        events.push(self.event(ResponsesStreamEvent::OutputTextDelta {
+            item_id: self.message_item_id.clone(),
+            output_index: 0,
+            content_index: 0,
+            delta: delta.to_string(),
+            sequence_number: 0,
+        }));
+
+        Ok(events)
+    }
+
+    fn push_tool_call_deltas(&mut self, tool_call_deltas: &[ChatCompletionToolCallDelta]) {
+        for tool_call_delta in tool_call_deltas {
+            let index = tool_call_delta
+                .index
+                .unwrap_or(self.tool_calls.len() as u64) as usize;
+            let tool_call = self
+                .tool_calls
+                .entry(index)
+                .or_insert_with(|| StreamedChatToolCall {
+                    id: format!("call_{}", Uuid::new_v4().simple()),
+                    item_id: format!("fc_{}", Uuid::new_v4().simple()),
+                    name: "unknown".to_string(),
+                    arguments: String::new(),
+                });
+
+            if let Some(id) = &tool_call_delta.id {
+                tool_call.id = id.to_string();
+            }
+            let Some(function) = &tool_call_delta.function else {
+                continue;
+            };
+            if let Some(name) = function.name.as_ref().filter(|name| !name.is_empty()) {
+                tool_call.name = name.to_string();
+            }
+            if let Some(arguments) = &function.arguments {
+                tool_call.arguments.push_str(arguments);
+            }
+        }
+    }
+
+    fn completed_response(&mut self) -> ResponsesStreamResponse {
+        let mut output = Vec::new();
+        if self.message_started {
+            output.push(self.message_item());
+        }
+        output.extend(
+            self.tool_calls
+                .values()
+                .map(StreamedChatToolCall::response_item),
+        );
+
+        ResponsesStreamResponse {
+            id: self.response_id(),
+            object: "response",
+            created_at: self.created_at,
+            status: ResponsesStreamResponseStatus::Completed,
+            model: self.response_model().to_string(),
+            output,
+            usage: self.usage.clone(),
+            end_turn: Some(true),
+        }
+    }
+
+    fn message_item(&self) -> ResponsesStreamOutputItem {
+        ResponsesStreamOutputItem::Message {
+            id: self.message_item_id.clone(),
+            role: "assistant".to_string(),
+            content: vec![ResponsesStreamContentPart::OutputText {
+                text: self.text.clone(),
+            }],
+            phase: Some(MessagePhase::FinalAnswer),
+        }
+    }
+
+    fn response_id(&mut self) -> String {
+        self.response_id
+            .get_or_insert_with(|| format!("resp_{}", Uuid::new_v4().simple()))
+            .clone()
+    }
+
+    fn response_model(&self) -> &str {
+        self.response_model
+            .as_deref()
+            .unwrap_or(&self.requested_model)
+    }
+
+    fn event(&mut self, event: ResponsesStreamEvent) -> ResponsesStreamFrame {
+        ResponsesStreamFrame::Event(event.with_sequence_number(self.next_sequence_number()))
+    }
+
+    fn next_sequence_number(&mut self) -> u64 {
+        let sequence_number = self.sequence_number;
+        self.sequence_number += 1;
+        sequence_number
+    }
+}
+
+impl StreamedChatToolCall {
+    fn response_item(&self) -> ResponsesStreamOutputItem {
+        ResponsesStreamOutputItem::FunctionCall {
+            id: self.item_id.clone(),
+            name: self.name.clone(),
+            namespace: None,
+            arguments: self.arguments.clone(),
+            call_id: self.id.clone(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{ChatRequest, ChatToolSpec, ContentItem, Message};
-    use crate::models::ResponseItem;
+    use super::{
+        ChatCompletionChunk, ChatRequest, ChatToolSpec, ContentItem, Message,
+        chat_completions_to_responses, responses_to_chat_completions,
+    };
     use crate::models::request::{ResponsesRequest, merge_strict_responses_request_defaults};
+    use crate::models::{ResponseEvent, ResponseItem};
     use serde_json::json;
+
+    fn chat_body(request: &ResponsesRequest, model: &str) -> serde_json::Value {
+        serde_json::to_value(
+            responses_to_chat_completions(request, model).expect("request should convert"),
+        )
+        .expect("chat request should serialize")
+    }
 
     #[test]
     fn maps_response_function_tool_to_chat_tool_spec() {
@@ -623,5 +1116,220 @@ mod tests {
         assert_eq!(body["messages"][0]["role"], "assistant");
         assert_eq!(body["messages"][1]["role"], "tool");
         assert_eq!(body["messages"][1]["tool_call_id"], "call_1");
+    }
+
+    #[test]
+    fn preserves_lowercase_json_schema_for_chat_tools() {
+        let request: ResponsesRequest =
+            serde_json::from_value(merge_strict_responses_request_defaults(json!({
+                "model": "gpt-5.4",
+                "input": [{
+                    "type": "message",
+                    "role": "user",
+                    "content": [{ "type": "input_text", "text": "hello" }]
+                }],
+                "tools": [{
+                    "type": "function",
+                    "name": "shell",
+                    "description": "Run a command",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "command": { "type": "array" },
+                            "workdir": { "type": "string", "format": "uri-reference" }
+                        }
+                    }
+                }]
+            })))
+            .expect("request should parse");
+
+        let body = chat_body(&request, "chat-compatible-latest");
+        let parameters = &body["tools"][0]["function"]["parameters"];
+
+        assert_eq!(parameters["type"], "object");
+        assert_eq!(parameters["properties"]["command"]["type"], "array");
+        assert_eq!(parameters["properties"]["workdir"]["type"], "string");
+        assert_eq!(
+            parameters["properties"]["workdir"]["format"],
+            "uri-reference"
+        );
+    }
+
+    #[test]
+    fn forwards_responses_stream_flag_to_chat_completions() {
+        let request: ResponsesRequest =
+            serde_json::from_value(merge_strict_responses_request_defaults(json!({
+                "model": "gpt-5.4",
+                "stream": true,
+                "input": [{
+                    "type": "message",
+                    "role": "user",
+                    "content": [{ "type": "input_text", "text": "hello" }]
+                }]
+            })))
+            .expect("request should parse");
+
+        let body = chat_body(&request, "chat-compatible-latest");
+
+        assert_eq!(body["stream"], true);
+    }
+
+    #[test]
+    fn maps_chat_completions_tool_calls_and_text_back_to_responses() {
+        let chat = json!({
+            "id": "chatcmpl_123",
+            "created": 1_700_000_000u64,
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 6,
+                "total_tokens": 16
+            },
+            "choices": [{
+                "message": {
+                    "content": "done",
+                    "tool_calls": [{
+                        "id": "call_123",
+                        "function": {
+                            "name": "shell",
+                            "arguments": "{\"command\":[\"pwd\"]}"
+                        }
+                    }]
+                }
+            }]
+        });
+
+        let events = chat_completions_to_responses(&chat);
+        let output: Vec<&ResponseItem> = events
+            .iter()
+            .filter_map(|event| match event {
+                ResponseEvent::OutputItemDone(item) => Some(item),
+                _ => None,
+            })
+            .collect();
+        let usage = events.iter().find_map(|event| match event {
+            ResponseEvent::Completed { token_usage, .. } => token_usage.as_ref(),
+            _ => None,
+        });
+
+        assert_eq!(output.len(), 2);
+        assert_eq!(usage.map(|usage| usage.total_tokens), Some(16));
+        assert!(matches!(
+            output[0],
+            ResponseItem::FunctionCall { name, .. } if name == "shell"
+        ));
+        assert!(matches!(output[1], ResponseItem::Message { .. }));
+    }
+
+    #[test]
+    fn reorders_tool_outputs_to_follow_assistant_tool_calls_for_chat_completions() {
+        let request: ResponsesRequest = serde_json::from_value(merge_strict_responses_request_defaults(json!({
+            "model": "gpt-5.4",
+            "input": [
+                { "type": "function_call_output", "call_id": "call_1", "output": "ok", "name": "shell" },
+                { "type": "function_call", "call_id": "call_1", "name": "shell", "arguments": "{\"command\":[\"pwd\"]}" }
+            ]
+        })))
+        .expect("request should parse");
+
+        let body = chat_body(&request, "chat-compatible-latest");
+        let messages = body["messages"].as_array().expect("messages array");
+
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0]["role"], "assistant");
+        assert!(messages[0].get("tool_calls").is_some());
+        assert_eq!(messages[1]["role"], "tool");
+        assert_eq!(messages[1]["tool_call_id"], "call_1");
+    }
+
+    #[test]
+    fn demotes_unmatched_tool_outputs_to_user_messages_for_chat_completions() {
+        let request: ResponsesRequest = serde_json::from_value(merge_strict_responses_request_defaults(json!({
+            "model": "gpt-5.4",
+            "input": [
+                { "type": "function_call_output", "call_id": "call_orphan", "output": "orphaned", "name": "shell" }
+            ]
+        })))
+        .expect("request should parse");
+
+        let body = chat_body(&request, "chat-compatible-latest");
+        let messages = body["messages"].as_array().expect("messages array");
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0]["role"], "user");
+        assert!(messages[0].get("tool_call_id").is_none());
+    }
+
+    #[test]
+    fn maps_chat_completion_chunk_text_and_usage_to_responses() {
+        let chunk: ChatCompletionChunk = serde_json::from_str(
+            r#"{
+                "id": "chatcmpl_1",
+                "created": 1700000000,
+                "model": "chat-model",
+                "choices": [
+                    { "index": 0, "delta": { "content": "hi" } },
+                    { "index": 1, "delta": { "content": "ignored" } }
+                ],
+                "usage": {
+                    "prompt_tokens": 3,
+                    "completion_tokens": 2,
+                    "total_tokens": 5
+                }
+            }"#,
+        )
+        .expect("chunk should parse");
+
+        let responses = chunk.to_responses();
+
+        assert_eq!(responses.response_id.as_deref(), Some("chatcmpl_1"));
+        assert_eq!(responses.response_model.as_deref(), Some("chat-model"));
+        assert_eq!(responses.created_at, Some(1700000000));
+        assert_eq!(responses.text_deltas, vec!["hi"]);
+        assert_eq!(
+            responses.usage.as_ref().map(|usage| usage.input_tokens),
+            Some(3)
+        );
+        assert_eq!(
+            responses.usage.as_ref().map(|usage| usage.output_tokens),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn maps_chat_completion_tool_call_delta_to_responses() {
+        let chunk: ChatCompletionChunk = serde_json::from_str(
+            r#"{
+                "choices": [{
+                    "index": 0,
+                    "delta": {
+                        "tool_calls": [{
+                            "index": 0,
+                            "id": "call_1",
+                            "function": {
+                                "name": "lookup",
+                                "arguments": "{\"q\":\"test\"}"
+                            }
+                        }]
+                    }
+                }]
+            }"#,
+        )
+        .expect("chunk should parse");
+
+        let responses = chunk.to_responses();
+        let tool_call = responses
+            .tool_call_deltas
+            .first()
+            .expect("tool call delta should be present");
+
+        assert_eq!(tool_call.index, Some(0));
+        assert_eq!(tool_call.id.as_deref(), Some("call_1"));
+        assert_eq!(
+            tool_call
+                .function
+                .as_ref()
+                .and_then(|function| function.name.as_deref()),
+            Some("lookup")
+        );
     }
 }

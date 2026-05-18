@@ -1,5 +1,4 @@
 pub mod adapter;
-pub mod stream;
-pub mod types;
-pub use stream::*;
-pub use types::*;
+pub(crate) mod types;
+pub(crate) use adapter::ChatCompletionsResponsesStream;
+pub(crate) use adapter::responses_to_chat_completions;

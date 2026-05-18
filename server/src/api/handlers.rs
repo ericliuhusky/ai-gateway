@@ -1,5 +1,4 @@
 use crate::{
-    adapters::responses::responses_to_chat_completions,
     auth::OAuthClient,
     config::Config,
     models::{
@@ -12,7 +11,7 @@ use crate::{
         QuotaSupportStatus, ResponsesRequest, ResponsesStreamFrame, SelectedRoute,
         UpdateGatewayLogSettingsRequest, UpdateSelectedModelRequest, UpdateSelectedProviderRequest,
         UpstreamProtocol, UpstreamRateLimitStatusDetails, UpstreamRateLimitStatusPayload,
-        UpstreamRateLimitWindowSnapshot,
+        UpstreamRateLimitWindowSnapshot, responses_to_chat_completions,
     },
     store::{
         AccountStore, LogEvent, LogStage, LogStore, ModelStore, ProviderStore, RouteStore,
@@ -831,8 +830,10 @@ pub(super) async fn responses_inner(
                 "responses 接口请求必须使用流式 (\"stream\": true)".to_string(),
             ));
         }
-        let request_body = responses_to_chat_completions(&request, &native_target.upstream_model)
+        let chat_request = responses_to_chat_completions(&request, &native_target.upstream_model)
             .map_err(AppError::bad_request)?;
+        let request_body = serde_json::to_value(chat_request)
+            .map_err(|err| AppError::internal(err.to_string()))?;
         let upstream_url = chat_completions_api_url(&native_provider.base_url);
         log_http_event(
             &state.logs,
