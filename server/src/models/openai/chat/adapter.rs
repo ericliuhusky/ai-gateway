@@ -853,7 +853,9 @@ mod tests {
         ContentItem, responses_to_chat_completions,
     };
     use crate::models::ResponseItem;
-    use crate::models::request::{ResponseCreateParams, merge_strict_responses_request_defaults};
+    use crate::models::openai::responses::{
+        ResponseCreateParams, merge_strict_responses_request_defaults,
+    };
     use serde_json::json;
 
     fn chat_body(request: &ResponseCreateParams, model: &str) -> serde_json::Value {
