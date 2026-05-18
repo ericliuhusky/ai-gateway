@@ -1,28 +1,32 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default, PartialEq, Eq)]
-pub struct TokenUsage {
+pub struct ResponseUsage {
     pub input_tokens: i64,
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub cached_input_tokens: i64,
+    pub input_tokens_details: ResponseUsageInputTokensDetails,
     pub output_tokens: i64,
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub reasoning_output_tokens: i64,
+    pub output_tokens_details: ResponseUsageOutputTokensDetails,
     pub total_tokens: i64,
 }
 
-fn is_zero(value: &i64) -> bool {
-    *value == 0
+#[derive(Debug, Clone, Deserialize, Serialize, Default, PartialEq, Eq)]
+pub struct ResponseUsageInputTokensDetails {
+    pub cached_tokens: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, Default, PartialEq, Eq)]
+pub struct ResponseUsageOutputTokensDetails {
+    pub reasoning_tokens: i64,
 }
 
 #[cfg(test)]
 mod public_responses_entry_compat_tests {
-    use crate::models::request::{ResponsesRequest, merge_strict_responses_request_defaults};
+    use crate::models::request::{ResponseCreateParams, merge_strict_responses_request_defaults};
     use serde_json::{Value, json};
 
     fn public_entry_roundtrip(value: Value) -> Value {
         let value = merge_strict_responses_request_defaults(value);
-        let request: ResponsesRequest =
+        let request: ResponseCreateParams =
             serde_json::from_value(value).expect("public responses request should parse");
         serde_json::to_value(request).expect("public responses request should serialize")
     }

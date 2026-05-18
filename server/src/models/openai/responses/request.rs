@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct ResponsesRequest {
+pub struct ResponseCreateParams {
     pub model: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub instructions: String,
@@ -27,7 +27,7 @@ pub struct ResponsesRequest {
     pub client_metadata: Option<HashMap<String, String>>,
 }
 
-/// Fills missing keys so a partial JSON object matches [`ResponsesRequest`] (strict decode).
+/// Fills missing keys so a partial JSON object matches [`ResponseCreateParams`] (strict decode).
 /// Used by unit tests. HTTP handlers decode the body as-is.
 #[cfg(test)]
 pub(crate) fn merge_strict_responses_request_defaults(value: Value) -> Value {
@@ -56,12 +56,12 @@ pub(crate) fn merge_strict_responses_request_defaults(value: Value) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::{ResponsesRequest, merge_strict_responses_request_defaults};
+    use super::{ResponseCreateParams, merge_strict_responses_request_defaults};
     use serde_json::json;
 
     #[test]
     fn omits_absent_tool_function_when_serializing() {
-        let request: ResponsesRequest =
+        let request: ResponseCreateParams =
             serde_json::from_value(merge_strict_responses_request_defaults(json!({
                 "model": "gpt-5.4",
                 "input": [],

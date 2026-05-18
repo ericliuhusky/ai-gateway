@@ -184,54 +184,6 @@ pub struct ProviderQuotaResponse {
     pub quota: ProviderQuotaSummary,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct UpstreamRateLimitStatusPayload {
-    pub plan_type: String,
-    #[serde(default)]
-    pub rate_limit: Option<UpstreamRateLimitStatusDetails>,
-    #[serde(default)]
-    pub credits: Option<UpstreamCreditStatusDetails>,
-    #[serde(default)]
-    pub additional_rate_limits: Option<Vec<UpstreamAdditionalRateLimitDetails>>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct UpstreamRateLimitStatusDetails {
-    #[allow(dead_code)]
-    pub allowed: bool,
-    #[allow(dead_code)]
-    pub limit_reached: bool,
-    #[serde(default)]
-    pub primary_window: Option<UpstreamRateLimitWindowSnapshot>,
-    #[serde(default)]
-    pub secondary_window: Option<UpstreamRateLimitWindowSnapshot>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct UpstreamRateLimitWindowSnapshot {
-    pub used_percent: i32,
-    pub limit_window_seconds: i32,
-    #[allow(dead_code)]
-    pub reset_after_seconds: i32,
-    pub reset_at: i64,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct UpstreamCreditStatusDetails {
-    pub has_credits: bool,
-    pub unlimited: bool,
-    #[serde(default)]
-    pub balance: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct UpstreamAdditionalRateLimitDetails {
-    pub limit_name: String,
-    pub metered_feature: String,
-    #[serde(default)]
-    pub rate_limit: Option<UpstreamRateLimitStatusDetails>,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccountRecord {
     #[serde(default)]

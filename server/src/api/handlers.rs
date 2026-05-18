@@ -1,6 +1,9 @@
 use crate::{
     auth::OAuthClient,
     config::Config,
+    models::openai::responses::{
+        CodexUsageCredits, CodexUsageRateLimit, CodexUsageRateLimitWindow, CodexUsageResponse,
+    },
     models::{
         AccountRecord, ApiProviderRecord, ApiProviderSummary, ChatCompletionsResponsesStream,
         ClientProtocol, CodexConfigStatus, CreateApiProviderRequest, GatewayLogDetail,
@@ -8,10 +11,9 @@ use crate::{
         GatewayLogSettingsResponse, GatewayLogSummary, ModelListItem, ModelListResponse,
         PROVIDER_OPENAI_PROXY, ProviderAuthMode, ProviderQuotaCredits, ProviderQuotaResponse,
         ProviderQuotaSnapshot, ProviderQuotaSummary, ProviderQuotaWindow, QuotaSource,
-        QuotaSupportStatus, ResponsesRequest, ResponsesStreamFrame, SelectedRoute,
+        QuotaSupportStatus, ResponseCreateParams, ResponseStreamFrame, SelectedRoute,
         UpdateGatewayLogSettingsRequest, UpdateSelectedModelRequest, UpdateSelectedProviderRequest,
-        UpstreamProtocol, UpstreamRateLimitStatusDetails, UpstreamRateLimitStatusPayload,
-        UpstreamRateLimitWindowSnapshot, responses_to_chat_completions,
+        UpstreamProtocol, responses_to_chat_completions,
     },
     store::{
         AccountStore, LogEvent, LogStage, LogStore, ModelStore, ProviderStore, RouteStore,
@@ -251,7 +253,7 @@ pub async fn get_provider_quota(
             .await
             .map_err(AppError::upstream_message)?;
         let raw: Value = upstream.json().await.map_err(AppError::upstream)?;
-        let payload: UpstreamRateLimitStatusPayload = serde_json::from_value(raw)
+        let payload: CodexUsageResponse = serde_json::from_value(raw)
             .map_err(|err| AppError::upstream_message(err.to_string()))?;
         quota_from_openai_usage(payload)
     } else {
@@ -823,7 +825,7 @@ pub(super) async fn responses_inner(
 
     let native_target = resolve_native_target(&native_provider, &requested_model);
     if native_target.uses_chat_completions {
-        let request: ResponsesRequest = serde_json::from_value(request_json)
+        let request: ResponseCreateParams = serde_json::from_value(request_json)
             .map_err(|err| AppError::bad_request(format!("invalid request JSON: {err}")))?;
         if !request.stream {
             return Err(AppError::bad_request(
@@ -1773,7 +1775,7 @@ fn unsupported_quota_summary(message: String) -> ProviderQuotaSummary {
     }
 }
 
-fn quota_from_openai_usage(payload: UpstreamRateLimitStatusPayload) -> ProviderQuotaSummary {
+fn quota_from_openai_usage(payload: CodexUsageResponse) -> ProviderQuotaSummary {
     ProviderQuotaSummary {
         source: QuotaSource::ChatgptCodexUsageApi,
         status: QuotaSupportStatus::Supported,
@@ -1805,8 +1807,8 @@ fn quota_from_openai_usage(payload: UpstreamRateLimitStatusPayload) -> ProviderQ
 fn rate_limit_snapshot_from_payload(
     limit_id: Option<String>,
     limit_name: Option<String>,
-    rate_limit: Option<UpstreamRateLimitStatusDetails>,
-    credits: Option<crate::models::UpstreamCreditStatusDetails>,
+    rate_limit: Option<CodexUsageRateLimit>,
+    credits: Option<CodexUsageCredits>,
     plan_type: Option<String>,
 ) -> ProviderQuotaSnapshot {
     let (primary, secondary) = match rate_limit {
@@ -1832,7 +1834,7 @@ fn rate_limit_snapshot_from_payload(
 }
 
 fn rate_limit_window_from_payload(
-    window: Option<UpstreamRateLimitWindowSnapshot>,
+    window: Option<CodexUsageRateLimitWindow>,
 ) -> Option<ProviderQuotaWindow> {
     let window = window?;
     Some(ProviderQuotaWindow {
@@ -1903,7 +1905,7 @@ fn sse_payload_from_frame(frame: &str) -> Option<String> {
     (!data_lines.is_empty()).then(|| data_lines.join("\n"))
 }
 
-fn encode_response_frame(frame: ResponsesStreamFrame) -> Result<String, std::io::Error> {
+fn encode_response_frame(frame: ResponseStreamFrame) -> Result<String, std::io::Error> {
     frame
         .encode_sse()
         .map_err(|err| std::io::Error::other(err.to_string()))
@@ -2088,12 +2090,12 @@ mod tests {
         provider_uses_openai_account, quota_from_openai_usage, resolve_native_target,
     };
     use crate::models::{
-        ApiProviderBillingMode, ApiProviderRecord, ProviderAuthMode, ResponsesStreamFrame,
+        ApiProviderBillingMode, ApiProviderRecord, ProviderAuthMode, ResponseStreamFrame,
         UpstreamProtocol,
     };
     use serde_json::json;
 
-    fn encode_frames(frames: Vec<ResponsesStreamFrame>) -> String {
+    fn encode_frames(frames: Vec<ResponseStreamFrame>) -> String {
         frames
             .into_iter()
             .map(|frame| frame.encode_sse().expect("frame should encode"))
