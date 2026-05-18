@@ -10,7 +10,7 @@ use super::types::{
 };
 use crate::models::{
     ContentItem, FunctionCallOutputPayload, LocalShellAction, LocalShellExecAction, MessagePhase,
-    ResponseEvent, ResponseEvents, ResponseItem, TokenUsage, WebSearchAction,
+    ResponseItem, TokenUsage, WebSearchAction,
 };
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -23,122 +23,6 @@ pub(crate) fn responses_to_chat_completions(
     let mut body = ChatRequest::try_from(request)?;
     body.model = model.to_string();
     Ok(body)
-}
-
-fn chat_completions_to_response_items(chat: &Value) -> (Vec<ResponseItem>, Option<TokenUsage>) {
-    let usage = chat.get("usage").map(chat_usage_to_token_usage);
-    let mut output = Vec::new();
-
-    if let Some(message) = chat_message(chat) {
-        output.extend(chat_tool_calls_to_response_items(message));
-        output.extend(chat_message_text_to_response_item(message));
-    }
-
-    (output, usage)
-}
-
-fn chat_completions_to_responses(chat: &Value) -> ResponseEvents {
-    let (output, usage) = chat_completions_to_response_items(chat);
-    let response_id = chat
-        .get("id")
-        .and_then(Value::as_str)
-        .map(ToOwned::to_owned)
-        .unwrap_or_else(|| format!("resp_{}", Uuid::new_v4().simple()));
-
-    let mut events = Vec::with_capacity(output.len() * 2 + 2);
-    events.push(ResponseEvent::Created);
-    for item in output {
-        events.push(ResponseEvent::OutputItemAdded(item.clone()));
-        events.push(ResponseEvent::OutputItemDone(item));
-    }
-    events.push(ResponseEvent::Completed {
-        response_id,
-        token_usage: usage,
-        end_turn: Some(true),
-    });
-    events
-}
-
-fn chat_usage_to_token_usage(usage: &Value) -> TokenUsage {
-    TokenUsage {
-        input_tokens: usage
-            .get("prompt_tokens")
-            .and_then(Value::as_u64)
-            .unwrap_or(0) as i64,
-        cached_input_tokens: 0,
-        output_tokens: usage
-            .get("completion_tokens")
-            .and_then(Value::as_u64)
-            .unwrap_or(0) as i64,
-        reasoning_output_tokens: 0,
-        total_tokens: usage
-            .get("total_tokens")
-            .and_then(Value::as_u64)
-            .unwrap_or(0) as i64,
-    }
-}
-
-fn chat_message(chat: &Value) -> Option<&Value> {
-    chat.get("choices")
-        .and_then(Value::as_array)
-        .and_then(|choices| choices.first())
-        .and_then(|choice| choice.get("message"))
-}
-
-fn chat_tool_calls_to_response_items(message: &Value) -> Vec<ResponseItem> {
-    message
-        .get("tool_calls")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .map(chat_tool_call_to_response_item)
-        .collect()
-}
-
-fn chat_tool_call_to_response_item(tool_call: &Value) -> ResponseItem {
-    let call_id = tool_call
-        .get("id")
-        .and_then(Value::as_str)
-        .map(ToOwned::to_owned)
-        .unwrap_or_else(|| format!("call_{}", Uuid::new_v4().simple()));
-    let name = tool_call
-        .get("function")
-        .and_then(|function| function.get("name"))
-        .and_then(Value::as_str)
-        .map(ToOwned::to_owned)
-        .unwrap_or_else(|| "unknown".to_string());
-    let arguments = tool_call
-        .get("function")
-        .and_then(|function| function.get("arguments"))
-        .map(|value| match value {
-            Value::String(text) => text.clone(),
-            other => other.to_string(),
-        })
-        .unwrap_or_else(|| "{}".to_string());
-
-    ResponseItem::FunctionCall {
-        id: Some(format!("fc_{}", Uuid::new_v4().simple())),
-        name,
-        namespace: None,
-        arguments,
-        call_id,
-    }
-}
-
-fn chat_message_text_to_response_item(message: &Value) -> Option<ResponseItem> {
-    let text = message.get("content").and_then(Value::as_str)?;
-    if text.is_empty() {
-        return None;
-    }
-
-    Some(ResponseItem::Message {
-        id: Some(format!("msg_{}", Uuid::new_v4().simple())),
-        role: "assistant".to_string(),
-        content: vec![ContentItem::OutputText {
-            text: text.to_string(),
-        }],
-        phase: Some(MessagePhase::FinalAnswer),
-    })
 }
 
 impl ChatRequest {
@@ -937,10 +821,10 @@ impl StreamedChatToolCall {
 mod tests {
     use super::{
         ChatCompletionChunk, ChatRequest, ChatToolSpec, ContentItem, Message,
-        chat_completions_to_responses, responses_to_chat_completions,
+        responses_to_chat_completions,
     };
+    use crate::models::ResponseItem;
     use crate::models::request::{ResponsesRequest, merge_strict_responses_request_defaults};
-    use crate::models::{ResponseEvent, ResponseItem};
     use serde_json::json;
 
     fn chat_body(request: &ResponsesRequest, model: &str) -> serde_json::Value {
@@ -1172,52 +1056,6 @@ mod tests {
         let body = chat_body(&request, "chat-compatible-latest");
 
         assert_eq!(body["stream"], true);
-    }
-
-    #[test]
-    fn maps_chat_completions_tool_calls_and_text_back_to_responses() {
-        let chat = json!({
-            "id": "chatcmpl_123",
-            "created": 1_700_000_000u64,
-            "usage": {
-                "prompt_tokens": 10,
-                "completion_tokens": 6,
-                "total_tokens": 16
-            },
-            "choices": [{
-                "message": {
-                    "content": "done",
-                    "tool_calls": [{
-                        "id": "call_123",
-                        "function": {
-                            "name": "shell",
-                            "arguments": "{\"command\":[\"pwd\"]}"
-                        }
-                    }]
-                }
-            }]
-        });
-
-        let events = chat_completions_to_responses(&chat);
-        let output: Vec<&ResponseItem> = events
-            .iter()
-            .filter_map(|event| match event {
-                ResponseEvent::OutputItemDone(item) => Some(item),
-                _ => None,
-            })
-            .collect();
-        let usage = events.iter().find_map(|event| match event {
-            ResponseEvent::Completed { token_usage, .. } => token_usage.as_ref(),
-            _ => None,
-        });
-
-        assert_eq!(output.len(), 2);
-        assert_eq!(usage.map(|usage| usage.total_tokens), Some(16));
-        assert!(matches!(
-            output[0],
-            ResponseItem::FunctionCall { name, .. } if name == "shell"
-        ));
-        assert!(matches!(output[1], ResponseItem::Message { .. }));
     }
 
     #[test]

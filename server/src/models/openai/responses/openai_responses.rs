@@ -1,49 +1,4 @@
-use super::ResponseItem;
 use serde::{Deserialize, Serialize};
-
-pub type ResponseEvents = Vec<ResponseEvent>;
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub enum ResponseEvent {
-    Created,
-    OutputItemDone(ResponseItem),
-    OutputItemAdded(ResponseItem),
-    /// Emitted when the server includes `OpenAI-Model` on the stream response.
-    /// This can differ from the requested model when backend safety routing applies.
-    ServerModel(String),
-    /// Emitted when the server recommends additional account verification.
-    ModelVerifications(Vec<ModelVerification>),
-    /// Emitted when `X-Reasoning-Included: true` is present on the response,
-    /// meaning the server already accounted for past reasoning tokens and the
-    /// client should not re-estimate them.
-    ServerReasoningIncluded(bool),
-    Completed {
-        response_id: String,
-        token_usage: Option<TokenUsage>,
-        /// Did the model affirmatively end its turn? Some providers do not set this,
-        /// so we rely on fallback logic when this is `None`.
-        end_turn: Option<bool>,
-    },
-    OutputTextDelta(String),
-    ToolCallInputDelta {
-        item_id: String,
-        call_id: Option<String>,
-        delta: String,
-    },
-    ReasoningSummaryDelta {
-        delta: String,
-        summary_index: i64,
-    },
-    ReasoningContentDelta {
-        delta: String,
-        content_index: i64,
-    },
-    ReasoningSummaryPartAdded {
-        summary_index: i64,
-    },
-    RateLimits(RateLimitSnapshot),
-    ModelsEtag(String),
-}
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default, PartialEq, Eq)]
 pub struct TokenUsage {
@@ -54,57 +9,6 @@ pub struct TokenUsage {
     #[serde(default, skip_serializing_if = "is_zero")]
     pub reasoning_output_tokens: i64,
     pub total_tokens: i64,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ModelVerification {
-    TrustedAccessForCyber,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
-pub struct RateLimitSnapshot {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub limit_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub limit_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub primary: Option<RateLimitWindow>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub secondary: Option<RateLimitWindow>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub credits: Option<CreditsSnapshot>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub plan_type: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub rate_limit_reached_type: Option<RateLimitReachedType>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
-pub struct RateLimitWindow {
-    pub used_percent: f64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub window_minutes: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub resets_at: Option<i64>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
-pub struct CreditsSnapshot {
-    pub has_credits: bool,
-    pub unlimited: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub balance: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum RateLimitReachedType {
-    RateLimitReached,
-    WorkspaceOwnerCreditsDepleted,
-    WorkspaceMemberCreditsDepleted,
-    WorkspaceOwnerUsageLimitReached,
-    WorkspaceMemberUsageLimitReached,
 }
 
 fn is_zero(value: &i64) -> bool {
