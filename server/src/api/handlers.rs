@@ -1,4 +1,8 @@
 use crate::{
+    adapters::responses::{
+        PreparedResponsesUpstream, ResponsesAdapterError, ResponsesAdapterProvider,
+        prepare_responses_upstream,
+    },
     auth::OAuthClient,
     codex_config,
     config::Config,
@@ -12,9 +16,8 @@ use crate::{
         GatewayLogSettingsResponse, GatewayLogSummary, ModelListItem, ModelListResponse,
         PROVIDER_OPENAI_PROXY, ProviderAuthMode, ProviderQuotaCredits, ProviderQuotaResponse,
         ProviderQuotaSnapshot, ProviderQuotaSummary, ProviderQuotaWindow, QuotaSource,
-        QuotaSupportStatus, ResponseCreateParams, ResponseStreamFrame, SelectedRoute,
-        UpdateGatewayLogSettingsRequest, UpdateSelectedModelRequest, UpdateSelectedProviderRequest,
-        UpstreamProtocol, responses_to_chat_completions,
+        QuotaSupportStatus, ResponseStreamFrame, SelectedRoute, UpdateGatewayLogSettingsRequest,
+        UpdateSelectedModelRequest, UpdateSelectedProviderRequest, UpstreamProtocol,
     },
     store::{
         AccountStore, LogEvent, LogStage, LogStore, ModelStore, ProviderStore, RouteStore,
@@ -24,7 +27,6 @@ use crate::{
     upstream::{
         OPENAI_CODEX_BASE_URL, OpenAiEndpoint, OpenAiRequestBody, OpenAiRequestBuilder,
         PrivateOpenAiRequestBuilder, PublicOpenAiRequestBuilder, UpstreamClient,
-        chat_completions_api_url, responses_api_url,
     },
 };
 use async_stream::stream;
@@ -763,159 +765,247 @@ pub(super) async fn responses_inner(
         .unwrap_or_default()
         .to_string();
 
-    if provider.auth_mode == ProviderAuthMode::Account && provider_uses_openai_account(&provider) {
-        let account = resolve_account_for_provider(&state, &provider).await?;
-        let private_responses = PrivateOpenAiRequestBuilder {
-            base_url: OPENAI_CODEX_BASE_URL,
-            access_token: account.access_token(),
-            account_id: account.upstream_account_id(),
-            client_version: None,
-        };
-        return responses_passthrough_inner(
-            state,
-            private_responses,
-            ResponsesPassthroughContext {
-                provider_name: provider.name,
-                account_id: Some(account.id.clone()),
-                account_email: Some(account.email.clone()),
-                model: requested_model,
-                request_stream,
-                upstream_protocol: UpstreamProtocol::OpenAiPrivateResponses,
-                upstream_url: Config::openai_private_responses_url().to_string(),
-                request_body,
-            },
-            id,
-            started_at,
-        )
-        .await;
-    }
+    let prepared = prepare_responses_upstream(
+        ResponsesAdapterProvider {
+            name: provider.name.clone(),
+            auth_mode: provider.auth_mode.clone(),
+            record: provider.record.clone(),
+            uses_openai_account: provider_uses_openai_account(&provider),
+        },
+        request_json,
+        request_body,
+        requested_model,
+        request_stream,
+    )
+    .map_err(adapter_error_to_app_error)?;
 
-    if provider.auth_mode == ProviderAuthMode::Account {
-        return Err(AppError::bad_request(format!(
-            "account auth provider is not supported yet: {}",
-            provider.name
-        )));
-    }
-
-    let native_provider = provider
-        .record
-        .clone()
-        .ok_or_else(|| AppError::bad_request(format!("unknown provider: {}", provider.name)))?;
-
-    let native_target = resolve_native_target(&native_provider, &requested_model);
-    if native_target.uses_chat_completions {
-        let request: ResponseCreateParams = serde_json::from_value(request_json)
-            .map_err(|err| AppError::bad_request(format!("invalid request JSON: {err}")))?;
-        if !request.stream {
-            return Err(AppError::bad_request(
-                "responses 接口请求必须使用流式 (\"stream\": true)".to_string(),
-            ));
-        }
-        let chat_request = responses_to_chat_completions(&request, &native_target.upstream_model)
-            .map_err(AppError::bad_request)?;
-        let request_body = serde_json::to_value(chat_request)
-            .map_err(|err| AppError::internal(err.to_string()))?;
-        let upstream_url = chat_completions_api_url(&native_provider.base_url);
-        log_http_event(
-            &state.logs,
-            &id,
-            LogStage::UpstreamRequest,
-            None,
-            Some(ClientProtocol::OpenAiResponses.as_str()),
-            Some(native_target.upstream.as_str()),
-            Some(&provider.name),
-            None,
-            None,
-            Some(&request.model),
-            request.stream,
-            Some("POST"),
-            None,
-            Some(&upstream_url),
-            Some(json_value_for_storage(&request_body)),
-            None,
-            None,
-        )
-        .await;
-
-        let public_chat = PublicOpenAiRequestBuilder {
-            base_url: native_provider.base_url.as_str(),
-            api_key: native_provider.api_key.as_str(),
-        };
-        let upstream = state
-            .upstream
-            .openai_send(
-                &public_chat,
-                OpenAiEndpoint::ChatCompletions { body: request_body },
+    match prepared {
+        PreparedResponsesUpstream::OpenAiAccountResponsesPassthrough(prepared) => {
+            let account = resolve_account_for_provider(&state, &provider).await?;
+            let private_responses = PrivateOpenAiRequestBuilder {
+                base_url: OPENAI_CODEX_BASE_URL,
+                access_token: account.access_token(),
+                account_id: account.upstream_account_id(),
+                client_version: None,
+            };
+            responses_passthrough_inner(
+                state,
+                private_responses,
+                ResponsesPassthroughContext {
+                    provider_name: prepared.provider_name,
+                    account_id: Some(account.id.clone()),
+                    account_email: Some(account.email.clone()),
+                    model: prepared.model,
+                    request_stream: prepared.request_stream,
+                    upstream_protocol: prepared.upstream_protocol,
+                    upstream_url: prepared.upstream_url,
+                    request_body: prepared.request_body,
+                },
+                id,
+                started_at,
             )
             .await
-            .map_err(AppError::upstream_message)?;
-        let upstream_status = upstream.status();
+        }
+        PreparedResponsesUpstream::ApiChatCompletions(prepared) => {
+            log_http_event(
+                &state.logs,
+                &id,
+                LogStage::UpstreamRequest,
+                None,
+                Some(ClientProtocol::OpenAiResponses.as_str()),
+                Some(prepared.upstream_protocol.as_str()),
+                Some(&prepared.provider_name),
+                None,
+                None,
+                Some(&prepared.model),
+                prepared.stream,
+                Some("POST"),
+                None,
+                Some(&prepared.upstream_url),
+                Some(json_value_for_storage(&prepared.request_body)),
+                None,
+                None,
+            )
+            .await;
 
-        let logs = state.logs.clone();
-        let id_for_stream = id.clone();
-        let provider_name = provider.name.clone();
-        let model = request.model.clone();
-        let upstream_protocol = native_target.upstream.as_str().to_string();
-        let upstream_url_for_stream = upstream_url.clone();
-        let output = stream! {
-            let mut stream = upstream.bytes_stream();
-            let mut chat_sse_buffer = String::new();
-            let mut response_body = String::new();
-            let mut final_response_sse_buffer = String::new();
-            let mut final_response_body: Option<String> = None;
-            let mut response_stream =
-                ChatCompletionsResponsesStream::new(model.clone(), now_unix());
+            let public_chat = PublicOpenAiRequestBuilder {
+                base_url: prepared.provider.base_url.as_str(),
+                api_key: prepared.provider.api_key.as_str(),
+            };
+            let upstream = state
+                .upstream
+                .openai_send(
+                    &public_chat,
+                    OpenAiEndpoint::ChatCompletions {
+                        body: prepared.request_body,
+                    },
+                )
+                .await
+                .map_err(AppError::upstream_message)?;
+            let upstream_status = upstream.status();
 
-            while let Some(result) = stream.next().await {
-                match result {
-                    Ok(chunk) => {
-                        let chunk_text = String::from_utf8_lossy(&chunk);
-                        let payloads = drain_sse_payloads(&mut chat_sse_buffer, &chunk_text);
-                        for payload in payloads {
-                            match response_stream.push_chat_payload(&payload) {
-                                Ok(frames) => {
-                                    for frame in frames {
-                                        let event = match encode_response_frame(frame) {
-                                            Ok(event) => event,
-                                            Err(err) => {
-                                                yield Err(err);
-                                                return;
-                                            }
-                                        };
-                                        append_to_log_buffer(&mut response_body, &event);
-                                        capture_final_response_from_sse_chunk(
-                                            &mut final_response_sse_buffer,
-                                            &event,
-                                            &mut final_response_body,
-                                        );
-                                        yield Ok::<Bytes, std::io::Error>(Bytes::from(event));
+            let logs = state.logs.clone();
+            let id_for_stream = id.clone();
+            let provider_name = prepared.provider_name;
+            let response_provider_name = provider_name.clone();
+            let model = prepared.model;
+            let upstream_protocol = prepared.upstream_protocol.as_str().to_string();
+            let upstream_url_for_stream = prepared.upstream_url;
+            let output = stream! {
+                let mut stream = upstream.bytes_stream();
+                let mut chat_sse_buffer = String::new();
+                let mut response_body = String::new();
+                let mut final_response_sse_buffer = String::new();
+                let mut final_response_body: Option<String> = None;
+                let mut response_stream =
+                    ChatCompletionsResponsesStream::new(model.clone(), now_unix());
+
+                while let Some(result) = stream.next().await {
+                    match result {
+                        Ok(chunk) => {
+                            let chunk_text = String::from_utf8_lossy(&chunk);
+                            let payloads = drain_sse_payloads(&mut chat_sse_buffer, &chunk_text);
+                            for payload in payloads {
+                                match response_stream.push_chat_payload(&payload) {
+                                    Ok(frames) => {
+                                        for frame in frames {
+                                            let event = match encode_response_frame(frame) {
+                                                Ok(event) => event,
+                                                Err(err) => {
+                                                    yield Err(err);
+                                                    return;
+                                                }
+                                            };
+                                            append_to_log_buffer(&mut response_body, &event);
+                                            capture_final_response_from_sse_chunk(
+                                                &mut final_response_sse_buffer,
+                                                &event,
+                                                &mut final_response_body,
+                                            );
+                                            yield Ok::<Bytes, std::io::Error>(Bytes::from(event));
+                                        }
+                                    }
+                                    Err(err) => {
+                                        log_http_event(
+                                            &logs,
+                                            &id_for_stream,
+                                            LogStage::Error,
+                                            Some(StatusCode::BAD_GATEWAY),
+                                            Some(ClientProtocol::OpenAiResponses.as_str()),
+                                            Some(&upstream_protocol),
+                                            Some(&provider_name),
+                                            None,
+                                            None,
+                                            Some(&model),
+                                            true,
+                                            Some("POST"),
+                                            Some(Config::responses_path()),
+                                            Some(&upstream_url_for_stream),
+                                            Some(response_body.clone()),
+                                            Some(err),
+                                            Some(elapsed_ms(started_at)),
+                                        )
+                                        .await;
+                                        yield Err(std::io::Error::other("failed to parse chat completions stream"));
+                                        return;
                                     }
                                 }
-                                Err(err) => {
-                                    log_http_event(
-                                        &logs,
-                                        &id_for_stream,
-                                        LogStage::Error,
-                                        Some(StatusCode::BAD_GATEWAY),
-                                        Some(ClientProtocol::OpenAiResponses.as_str()),
-                                        Some(&upstream_protocol),
-                                        Some(&provider_name),
-                                        None,
-                                        None,
-                                        Some(&model),
-                                        true,
-                                        Some("POST"),
-                                        Some(Config::responses_path()),
-                                        Some(&upstream_url_for_stream),
-                                        Some(response_body.clone()),
-                                        Some(err),
-                                        Some(elapsed_ms(started_at)),
-                                    )
-                                    .await;
-                                    yield Err(std::io::Error::other("failed to parse chat completions stream"));
-                                    return;
+                            }
+                        }
+                        Err(err) => {
+                            log_http_event(
+                                &logs,
+                                &id_for_stream,
+                                LogStage::Error,
+                                Some(StatusCode::INTERNAL_SERVER_ERROR),
+                                Some(ClientProtocol::OpenAiResponses.as_str()),
+                                Some(&upstream_protocol),
+                                Some(&provider_name),
+                                None,
+                                None,
+                                Some(&model),
+                                true,
+                                Some("POST"),
+                                Some(Config::responses_path()),
+                                Some(&upstream_url_for_stream),
+                                Some(response_body.clone()),
+                                Some(err.to_string()),
+                                Some(elapsed_ms(started_at)),
+                            )
+                            .await;
+                            yield Err(std::io::Error::other(err));
+                            return;
+                        }
+                    }
+                }
+
+                if !chat_sse_buffer.trim().is_empty() {
+                    let payloads = drain_sse_payloads(&mut chat_sse_buffer, "\n\n");
+                    for payload in payloads {
+                        match response_stream.push_chat_payload(&payload) {
+                            Ok(frames) => {
+                                for frame in frames {
+                                    let event = match encode_response_frame(frame) {
+                                        Ok(event) => event,
+                                        Err(err) => {
+                                            yield Err(err);
+                                            return;
+                                        }
+                                    };
+                                    append_to_log_buffer(&mut response_body, &event);
+                                    capture_final_response_from_sse_chunk(
+                                        &mut final_response_sse_buffer,
+                                        &event,
+                                        &mut final_response_body,
+                                    );
+                                    yield Ok::<Bytes, std::io::Error>(Bytes::from(event));
                                 }
                             }
+                            Err(err) => {
+                                log_http_event(
+                                    &logs,
+                                    &id_for_stream,
+                                    LogStage::Error,
+                                    Some(StatusCode::BAD_GATEWAY),
+                                    Some(ClientProtocol::OpenAiResponses.as_str()),
+                                    Some(&upstream_protocol),
+                                    Some(&provider_name),
+                                    None,
+                                    None,
+                                    Some(&model),
+                                    true,
+                                    Some("POST"),
+                                    Some(Config::responses_path()),
+                                    Some(&upstream_url_for_stream),
+                                    Some(response_body.clone()),
+                                    Some(err),
+                                    Some(elapsed_ms(started_at)),
+                                )
+                                .await;
+                                yield Err(std::io::Error::other("failed to parse chat completions stream"));
+                                return;
+                            }
+                        }
+                    }
+                }
+
+                match response_stream.finish() {
+                    Ok(frames) => {
+                        for frame in frames {
+                            let event = match encode_response_frame(frame) {
+                                Ok(event) => event,
+                                Err(err) => {
+                                    yield Err(err);
+                                    return;
+                                }
+                            };
+                            append_to_log_buffer(&mut response_body, &event);
+                            capture_final_response_from_sse_chunk(
+                                &mut final_response_sse_buffer,
+                                &event,
+                                &mut final_response_body,
+                            );
+                            yield Ok::<Bytes, std::io::Error>(Bytes::from(event));
                         }
                     }
                     Err(err) => {
@@ -935,195 +1025,100 @@ pub(super) async fn responses_inner(
                             Some(Config::responses_path()),
                             Some(&upstream_url_for_stream),
                             Some(response_body.clone()),
-                            Some(err.to_string()),
+                            Some(err),
                             Some(elapsed_ms(started_at)),
                         )
                         .await;
-                        yield Err(std::io::Error::other(err));
+                        yield Err(std::io::Error::other("failed to finish chat completions stream"));
                         return;
                     }
                 }
-            }
 
-            if !chat_sse_buffer.trim().is_empty() {
-                let payloads = drain_sse_payloads(&mut chat_sse_buffer, "\n\n");
-                for payload in payloads {
-                    match response_stream.push_chat_payload(&payload) {
-                        Ok(frames) => {
-                            for frame in frames {
-                                let event = match encode_response_frame(frame) {
-                                    Ok(event) => event,
-                                    Err(err) => {
-                                        yield Err(err);
-                                        return;
-                                    }
-                                };
-                                append_to_log_buffer(&mut response_body, &event);
-                                capture_final_response_from_sse_chunk(
-                                    &mut final_response_sse_buffer,
-                                    &event,
-                                    &mut final_response_body,
-                                );
-                                yield Ok::<Bytes, std::io::Error>(Bytes::from(event));
-                            }
-                        }
-                        Err(err) => {
-                            log_http_event(
-                                &logs,
-                                &id_for_stream,
-                                LogStage::Error,
-                                Some(StatusCode::BAD_GATEWAY),
-                                Some(ClientProtocol::OpenAiResponses.as_str()),
-                                Some(&upstream_protocol),
-                                Some(&provider_name),
-                                None,
-                                None,
-                                Some(&model),
-                                true,
-                                Some("POST"),
-                                Some(Config::responses_path()),
-                                Some(&upstream_url_for_stream),
-                                Some(response_body.clone()),
-                                Some(err),
-                                Some(elapsed_ms(started_at)),
-                            )
-                            .await;
-                            yield Err(std::io::Error::other("failed to parse chat completions stream"));
-                            return;
-                        }
-                    }
-                }
-            }
+                let elapsed = elapsed_ms(started_at);
+                let logged_response_body =
+                    logged_stream_response_body(final_response_body.as_deref(), &response_body);
+                log_http_event(
+                    &logs,
+                    &id_for_stream,
+                    LogStage::ClientResponse,
+                    Some(upstream_status),
+                    Some(ClientProtocol::OpenAiResponses.as_str()),
+                    Some(&upstream_protocol),
+                    Some(&provider_name),
+                    None,
+                    None,
+                    Some(&model),
+                    true,
+                    Some("POST"),
+                    None,
+                    Some(&upstream_url_for_stream),
+                    Some(logged_response_body.clone()),
+                    None,
+                    Some(elapsed),
+                )
+                .await;
+                log_http_event(
+                    &logs,
+                    &id_for_stream,
+                    LogStage::UpstreamResponse,
+                    Some(StatusCode::OK),
+                    Some(ClientProtocol::OpenAiResponses.as_str()),
+                    None,
+                    Some(&provider_name),
+                    None,
+                    None,
+                    Some(&model),
+                    true,
+                    Some("POST"),
+                    Some(Config::responses_path()),
+                    None,
+                    Some(logged_response_body),
+                    None,
+                    Some(elapsed),
+                )
+                .await;
+            };
 
-            match response_stream.finish() {
-                Ok(frames) => {
-                    for frame in frames {
-                        let event = match encode_response_frame(frame) {
-                            Ok(event) => event,
-                            Err(err) => {
-                                yield Err(err);
-                                return;
-                            }
-                        };
-                        append_to_log_buffer(&mut response_body, &event);
-                        capture_final_response_from_sse_chunk(
-                            &mut final_response_sse_buffer,
-                            &event,
-                            &mut final_response_body,
-                        );
-                        yield Ok::<Bytes, std::io::Error>(Bytes::from(event));
-                    }
-                }
-                Err(err) => {
-                    log_http_event(
-                        &logs,
-                        &id_for_stream,
-                        LogStage::Error,
-                        Some(StatusCode::INTERNAL_SERVER_ERROR),
-                        Some(ClientProtocol::OpenAiResponses.as_str()),
-                        Some(&upstream_protocol),
-                        Some(&provider_name),
-                        None,
-                        None,
-                        Some(&model),
-                        true,
-                        Some("POST"),
-                        Some(Config::responses_path()),
-                        Some(&upstream_url_for_stream),
-                        Some(response_body.clone()),
-                        Some(err),
-                        Some(elapsed_ms(started_at)),
-                    )
-                    .await;
-                    yield Err(std::io::Error::other("failed to finish chat completions stream"));
-                    return;
-                }
-            }
-
-            let elapsed = elapsed_ms(started_at);
-            let logged_response_body =
-                logged_stream_response_body(final_response_body.as_deref(), &response_body);
-            log_http_event(
-                &logs,
-                &id_for_stream,
-                LogStage::ClientResponse,
-                Some(upstream_status),
-                Some(ClientProtocol::OpenAiResponses.as_str()),
-                Some(&upstream_protocol),
-                Some(&provider_name),
-                None,
-                None,
-                Some(&model),
-                true,
-                Some("POST"),
-                None,
-                Some(&upstream_url_for_stream),
-                Some(logged_response_body.clone()),
-                None,
-                Some(elapsed),
+            Ok(Response::builder()
+                .status(StatusCode::OK)
+                .header(
+                    "content-type",
+                    HeaderValue::from_static("text/event-stream"),
+                )
+                .header("cache-control", HeaderValue::from_static("no-cache"))
+                .header("connection", HeaderValue::from_static("keep-alive"))
+                .header(
+                    "x-provider",
+                    HeaderValue::from_str(&response_provider_name)
+                        .map_err(|err| AppError::internal(err.to_string()))?,
+                )
+                .body(Body::from_stream(output))
+                .map_err(|err| AppError::internal(err.to_string()))?)
+        }
+        PreparedResponsesUpstream::ApiResponsesPassthrough(prepared) => {
+            let public_responses = PublicOpenAiRequestBuilder {
+                base_url: prepared.provider.base_url.as_str(),
+                api_key: prepared.provider.api_key.as_str(),
+            };
+            responses_passthrough_inner(
+                state,
+                public_responses,
+                ResponsesPassthroughContext {
+                    provider_name: prepared.provider_name,
+                    account_id: None,
+                    account_email: None,
+                    model: prepared.model,
+                    request_stream: prepared.request_stream,
+                    upstream_protocol: prepared.upstream_protocol,
+                    upstream_url: prepared.upstream_url,
+                    request_body: prepared.request_body,
+                },
+                id,
+                started_at,
             )
-            .await;
-            log_http_event(
-                &logs,
-                &id_for_stream,
-                LogStage::UpstreamResponse,
-                Some(StatusCode::OK),
-                Some(ClientProtocol::OpenAiResponses.as_str()),
-                None,
-                Some(&provider_name),
-                None,
-                None,
-                Some(&model),
-                true,
-                Some("POST"),
-                Some(Config::responses_path()),
-                None,
-                Some(logged_response_body),
-                None,
-                Some(elapsed),
-            )
-            .await;
-        };
-
-        return Ok(Response::builder()
-            .status(StatusCode::OK)
-            .header(
-                "content-type",
-                HeaderValue::from_static("text/event-stream"),
-            )
-            .header("cache-control", HeaderValue::from_static("no-cache"))
-            .header("connection", HeaderValue::from_static("keep-alive"))
-            .header(
-                "x-provider",
-                HeaderValue::from_str(&provider.name)
-                    .map_err(|err| AppError::internal(err.to_string()))?,
-            )
-            .body(Body::from_stream(output))
-            .map_err(|err| AppError::internal(err.to_string()))?);
+            .await
+        }
     }
-
-    let public_responses = PublicOpenAiRequestBuilder {
-        base_url: native_provider.base_url.as_str(),
-        api_key: native_provider.api_key.as_str(),
-    };
-    let upstream_url = responses_api_url(&native_provider.base_url);
-    responses_passthrough_inner(
-        state,
-        public_responses,
-        ResponsesPassthroughContext {
-            provider_name: provider.name,
-            account_id: None,
-            account_email: None,
-            model: requested_model,
-            request_stream,
-            upstream_protocol: native_target.upstream,
-            upstream_url,
-            request_body,
-        },
-        id,
-        started_at,
-    )
-    .await
 }
 
 #[derive(Debug)]
@@ -1787,29 +1782,6 @@ fn rate_limit_window_from_payload(
     })
 }
 
-#[derive(Clone, Debug)]
-struct NativeTarget {
-    upstream_model: String,
-    upstream: UpstreamProtocol,
-    uses_chat_completions: bool,
-}
-
-fn resolve_native_target(provider: &ApiProviderRecord, requested_model: &str) -> NativeTarget {
-    if provider.uses_chat_completions {
-        return NativeTarget {
-            upstream_model: requested_model.to_string(),
-            upstream: UpstreamProtocol::NativeChatCompletions,
-            uses_chat_completions: true,
-        };
-    }
-
-    NativeTarget {
-        upstream_model: requested_model.to_string(),
-        upstream: UpstreamProtocol::NativeResponses,
-        uses_chat_completions: false,
-    }
-}
-
 fn drain_sse_payloads(buffer: &mut String, chunk: &str) -> Vec<String> {
     buffer.push_str(chunk);
     let mut payloads = Vec::new();
@@ -2010,6 +1982,13 @@ impl AppError {
     }
 }
 
+fn adapter_error_to_app_error(error: ResponsesAdapterError) -> AppError {
+    match error {
+        ResponsesAdapterError::BadRequest(message) => AppError::bad_request(message),
+        ResponsesAdapterError::Internal(message) => AppError::internal(message),
+    }
+}
+
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         (
@@ -2030,11 +2009,10 @@ mod tests {
     use super::{
         ChatCompletionsResponsesStream, ResolvedProvider, capture_final_response_from_sse_chunk,
         drain_sse_payloads, logged_stream_response_body, openai_models_response,
-        provider_uses_openai_account, quota_from_openai_usage, resolve_native_target,
+        provider_uses_openai_account, quota_from_openai_usage,
     };
     use crate::models::{
         ApiProviderBillingMode, ApiProviderRecord, ProviderAuthMode, ResponseStreamFrame,
-        UpstreamProtocol,
     };
     use serde_json::json;
 
@@ -2213,45 +2191,6 @@ mod tests {
         };
 
         assert!(provider_uses_openai_account(&provider));
-    }
-
-    #[test]
-    fn api_provider_uses_responses_by_default_even_for_compatible_provider_name() {
-        let provider = ApiProviderRecord {
-            id: "provider-123".to_string(),
-            name: "compatible-provider".to_string(),
-            auth_mode: ProviderAuthMode::ApiKey,
-            base_url: "https://example.com/v1".to_string(),
-            api_key: "sk-test".to_string(),
-            account_id: None,
-            uses_chat_completions: false,
-            billing_mode: ApiProviderBillingMode::Metered,
-        };
-
-        let target = resolve_native_target(&provider, "gpt-5.4");
-
-        assert_eq!(target.upstream, UpstreamProtocol::NativeResponses);
-        assert!(!target.uses_chat_completions);
-    }
-
-    #[test]
-    fn api_provider_uses_chat_completions_only_when_enabled() {
-        let provider = ApiProviderRecord {
-            id: "provider-123".to_string(),
-            name: "custom-compatible".to_string(),
-            auth_mode: ProviderAuthMode::ApiKey,
-            base_url: "https://example.com/v1".to_string(),
-            api_key: "sk-test".to_string(),
-            account_id: None,
-            uses_chat_completions: true,
-            billing_mode: ApiProviderBillingMode::Metered,
-        };
-
-        let target = resolve_native_target(&provider, "qwen3-32b");
-
-        assert_eq!(target.upstream, UpstreamProtocol::NativeChatCompletions);
-        assert!(target.uses_chat_completions);
-        assert_eq!(target.upstream_model, "qwen3-32b");
     }
 
     #[test]

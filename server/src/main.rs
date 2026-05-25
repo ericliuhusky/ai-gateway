@@ -1,3 +1,4 @@
+mod adapters;
 mod api;
 mod auth;
 mod codex_config;
