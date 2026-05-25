@@ -4,7 +4,7 @@ use crate::{
         prepare_responses_upstream,
     },
     auth::OAuthClient,
-    codex_config,
+    codex_config, codex_history,
     config::Config,
     models::openai::responses::{
         CodexUsageCredits, CodexUsageRateLimit, CodexUsageRateLimitWindow, CodexUsageResponse,
@@ -406,10 +406,17 @@ pub async fn apply_codex_config(State(state): State<AppState>) -> Result<Json<Va
         &config.codex_config_patch_path(),
     )
     .map_err(AppError::bad_request)?;
+    let history_aliases = codex_history::sync_openai_history_aliases(
+        &config.codex_dir(),
+        &config.codex_state_path(),
+        &config.codex_session_alias_patch_path(),
+    )
+    .map_err(AppError::bad_request)?;
 
     Ok(Json(json!({
         "codex_config": codex_config_status(&state)?,
         "takeover": takeover,
+        "history_aliases": history_aliases,
     })))
 }
 

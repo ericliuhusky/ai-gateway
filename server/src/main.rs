@@ -2,6 +2,7 @@ mod adapters;
 mod api;
 mod auth;
 mod codex_config;
+mod codex_history;
 mod config;
 mod models;
 mod store;

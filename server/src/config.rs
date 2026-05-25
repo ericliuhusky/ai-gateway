@@ -82,8 +82,16 @@ impl Config {
         self.data_dir().join("codex-config.patch.json")
     }
 
+    pub fn codex_session_alias_patch_path(&self) -> PathBuf {
+        self.data_dir().join("codex-session-aliases.json")
+    }
+
     pub fn codex_auth_path(&self) -> PathBuf {
         self.codex_dir().join("auth.json")
+    }
+
+    pub fn codex_state_path(&self) -> PathBuf {
+        self.codex_dir().join("state_5.sqlite")
     }
 
     fn codex_version_path(&self) -> PathBuf {
