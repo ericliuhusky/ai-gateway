@@ -101,8 +101,7 @@ pub struct UpdateSelectedModelRequest {
 pub struct CodexConfigStatus {
     pub target_path: String,
     pub auth_path: String,
-    pub config_backup_exists: bool,
-    pub auth_backup_exists: bool,
+    pub config_patch_exists: bool,
     pub restore_available: bool,
     pub target_exists: bool,
     pub auth_exists: bool,

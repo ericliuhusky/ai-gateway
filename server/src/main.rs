@@ -1,5 +1,6 @@
 mod api;
 mod auth;
+mod codex_config;
 mod config;
 mod models;
 mod store;

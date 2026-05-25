@@ -11,9 +11,6 @@ const DEFAULT_CODEX_CLIENT_VERSION: &str = "0.130.0";
 const RESPONSES_PATH: &str = "/openai/v1/responses";
 const OPENAI_PRIVATE_RESPONSES_URL: &str = "https://chatgpt.com/backend-api/codex/responses";
 
-// 内置 Codex 资源。
-const BUNDLED_CODEX_CONFIG: &str = include_str!("../../assets/codex-config.toml");
-
 #[derive(Debug, Deserialize)]
 struct CodexVersion {
     latest_version: Option<String>,
@@ -73,10 +70,6 @@ impl Config {
     }
 
     // Codex 文件和默认值。
-    pub fn bundled_codex_config(&self) -> &'static str {
-        BUNDLED_CODEX_CONFIG
-    }
-
     pub fn codex_dir(&self) -> PathBuf {
         self.home_dir.join(".codex")
     }
@@ -85,16 +78,12 @@ impl Config {
         self.codex_dir().join("config.toml")
     }
 
-    pub fn codex_config_backup_path(&self) -> PathBuf {
-        self.data_dir().join("codex-config.backup.toml")
+    pub fn codex_config_patch_path(&self) -> PathBuf {
+        self.data_dir().join("codex-config.patch.json")
     }
 
     pub fn codex_auth_path(&self) -> PathBuf {
         self.codex_dir().join("auth.json")
-    }
-
-    pub fn codex_auth_backup_path(&self) -> PathBuf {
-        self.data_dir().join("codex-auth.backup.json")
     }
 
     fn codex_version_path(&self) -> PathBuf {
