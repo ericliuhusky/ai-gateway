@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 pub const PROVIDER_OPENAI_PROXY: &str = "openai-proxy";
 
@@ -111,6 +112,8 @@ pub struct CodexConfigStatus {
 pub struct ModelListResponse {
     pub object: String,
     pub data: Vec<ModelListItem>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub models: Vec<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

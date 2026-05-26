@@ -274,7 +274,8 @@ pub async fn list_models(
     Query(query): Query<ListModelsQuery>,
 ) -> Result<Json<ModelListResponse>, AppError> {
     let provider = resolve_selected_provider(&state).await?;
-    let response = load_provider_models(&state, &provider, query.force).await?;
+    let mut response = load_provider_models(&state, &provider, query.force).await?;
+    ensure_codex_model_infos(&mut response);
 
     Ok(Json(response))
 }
@@ -1557,14 +1558,19 @@ fn native_models_response(_provider: &str, raw: &Value) -> Result<ModelListRespo
     let mut data = Vec::with_capacity(entries.len());
     for entry in entries {
         if let Some(id) = native_model_id(entry) {
-            data.push(ModelListItem { id: id.to_string() });
+            data.push((
+                id.to_string(),
+                ModelListItem { id: id.to_string() },
+                codex_model_info(id, Some(entry)),
+            ));
         }
     }
-    data.sort_by(|left, right| left.id.cmp(&right.id));
+    data.sort_by(|left, right| left.0.cmp(&right.0));
 
     Ok(ModelListResponse {
         object: "list".to_string(),
-        data,
+        data: data.iter().map(|(_, item, _)| item.clone()).collect(),
+        models: data.into_iter().map(|(_, _, model)| model).collect(),
     })
 }
 
@@ -1592,6 +1598,7 @@ fn openai_models_response(_provider: &str, raw: &Value) -> Result<ModelListRespo
                 priority,
                 id.to_string(),
                 ModelListItem { id: id.to_string() },
+                codex_model_info(id, Some(entry)),
             ));
         }
     }
@@ -1599,7 +1606,77 @@ fn openai_models_response(_provider: &str, raw: &Value) -> Result<ModelListRespo
 
     Ok(ModelListResponse {
         object: "list".to_string(),
-        data: data.into_iter().map(|(_, _, item)| item).collect(),
+        data: data.iter().map(|(_, _, item, _)| item.clone()).collect(),
+        models: data.into_iter().map(|(_, _, _, model)| model).collect(),
+    })
+}
+
+fn ensure_codex_model_infos(response: &mut ModelListResponse) {
+    if response.models.is_empty() {
+        response.models = response
+            .data
+            .iter()
+            .map(|item| codex_model_info(item.id.as_str(), None))
+            .collect();
+    }
+}
+
+fn codex_model_info(id: &str, entry: Option<&Value>) -> Value {
+    let context_window = entry
+        .and_then(|entry| entry.get("context_window").and_then(Value::as_i64))
+        .or_else(|| entry.and_then(|entry| entry.get("max_context_window").and_then(Value::as_i64)))
+        .unwrap_or(272_000);
+    let max_context_window = entry
+        .and_then(|entry| entry.get("max_context_window").and_then(Value::as_i64))
+        .unwrap_or(context_window);
+    let auto_compact_token_limit = entry
+        .and_then(|entry| entry.get("auto_compact_token_limit"))
+        .filter(|value| value.is_number())
+        .cloned()
+        .unwrap_or(Value::Null);
+    let display_name = entry
+        .and_then(|entry| entry.get("display_name").and_then(Value::as_str))
+        .unwrap_or(id);
+    let description = entry
+        .and_then(|entry| entry.get("description").and_then(Value::as_str))
+        .map(Value::from)
+        .unwrap_or(Value::Null);
+
+    json!({
+        "slug": id,
+        "display_name": display_name,
+        "description": description,
+        "default_reasoning_level": "medium",
+        "supported_reasoning_levels": [
+            { "effort": "low", "description": "Fast responses with lighter reasoning" },
+            { "effort": "medium", "description": "Balances speed and reasoning depth for everyday tasks" },
+            { "effort": "high", "description": "Greater reasoning depth for complex problems" },
+            { "effort": "xhigh", "description": "Extra high reasoning depth for complex problems" }
+        ],
+        "shell_type": "shell_command",
+        "visibility": "list",
+        "supported_in_api": true,
+        "priority": entry.and_then(|entry| entry.get("priority").and_then(Value::as_i64)).unwrap_or(0),
+        "availability_nux": null,
+        "upgrade": null,
+        "base_instructions": "",
+        "model_messages": null,
+        "supports_reasoning_summaries": true,
+        "default_reasoning_summary": "none",
+        "support_verbosity": true,
+        "default_verbosity": "low",
+        "apply_patch_tool_type": "freeform",
+        "web_search_tool_type": "text_and_image",
+        "truncation_policy": { "mode": "tokens", "limit": 10000 },
+        "supports_parallel_tool_calls": true,
+        "supports_image_detail_original": true,
+        "context_window": context_window,
+        "max_context_window": max_context_window,
+        "auto_compact_token_limit": auto_compact_token_limit,
+        "effective_context_window_percent": 95,
+        "experimental_supported_tools": [],
+        "input_modalities": ["text", "image"],
+        "supports_search_tool": true
     })
 }
 
