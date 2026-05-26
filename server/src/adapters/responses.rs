@@ -164,6 +164,7 @@ fn resolve_native_target(provider: &ApiProviderRecord, requested_model: &str) ->
 
 const NON_OPENAI_RESPONSES_FILTERED_FUNCTION_TOOLS: &[&str] =
     &["list_available_plugins_to_install"];
+const NON_OPENAI_RESPONSES_FILTERED_TOOL_TYPES: &[&str] = &["tool_search"];
 
 fn adapt_native_responses_passthrough_body(
     provider: &ApiProviderRecord,
@@ -193,12 +194,17 @@ fn filter_non_openai_responses_tools(body: &mut Value) {
     };
 
     tools.retain(|tool| {
-        let should_filter = tool.get("type").and_then(Value::as_str) == Some("function")
+        let Some(tool_type) = tool.get("type").and_then(Value::as_str) else {
+            return true;
+        };
+        if NON_OPENAI_RESPONSES_FILTERED_TOOL_TYPES.contains(&tool_type) {
+            return false;
+        }
+        !(tool_type == "function"
             && tool
                 .get("name")
                 .and_then(Value::as_str)
-                .is_some_and(|name| NON_OPENAI_RESPONSES_FILTERED_FUNCTION_TOOLS.contains(&name));
-        !should_filter
+                .is_some_and(|name| NON_OPENAI_RESPONSES_FILTERED_FUNCTION_TOOLS.contains(&name)))
     });
 }
 
@@ -292,7 +298,7 @@ mod tests {
     }
 
     #[test]
-    fn filters_known_incompatible_response_tool_for_non_openai_provider() {
+    fn filters_known_incompatible_response_tools_for_non_openai_provider() {
         let provider = api_provider("https://example.com/v1", false);
         let body = json!({
             "model": "external/gpt-5.5",
@@ -315,6 +321,12 @@ mod tests {
                     "name": "list_available_plugins_to_install",
                     "description": "Do not filter non-function tools",
                     "tools": []
+                },
+                {
+                    "type": "tool_search",
+                    "execution": "client",
+                    "description": "Search deferred tools",
+                    "parameters": { "type": "object", "properties": {} }
                 }
             ]
         });
