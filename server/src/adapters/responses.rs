@@ -163,7 +163,7 @@ fn resolve_native_target(provider: &ApiProviderRecord, requested_model: &str) ->
 }
 
 const NON_OPENAI_RESPONSES_FILTERED_FUNCTION_TOOLS: &[&str] =
-    &["list_available_plugins_to_install"];
+    &["list_available_plugins_to_install", "get_goal"];
 const NON_OPENAI_RESPONSES_FILTERED_TOOL_TYPES: &[&str] = &["tool_search"];
 
 fn adapt_native_responses_passthrough_body(
@@ -315,6 +315,13 @@ mod tests {
                     "name": "exec_command",
                     "description": "Runs a command",
                     "parameters": { "type": "object", "properties": {} }
+                },
+                {
+                    "type": "function",
+                    "name": "get_goal",
+                    "description": "Get the current goal",
+                    "parameters": {},
+                    "strict": false
                 },
                 {
                     "type": "namespace",
