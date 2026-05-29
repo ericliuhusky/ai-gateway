@@ -48,13 +48,17 @@ impl TryFrom<&ResponseCreateParams> for ChatCompletionCreateParams {
             .iter()
             .filter_map(ChatCompletionMessageParam::from_responses_item)
             .collect();
-        if !request.instructions.trim().is_empty() {
+        if let Some(instructions) = request
+            .instructions
+            .as_ref()
+            .filter(|instructions| !instructions.trim().is_empty())
+        {
             messages.insert(
                 0,
                 ChatCompletionMessageParam {
                     role: "system".to_string(),
                     content: Some(ChatCompletionMessageContent::String(
-                        request.instructions.clone(),
+                        instructions.clone(),
                     )),
                     tool_calls: None,
                     tool_call_id: None,

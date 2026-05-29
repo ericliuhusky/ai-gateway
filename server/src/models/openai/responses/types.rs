@@ -7,8 +7,8 @@ use std::collections::HashMap;
 #[serde(deny_unknown_fields)]
 pub struct ResponseCreateParams {
     pub model: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub instructions: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
     pub input: Vec<ResponseItem>,
     pub tools: Vec<ToolSpec>,
     pub tool_choice: String,
@@ -37,7 +37,6 @@ pub(crate) fn merge_strict_responses_request_defaults(value: Value) -> Value {
     let defaults: serde_json::Map<String, Value> = serde_json::from_value(serde_json::json!({
         "client_metadata": null,
         "include": [],
-        "instructions": "",
         "parallel_tool_calls": true,
         "prompt_cache_key": null,
         "reasoning": null,
@@ -95,6 +94,27 @@ mod tests {
 
         assert!(tool.get("function").is_none());
         assert_eq!(tool["type"], "local_shell");
+    }
+
+    #[test]
+    fn accepts_missing_instructions_as_none() {
+        let request: ResponseCreateParams = serde_json::from_value(json!({
+            "model": "gpt-5.4",
+            "input": [],
+            "tools": [],
+            "tool_choice": "auto",
+            "parallel_tool_calls": true,
+            "reasoning": null,
+            "store": false,
+            "stream": true,
+            "include": []
+        }))
+        .expect("instructions should be optional");
+
+        assert_eq!(request.instructions, None);
+
+        let body = serde_json::to_value(request).expect("request should serialize");
+        assert!(body.get("instructions").is_none());
     }
 }
 
