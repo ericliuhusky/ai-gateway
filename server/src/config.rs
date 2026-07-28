@@ -1,6 +1,6 @@
 use std::{env, net::SocketAddr, path::PathBuf};
 
-const DEFAULT_BIND_ADDR: &str = "0.0.0.0:10100";
+const DEFAULT_BIND_ADDR: &str = "0.0.0.0:4242";
 const DEFAULT_CODEX_CLIENT_VERSION: &str = "0.130.0";
 const RESPONSES_PATH: &str = "/openai/v1/responses";
 const OPENAI_PRIVATE_RESPONSES_URL: &str = "https://chatgpt.com/backend-api/codex/responses";

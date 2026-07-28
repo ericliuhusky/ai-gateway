@@ -29,14 +29,14 @@ cargo run -p ai-gateway
 默认监听：
 
 ```text
-0.0.0.0:10100
+0.0.0.0:4242
 ```
 
 支持的环境变量：
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `AI_GATEWAY_BIND_ADDR` | `0.0.0.0:10100` | HTTP 监听地址 |
+| `AI_GATEWAY_BIND_ADDR` | `0.0.0.0:4242` | HTTP 监听地址 |
 | `AI_GATEWAY_DATA_DIR` | `$HOME/.ai-gateway` | SQLite 和日志目录 |
 | `AI_GATEWAY_CODEX_CLIENT_VERSION` | `0.130.0` | 调用 ChatGPT Codex 私有模型接口时使用的客户端版本 |
 
@@ -105,7 +105,7 @@ $HOME/.ai-gateway/web
 打开：
 
 ```text
-http://127.0.0.1:10100/
+http://127.0.0.1:4242/
 ```
 
 如果静态文件部署在其他目录，可设置：
@@ -121,7 +121,7 @@ Web 页面与它所在的远程 Server 同源通信，不需要单独配置 Serv
 浏览器 OAuth 登录已经移除。OpenAI 账号只通过粘贴 Codex Token 导入：
 
 ```bash
-curl -X POST http://127.0.0.1:10100/accounts/openai/import-token \
+curl -X POST http://127.0.0.1:4242/accounts/openai/import-token \
   -H 'Content-Type: application/json' \
   -d '{
     "tokens": {
@@ -167,7 +167,7 @@ GET    /debug
 所有推理请求仍统一使用 OpenAI Responses 客户端协议：
 
 ```bash
-curl -X POST http://127.0.0.1:10100/openai/v1/responses \
+curl -X POST http://127.0.0.1:4242/openai/v1/responses \
   -H 'Content-Type: application/json' \
   -d '{
     "model": "gpt-5.4",
