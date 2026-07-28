@@ -9,6 +9,7 @@ const OPENAI_PRIVATE_RESPONSES_URL: &str = "https://chatgpt.com/backend-api/code
 pub struct Config {
     bind_addr: SocketAddr,
     data_dir: PathBuf,
+    web_dir: PathBuf,
     codex_client_version: String,
 }
 
@@ -35,9 +36,15 @@ impl Config {
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| DEFAULT_CODEX_CLIENT_VERSION.to_string());
 
+        let web_dir = match env::var("AI_GATEWAY_WEB_DIR") {
+            Ok(path) if !path.trim().is_empty() => PathBuf::from(path),
+            _ => data_dir.join("web"),
+        };
+
         Ok(Self {
             bind_addr,
             data_dir,
+            web_dir,
             codex_client_version,
         })
     }
@@ -64,6 +71,10 @@ impl Config {
 
     pub fn log_sqlite_path(&self) -> PathBuf {
         self.data_dir.join("log.db")
+    }
+
+    pub fn web_dir(&self) -> PathBuf {
+        self.web_dir.clone()
     }
 
     pub fn codex_client_version(&self) -> &str {

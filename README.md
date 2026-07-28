@@ -1,11 +1,12 @@
 # ai-gateway
 
-AI Gateway 现在拆分为两个进程：
+AI Gateway 现在拆分为远程 Server、Web 管理端和本地 Agent：
 
 - `server`：部署在服务器上的网关核心，负责 Provider、账号 Token、路由、协议适配、额度、日志和上游请求。
+- `web`：由 `server` 同源托管的管理端，负责远程 Provider、模型、额度和接入配置。
 - `agent`：只运行在用户电脑上的本地集成进程，负责修改 `~/.codex` 配置和同步本地历史。
 
-macOS App 只内置和管理 `agent`，不再内置完整网关 `server`。
+浏览器不能直接修改本机文件，因此 Web 管理端不替代本地 `agent`。
 
 ## 架构
 
@@ -83,26 +84,37 @@ Agent 会：
 curl -X DELETE http://127.0.0.1:10101/codex-config
 ```
 
-## macOS App
+## Web 管理端
 
-App 启动时会：
-
-1. 编译并内置 `ai-gateway-agent`
-2. 安装到 `~/.ai-gateway/bin/ai-gateway-agent`
-3. 使用 LaunchAgent `ericliu.husky.ai-gateway.agent` 管理本地 Agent
-4. 将远程 Server URL 写入 Codex 配置
-
-Server URL 当前按以下顺序确定：
-
-1. macOS `UserDefaults` 的 `gatewayServerURL`
-2. 环境变量 `AI_GATEWAY_SERVER_URL`
-3. 默认 `http://127.0.0.1:10100`
-
-配置远程 Server：
+管理端已迁移为 Web，并由远程 Server 同源托管。技术栈为 React、TypeScript、Bun、Tailwind CSS。
 
 ```bash
-defaults write ericliu.husky.AIGateway gatewayServerURL https://gateway.example.com
+cd web
+bun install
+bun run install:server
+cd ..
+cargo run -p ai-gateway
 ```
+
+默认构建并安装到：
+
+```text
+$HOME/.ai-gateway/web
+```
+
+打开：
+
+```text
+http://127.0.0.1:10100/
+```
+
+如果静态文件部署在其他目录，可设置：
+
+```text
+AI_GATEWAY_WEB_DIR=/path/to/web
+```
+
+Web 页面与它所在的远程 Server 同源通信，不需要单独配置 Server URL。浏览器无法直接修改用户电脑上的 `~/.codex`，因此 Codex 配置写入与历史同步仍由本地 `agent` 完成；页面中的“Codex 接入”会生成连接当前 Server 的本机 agent 命令。
 
 ## Token 导入
 

@@ -41,7 +41,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         logs,
     };
 
-    let app = build_router(state);
+    let app = build_router(state, config.web_dir());
 
     let listener = tokio::net::TcpListener::bind(config.bind_addr()).await?;
     axum::serve(listener, app).await?;

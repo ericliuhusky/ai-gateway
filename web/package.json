@@ -1,0 +1,31 @@
+{
+  "name": "@ai-gateway/web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "clean": "rm -rf dist",
+    "build:js": "bun build ./src/main.tsx --outdir ./dist/assets --target browser --minify --entry-naming app.[hash].js",
+    "build:css": "bunx @tailwindcss/cli -i ./src/styles.css -o ./dist/assets/styles.css --minify",
+    "build:html": "bun ./scripts/write-index.ts",
+    "build": "bun run clean && bun run build:js && bun run build:css && bun run build:html",
+    "install:server": "bun run build && mkdir -p ${AI_GATEWAY_WEB_DIR:-${HOME}/.ai-gateway/web} && cp -R ./dist/. ${AI_GATEWAY_WEB_DIR:-${HOME}/.ai-gateway/web}/",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@radix-ui/react-slot": "latest",
+    "@tailwindcss/cli": "latest",
+    "class-variance-authority": "latest",
+    "clsx": "latest",
+    "lucide-react": "latest",
+    "react": "latest",
+    "react-dom": "latest",
+    "tailwind-merge": "latest",
+    "tailwindcss": "latest"
+  },
+  "devDependencies": {
+    "@types/node": "latest",
+    "@types/react": "latest",
+    "@types/react-dom": "latest",
+    "typescript": "latest"
+  }
+}

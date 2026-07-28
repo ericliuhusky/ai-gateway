@@ -1,0 +1,179 @@
+@import "tailwindcss";
+@source "./";
+
+@theme {
+  --font-sans: Inter, -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Segoe UI", sans-serif;
+}
+
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
+
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    margin: 0;
+    min-width: 320px;
+    min-height: 100vh;
+    color: rgb(15 23 42);
+    background:
+      radial-gradient(circle at 10% 0%, rgb(219 234 254 / 0.7), transparent 32rem),
+      radial-gradient(circle at 90% 12%, rgb(209 250 229 / 0.6), transparent 28rem),
+      linear-gradient(145deg, #f5f8fb, #eef4f1 56%, #f5f7fa);
+    font-family: var(--font-sans);
+    letter-spacing: -0.018em;
+  }
+
+  button,
+  select,
+  input,
+  textarea {
+    font: inherit;
+  }
+
+  button {
+    cursor: pointer;
+  }
+
+  code,
+  pre {
+    font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    letter-spacing: 0;
+  }
+
+  ::selection {
+    background: rgb(59 130 246 / 0.2);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    body {
+      color: rgb(241 245 249);
+      background:
+        radial-gradient(circle at 8% 0%, rgb(30 64 175 / 0.2), transparent 34rem),
+        radial-gradient(circle at 92% 10%, rgb(5 150 105 / 0.12), transparent 28rem),
+        linear-gradient(145deg, #0c1119, #10171b 58%, #0a0f16);
+    }
+  }
+}
+
+@layer components {
+  .glass-panel {
+    border: 1px solid rgb(255 255 255 / 0.72);
+    background: linear-gradient(145deg, rgb(255 255 255 / 0.76), rgb(255 255 255 / 0.55));
+    box-shadow:
+      0 1px 2px rgb(15 23 42 / 0.03),
+      0 20px 50px rgb(15 23 42 / 0.06);
+    backdrop-filter: blur(20px);
+  }
+
+  .provider-card {
+    border: 1px solid rgb(255 255 255 / 0.76);
+    background: linear-gradient(145deg, rgb(255 255 255 / 0.82), rgb(255 255 255 / 0.58));
+    box-shadow:
+      0 1px 2px rgb(15 23 42 / 0.035),
+      0 12px 34px rgb(15 23 42 / 0.055);
+    backdrop-filter: blur(20px);
+    transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+  }
+
+  .provider-card:hover {
+    transform: translateY(-1px);
+    box-shadow:
+      0 2px 4px rgb(15 23 42 / 0.04),
+      0 18px 42px rgb(15 23 42 / 0.08);
+  }
+
+  .provider-card.selected {
+    border-color: rgb(59 130 246 / 0.7);
+    box-shadow:
+      0 0 0 1px rgb(59 130 246 / 0.25),
+      0 18px 44px rgb(37 99 235 / 0.12);
+    transform: scale(1.005);
+  }
+
+  .dialog-panel {
+    border: 1px solid rgb(255 255 255 / 0.78);
+    background:
+      linear-gradient(145deg, rgb(250 252 255 / 0.97), rgb(240 245 243 / 0.96));
+    box-shadow: 0 28px 80px rgb(15 23 42 / 0.25);
+    backdrop-filter: blur(28px);
+  }
+
+  .field {
+    display: block;
+    width: 100%;
+    border: 1px solid rgb(203 213 225 / 0.8);
+    border-radius: 0.75rem;
+    background: rgb(255 255 255 / 0.75);
+    padding: 0.65rem 0.75rem;
+    color: rgb(15 23 42);
+    outline: none;
+    transition: border-color 150ms ease, box-shadow 150ms ease, background 150ms ease;
+  }
+
+  .field:focus {
+    border-color: rgb(59 130 246 / 0.65);
+    background: rgb(255 255 255 / 0.95);
+    box-shadow: 0 0 0 3px rgb(59 130 246 / 0.1);
+  }
+
+  .field:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+  }
+
+  .eyebrow {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.11em;
+    text-transform: uppercase;
+    color: rgb(100 116 139);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .glass-panel,
+    .provider-card {
+      border-color: rgb(255 255 255 / 0.08);
+      background: linear-gradient(145deg, rgb(255 255 255 / 0.065), rgb(255 255 255 / 0.025));
+      box-shadow:
+        0 1px 2px rgb(0 0 0 / 0.18),
+        0 18px 46px rgb(0 0 0 / 0.18);
+    }
+
+    .provider-card.selected {
+      border-color: rgb(96 165 250 / 0.7);
+      box-shadow:
+        0 0 0 1px rgb(59 130 246 / 0.2),
+        0 18px 48px rgb(0 0 0 / 0.28);
+    }
+
+    .dialog-panel {
+      border-color: rgb(255 255 255 / 0.1);
+      background: linear-gradient(145deg, rgb(22 30 42 / 0.98), rgb(13 21 25 / 0.98));
+      box-shadow: 0 28px 90px rgb(0 0 0 / 0.55);
+    }
+
+    .field {
+      border-color: rgb(255 255 255 / 0.1);
+      background: rgb(255 255 255 / 0.055);
+      color: rgb(241 245 249);
+    }
+
+    .field:focus {
+      border-color: rgb(96 165 250 / 0.65);
+      background: rgb(255 255 255 / 0.075);
+    }
+
+    .field option {
+      background: rgb(15 23 42);
+    }
+
+    .eyebrow {
+      color: rgb(148 163 184);
+    }
+  }
+}

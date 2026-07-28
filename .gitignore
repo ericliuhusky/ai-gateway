@@ -1,6 +1,4 @@
 .DS_Store
 target/
-
-# Xcode
-*.xcuserstate
-**/xcuserdata/
+web/node_modules/
+web/dist/

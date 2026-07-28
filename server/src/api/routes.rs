@@ -8,10 +8,15 @@ use axum::{
     Router,
     routing::{delete, get, post},
 };
+use std::path::PathBuf;
+use tower_http::services::{ServeDir, ServeFile};
 
 use super::AppState;
 
-pub fn build_router(state: AppState) -> Router {
+pub fn build_router(state: AppState, web_dir: PathBuf) -> Router {
+    let index = web_dir.join("index.html");
+    let assets = ServeDir::new(web_dir.join("assets"));
+
     Router::new()
         .route("/healthz", get(healthz))
         .route("/accounts/openai/import-token", post(import_openai_token))
@@ -36,5 +41,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/debug/clear", post(debug_clear_logs))
         .route("/openai/v1/models", get(list_models))
         .route("/openai/v1/responses", post(responses))
+        .nest_service("/assets", assets)
         .with_state(state)
+        .fallback_service(ServeFile::new(index))
 }
