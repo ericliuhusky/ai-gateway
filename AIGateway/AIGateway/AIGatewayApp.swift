@@ -10,12 +10,16 @@ import SwiftUI
 @main
 struct AIGatewayApp: App {
     @StateObject private var viewModel: GatewayViewModel
-    @StateObject private var serviceSupervisor: GatewayServiceSupervisor
+    @StateObject private var serviceSupervisor: GatewayAgentSupervisor
     @StateObject private var updater: AppUpdateViewModel
 
     init() {
-        let serviceSupervisor = GatewayServiceSupervisor()
-        _viewModel = StateObject(wrappedValue: GatewayViewModel())
+        let gatewayBaseURL = GatewayEndpoints.serverBaseURL
+        let serviceSupervisor = GatewayAgentSupervisor(
+            agentBaseURL: GatewayEndpoints.agentBaseURL,
+            gatewayBaseURL: gatewayBaseURL
+        )
+        _viewModel = StateObject(wrappedValue: GatewayViewModel(baseURL: gatewayBaseURL))
         _serviceSupervisor = StateObject(wrappedValue: serviceSupervisor)
         _updater = StateObject(wrappedValue: AppUpdateViewModel(serviceSupervisor: serviceSupervisor))
     }

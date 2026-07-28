@@ -57,9 +57,7 @@ impl TryFrom<&ResponseCreateParams> for ChatCompletionCreateParams {
                 0,
                 ChatCompletionMessageParam {
                     role: "system".to_string(),
-                    content: Some(ChatCompletionMessageContent::String(
-                        instructions.clone(),
-                    )),
+                    content: Some(ChatCompletionMessageContent::String(instructions.clone())),
                     tool_calls: None,
                     tool_call_id: None,
                     name: None,

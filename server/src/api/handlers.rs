@@ -3,22 +3,21 @@ use crate::{
         PreparedResponsesUpstream, ResponsesAdapterError, ResponsesAdapterProvider,
         prepare_responses_upstream,
     },
-    auth::OAuthClient,
-    codex_config, codex_history,
     config::Config,
     models::openai::responses::{
         CodexUsageCredits, CodexUsageRateLimit, CodexUsageRateLimitWindow, CodexUsageResponse,
     },
     models::{
         AccountRecord, ApiProviderRecord, ApiProviderSummary, ChatCompletionsResponsesStream,
-        ClientProtocol, CodexConfigStatus, CreateApiProviderRequest, GatewayLogDetail,
-        GatewayLogDetailResponse, GatewayLogListResponse, GatewayLogSettings,
-        GatewayLogSettingsResponse, GatewayLogSummary, ModelListItem, ModelListResponse,
-        PROVIDER_OPENAI_PROXY, ProviderAuthMode, ProviderQuotaCredits, ProviderQuotaResponse,
-        ProviderQuotaSnapshot, ProviderQuotaSummary, ProviderQuotaWindow, QuotaSource,
-        QuotaSupportStatus, ResponseStreamFrame, SelectedRoute, UpdateGatewayLogSettingsRequest,
-        UpdateSelectedModelRequest, UpdateSelectedProviderRequest, UpstreamProtocol,
+        ClientProtocol, CreateApiProviderRequest, GatewayLogDetail, GatewayLogDetailResponse,
+        GatewayLogListResponse, GatewayLogSettings, GatewayLogSettingsResponse, GatewayLogSummary,
+        ModelListItem, ModelListResponse, PROVIDER_OPENAI_PROXY, ProviderAuthMode,
+        ProviderQuotaCredits, ProviderQuotaResponse, ProviderQuotaSnapshot, ProviderQuotaSummary,
+        ProviderQuotaWindow, QuotaSource, QuotaSupportStatus, ResponseStreamFrame, SelectedRoute,
+        UpdateGatewayLogSettingsRequest, UpdateSelectedModelRequest, UpdateSelectedProviderRequest,
+        UpstreamProtocol,
     },
+    openai_tokens::OpenAiTokenService,
     store::{
         AccountStore, LogEvent, LogStage, LogStore, ModelStore, ProviderStore, RouteStore,
         log_store::extract_model_output_from_body,
@@ -45,15 +44,15 @@ use reqwest::Client;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::{Value, json};
+use std::sync::Arc;
 use std::time::Instant;
-use std::{fs, sync::Arc};
 use uuid::Uuid;
 
 #[derive(Clone)]
 pub struct AppState {
     pub _client: Client,
     pub _config: Arc<Config>,
-    pub oauth: OAuthClient,
+    pub openai_tokens: OpenAiTokenService,
     pub accounts: AccountStore,
     pub providers: ProviderStore,
     pub routes: RouteStore,
@@ -70,74 +69,6 @@ pub struct ListModelsQuery {
 
 pub async fn healthz() -> &'static str {
     "ok"
-}
-
-pub async fn auth_openai_start(State(state): State<AppState>) -> Result<Redirect, AppError> {
-    let url = state
-        .oauth
-        .create_openai_auth_url()
-        .await
-        .map_err(AppError::bad_request)?;
-    Ok(Redirect::temporary(&url))
-}
-
-#[derive(Debug, Deserialize)]
-pub struct OAuthCallbackQuery {
-    pub code: Option<String>,
-    pub state: Option<String>,
-    pub error: Option<String>,
-}
-
-fn auth_success_html(provider_name: &str, email: &str) -> Html<String> {
-    Html(format!(
-        "<html lang='zh-CN'><head><meta charset='utf-8'></head><body style='font-family:sans-serif;padding:32px'><h1>{provider_name} 登录成功</h1><p>账号 <strong>{email}</strong> 已加入代理池。</p><p>你现在可以关闭此页面，并调用 <code>{responses_path}</code>。</p></body></html>",
-        responses_path = Config::responses_path()
-    ))
-}
-
-pub async fn auth_openai_callback(
-    State(state): State<AppState>,
-    Query(query): Query<OAuthCallbackQuery>,
-) -> Result<Html<String>, AppError> {
-    if let Some(error) = query.error {
-        return Err(AppError::bad_request(format!(
-            "openai oauth error: {error}"
-        )));
-    }
-
-    let code = query
-        .code
-        .ok_or_else(|| AppError::bad_request("missing oauth code"))?;
-    let state_token = query
-        .state
-        .ok_or_else(|| AppError::bad_request("missing oauth state"))?;
-    let code_verifier = state
-        .oauth
-        .consume_openai_code_verifier(&state_token)
-        .await
-        .map_err(AppError::bad_request)?;
-    let token = state
-        .oauth
-        .exchange_openai_code(&code, &code_verifier)
-        .await
-        .map_err(AppError::bad_request)?;
-    let imported = state
-        .oauth
-        .openai_auth_from_token_response(token)
-        .map_err(AppError::bad_request)?;
-    let email = imported.email.clone();
-    let account = state
-        .accounts
-        .add_openai_account(imported)
-        .await
-        .map_err(AppError::bad_request)?;
-    state
-        .providers
-        .add_account_provider(PROVIDER_OPENAI_PROXY, &account.id)
-        .await
-        .map_err(AppError::bad_request)?;
-
-    Ok(auth_success_html("OpenAI", &email))
 }
 
 #[derive(Debug, Deserialize)]
@@ -165,8 +96,8 @@ pub struct ImportOpenAiFromLocalResponse {
     has_responses_write: bool,
 }
 
-/// Import an OpenAI account from a pasted Codex `auth.json` payload without running OAuth.
-pub async fn import_openai_codex_auth(
+/// Import an OpenAI account from a pasted Codex `auth.json` token payload.
+pub async fn import_openai_token(
     State(state): State<AppState>,
     Json(auth_file): Json<CodexAuthFile>,
 ) -> Result<Json<ImportOpenAiFromLocalResponse>, AppError> {
@@ -178,8 +109,8 @@ pub async fn import_openai_codex_auth(
     })?;
 
     let imported = state
-        .oauth
-        .openai_auth_from_local_tokens(
+        .openai_tokens
+        .import_codex_tokens(
             tokens.access_token,
             refresh_token,
             tokens.id_token,
@@ -366,53 +297,6 @@ pub async fn clear_selected_model(State(state): State<AppState>) -> Result<Json<
         .await
         .map_err(AppError::bad_request)?;
     Ok(Json(json!({ "selected_model": route_payload(route) })))
-}
-
-pub async fn get_codex_config_status(
-    State(state): State<AppState>,
-) -> Result<Json<Value>, AppError> {
-    let status = codex_config_status(&state)?;
-    Ok(Json(json!({ "codex_config": status })))
-}
-
-pub async fn apply_codex_config(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
-    let config = state._config.as_ref();
-
-    fs::create_dir_all(config.data_dir())
-        .map_err(|err| AppError::bad_request(format!("failed to create data dir: {err}")))?;
-    fs::create_dir_all(config.codex_dir())
-        .map_err(|err| AppError::bad_request(format!("failed to create CodeX dir: {err}")))?;
-
-    let takeover = codex_config::apply_takeover(
-        &config.codex_config_path(),
-        &config.codex_config_patch_path(),
-    )
-    .map_err(AppError::bad_request)?;
-    let history_aliases = codex_history::sync_openai_history_aliases(
-        &config.codex_dir(),
-        &config.codex_state_path(),
-        &config.codex_session_alias_patch_path(),
-    )
-    .map_err(AppError::bad_request)?;
-
-    Ok(Json(json!({
-        "codex_config": codex_config_status(&state)?,
-        "takeover": takeover,
-        "history_aliases": history_aliases,
-    })))
-}
-
-pub async fn restore_codex_config(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
-    let config = state._config.as_ref();
-    let patch_path = config.codex_config_patch_path();
-
-    let restore = codex_config::restore_takeover(&config.codex_config_path(), &patch_path)
-        .map_err(AppError::bad_request)?;
-
-    Ok(Json(json!({
-        "codex_config": codex_config_status(&state)?,
-        "restore": restore,
-    })))
 }
 
 #[derive(Debug, Deserialize)]
@@ -1426,7 +1310,7 @@ async fn fetch_provider_models(
                 base_url: OPENAI_CODEX_BASE_URL,
                 access_token: account.access_token(),
                 account_id: account.upstream_account_id(),
-                client_version: Some(client_version.as_str()),
+                client_version: Some(client_version),
             };
             let upstream = state
                 .upstream
@@ -1486,20 +1370,6 @@ async fn load_provider_models(
         .save(provider_id, &models)
         .map_err(AppError::internal)?;
     Ok(models)
-}
-
-fn codex_config_status(state: &AppState) -> Result<CodexConfigStatus, AppError> {
-    let config = state._config.as_ref();
-    let config_patch_exists = codex_config::patch_exists(&config.codex_config_patch_path());
-
-    Ok(CodexConfigStatus {
-        target_path: config.codex_config_path().display().to_string(),
-        auth_path: config.codex_auth_path().display().to_string(),
-        config_patch_exists,
-        restore_available: config_patch_exists,
-        target_exists: config.codex_config_path().exists(),
-        auth_exists: config.codex_auth_path().exists(),
-    })
 }
 
 fn normalize_selected_provider_id(provider_id: Option<String>) -> Result<String, AppError> {
@@ -1713,7 +1583,7 @@ pub(super) async fn resolve_account_for_provider(
 
     state
         .accounts
-        .acquire_by_id(&state.oauth, &state.upstream, account_id)
+        .acquire_by_id(&state.openai_tokens, &state.upstream, account_id)
         .await
         .map_err(AppError::bad_request)
 }

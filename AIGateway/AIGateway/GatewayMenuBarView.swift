@@ -4,7 +4,7 @@ import SwiftUI
 struct GatewayMenuBarView: View {
     @Environment(\.openWindow) private var openWindow
     @ObservedObject var viewModel: GatewayViewModel
-    @ObservedObject var serviceSupervisor: GatewayServiceSupervisor
+    @ObservedObject var serviceSupervisor: GatewayAgentSupervisor
     @ObservedObject var updater: AppUpdateViewModel
     @State private var isRefreshing = false
     @State private var isStarting = false
@@ -54,12 +54,7 @@ struct GatewayMenuBarView: View {
 
     @ViewBuilder
     private var providerSection: some View {
-        if !serviceSupervisor.isReachable {
-            statusMessage(
-                title: "服务未连接",
-                detail: "启动网关服务后会显示当前供应商和额度。"
-            )
-        } else if viewModel.isLoading && viewModel.providers.isEmpty {
+        if viewModel.isLoading && viewModel.providers.isEmpty {
             statusMessage(title: "正在同步", detail: "正在读取供应商信息。")
         } else if let provider = viewModel.selectedProvider {
             selectedProviderPanel(provider)
@@ -233,7 +228,6 @@ struct GatewayMenuBarView: View {
 
     private func refreshIfReachable() async {
         await serviceSupervisor.refreshStatus()
-        guard serviceSupervisor.isReachable else { return }
 
         if viewModel.providers.isEmpty {
             await refreshFromMenu()

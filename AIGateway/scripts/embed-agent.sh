@@ -4,8 +4,8 @@ set -eu
 
 PROJECT_ROOT="${SRCROOT}"
 WORKSPACE_ROOT="$(cd "${PROJECT_ROOT}/.." && pwd)"
-SERVER_BIN_NAME="ai-gateway"
-OUTPUT_BIN_NAME="ai-gateway-server"
+SERVER_BIN_NAME="ai-gateway-agent"
+OUTPUT_BIN_NAME="ai-gateway-agent"
 CARGO_BIN="${CARGO_BIN:-}"
 
 if [ -z "${CARGO_BIN}" ] && [ -n "${HOME:-}" ] && [ -f "${HOME}/.cargo/env" ]; then
@@ -38,11 +38,11 @@ fi
 PROFILE_DIR="debug"
 if [ "${CONFIGURATION}" = "Release" ]; then
   PROFILE_DIR="release"
-  echo "Building bundled Rust server in release mode"
-  "${CARGO_BIN}" build --manifest-path "${WORKSPACE_ROOT}/server/Cargo.toml" --release
+  echo "Building bundled Rust agent in release mode"
+  "${CARGO_BIN}" build --manifest-path "${WORKSPACE_ROOT}/agent/Cargo.toml" --release
 else
-  echo "Building bundled Rust server in debug mode"
-  "${CARGO_BIN}" build --manifest-path "${WORKSPACE_ROOT}/server/Cargo.toml"
+  echo "Building bundled Rust agent in debug mode"
+  "${CARGO_BIN}" build --manifest-path "${WORKSPACE_ROOT}/agent/Cargo.toml"
 fi
 
 SOURCE_BIN="${WORKSPACE_ROOT}/target/${PROFILE_DIR}/${SERVER_BIN_NAME}"

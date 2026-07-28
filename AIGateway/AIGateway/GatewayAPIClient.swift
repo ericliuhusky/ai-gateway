@@ -76,18 +76,11 @@ struct GatewayAPIClient: Sendable {
 
     func importOpenAICodexAuth(_ auth: CodexAuthImportRequest) async throws -> ImportOpenAiFromLocalResponse {
         let response: ImportOpenAiFromLocalResponse = try await requestWithBody(
-            path: "/auth/openai/import-codex",
+            path: "/accounts/openai/import-token",
             method: "POST",
             body: auth
         )
         return response
-    }
-
-    func loginURL(for provider: AccountLoginProvider) -> URL {
-        switch provider {
-        case .openai:
-            return baseURL.appending(path: "auth/openai/start")
-        }
     }
 
     private func request<T: Decodable>(

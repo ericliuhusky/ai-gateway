@@ -55,7 +55,7 @@
 				2879E1E32F8A9AA5009C9270 /* Sources */,
 				2879E1E42F8A9AA5009C9270 /* Frameworks */,
 				2879E1E52F8A9AA5009C9270 /* Resources */,
-				1A2B3C4D5E6F700100000001 /* Embed Rust Server */,
+				1A2B3C4D5E6F700100000001 /* Embed Rust Agent */,
 			);
 			buildRules = (
 			);
@@ -116,7 +116,7 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
-		1A2B3C4D5E6F700100000001 /* Embed Rust Server */ = {
+		1A2B3C4D5E6F700100000001 /* Embed Rust Agent */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -125,14 +125,14 @@
 			);
 			inputPaths = (
 			);
-			name = "Embed Rust Server";
+			name = "Embed Rust Agent";
 			outputFileListPaths = (
 			);
 			outputPaths = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "/bin/sh \"${SRCROOT}/scripts/embed-server.sh\"\n";
+			shellScript = "/bin/sh \"${SRCROOT}/scripts/embed-agent.sh\"\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 

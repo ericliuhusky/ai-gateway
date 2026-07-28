@@ -4,9 +4,10 @@ import Darwin
 import Foundation
 
 @MainActor
-final class GatewayServiceSupervisor: ObservableObject {
-    static let serviceLabel = "ericliu.husky.ai-gateway.server"
-    static let installedBinaryName = "ai-gateway-server"
+final class GatewayAgentSupervisor: ObservableObject {
+    static let serviceLabel = "ericliu.husky.ai-gateway.agent"
+    static let installedBinaryName = "ai-gateway-agent"
+    static let legacyServiceLabel = "ericliu.husky.ai-gateway.server"
 
     enum Status: Equatable {
         case checking
@@ -21,13 +22,18 @@ final class GatewayServiceSupervisor: ObservableObject {
 
     @Published private(set) var status: Status = .checking
 
-    let baseURL: URL
+    let agentBaseURL: URL
+    let gatewayBaseURL: URL
 
     private var startupTask: Task<Void, Error>?
     private let fileManager = FileManager.default
 
-    init(baseURL: URL = URL(string: "http://127.0.0.1:10100")!) {
-        self.baseURL = baseURL
+    init(
+        agentBaseURL: URL = URL(string: "http://127.0.0.1:10101")!,
+        gatewayBaseURL: URL = URL(string: "http://127.0.0.1:10100")!
+    ) {
+        self.agentBaseURL = agentBaseURL
+        self.gatewayBaseURL = gatewayBaseURL
     }
 
     var isReachable: Bool {
@@ -83,20 +89,20 @@ final class GatewayServiceSupervisor: ObservableObject {
     var statusDetail: String {
         switch status {
         case .checking:
-            return "正在检查服务状态。"
+            return "正在检查本地 Agent 状态。"
         case .installing:
-            return "正在准备服务文件。"
+            return "正在准备本地 Agent。"
         case .starting:
-            return "正在启动服务，请稍候。"
+            return "正在启动本地 Agent，请稍候。"
         case .runningLaunchAgent(let pid):
             _ = pid
-            return "服务正在运行。"
+            return "本地 Agent 正在运行。"
         case .runningExternal:
-            return "服务正在运行。"
+            return "本地 Agent 正在运行。"
         case .installedStopped:
-            return "服务当前未启动。"
+            return "本地 Agent 当前未启动。"
         case .notInstalled:
-            return "服务当前未安装。点击启动服务后会自动完成安装。"
+            return "本地 Agent 当前未安装。点击启动后会自动完成安装。"
         case .failed(let message):
             return message
         }
@@ -109,6 +115,7 @@ final class GatewayServiceSupervisor: ObservableObject {
         }
 
         let task = Task<Void, Error> {
+            await self.removeLegacyServerIfPresent()
             let launchd = try await self.inspectLaunchAgent()
             if launchd.isLoaded, await self.isServerHealthy() {
                 try await self.applyCodexConfig()
@@ -177,7 +184,7 @@ final class GatewayServiceSupervisor: ObservableObject {
     }
 
     func openDebugDashboard() {
-        NSWorkspace.shared.open(baseURL.appending(path: "debug"))
+        NSWorkspace.shared.open(gatewayBaseURL.appending(path: "debug"))
     }
 
     private func startLaunchAgent() async throws {
@@ -209,7 +216,7 @@ final class GatewayServiceSupervisor: ObservableObject {
             try? await Task.sleep(for: .milliseconds(250))
         }
 
-        status = .failed("服务启动后健康检查超时，未能连接到 /healthz。")
+        status = .failed("本地 Agent 启动后健康检查超时，未能连接到 /healthz。")
         throw GatewayServiceError.startupTimedOut
     }
 
@@ -222,9 +229,18 @@ final class GatewayServiceSupervisor: ObservableObject {
     }
 
     private func requestCodexConfig(method: String, allowsMissingBackup: Bool) async throws {
-        var request = URLRequest(url: baseURL.appending(path: "codex-config"))
+        var request = URLRequest(url: agentBaseURL.appending(path: "codex-config"))
         request.httpMethod = method
         request.timeoutInterval = 5
+        if method == "PUT" {
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try JSONSerialization.data(withJSONObject: [
+                "gateway_base_url": gatewayBaseURL
+                    .appending(path: "openai")
+                    .appending(path: "v1")
+                    .absoluteString,
+            ])
+        }
 
         let (data, response): (Data, URLResponse)
         do {
@@ -258,7 +274,7 @@ final class GatewayServiceSupervisor: ObservableObject {
         try fileManager.createDirectory(at: installedBinaryURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         try fileManager.createDirectory(at: launchAgentPlistURL.deletingLastPathComponent(), withIntermediateDirectories: true)
 
-        let bundledURL = try bundledServerExecutableURL()
+        let bundledURL = try bundledAgentExecutableURL()
         let shouldCopyBinary = !fileManager.fileExists(atPath: installedBinaryURL.path)
             || !fileManager.contentsEqual(atPath: bundledURL.path, andPath: installedBinaryURL.path)
 
@@ -311,7 +327,31 @@ final class GatewayServiceSupervisor: ObservableObject {
         }
     }
 
-    private func bundledServerExecutableURL() throws -> URL {
+    private func removeLegacyServerIfPresent() async {
+        guard !Self.isLoopbackURL(gatewayBaseURL) else { return }
+
+        let legacyPlistURL = launchAgentPlistURL(for: Self.legacyServiceLabel)
+        let legacyTarget = "\(launchDomain)/\(Self.legacyServiceLabel)"
+        _ = try? await runLaunchctl(arguments: ["bootout", legacyTarget], allowFailure: true)
+        _ = try? await runLaunchctl(
+            arguments: ["bootout", launchDomain, legacyPlistURL.path],
+            allowFailure: true
+        )
+        if fileManager.fileExists(atPath: legacyPlistURL.path) {
+            try? fileManager.removeItem(at: legacyPlistURL)
+        }
+    }
+
+    nonisolated private static func isLoopbackURL(_ url: URL) -> Bool {
+        switch url.host?.lowercased() {
+        case "localhost", "127.0.0.1", "::1":
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func bundledAgentExecutableURL() throws -> URL {
         guard let resourceURL = Bundle.main.resourceURL else {
             throw GatewayServiceError.missingBundleResources
         }
@@ -321,14 +361,14 @@ final class GatewayServiceSupervisor: ObservableObject {
             .appendingPathComponent(Self.installedBinaryName, isDirectory: false)
 
         guard fileManager.isExecutableFile(atPath: executableURL.path) else {
-            throw GatewayServiceError.missingBundledServer(executableURL.path)
+            throw GatewayServiceError.missingBundledAgent(executableURL.path)
         }
 
         return executableURL
     }
 
     private func isServerHealthy() async -> Bool {
-        var request = URLRequest(url: baseURL.appending(path: "healthz"))
+        var request = URLRequest(url: agentBaseURL.appending(path: "healthz"))
         request.httpMethod = "GET"
         request.timeoutInterval = 1.5
 
@@ -461,7 +501,7 @@ private struct LaunchAgentState {
 
 enum GatewayServiceError: LocalizedError {
     case missingBundleResources
-    case missingBundledServer(String)
+    case missingBundledAgent(String)
     case codexConfigFailed(String)
     case startupTimedOut
     case launchctlFailed(String, Int, String)
@@ -470,12 +510,12 @@ enum GatewayServiceError: LocalizedError {
         switch self {
         case .missingBundleResources:
             return "无法读取 app bundle 资源目录。"
-        case .missingBundledServer(let path):
-            return "没有在 app bundle 里找到内置 server：\(path)"
+        case .missingBundledAgent(let path):
+            return "没有在 app bundle 里找到内置 Agent：\(path)"
         case .codexConfigFailed(let message):
             return message
         case .startupTimedOut:
-            return "服务启动超时，未能通过健康检查。"
+            return "本地 Agent 启动超时，未能通过健康检查。"
         case .launchctlFailed(let command, let code, let output):
             let suffix = output.isEmpty ? "" : "\n\(output)"
             return "launchctl 执行失败：\(command) (exit \(code))\(suffix)"

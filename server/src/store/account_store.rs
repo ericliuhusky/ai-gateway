@@ -1,7 +1,7 @@
 use crate::{
-    auth::{ImportedOpenAIAuth, OAuthClient, extract_openai_chatgpt_account_id},
     config::Config,
     models::{AccountRecord, AccountType, PROVIDER_OPENAI_PROXY},
+    openai_tokens::{ImportedOpenAIAuth, OpenAiTokenService, extract_openai_chatgpt_account_id},
     store::sqlite::SqliteStore,
     support::time::now_unix,
     upstream::UpstreamClient,
@@ -59,7 +59,7 @@ impl AccountStore {
 
     pub async fn acquire_by_id(
         &self,
-        oauth: &OAuthClient,
+        token_service: &OpenAiTokenService,
         upstream: &UpstreamClient,
         account_id: &str,
     ) -> Result<AccountRecord, String> {
@@ -67,7 +67,8 @@ impl AccountStore {
             .find_by_id(account_id)
             .await
             .ok_or_else(|| format!("账户不存在: {account_id}"))?;
-        self.prepare_account_for_use(account, oauth, upstream).await
+        self.prepare_account_for_use(account, token_service, upstream)
+            .await
     }
 
     pub async fn find_by_id(&self, account_id: &str) -> Option<AccountRecord> {
@@ -96,15 +97,15 @@ impl AccountStore {
     async fn prepare_account_for_use(
         &self,
         mut account: AccountRecord,
-        oauth: &OAuthClient,
+        token_service: &OpenAiTokenService,
         _upstream: &UpstreamClient,
     ) -> Result<AccountRecord, String> {
-        if oauth.refresh_needed(account.expiry_timestamp) {
+        if token_service.refresh_needed(account.expiry_timestamp) {
             let client_id = account
                 .client_id()
                 .ok_or_else(|| "openai account missing oauth client id".to_string())?;
-            let refreshed = oauth
-                .refresh_openai_access_token(client_id, account.refresh_token())
+            let refreshed = token_service
+                .refresh_access_token(client_id, account.refresh_token())
                 .await;
 
             match refreshed {

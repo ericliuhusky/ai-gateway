@@ -1,10 +1,8 @@
 use crate::api::handlers::{
-    add_provider, apply_codex_config, auth_openai_callback, auth_openai_start, clear_logs,
-    clear_selected_model, debug_clear_logs, debug_dashboard, debug_set_log_settings,
-    delete_provider, get_codex_config_status, get_log_detail, get_log_settings, get_logs,
-    get_provider_quota, get_route, get_selected_model, healthz, import_openai_codex_auth,
-    list_models, list_providers, responses, restore_codex_config, set_log_settings, set_route,
-    set_selected_model,
+    add_provider, clear_logs, clear_selected_model, debug_clear_logs, debug_dashboard,
+    debug_set_log_settings, delete_provider, get_log_detail, get_log_settings, get_logs,
+    get_provider_quota, get_route, get_selected_model, healthz, import_openai_token, list_models,
+    list_providers, responses, set_log_settings, set_route, set_selected_model,
 };
 use axum::{
     Router,
@@ -16,10 +14,7 @@ use super::AppState;
 pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
-        .route("/auth/openai/start", get(auth_openai_start))
-        .route("/auth/callback", get(auth_openai_callback))
-        .route("/auth/openai/callback", get(auth_openai_callback))
-        .route("/auth/openai/import-codex", post(import_openai_codex_auth))
+        .route("/accounts/openai/import-token", post(import_openai_token))
         .route("/providers", get(list_providers).post(add_provider))
         .route("/providers/:provider_id", delete(delete_provider))
         .route("/providers/:provider_id/quota", get(get_provider_quota))
@@ -29,12 +24,6 @@ pub fn build_router(state: AppState) -> Router {
             get(get_selected_model)
                 .put(set_selected_model)
                 .delete(clear_selected_model),
-        )
-        .route(
-            "/codex-config",
-            get(get_codex_config_status)
-                .put(apply_codex_config)
-                .delete(restore_codex_config),
         )
         .route("/logs", get(get_logs).delete(clear_logs))
         .route(

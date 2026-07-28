@@ -9,7 +9,6 @@ const MODEL_PROVIDER_KEY: &str = "model_provider";
 const MODEL_PROVIDERS_KEY: &str = "model_providers";
 const GATEWAY_PROVIDER_ID: &str = "ai-gateway";
 const GATEWAY_PROVIDER_NAME: &str = "ai-gateway";
-const GATEWAY_BASE_URL: &str = "http://127.0.0.1:10100/openai/v1";
 const GATEWAY_WIRE_API: &str = "responses";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -29,7 +28,11 @@ pub struct RestoreSummary {
     pub patch_removed: bool,
 }
 
-pub fn apply_takeover(config_path: &Path, patch_path: &Path) -> Result<ApplySummary, String> {
+pub fn apply_takeover(
+    config_path: &Path,
+    patch_path: &Path,
+    gateway_base_url: &str,
+) -> Result<ApplySummary, String> {
     let mut doc = read_config_document(config_path)?;
 
     if !patch_path.exists() {
@@ -44,7 +47,7 @@ pub fn apply_takeover(config_path: &Path, patch_path: &Path) -> Result<ApplySumm
 
     ensure_gateway_provider_table(&mut doc)?;
     doc[MODEL_PROVIDERS_KEY][GATEWAY_PROVIDER_ID]["name"] = value(GATEWAY_PROVIDER_NAME);
-    doc[MODEL_PROVIDERS_KEY][GATEWAY_PROVIDER_ID]["base_url"] = value(GATEWAY_BASE_URL);
+    doc[MODEL_PROVIDERS_KEY][GATEWAY_PROVIDER_ID]["base_url"] = value(gateway_base_url);
     doc[MODEL_PROVIDERS_KEY][GATEWAY_PROVIDER_ID]["wire_api"] = value(GATEWAY_WIRE_API);
     doc[MODEL_PROVIDER_KEY] = value(GATEWAY_PROVIDER_ID);
 
@@ -215,7 +218,12 @@ command = "demo"
         )
         .expect("write config");
 
-        apply_takeover(&config_path, &patch_path).expect("apply takeover");
+        apply_takeover(
+            &config_path,
+            &patch_path,
+            "https://gateway.example.com/openai/v1",
+        )
+        .expect("apply takeover");
 
         let content = fs::read_to_string(&config_path).expect("read config");
         assert!(content.contains(r#"model = "gpt-5""#));
@@ -224,7 +232,7 @@ command = "demo"
         assert!(content.contains(r#"model_provider = "ai-gateway""#));
         assert!(content.contains("[model_providers.ai-gateway]"));
         assert!(content.contains(r#"name = "ai-gateway""#));
-        assert!(content.contains(r#"base_url = "http://127.0.0.1:10100/openai/v1""#));
+        assert!(content.contains(r#"base_url = "https://gateway.example.com/openai/v1""#));
         assert!(content.contains(r#"wire_api = "responses""#));
     }
 
@@ -241,7 +249,12 @@ model = "gpt-5"
         )
         .expect("write config");
 
-        apply_takeover(&config_path, &patch_path).expect("apply takeover");
+        apply_takeover(
+            &config_path,
+            &patch_path,
+            "https://gateway.example.com/openai/v1",
+        )
+        .expect("apply takeover");
         restore_takeover(&config_path, &patch_path).expect("restore takeover");
 
         let content = fs::read_to_string(&config_path).expect("read config");
@@ -258,7 +271,12 @@ model = "gpt-5"
         let patch_path = dir.join("patch.json");
         fs::write(&config_path, r#"model = "gpt-5""#).expect("write config");
 
-        apply_takeover(&config_path, &patch_path).expect("apply takeover");
+        apply_takeover(
+            &config_path,
+            &patch_path,
+            "https://gateway.example.com/openai/v1",
+        )
+        .expect("apply takeover");
         restore_takeover(&config_path, &patch_path).expect("restore takeover");
 
         let content = fs::read_to_string(&config_path).expect("read config");
@@ -273,8 +291,18 @@ model = "gpt-5"
         let patch_path = dir.join("patch.json");
         fs::write(&config_path, r#"model_provider = "openai""#).expect("write config");
 
-        apply_takeover(&config_path, &patch_path).expect("first apply");
-        apply_takeover(&config_path, &patch_path).expect("second apply");
+        apply_takeover(
+            &config_path,
+            &patch_path,
+            "https://gateway.example.com/openai/v1",
+        )
+        .expect("first apply");
+        apply_takeover(
+            &config_path,
+            &patch_path,
+            "https://gateway.example.com/openai/v1",
+        )
+        .expect("second apply");
         restore_takeover(&config_path, &patch_path).expect("restore takeover");
 
         let content = fs::read_to_string(&config_path).expect("read config");

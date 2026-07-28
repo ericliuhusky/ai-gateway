@@ -11,7 +11,7 @@ import SwiftUI
 struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
     @ObservedObject private var viewModel: GatewayViewModel
-    @ObservedObject private var serviceSupervisor: GatewayServiceSupervisor
+    @ObservedObject private var serviceSupervisor: GatewayAgentSupervisor
     @ObservedObject private var updater: AppUpdateViewModel
     @State private var addProviderMode: ProviderCreationMode?
     @State private var modelRefreshRotation: Double = 0
@@ -24,7 +24,7 @@ struct ContentView: View {
 
     init(
         viewModel: GatewayViewModel,
-        serviceSupervisor: GatewayServiceSupervisor,
+        serviceSupervisor: GatewayAgentSupervisor,
         updater: AppUpdateViewModel
     ) {
         self.viewModel = viewModel
@@ -122,7 +122,7 @@ struct ContentView: View {
 
     private var servicePanel: some View {
         HStack(alignment: .center, spacing: 14) {
-            Text("网关")
+            Text("本地 Agent")
                 .font(.system(size: 11, weight: .semibold, design: .rounded))
                 .foregroundStyle(.secondary)
 
@@ -184,8 +184,8 @@ struct ContentView: View {
                         .frame(width: 16, height: 16)
                 }
                 .buttonStyle(.bordered)
-                .help(serviceSupervisor.isReachable ? "停止服务" : "启动服务")
-                .accessibilityLabel(serviceSupervisor.isReachable ? "停止服务" : "启动服务")
+                .help(serviceSupervisor.isReachable ? "停止本地 Agent" : "启动本地 Agent")
+                .accessibilityLabel(serviceSupervisor.isReachable ? "停止本地 Agent" : "启动本地 Agent")
                 .disabled(!serviceSupervisor.canStart && !serviceSupervisor.canStop)
 
                 Button {
@@ -319,18 +319,11 @@ struct ContentView: View {
 
     private var providerGrid: some View {
         ScrollView {
-            if !serviceSupervisor.isReachable && !viewModel.isLoading {
-                ContentUnavailableView(
-                    "服务未连接",
-                    systemImage: "bolt.horizontal.circle",
-                    description: Text("先启动网关服务，再加载供应商和模型信息。")
-                )
-                .frame(maxWidth: .infinity, minHeight: 420)
-            } else if viewModel.providers.isEmpty && !viewModel.isLoading {
+            if viewModel.providers.isEmpty && !viewModel.isLoading {
                 ContentUnavailableView(
                     "还没有供应商",
                     systemImage: "tray",
-                    description: Text("添加一个 API 供应商，或者用账号登录自动生成供应商。")
+                    description: Text("添加一个 API 供应商，或者导入账号 Token 自动生成供应商。")
                 )
                 .frame(maxWidth: .infinity, minHeight: 420)
             } else {
@@ -429,7 +422,7 @@ struct ContentView: View {
             if provider.authMode == .account {
                 providerMetaRow(
                     title: "邮箱",
-                    value: provider.accountEmail ?? "等待登录完成",
+                    value: provider.accountEmail ?? "等待 Token 导入",
                     emphasized: true
                 )
             }
@@ -795,7 +788,7 @@ struct ContentView: View {
     }
 
     private var isQuotaAutoRefreshActive: Bool {
-        serviceSupervisor.isReachable
+        !viewModel.providers.isEmpty
     }
 
     private var quotaAutoRefreshTaskID: String {
@@ -993,18 +986,13 @@ struct ContentView: View {
 
     private func stopManagedService() async {
         await serviceSupervisor.stopService()
-        if serviceSupervisor.isReachable {
-            await viewModel.refresh()
-        } else {
-            viewModel.clearData()
-        }
     }
 }
 
 struct ContentView_Previews: PreviewProvider {
     @MainActor
     static var previews: some View {
-        let serviceSupervisor = GatewayServiceSupervisor()
+        let serviceSupervisor = GatewayAgentSupervisor()
         ContentView(
             viewModel: GatewayViewModel(),
             serviceSupervisor: serviceSupervisor,

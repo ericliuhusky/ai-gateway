@@ -98,16 +98,6 @@ pub struct UpdateSelectedModelRequest {
     pub model: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct CodexConfigStatus {
-    pub target_path: String,
-    pub auth_path: String,
-    pub config_patch_exists: bool,
-    pub restore_available: bool,
-    pub target_exists: bool,
-    pub auth_exists: bool,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelListResponse {
     pub object: String,

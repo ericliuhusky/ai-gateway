@@ -41,13 +41,13 @@ final class AppUpdateViewModel: ObservableObject {
     @Published private(set) var state: UpdateState = .hidden
 
     private let session: URLSession
-    private let serviceSupervisor: GatewayServiceSupervisor
+    private let serviceSupervisor: GatewayAgentSupervisor
     private let fileManager = FileManager.default
     private var latestRelease: GitHubRelease?
     private var lastCheckedAt: Date?
 
     init(
-        serviceSupervisor: GatewayServiceSupervisor,
+        serviceSupervisor: GatewayAgentSupervisor,
         session: URLSession = .shared
     ) {
         self.serviceSupervisor = serviceSupervisor

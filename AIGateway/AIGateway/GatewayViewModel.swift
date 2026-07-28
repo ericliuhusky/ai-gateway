@@ -260,10 +260,6 @@ final class GatewayViewModel: ObservableObject {
         }
     }
 
-    func openLogin(provider: AccountLoginProvider) {
-        NSWorkspace.shared.open(client.loginURL(for: provider))
-    }
-
     func importOpenAICodexAuth(_ auth: CodexAuthImportRequest) async -> Bool {
         isLoading = true
         defer { isLoading = false }

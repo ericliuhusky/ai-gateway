@@ -1,143 +1,158 @@
 # ai-gateway
 
-## 架构词汇
+AI Gateway 现在拆分为两个进程：
 
-- `Client`: 调用方看到的网关客户端侧协议。当前只有 `OpenAI Responses`
-- `Upstream`: 网关调用真实供应商时使用的上游协议。当前固定 3 种：
-  - `OpenAI private responses`
-  - `Native responses`
-  - `Native chat completions`
-- `Provider`: 具体供应商实例，例如 `openai-proxy`、`openai-compatible`
-- `Route`: 当前把客户端请求转发到哪个 provider
-- `Adapter`: 从统一 `Responses` 客户端协议适配到具体上游协议的转换层
+- `server`：部署在服务器上的网关核心，负责 Provider、账号 Token、路由、协议适配、额度、日志和上游请求。
+- `agent`：只运行在用户电脑上的本地集成进程，负责修改 `~/.codex` 配置和同步本地历史。
 
-当前实现遵循“单一客户端协议、多个上游协议”的结构：
+macOS App 只内置和管理 `agent`，不再内置完整网关 `server`。
 
-- 所有推理请求统一从 `POST /openai/v1/responses` 进入
-- 路由层根据当前选中的 provider 决定上游协议
-- adapter 层负责把客户端侧 `Responses` 适配到对应的上游协议
-- upstream 层只负责调用真实上游接口
+## 架构
 
-- 用户可以仿照 Codex / OpenClaw 的方式，通过 ChatGPT OAuth + PKCE 登录
-- 登录成功后账号会写入本地 SQLite 数据库 `~/.ai-gateway/db.sqlite`
-- provider 如果使用账号登录，会绑定本地账号池里的账号
-- access token 过期前自动刷新
-
-## 运行
-
-```bash
-cargo run
+```text
+Codex -> https://gateway.example.com/openai/v1 -> server -> upstream provider
+  |
+  +-> local agent (127.0.0.1:10101)
+        - apply/restore ~/.codex/config.toml
+        - sync ~/.codex/state_5.sqlite and rollout aliases
 ```
 
-默认固定监听 `127.0.0.1:10100`。
+## Server
 
-如果你使用 macOS 上的 `AIGateway.app`：
-
-- Xcode 构建时会自动编译 Rust `server`，并把它打进 app bundle
-- GUI 启动时会把内置 Rust `server` 安装到 `~/.ai-gateway/bin/ai-gateway-server`
-- GUI 会生成并维护同一份 `LaunchAgent`：`~/Library/LaunchAgents/ericliu.husky.ai-gateway.server.plist`
-- GUI 和手动命令都通过 `launchctl` 控制同一个用户级后台服务 `ericliu.husky.ai-gateway.server`
-
-手动控制同一份服务时，可以直接使用：
+### 本地运行
 
 ```bash
-launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/ericliu.husky.ai-gateway.server.plist
-launchctl kickstart -k "gui/$(id -u)/ericliu.husky.ai-gateway.server"
-launchctl bootout "gui/$(id -u)" ~/Library/LaunchAgents/ericliu.husky.ai-gateway.server.plist
-launchctl print "gui/$(id -u)/ericliu.husky.ai-gateway.server"
+cargo run -p ai-gateway
 ```
 
-在 macOS 上，网关启动时会主动读取 `scutil --proxy` 返回的系统 `HTTP/HTTPS` 代理，并显式用于上游请求；`localhost` / `127.0.0.1` / `::1` 保持直连，不会被套进上游代理。
+默认监听：
 
-账号、provider 和路由状态固定保存在 `~/.ai-gateway/db.sqlite`。
-
-## 登录
-
-macOS 客户端的“账户登录”面板支持直接粘贴官方 Codex `auth.json` 格式并导入账号：
-
-```json
-{
-  "tokens": {
-    "id_token": "...",
-    "access_token": "...",
-    "refresh_token": "...",
-    "account_id": "..."
-  },
-  "last_refresh": "2026-07-19T06:25:55Z"
-}
+```text
+0.0.0.0:10100
 ```
 
-导入只要求 `tokens.access_token` 和 `tokens.refresh_token`；`id_token`、`account_id`、
-`auth_mode`、`OPENAI_API_KEY` 和 `last_refresh` 均可省略。接口为
-`POST /auth/openai/import-codex`，请求体就是上述 JSON，不需要额外包装字段。
+支持的环境变量：
 
-如果你想直接走浏览器 OAuth，而不是导入本地文件：
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `AI_GATEWAY_BIND_ADDR` | `0.0.0.0:10100` | HTTP 监听地址 |
+| `AI_GATEWAY_DATA_DIR` | `$HOME/.ai-gateway` | SQLite 和日志目录 |
+| `AI_GATEWAY_CODEX_CLIENT_VERSION` | `0.130.0` | 调用 ChatGPT Codex 私有模型接口时使用的客户端版本 |
+
+Server 不再读取或修改服务器用户的 `~/.codex`。
+
+当前网关接口还没有客户端鉴权。正式暴露到公网前，应放在带 TLS 和访问控制的反向代理后，或者先完成网关 API Key/多租户改造。
+
+## Agent
+
+### 运行
 
 ```bash
-open http://127.0.0.1:10100/auth/openai/start
+cargo run -p ai-gateway-agent
 ```
 
-这会仿照 Codex / OpenClaw：
+Agent 默认只监听：
 
-- 生成 PKCE `code_verifier` / `code_challenge`
-- 打开 `https://auth.openai.com/oauth/authorize`
-- 使用固定回调 `http://localhost:1455/auth/callback`
-- 回调后向 `https://auth.openai.com/oauth/token` 交换 token
-- 从 access token 提取 `accountId`
+```text
+127.0.0.1:10101
+```
 
-注意：服务除了 `127.0.0.1:10100` 外，还会额外监听 `127.0.0.1:1455` 以接收 OpenAI OAuth 回调。
+可通过 `AI_GATEWAY_AGENT_BIND_ADDR` 修改，但不建议暴露到局域网或公网。
 
-注意：按 OpenAI 官方文档，Codex 的 ChatGPT 登录和 API key 登录是两条不同的访问路径。当前 ChatGPT/Codex OAuth 会话，实测可能不带公开 `POST /openai/v1/responses` 所需的 `api.responses.write` scope；如果你要稳定访问公开 OpenAI API，仍应优先使用 API key。
-
-## 原生 API 供应商
-
-除了 `openai-proxy` 这类 OAuth 代理供应商，现在也支持登记“原生 key 的 API 供应商”配置。`provider` 是统一配置入口：
-
-- `api_key` 型 provider 通过 `POST /providers` 手动创建
-- `account` 型 provider 只能通过 OAuth 登录自动创建或更新
-- 用户不会手动绑定 account；登录成功后系统会自动维护 `provider <-> account` 这一对一关系
+### 应用 Codex 配置
 
 ```bash
-curl -X POST http://127.0.0.1:10100/providers \
+curl -X PUT http://127.0.0.1:10101/codex-config \
   -H 'Content-Type: application/json' \
   -d '{
-    "name": "openai-compatible",
-    "base_url": "https://api.example.com/v1",
-    "api_key": "sk-xxx",
-    "billing_mode": "metered"
+    "gateway_base_url": "https://gateway.example.com/openai/v1"
   }'
 ```
 
-其中：
+Agent 会：
 
-- `name`: 供应商名，例如 `openai-compatible`、`local-8080`
-- `base_url`: 该供应商的 API 基础地址
-- `api_key`: 上游 API key
-- `uses_chat_completions`: 可选，默认 `false`。设为 `true` 时把统一客户端协议适配到 OpenAI Chat Completions 兼容接口；默认走 OpenAI Responses 原生接口
-- `billing_mode`: `metered` 或 `subscription`
-  - `metered`: 按量计费，通常按 token、请求次数或实际用量扣费
-  - `subscription`: 订阅制 / 套餐制，通常不是每次调用单独计费
+- 备份并修改 `~/.codex/config.toml`
+- 将 `model_provider` 指向 `ai-gateway`
+- 尝试为现有 OpenAI 历史创建 `ai-gateway` 别名
 
-`POST /providers` 不接受 `auth_mode` 或 `account_id`；这个接口默认创建的就是 `api_key` 型 provider。
+历史数据库不存在时不会阻止配置写入，响应中的 `history_warning` 会说明原因。
 
-查看已登记的供应商：
+恢复：
 
 ```bash
-curl http://127.0.0.1:10100/providers
+curl -X DELETE http://127.0.0.1:10101/codex-config
 ```
 
-### 列出供应商模型
+## macOS App
+
+App 启动时会：
+
+1. 编译并内置 `ai-gateway-agent`
+2. 安装到 `~/.ai-gateway/bin/ai-gateway-agent`
+3. 使用 LaunchAgent `ericliu.husky.ai-gateway.agent` 管理本地 Agent
+4. 将远程 Server URL 写入 Codex 配置
+
+Server URL 当前按以下顺序确定：
+
+1. macOS `UserDefaults` 的 `gatewayServerURL`
+2. 环境变量 `AI_GATEWAY_SERVER_URL`
+3. 默认 `http://127.0.0.1:10100`
+
+配置远程 Server：
 
 ```bash
-curl 'http://127.0.0.1:10100/openai/v1/models'
+defaults write ericliu.husky.AIGateway gatewayServerURL https://gateway.example.com
 ```
 
-- 返回当前路由选中的供应商模型列表
-- 必须先通过 `/selected-provider` 明确选择 provider
+## Token 导入
 
-## 选择当前 Provider
+浏览器 OAuth 登录已经移除。OpenAI 账号只通过粘贴 Codex Token 导入：
 
-所有转发统一都走：
+```bash
+curl -X POST http://127.0.0.1:10100/accounts/openai/import-token \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "tokens": {
+      "access_token": "...",
+      "refresh_token": "...",
+      "id_token": "...",
+      "account_id": "..."
+    }
+  }'
+```
+
+必填：
+
+- `tokens.access_token`
+- `tokens.refresh_token`
+
+可选：
+
+- `tokens.id_token`
+- `tokens.account_id`
+
+Server 会从 Token 中提取邮箱、过期时间和 ChatGPT Account ID，并在 access token 即将过期时使用 refresh token 自动刷新。
+
+## 主要接口
+
+```text
+GET    /healthz
+POST   /accounts/openai/import-token
+GET    /providers
+POST   /providers
+DELETE /providers/:provider_id
+GET    /providers/:provider_id/quota
+GET    /selected-provider
+PUT    /selected-provider
+GET    /selected-model
+PUT    /selected-model
+DELETE /selected-model
+GET    /openai/v1/models
+POST   /openai/v1/responses
+GET    /debug
+```
+
+所有推理请求仍统一使用 OpenAI Responses 客户端协议：
 
 ```bash
 curl -X POST http://127.0.0.1:10100/openai/v1/responses \
@@ -147,46 +162,3 @@ curl -X POST http://127.0.0.1:10100/openai/v1/responses \
     "input": "hello"
   }'
 ```
-
-如果你想查看当前选择的 provider，可以调用：
-
-```bash
-curl http://127.0.0.1:10100/selected-provider
-```
-
-返回当前路由状态，例如：
-
-```json
-{
-  "selected_provider": {
-    "provider_id": "385ea1cd-9ab5-4517-ab54-8519943febba"
-  }
-}
-```
-
-更新为某个指定供应商：
-
-```bash
-curl -X PUT http://127.0.0.1:10100/selected-provider \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "provider_id": "385ea1cd-9ab5-4517-ab54-8519943febba"
-  }'
-```
-
-`provider_id` 必须是 `/providers` 返回里的 `id`。
-
-## 路由行为
-
-- `openai-proxy`: 使用 ChatGPT OAuth，会转发到 `https://chatgpt.com/backend-api/codex/responses`
-- API key 型 provider 默认走 OpenAI Responses 原生上游协议
-- API key 型 provider 设置 `uses_chat_completions: true` 时，走 OpenAI Chat Completions 兼容上游协议
-- OAuth 登录成功后，会自动创建或更新对应 provider，并绑定到刚登录的本地 account
-- 当前设计要求 `account` 和 `provider` 一对一存在：要么同时存在，要么同时不存在
-- 不再提供自动路由；所有 `/openai/v1/models` 和 `/openai/v1/responses` 调用都依赖用户显式选择的 provider
-- `account` 不再对外暴露接口，只作为 provider 的内部认证信息存在
-
-## 当前范围
-
-- 已实现：OpenAI 浏览器 OAuth + PKCE 登录、账号持久化、账号轮询、token 刷新、GPT 请求直连 ChatGPT Codex backend-api、最小函数工具调用映射
-- 暂未实现：复杂配额保护、设备指纹、官方客户端全部 Header 指纹、更多管理接口

@@ -6,7 +6,6 @@ struct AddProviderSheet: View {
     @Environment(\.colorScheme) private var colorScheme
 
     private let mode: ProviderCreationMode
-    @State private var loginProvider: AccountLoginProvider = .openai
     @State private var name = ""
     @State private var baseURL = ""
     @State private var apiKey = ""
@@ -34,10 +33,10 @@ struct AddProviderSheet: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(mode == .apiKey ? "API Key" : "账户登录")
+            Text(mode == .apiKey ? "API Key" : "账户 Token")
                 .font(.system(size: 22, weight: .bold, design: .rounded))
 
-            Text(mode == .apiKey ? "接入 OpenAI 兼容接口。" : "登录后会自动生成供应商。")
+            Text(mode == .apiKey ? "接入 OpenAI 兼容接口。" : "导入后会自动生成供应商。")
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(.secondary)
         }
@@ -90,34 +89,26 @@ struct AddProviderSheet: View {
 
     private var accountForm: some View {
         VStack(alignment: .leading, spacing: 16) {
-            choiceGroup("账号", selection: $loginProvider) {
-                ForEach(AccountLoginProvider.allCases) { provider in
-                    Text(provider.title).tag(provider)
-                }
-            }
+            VStack(alignment: .leading, spacing: 7) {
+                label("OpenAI Codex Token")
 
-            if loginProvider == .openai {
-                VStack(alignment: .leading, spacing: 7) {
-                    label("Codex auth.json")
+                TextEditor(text: $codexAuthJSON)
+                    .font(.system(size: 11, design: .monospaced))
+                    .scrollContentBackground(.hidden)
+                    .padding(10)
+                    .frame(minHeight: 210)
+                    .background(fieldBackground)
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .strokeBorder(cardBorder, lineWidth: 1)
+                    )
 
-                    TextEditor(text: $codexAuthJSON)
-                        .font(.system(size: 11, design: .monospaced))
-                        .scrollContentBackground(.hidden)
-                        .padding(10)
-                        .frame(minHeight: 210)
-                        .background(fieldBackground)
-                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .strokeBorder(cardBorder, lineWidth: 1)
-                        )
-
-                    Text(codexAuthJSON.isEmpty || parsedCodexAuth != nil
-                        ? "粘贴官方 Codex auth.json 内容；auth_mode、OPENAI_API_KEY 和 last_refresh 可省略。"
-                        : "JSON 格式无效，或 tokens 中缺少 access_token / refresh_token。")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(codexAuthJSON.isEmpty || parsedCodexAuth != nil ? Color.secondary : Color.red)
-                }
+                Text(codexAuthJSON.isEmpty || parsedCodexAuth != nil
+                    ? "粘贴 Codex auth.json 内容，需要 tokens.access_token 和 tokens.refresh_token。"
+                    : "JSON 格式无效，或 tokens 中缺少 access_token / refresh_token。")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(codexAuthJSON.isEmpty || parsedCodexAuth != nil ? Color.secondary : Color.red)
             }
         }
     }
@@ -134,38 +125,18 @@ struct AddProviderSheet: View {
             if mode == .account {
                 Button {
                     Task {
-                        await viewModel.refresh()
-                    }
-                } label: {
-                    Label("已完成", systemImage: "arrow.clockwise")
-                }
-                .buttonStyle(.bordered)
-                .disabled(viewModel.isLoading)
-
-                if loginProvider == .openai {
-                    Button {
-                        Task {
-                            guard let auth = parsedCodexAuth else { return }
-                            if await viewModel.importOpenAICodexAuth(auth) {
-                                codexAuthJSON = ""
-                                dismiss()
-                            }
+                        guard let auth = parsedCodexAuth else { return }
+                        if await viewModel.importOpenAICodexAuth(auth) {
+                            codexAuthJSON = ""
+                            dismiss()
                         }
-                    } label: {
-                        Label("导入 Token", systemImage: "key.viewfinder")
-                            .frame(minWidth: 112)
                     }
-                    .buttonStyle(.bordered)
-                    .disabled(viewModel.isLoading || parsedCodexAuth == nil)
-                }
-
-                Button {
-                    viewModel.openLogin(provider: loginProvider)
                 } label: {
-                    Label("打开登录", systemImage: "link")
-                        .frame(minWidth: 94)
+                    Label("导入 Token", systemImage: "key.viewfinder")
+                        .frame(minWidth: 112)
                 }
                 .buttonStyle(.borderedProminent)
+                .disabled(viewModel.isLoading || parsedCodexAuth == nil)
             } else {
                 Button {
                     Task {
