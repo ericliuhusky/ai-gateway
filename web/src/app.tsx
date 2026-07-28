@@ -28,7 +28,6 @@ import type {
   GatewayBillingMode,
   GatewayModel,
   GatewayProvider,
-  ProviderQuotaSnapshot,
   ProviderQuotaSummary,
   ProviderQuotaWindow,
   SelectedProvider,
@@ -55,13 +54,14 @@ function quotaTone(value: number) {
 function resetLabel(window: ProviderQuotaWindow) {
   if (!window.resets_at) return null;
   const date = new Date(window.resets_at * 1000);
-  const formatter = new Intl.DateTimeFormat("zh-CN", {
-    month: "numeric",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-  return `${formatter.format(date)} 重置`;
+  const time = `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+
+  if (window.window_minutes === 300) {
+    return `${time} 重置`;
+  }
+
+  const weekdays = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
+  return `${date.getMonth() + 1}月${date.getDate()}日 ${weekdays[date.getDay()]} ${time} 重置`;
 }
 
 function copyText(text: string) {
@@ -568,12 +568,12 @@ function QuotaPanel({
         <div className="text-xs leading-5 text-slate-400">{quota.message ?? "暂不支持额度快照"}</div>
       ) : primary || secondary ? (
         <div className="space-y-2.5">
-          {primary ? <QuotaRow title={windowTitle(primary, "5h")} window={primary} /> : null}
-          {secondary ? <QuotaRow title={windowTitle(secondary, "周")} window={secondary} /> : null}
-          <QuotaFootnote snapshot={snapshot} />
+          {primary ? <QuotaRow title={windowTitle(primary, "五小时窗口")} window={primary} /> : null}
+          {secondary ? <QuotaRow title={windowTitle(secondary, "周窗口")} window={secondary} /> : null}
+          {quota ? <QuotaFootnote quota={quota} /> : null}
         </div>
       ) : (
-        <div className="text-xs text-slate-400">暂无额度数据</div>
+        <div className="text-xs text-slate-400">还没有拿到额度信息</div>
       )}
     </div>
   );
@@ -581,8 +581,15 @@ function QuotaPanel({
 
 function windowTitle(window: ProviderQuotaWindow, fallback: string) {
   if (!window.window_minutes) return fallback;
-  if (window.window_minutes < 24 * 60) return `${Math.round(window.window_minutes / 60)}h`;
-  return `${Math.round(window.window_minutes / (24 * 60))}天`;
+  if (window.window_minutes === 300) return "五小时窗口";
+  if (window.window_minutes >= 7 * 24 * 60) return "周窗口";
+  if (window.window_minutes % (24 * 60) === 0) {
+    return `${window.window_minutes / (24 * 60)} 天窗口`;
+  }
+  if (window.window_minutes % 60 === 0) {
+    return `${window.window_minutes / 60} 小时窗口`;
+  }
+  return `${window.window_minutes} 分钟窗口`;
 }
 
 function QuotaRow({ title, window }: { title: string; window: ProviderQuotaWindow }) {
@@ -619,12 +626,17 @@ function QuotaRow({ title, window }: { title: string; window: ProviderQuotaWindo
   );
 }
 
-function QuotaFootnote({ snapshot }: { snapshot?: ProviderQuotaSnapshot }) {
-  if (!snapshot) return null;
-  const credits = snapshot.credits;
+function QuotaFootnote({ quota }: { quota: ProviderQuotaSummary }) {
+  const snapshots = [
+    ...(quota.snapshot ? [quota.snapshot] : []),
+    ...(quota.additional_snapshots ?? []),
+  ];
+  const credits = snapshots.map((snapshot) => snapshot.credits).filter(Boolean);
+  const unlimited = credits.some((item) => item?.unlimited);
+  const balance = credits.find((item) => item?.balance)?.balance;
   const parts = [
-    snapshot.plan_type ? `计划 ${snapshot.plan_type}` : null,
-    credits?.unlimited ? "Credits 不限量" : credits?.balance ? `Credits ${credits.balance}` : null,
+    unlimited ? "账户余额无限" : balance ? `余额 ${balance}` : null,
+    quota.snapshot?.plan_type ? `Plan ${quota.snapshot.plan_type}` : null,
   ].filter(Boolean);
   return parts.length ? <div className="text-[9px] text-slate-400">{parts.join(" · ")}</div> : null;
 }
