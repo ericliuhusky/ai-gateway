@@ -74,10 +74,11 @@ struct GatewayAPIClient: Sendable {
         return response.selectedModel
     }
 
-    func importOpenAIFromLocalCodexAuth() async throws -> ImportOpenAiFromLocalResponse {
-        let response: ImportOpenAiFromLocalResponse = try await request(
-            path: "/auth/openai/import-local",
-            method: "POST"
+    func importOpenAICodexAuth(_ auth: CodexAuthImportRequest) async throws -> ImportOpenAiFromLocalResponse {
+        let response: ImportOpenAiFromLocalResponse = try await requestWithBody(
+            path: "/auth/openai/import-codex",
+            method: "POST",
+            body: auth
         )
         return response
     }

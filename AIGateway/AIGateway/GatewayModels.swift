@@ -231,14 +231,30 @@ struct ImportOpenAiFromLocalResponse: Codable {
     let email: String
     let accountID: String
     let hasResponsesWrite: Bool
-    let sourcePath: String
 
     enum CodingKeys: String, CodingKey {
         case imported
         case email
         case accountID = "account_id"
         case hasResponsesWrite = "has_responses_write"
-        case sourcePath = "source_path"
+    }
+}
+
+struct CodexAuthImportRequest: Codable {
+    let tokens: CodexAuthTokens
+}
+
+struct CodexAuthTokens: Codable {
+    let idToken: String?
+    let accessToken: String
+    let refreshToken: String
+    let accountID: String?
+
+    enum CodingKeys: String, CodingKey {
+        case idToken = "id_token"
+        case accessToken = "access_token"
+        case refreshToken = "refresh_token"
+        case accountID = "account_id"
     }
 }
 

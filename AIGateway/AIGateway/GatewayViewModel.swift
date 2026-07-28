@@ -264,12 +264,12 @@ final class GatewayViewModel: ObservableObject {
         NSWorkspace.shared.open(client.loginURL(for: provider))
     }
 
-    func importOpenAIFromLocalCodexAuth() async -> Bool {
+    func importOpenAICodexAuth(_ auth: CodexAuthImportRequest) async -> Bool {
         isLoading = true
         defer { isLoading = false }
 
         do {
-            _ = try await client.importOpenAIFromLocalCodexAuth()
+            _ = try await client.importOpenAICodexAuth(auth)
             await refresh()
             return true
         } catch {

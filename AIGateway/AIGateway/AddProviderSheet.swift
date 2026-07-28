@@ -10,6 +10,7 @@ struct AddProviderSheet: View {
     @State private var name = ""
     @State private var baseURL = ""
     @State private var apiKey = ""
+    @State private var codexAuthJSON = ""
     @State private var billingMode: GatewayBillingMode = .metered
     @State private var usesChatCompletions = false
 
@@ -27,7 +28,7 @@ struct AddProviderSheet: View {
             actions
         }
         .padding(24)
-        .frame(width: 540)
+        .frame(width: 620)
         .background(sheetBackground)
     }
 
@@ -95,6 +96,29 @@ struct AddProviderSheet: View {
                 }
             }
 
+            if loginProvider == .openai {
+                VStack(alignment: .leading, spacing: 7) {
+                    label("Codex auth.json")
+
+                    TextEditor(text: $codexAuthJSON)
+                        .font(.system(size: 11, design: .monospaced))
+                        .scrollContentBackground(.hidden)
+                        .padding(10)
+                        .frame(minHeight: 210)
+                        .background(fieldBackground)
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .strokeBorder(cardBorder, lineWidth: 1)
+                        )
+
+                    Text(codexAuthJSON.isEmpty || parsedCodexAuth != nil
+                        ? "粘贴官方 Codex auth.json 内容；auth_mode、OPENAI_API_KEY 和 last_refresh 可省略。"
+                        : "JSON 格式无效，或 tokens 中缺少 access_token / refresh_token。")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(codexAuthJSON.isEmpty || parsedCodexAuth != nil ? Color.secondary : Color.red)
+                }
+            }
         }
     }
 
@@ -121,14 +145,18 @@ struct AddProviderSheet: View {
                 if loginProvider == .openai {
                     Button {
                         Task {
-                            _ = await viewModel.importOpenAIFromLocalCodexAuth()
+                            guard let auth = parsedCodexAuth else { return }
+                            if await viewModel.importOpenAICodexAuth(auth) {
+                                codexAuthJSON = ""
+                                dismiss()
+                            }
                         }
                     } label: {
-                        Label("导入本地账号", systemImage: "arrow.down.doc")
+                        Label("导入 Token", systemImage: "key.viewfinder")
                             .frame(minWidth: 112)
                     }
                     .buttonStyle(.bordered)
-                    .disabled(viewModel.isLoading)
+                    .disabled(viewModel.isLoading || parsedCodexAuth == nil)
                 }
 
                 Button {
@@ -228,6 +256,11 @@ struct AddProviderSheet: View {
 
     private var canCreateAPIProvider: Bool {
         !trimmedName.isEmpty && !trimmedBaseURL.isEmpty && !trimmedAPIKey.isEmpty
+    }
+
+    private var parsedCodexAuth: CodexAuthImportRequest? {
+        guard let data = codexAuthJSON.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode(CodexAuthImportRequest.self, from: data)
     }
 
     private var sheetBackground: some View {

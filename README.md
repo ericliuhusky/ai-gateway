@@ -53,6 +53,24 @@ launchctl print "gui/$(id -u)/ericliu.husky.ai-gateway.server"
 
 ## 登录
 
+macOS 客户端的“账户登录”面板支持直接粘贴官方 Codex `auth.json` 格式并导入账号：
+
+```json
+{
+  "tokens": {
+    "id_token": "...",
+    "access_token": "...",
+    "refresh_token": "...",
+    "account_id": "..."
+  },
+  "last_refresh": "2026-07-19T06:25:55Z"
+}
+```
+
+导入只要求 `tokens.access_token` 和 `tokens.refresh_token`；`id_token`、`account_id`、
+`auth_mode`、`OPENAI_API_KEY` 和 `last_refresh` 均可省略。接口为
+`POST /auth/openai/import-codex`，请求体就是上述 JSON，不需要额外包装字段。
+
 如果你想直接走浏览器 OAuth，而不是导入本地文件：
 
 ```bash

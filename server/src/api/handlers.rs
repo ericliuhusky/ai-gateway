@@ -152,7 +152,7 @@ struct CodexAuthTokensFile {
 }
 
 #[derive(Debug, Deserialize)]
-struct CodexAuthFile {
+pub(crate) struct CodexAuthFile {
     #[serde(default)]
     tokens: Option<CodexAuthTokensFile>,
 }
@@ -163,36 +163,18 @@ pub struct ImportOpenAiFromLocalResponse {
     email: String,
     account_id: String,
     has_responses_write: bool,
-    source_path: String,
 }
 
-/// Import an OpenAI account from Codex's local `~/.codex/auth.json` without running OAuth.
-///
-/// This is useful when Codex is already logged in on the same machine, and we just want the
-/// gateway to reuse that session for the `openai-proxy` account provider.
-pub async fn import_openai_from_local_codex_auth(
+/// Import an OpenAI account from a pasted Codex `auth.json` payload without running OAuth.
+pub async fn import_openai_codex_auth(
     State(state): State<AppState>,
+    Json(auth_file): Json<CodexAuthFile>,
 ) -> Result<Json<ImportOpenAiFromLocalResponse>, AppError> {
-    let config = state._config.as_ref();
-    let auth_path = config.codex_auth_path();
-    let content = fs::read_to_string(&auth_path).map_err(|err| {
-        AppError::bad_request(format!(
-            "failed to read Codex auth.json at {}: {err}",
-            auth_path.display()
-        ))
-    })?;
-
-    let auth_file: CodexAuthFile = serde_json::from_str(&content).map_err(|err| {
-        AppError::bad_request(format!(
-            "failed to parse Codex auth.json at {}: {err}",
-            auth_path.display()
-        ))
-    })?;
-    let tokens = auth_file.tokens.ok_or_else(|| {
-        AppError::bad_request("Codex auth.json is missing `tokens` (please login in Codex first)")
-    })?;
+    let tokens = auth_file
+        .tokens
+        .ok_or_else(|| AppError::bad_request("Codex auth JSON is missing `tokens`"))?;
     let refresh_token = tokens.refresh_token.ok_or_else(|| {
-        AppError::bad_request("Codex auth.json tokens is missing `refresh_token`")
+        AppError::bad_request("Codex auth JSON tokens is missing `refresh_token`")
     })?;
 
     let imported = state
@@ -226,7 +208,6 @@ pub async fn import_openai_from_local_codex_auth(
         email,
         account_id: account.id,
         has_responses_write,
-        source_path: auth_path.display().to_string(),
     }))
 }
 
@@ -2090,6 +2071,7 @@ impl IntoResponse for AppError {
 
 #[cfg(test)]
 mod tests {
+    use super::CodexAuthFile;
     use super::{
         ChatCompletionsResponsesStream, ResolvedProvider, capture_final_response_from_sse_chunk,
         drain_sse_payloads, logged_stream_response_body, openai_models_response,
@@ -2099,6 +2081,43 @@ mod tests {
         ApiProviderBillingMode, ApiProviderRecord, ProviderAuthMode, ResponseStreamFrame,
     };
     use serde_json::json;
+
+    #[test]
+    fn parses_minimal_pasted_codex_auth_json() {
+        let auth: CodexAuthFile = serde_json::from_value(json!({
+            "tokens": {
+                "access_token": "access-token",
+                "refresh_token": "refresh-token"
+            }
+        }))
+        .expect("minimal Codex auth JSON should parse");
+
+        let tokens = auth.tokens.expect("tokens should be present");
+        assert_eq!(tokens.access_token, "access-token");
+        assert_eq!(tokens.refresh_token.as_deref(), Some("refresh-token"));
+        assert!(tokens.id_token.is_none());
+        assert!(tokens.account_id.is_none());
+    }
+
+    #[test]
+    fn ignores_optional_official_codex_auth_fields() {
+        let auth: CodexAuthFile = serde_json::from_value(json!({
+            "auth_mode": "chatgpt",
+            "OPENAI_API_KEY": null,
+            "tokens": {
+                "id_token": "id-token",
+                "access_token": "access-token",
+                "refresh_token": "refresh-token",
+                "account_id": "account-id"
+            },
+            "last_refresh": "2026-07-19T06:25:55Z"
+        }))
+        .expect("full Codex auth JSON should parse");
+
+        let tokens = auth.tokens.expect("tokens should be present");
+        assert_eq!(tokens.id_token.as_deref(), Some("id-token"));
+        assert_eq!(tokens.account_id.as_deref(), Some("account-id"));
+    }
 
     fn encode_frames(frames: Vec<ResponseStreamFrame>) -> String {
         frames
