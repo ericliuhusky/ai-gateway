@@ -7,4 +7,4 @@ pub use request_builder::{
     OpenAiEndpoint, OpenAiRequestBody, OpenAiRequestBuilder, PrivateOpenAiRequestBuilder,
     PublicOpenAiRequestBuilder,
 };
-pub use url::{OPENAI_CODEX_BASE_URL, chat_completions_api_url, responses_api_url};
+pub use url::OPENAI_CODEX_BASE_URL;

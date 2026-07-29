@@ -2,7 +2,7 @@
 
 AI Gateway 现在拆分为远程 Server、Web 管理端和本地 Agent：
 
-- `server`：部署在服务器上的网关核心，负责 Provider、账号 Token、路由、协议适配、额度、日志和上游请求。
+- `server`：部署在服务器上的网关核心，负责 Provider、账号 Token、路由、协议适配、额度和上游请求。
 - `web`：由 `server` 同源托管的管理端，负责远程 Provider、模型、额度和接入配置。
 - `agent`：只运行在用户电脑上的本地集成进程，负责修改 `~/.codex` 配置和同步本地历史。
 
@@ -37,7 +37,7 @@ cargo run -p ai-gateway
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
 | `AI_GATEWAY_BIND_ADDR` | `0.0.0.0:4242` | HTTP 监听地址 |
-| `AI_GATEWAY_DATA_DIR` | `$HOME/.ai-gateway` | SQLite 和日志目录 |
+| `AI_GATEWAY_DATA_DIR` | `$HOME/.ai-gateway` | SQLite 数据目录 |
 | `AI_GATEWAY_CODEX_CLIENT_VERSION` | `0.130.0` | 调用 ChatGPT Codex 私有模型接口时使用的客户端版本 |
 
 Server 不再读取或修改服务器用户的 `~/.codex`。
@@ -170,7 +170,6 @@ PUT    /selected-model
 DELETE /selected-model
 GET    /openai/v1/models
 POST   /openai/v1/responses
-GET    /debug
 ```
 
 所有推理请求仍统一使用 OpenAI Responses 客户端协议：

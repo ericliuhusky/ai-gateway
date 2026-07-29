@@ -2,8 +2,6 @@ use std::{env, net::SocketAddr, path::PathBuf};
 
 const DEFAULT_BIND_ADDR: &str = "0.0.0.0:4242";
 const DEFAULT_CODEX_CLIENT_VERSION: &str = "0.130.0";
-const RESPONSES_PATH: &str = "/openai/v1/responses";
-const OPENAI_PRIVATE_RESPONSES_URL: &str = "https://chatgpt.com/backend-api/codex/responses";
 
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -53,24 +51,12 @@ impl Config {
         self.bind_addr
     }
 
-    pub fn responses_path() -> &'static str {
-        RESPONSES_PATH
-    }
-
-    pub fn openai_private_responses_url() -> &'static str {
-        OPENAI_PRIVATE_RESPONSES_URL
-    }
-
     pub fn data_dir(&self) -> PathBuf {
         self.data_dir.clone()
     }
 
     pub fn sqlite_path(&self) -> PathBuf {
         self.data_dir.join("db.sqlite")
-    }
-
-    pub fn log_sqlite_path(&self) -> PathBuf {
-        self.data_dir.join("log.db")
     }
 
     pub fn web_dir(&self) -> PathBuf {

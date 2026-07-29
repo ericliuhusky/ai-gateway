@@ -1,14 +1,9 @@
 mod request_policy;
 
-use crate::{
-    config::Config,
-    models::{
-        ApiProviderRecord, ProviderAuthMode, ProviderUpstreamProtocol, ResponseCreateParams,
-        UpstreamProtocol, responses_to_chat_completions,
-    },
-    upstream::{chat_completions_api_url, responses_api_url},
+use crate::models::{
+    ApiProviderRecord, ProviderAuthMode, ProviderUpstreamProtocol, ResponseCreateParams,
+    responses_to_chat_completions,
 };
-pub use request_policy::RequestTransformChange;
 use request_policy::apply_responses_request_policy;
 use serde_json::Value;
 
@@ -35,11 +30,7 @@ pub enum PreparedResponsesUpstream {
 
 #[derive(Debug)]
 pub struct PreparedResponsesPassthrough {
-    pub provider_name: String,
-    pub model: String,
     pub request_stream: bool,
-    pub upstream_protocol: UpstreamProtocol,
-    pub upstream_url: String,
     pub request_body: String,
 }
 
@@ -48,28 +39,19 @@ pub struct PreparedApiChatCompletions {
     pub provider_name: String,
     pub provider: ApiProviderRecord,
     pub model: String,
-    pub stream: bool,
-    pub upstream_protocol: UpstreamProtocol,
-    pub upstream_url: String,
     pub request_body: Value,
 }
 
 #[derive(Debug)]
 pub struct PreparedApiResponsesPassthrough {
-    pub provider_name: String,
     pub provider: ApiProviderRecord,
-    pub model: String,
     pub request_stream: bool,
-    pub upstream_protocol: UpstreamProtocol,
-    pub upstream_url: String,
     pub request_body: String,
-    pub request_transform_changes: Vec<RequestTransformChange>,
 }
 
 #[derive(Clone, Debug)]
 struct NativeTarget {
     upstream_model: String,
-    upstream: UpstreamProtocol,
     uses_chat_completions: bool,
 }
 
@@ -84,11 +66,7 @@ pub fn prepare_responses_upstream(
         return Ok(
             PreparedResponsesUpstream::OpenAiAccountResponsesPassthrough(
                 PreparedResponsesPassthrough {
-                    provider_name: provider.name,
-                    model: requested_model,
                     request_stream,
-                    upstream_protocol: UpstreamProtocol::OpenAiPrivateResponses,
-                    upstream_url: Config::openai_private_responses_url().to_string(),
                     request_body,
                 },
             ),
@@ -127,28 +105,19 @@ pub fn prepare_responses_upstream(
                 provider_name: provider.name,
                 provider: native_provider.clone(),
                 model: request.model,
-                stream: request.stream,
-                upstream_protocol: native_target.upstream,
-                upstream_url: chat_completions_api_url(&native_provider.base_url),
                 request_body,
             },
         ));
     }
 
-    let upstream_url = responses_api_url(&native_provider.base_url);
     let transformed =
         apply_responses_request_policy(&native_provider.compatibility_profile, request_body)
             .map_err(ResponsesAdapterError::BadRequest)?;
     Ok(PreparedResponsesUpstream::ApiResponsesPassthrough(
         PreparedApiResponsesPassthrough {
-            provider_name: provider.name,
             provider: native_provider,
-            model: requested_model,
             request_stream,
-            upstream_protocol: native_target.upstream,
-            upstream_url,
-            request_body: transformed.body,
-            request_transform_changes: transformed.changes,
+            request_body: transformed,
         },
     ))
 }
@@ -157,14 +126,12 @@ fn resolve_native_target(provider: &ApiProviderRecord, requested_model: &str) ->
     if provider.upstream_protocol == ProviderUpstreamProtocol::OpenAiChatCompletions {
         return NativeTarget {
             upstream_model: requested_model.to_string(),
-            upstream: UpstreamProtocol::NativeChatCompletions,
             uses_chat_completions: true,
         };
     }
 
     NativeTarget {
         upstream_model: requested_model.to_string(),
-        upstream: UpstreamProtocol::NativeResponses,
         uses_chat_completions: false,
     }
 }
@@ -174,7 +141,7 @@ mod tests {
     use super::{PreparedResponsesUpstream, ResponsesAdapterProvider, prepare_responses_upstream};
     use crate::models::{
         ApiProviderBillingMode, ApiProviderRecord, ProviderAuthMode, ProviderCompatibilityProfile,
-        ProviderUpstreamProtocol, UpstreamProtocol,
+        ProviderUpstreamProtocol,
     };
     use serde_json::json;
 
@@ -232,13 +199,9 @@ mod tests {
         )
         .unwrap();
 
-        let PreparedResponsesUpstream::ApiResponsesPassthrough(prepared) = prepared else {
+        let PreparedResponsesUpstream::ApiResponsesPassthrough(_) = prepared else {
             panic!("expected responses passthrough");
         };
-        assert_eq!(
-            prepared.upstream_protocol,
-            UpstreamProtocol::NativeResponses
-        );
     }
 
     #[test]
@@ -265,10 +228,6 @@ mod tests {
         let PreparedResponsesUpstream::ApiChatCompletions(prepared) = prepared else {
             panic!("expected chat completions");
         };
-        assert_eq!(
-            prepared.upstream_protocol,
-            UpstreamProtocol::NativeChatCompletions
-        );
         assert_eq!(prepared.model, "qwen3-32b");
     }
 
@@ -340,7 +299,6 @@ mod tests {
         assert_eq!(tools.len(), 2);
         assert_eq!(tools[0]["name"], "exec_command");
         assert_eq!(tools[1]["type"], "namespace");
-        assert_eq!(prepared.request_transform_changes.len(), 3);
     }
 
     #[test]
@@ -383,6 +341,5 @@ mod tests {
         let adapted: serde_json::Value = serde_json::from_str(&prepared.request_body).unwrap();
 
         assert_eq!(adapted["tools"].as_array().unwrap().len(), 1);
-        assert!(prepared.request_transform_changes.is_empty());
     }
 }

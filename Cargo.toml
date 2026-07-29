@@ -1,4 +1,4 @@
 [workspace]
-members = ["server", "agent", "debug-web"]
+members = ["server", "agent"]
 default-members = ["server"]
 resolver = "2"

@@ -9,19 +9,14 @@ use crate::{
     },
     models::{
         AccountRecord, ApiProviderRecord, ApiProviderSummary, ChatCompletionsResponsesStream,
-        ClientProtocol, CreateApiProviderRequest, GatewayLogDetail, GatewayLogDetailResponse,
-        GatewayLogListResponse, GatewayLogSettings, GatewayLogSettingsResponse, GatewayLogSummary,
-        ModelListItem, ModelListResponse, PROVIDER_OPENAI_PROXY, ProviderAuthMode,
-        ProviderQuotaCredits, ProviderQuotaResponse, ProviderQuotaSnapshot, ProviderQuotaSummary,
-        ProviderQuotaWindow, QuotaSource, QuotaSupportStatus, ResponseStreamFrame, SelectedRoute,
-        UpdateGatewayLogSettingsRequest, UpdateSelectedModelRequest, UpdateSelectedProviderRequest,
-        UpstreamProtocol,
+        CreateApiProviderRequest, ModelListItem, ModelListResponse, PROVIDER_OPENAI_PROXY,
+        ProviderAuthMode, ProviderQuotaCredits, ProviderQuotaResponse, ProviderQuotaSnapshot,
+        ProviderQuotaSummary, ProviderQuotaWindow, QuotaSource, QuotaSupportStatus,
+        ResponseStreamFrame, SelectedRoute, UpdateSelectedModelRequest,
+        UpdateSelectedProviderRequest,
     },
     openai_tokens::OpenAiTokenService,
-    store::{
-        AccountStore, LogEvent, LogStage, LogStore, ModelStore, ProviderStore, RouteStore,
-        log_store::extract_model_output_from_body,
-    },
+    store::{AccountStore, ModelStore, ProviderStore, RouteStore},
     support::time::now_unix,
     upstream::{
         OPENAI_CODEX_BASE_URL, OpenAiEndpoint, OpenAiRequestBody, OpenAiRequestBuilder,
@@ -31,13 +26,9 @@ use crate::{
 use async_stream::stream;
 use axum::{
     body::{Body, Bytes},
-    extract::{Form, Path as AxumPath, Query, State},
+    extract::{Path as AxumPath, Query, State},
     http::{HeaderMap, HeaderName, HeaderValue, StatusCode},
-    response::{Html, IntoResponse, Json, Redirect, Response},
-};
-use chrono::{Local, TimeZone};
-use debug_web::{
-    DebugLogDetail as DebugWebLogDetail, DebugLogSummary as DebugWebLogSummary, DebugPageData,
+    response::{IntoResponse, Json, Response},
 };
 use futures_util::StreamExt;
 use reqwest::Client;
@@ -45,8 +36,6 @@ use serde::Deserialize;
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::sync::Arc;
-use std::time::Instant;
-use uuid::Uuid;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -58,7 +47,6 @@ pub struct AppState {
     pub routes: RouteStore,
     pub models: ModelStore,
     pub upstream: UpstreamClient,
-    pub logs: LogStore,
 }
 
 #[derive(Debug, Deserialize)]
@@ -301,329 +289,16 @@ pub async fn clear_selected_model(State(state): State<AppState>) -> Result<Json<
     Ok(Json(json!({ "selected_model": route_payload(route) })))
 }
 
-#[derive(Debug, Deserialize)]
-pub struct LogsQuery {
-    pub limit: Option<usize>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct DebugDashboardQuery {
-    pub id: Option<String>,
-    pub limit: Option<usize>,
-    pub notice: Option<String>,
-    pub error: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct DebugLogSettingsForm {
-    pub enabled: bool,
-    pub id: Option<String>,
-    pub limit: Option<usize>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct DebugClearLogsForm {
-    pub limit: Option<usize>,
-}
-
-pub async fn get_logs(
-    State(state): State<AppState>,
-    Query(query): Query<LogsQuery>,
-) -> Result<Json<GatewayLogListResponse>, AppError> {
-    let limit = query.limit.unwrap_or(100).clamp(1, 500);
-    let logs = state
-        .logs
-        .list_request_summaries(limit)
-        .map_err(AppError::internal)?;
-    Ok(Json(GatewayLogListResponse { logs }))
-}
-
-pub async fn get_log_detail(
-    State(state): State<AppState>,
-    AxumPath(id): AxumPath<String>,
-) -> Result<Json<GatewayLogDetailResponse>, AppError> {
-    let detail = state.logs.load_request(&id).map_err(AppError::internal)?;
-    let Some(log) = detail else {
-        return Err(AppError::bad_request(format!("log id not found: {id}")));
-    };
-    Ok(Json(GatewayLogDetailResponse { log }))
-}
-
-pub async fn get_log_settings(State(state): State<AppState>) -> Json<GatewayLogSettingsResponse> {
-    Json(GatewayLogSettingsResponse {
-        logging: GatewayLogSettings {
-            enabled: state.logs.is_enabled(),
-        },
-    })
-}
-
-pub async fn set_log_settings(
-    State(state): State<AppState>,
-    Json(request): Json<UpdateGatewayLogSettingsRequest>,
-) -> Result<Json<GatewayLogSettingsResponse>, AppError> {
-    let enabled = state
-        .logs
-        .set_enabled(request.enabled)
-        .await
-        .map_err(AppError::internal)?;
-    Ok(Json(GatewayLogSettingsResponse {
-        logging: GatewayLogSettings { enabled },
-    }))
-}
-
-pub async fn clear_logs(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
-    state.logs.clear().await.map_err(AppError::internal)?;
-    Ok(Json(json!({ "cleared": true })))
-}
-
-pub async fn debug_dashboard(
-    State(state): State<AppState>,
-    Query(query): Query<DebugDashboardQuery>,
-) -> Result<Html<String>, AppError> {
-    let limit = query.limit.unwrap_or(100).clamp(1, 500);
-    let logs = state
-        .logs
-        .list_request_summaries(limit)
-        .map_err(AppError::internal)?;
-    let selected_id = query
-        .id
-        .clone()
-        .or_else(|| logs.first().map(|log| log.id.clone()));
-
-    let selected_detail = if let Some(id) = selected_id.as_ref() {
-        state
-            .logs
-            .load_request(id)
-            .map_err(AppError::internal)?
-            .map(map_debug_log_detail)
-    } else {
-        None
-    };
-
-    let invalid_selection_error = if query.id.is_some() && selected_detail.is_none() {
-        Some("指定的 id 不存在或已经被清空。".to_string())
-    } else {
-        None
-    };
-
-    let document = debug_web::render_debug_page(DebugPageData {
-        logging_enabled: state.logs.is_enabled(),
-        logs: logs.into_iter().map(map_debug_log_summary).collect(),
-        selected_id,
-        selected_detail,
-        limit,
-        notice: query.notice,
-        error: query.error.or(invalid_selection_error),
-    });
-    Ok(Html(document))
-}
-
-pub async fn debug_set_log_settings(
-    State(state): State<AppState>,
-    Form(form): Form<DebugLogSettingsForm>,
-) -> Result<Redirect, AppError> {
-    let enabled = state
-        .logs
-        .set_enabled(form.enabled)
-        .await
-        .map_err(AppError::internal)?;
-    let notice = if enabled {
-        "日志记录已开启"
-    } else {
-        "日志记录已暂停"
-    };
-    Ok(Redirect::to(&build_debug_redirect_url(
-        form.limit.unwrap_or(100),
-        form.id.as_deref(),
-        Some(notice),
-        None,
-    )))
-}
-
-pub async fn debug_clear_logs(
-    State(state): State<AppState>,
-    Form(form): Form<DebugClearLogsForm>,
-) -> Result<Redirect, AppError> {
-    state.logs.clear().await.map_err(AppError::internal)?;
-    Ok(Redirect::to(&build_debug_redirect_url(
-        form.limit.unwrap_or(100),
-        None,
-        Some("日志已清空"),
-        None,
-    )))
-}
-
 pub async fn responses(State(state): State<AppState>, body: Bytes) -> Result<Response, AppError> {
     let raw_body = std::str::from_utf8(&body)
         .map_err(|_| AppError::bad_request("request body must be valid UTF-8"))?
         .to_owned();
-    let request_json: Value = serde_json::from_str(&raw_body)
-        .map_err(|err| AppError::bad_request(format!("invalid request JSON: {err}")))?;
-
-    let id = Uuid::new_v4().simple().to_string();
-    let started_at = Instant::now();
-    let model = responses_request_model(&request_json).map(ToOwned::to_owned);
-    let stream = responses_request_stream(&request_json);
-    log_http_event(
-        &state.logs,
-        &id,
-        LogStage::ClientRequest,
-        None,
-        Some(ClientProtocol::OpenAiResponses.as_str()),
-        None,
-        None,
-        None,
-        None,
-        model.as_deref(),
-        stream,
-        Some("POST"),
-        Some(Config::responses_path()),
-        None,
-        Some(raw_body.clone()),
-        None,
-        None,
-    )
-    .await;
-
-    match responses_inner(state.clone(), raw_body, id.clone(), started_at).await {
-        Ok(response) => Ok(response),
-        Err(err) => {
-            let error_body = gateway_error_payload(&err.message);
-            let elapsed = elapsed_ms(started_at);
-            log_http_event(
-                &state.logs,
-                &id,
-                LogStage::Error,
-                Some(err.status),
-                Some(ClientProtocol::OpenAiResponses.as_str()),
-                None,
-                None,
-                None,
-                None,
-                model.as_deref(),
-                stream,
-                Some("POST"),
-                Some(Config::responses_path()),
-                None,
-                Some(json_value_for_storage(&error_body)),
-                Some(err.message.clone()),
-                Some(elapsed),
-            )
-            .await;
-            log_http_event(
-                &state.logs,
-                &id,
-                LogStage::UpstreamResponse,
-                Some(err.status),
-                Some(ClientProtocol::OpenAiResponses.as_str()),
-                None,
-                None,
-                None,
-                None,
-                model.as_deref(),
-                stream,
-                Some("POST"),
-                Some(Config::responses_path()),
-                None,
-                Some(json_value_for_storage(&error_body)),
-                Some(err.message.clone()),
-                Some(elapsed),
-            )
-            .await;
-            Err(err)
-        }
-    }
-}
-
-fn map_debug_log_summary(log: GatewayLogSummary) -> DebugWebLogSummary {
-    DebugWebLogSummary {
-        id: log.id,
-        updated_at_label: format_timestamp(log.updated_at),
-        provider_name: log.provider_name,
-        account_email: log.account_email,
-        model: log.model,
-        stream: log.stream,
-        status_code: log.status_code,
-        has_error: log.has_error,
-        error_message: log.error_message,
-        client_protocol: log.client_protocol,
-        upstream_protocol: log.upstream_protocol,
-        method: log.method,
-        path: log.path,
-        upstream_request_url: log.upstream_request_url,
-        user_input: log.user_input,
-        model_output: log.model_output,
-    }
-}
-
-fn map_debug_log_detail(log: GatewayLogDetail) -> DebugWebLogDetail {
-    DebugWebLogDetail {
-        id: log.id,
-        created_at_label: format_timestamp(log.created_at),
-        updated_at_label: format_timestamp(log.updated_at),
-        provider_name: log.provider_name,
-        account_id: log.account_id,
-        account_email: log.account_email,
-        model: log.model,
-        stream: log.stream,
-        client_protocol: log.client_protocol,
-        upstream_protocol: log.upstream_protocol,
-        method: log.method,
-        path: log.path,
-        upstream_request_url: log.upstream_request_url,
-        client_request_body: log.client_request_body,
-        client_request_body_truncated: log.client_request_body_truncated,
-        upstream_request_body: log.upstream_request_body,
-        upstream_request_body_truncated: log.upstream_request_body_truncated,
-        client_response_status_code: log.client_response_status_code,
-        client_response_body: log.client_response_body,
-        client_response_body_truncated: log.client_response_body_truncated,
-        upstream_response_status_code: log.upstream_response_status_code,
-        upstream_response_body: log.upstream_response_body,
-        upstream_response_body_truncated: log.upstream_response_body_truncated,
-        error_message: log.error_message,
-        error_truncated: log.error_truncated,
-        elapsed_ms: log.elapsed_ms,
-        user_input: log.user_input,
-        user_input_path: log.user_input_path,
-        model_output: log.model_output,
-        model_output_path: log.model_output_path,
-    }
-}
-
-fn format_timestamp(timestamp: i64) -> String {
-    Local
-        .timestamp_opt(timestamp, 0)
-        .single()
-        .map(|dt| dt.format("%Y年%-m月%-d日 %H:%M").to_string())
-        .unwrap_or_else(|| timestamp.to_string())
-}
-
-fn build_debug_redirect_url(
-    limit: usize,
-    id: Option<&str>,
-    notice: Option<&str>,
-    error: Option<&str>,
-) -> String {
-    let mut serializer = url::form_urlencoded::Serializer::new(String::new());
-    serializer.append_pair("limit", &limit.clamp(1, 500).to_string());
-    if let Some(id) = id {
-        serializer.append_pair("id", id);
-    }
-    if let Some(notice) = notice {
-        serializer.append_pair("notice", notice);
-    }
-    if let Some(error) = error {
-        serializer.append_pair("error", error);
-    }
-    format!("/debug?{}", serializer.finish())
+    responses_inner(state, raw_body).await
 }
 
 pub(super) async fn responses_inner(
     state: AppState,
     raw_body: String,
-    id: String,
-    started_at: Instant,
 ) -> Result<Response, AppError> {
     let provider = resolve_selected_provider(&state).await?;
     let mut request_json: Value = serde_json::from_str(&raw_body)
@@ -632,7 +307,7 @@ pub(super) async fn responses_inner(
     let model_overridden =
         apply_selected_model_override_to_raw_request(&state, &mut request_json).await;
     let request_body = if model_overridden {
-        json_value_for_storage(&request_json)
+        request_json.to_string()
     } else {
         raw_body
     };
@@ -666,43 +341,12 @@ pub(super) async fn responses_inner(
             responses_passthrough_inner(
                 state,
                 private_responses,
-                ResponsesPassthroughContext {
-                    provider_name: prepared.provider_name,
-                    account_id: Some(account.id.clone()),
-                    account_email: Some(account.email.clone()),
-                    model: prepared.model,
-                    request_stream: prepared.request_stream,
-                    upstream_protocol: prepared.upstream_protocol,
-                    upstream_url: prepared.upstream_url,
-                    request_body: prepared.request_body,
-                },
-                id,
-                started_at,
+                prepared.request_stream,
+                prepared.request_body,
             )
             .await
         }
         PreparedResponsesUpstream::ApiChatCompletions(prepared) => {
-            log_http_event(
-                &state.logs,
-                &id,
-                LogStage::UpstreamRequest,
-                None,
-                Some(ClientProtocol::OpenAiResponses.as_str()),
-                Some(prepared.upstream_protocol.as_str()),
-                Some(&prepared.provider_name),
-                None,
-                None,
-                Some(&prepared.model),
-                prepared.stream,
-                Some("POST"),
-                None,
-                Some(&prepared.upstream_url),
-                Some(json_value_for_storage(&prepared.request_body)),
-                None,
-                None,
-            )
-            .await;
-
             let public_chat = PublicOpenAiRequestBuilder {
                 base_url: prepared.provider.base_url.as_str(),
                 api_key: prepared.provider.api_key.as_str(),
@@ -717,23 +361,14 @@ pub(super) async fn responses_inner(
                 )
                 .await
                 .map_err(AppError::upstream_message)?;
-            let upstream_status = upstream.status();
 
-            let logs = state.logs.clone();
-            let id_for_stream = id.clone();
-            let provider_name = prepared.provider_name;
-            let response_provider_name = provider_name.clone();
+            let response_provider_name = prepared.provider_name;
             let model = prepared.model;
-            let upstream_protocol = prepared.upstream_protocol.as_str().to_string();
-            let upstream_url_for_stream = prepared.upstream_url;
             let output = stream! {
                 let mut stream = upstream.bytes_stream();
                 let mut chat_sse_buffer = String::new();
-                let mut response_body = String::new();
-                let mut final_response_sse_buffer = String::new();
-                let mut final_response_body: Option<String> = None;
                 let mut response_stream =
-                    ChatCompletionsResponsesStream::new(model.clone(), now_unix());
+                    ChatCompletionsResponsesStream::new(model, now_unix());
 
                 while let Some(result) = stream.next().await {
                     match result {
@@ -751,36 +386,10 @@ pub(super) async fn responses_inner(
                                                     return;
                                                 }
                                             };
-                                            append_to_log_buffer(&mut response_body, &event);
-                                            capture_final_response_from_sse_chunk(
-                                                &mut final_response_sse_buffer,
-                                                &event,
-                                                &mut final_response_body,
-                                            );
                                             yield Ok::<Bytes, std::io::Error>(Bytes::from(event));
                                         }
                                     }
-                                    Err(err) => {
-                                        log_http_event(
-                                            &logs,
-                                            &id_for_stream,
-                                            LogStage::Error,
-                                            Some(StatusCode::BAD_GATEWAY),
-                                            Some(ClientProtocol::OpenAiResponses.as_str()),
-                                            Some(&upstream_protocol),
-                                            Some(&provider_name),
-                                            None,
-                                            None,
-                                            Some(&model),
-                                            true,
-                                            Some("POST"),
-                                            Some(Config::responses_path()),
-                                            Some(&upstream_url_for_stream),
-                                            Some(response_body.clone()),
-                                            Some(err),
-                                            Some(elapsed_ms(started_at)),
-                                        )
-                                        .await;
+                                    Err(_) => {
                                         yield Err(std::io::Error::other("failed to parse chat completions stream"));
                                         return;
                                     }
@@ -788,26 +397,6 @@ pub(super) async fn responses_inner(
                             }
                         }
                         Err(err) => {
-                            log_http_event(
-                                &logs,
-                                &id_for_stream,
-                                LogStage::Error,
-                                Some(StatusCode::INTERNAL_SERVER_ERROR),
-                                Some(ClientProtocol::OpenAiResponses.as_str()),
-                                Some(&upstream_protocol),
-                                Some(&provider_name),
-                                None,
-                                None,
-                                Some(&model),
-                                true,
-                                Some("POST"),
-                                Some(Config::responses_path()),
-                                Some(&upstream_url_for_stream),
-                                Some(response_body.clone()),
-                                Some(err.to_string()),
-                                Some(elapsed_ms(started_at)),
-                            )
-                            .await;
                             yield Err(std::io::Error::other(err));
                             return;
                         }
@@ -827,36 +416,10 @@ pub(super) async fn responses_inner(
                                             return;
                                         }
                                     };
-                                    append_to_log_buffer(&mut response_body, &event);
-                                    capture_final_response_from_sse_chunk(
-                                        &mut final_response_sse_buffer,
-                                        &event,
-                                        &mut final_response_body,
-                                    );
                                     yield Ok::<Bytes, std::io::Error>(Bytes::from(event));
                                 }
                             }
-                            Err(err) => {
-                                log_http_event(
-                                    &logs,
-                                    &id_for_stream,
-                                    LogStage::Error,
-                                    Some(StatusCode::BAD_GATEWAY),
-                                    Some(ClientProtocol::OpenAiResponses.as_str()),
-                                    Some(&upstream_protocol),
-                                    Some(&provider_name),
-                                    None,
-                                    None,
-                                    Some(&model),
-                                    true,
-                                    Some("POST"),
-                                    Some(Config::responses_path()),
-                                    Some(&upstream_url_for_stream),
-                                    Some(response_body.clone()),
-                                    Some(err),
-                                    Some(elapsed_ms(started_at)),
-                                )
-                                .await;
+                            Err(_) => {
                                 yield Err(std::io::Error::other("failed to parse chat completions stream"));
                                 return;
                             }
@@ -874,84 +437,13 @@ pub(super) async fn responses_inner(
                                     return;
                                 }
                             };
-                            append_to_log_buffer(&mut response_body, &event);
-                            capture_final_response_from_sse_chunk(
-                                &mut final_response_sse_buffer,
-                                &event,
-                                &mut final_response_body,
-                            );
                             yield Ok::<Bytes, std::io::Error>(Bytes::from(event));
                         }
                     }
-                    Err(err) => {
-                        log_http_event(
-                            &logs,
-                            &id_for_stream,
-                            LogStage::Error,
-                            Some(StatusCode::INTERNAL_SERVER_ERROR),
-                            Some(ClientProtocol::OpenAiResponses.as_str()),
-                            Some(&upstream_protocol),
-                            Some(&provider_name),
-                            None,
-                            None,
-                            Some(&model),
-                            true,
-                            Some("POST"),
-                            Some(Config::responses_path()),
-                            Some(&upstream_url_for_stream),
-                            Some(response_body.clone()),
-                            Some(err),
-                            Some(elapsed_ms(started_at)),
-                        )
-                        .await;
+                    Err(_) => {
                         yield Err(std::io::Error::other("failed to finish chat completions stream"));
-                        return;
                     }
                 }
-
-                let elapsed = elapsed_ms(started_at);
-                let logged_response_body =
-                    logged_stream_response_body(final_response_body.as_deref(), &response_body);
-                log_http_event(
-                    &logs,
-                    &id_for_stream,
-                    LogStage::ClientResponse,
-                    Some(upstream_status),
-                    Some(ClientProtocol::OpenAiResponses.as_str()),
-                    Some(&upstream_protocol),
-                    Some(&provider_name),
-                    None,
-                    None,
-                    Some(&model),
-                    true,
-                    Some("POST"),
-                    None,
-                    Some(&upstream_url_for_stream),
-                    Some(logged_response_body.clone()),
-                    None,
-                    Some(elapsed),
-                )
-                .await;
-                log_http_event(
-                    &logs,
-                    &id_for_stream,
-                    LogStage::UpstreamResponse,
-                    Some(StatusCode::OK),
-                    Some(ClientProtocol::OpenAiResponses.as_str()),
-                    None,
-                    Some(&provider_name),
-                    None,
-                    None,
-                    Some(&model),
-                    true,
-                    Some("POST"),
-                    Some(Config::responses_path()),
-                    None,
-                    Some(logged_response_body),
-                    None,
-                    Some(elapsed),
-                )
-                .await;
             };
 
             Ok(Response::builder()
@@ -971,9 +463,6 @@ pub(super) async fn responses_inner(
                 .map_err(|err| AppError::internal(err.to_string()))?)
         }
         PreparedResponsesUpstream::ApiResponsesPassthrough(prepared) => {
-            // The structured trace is produced now so the adapter no longer hides
-            // mutations. It will be persisted by the next logging migration.
-            let _request_transform_changes = prepared.request_transform_changes;
             let public_responses = PublicOpenAiRequestBuilder {
                 base_url: prepared.provider.base_url.as_str(),
                 api_key: prepared.provider.api_key.as_str(),
@@ -981,76 +470,23 @@ pub(super) async fn responses_inner(
             responses_passthrough_inner(
                 state,
                 public_responses,
-                ResponsesPassthroughContext {
-                    provider_name: prepared.provider_name,
-                    account_id: None,
-                    account_email: None,
-                    model: prepared.model,
-                    request_stream: prepared.request_stream,
-                    upstream_protocol: prepared.upstream_protocol,
-                    upstream_url: prepared.upstream_url,
-                    request_body: prepared.request_body,
-                },
-                id,
-                started_at,
+                prepared.request_stream,
+                prepared.request_body,
             )
             .await
         }
     }
 }
 
-#[derive(Debug)]
-struct ResponsesPassthroughContext {
-    provider_name: String,
-    account_id: Option<String>,
-    account_email: Option<String>,
-    model: String,
-    request_stream: bool,
-    upstream_protocol: UpstreamProtocol,
-    upstream_url: String,
-    request_body: String,
-}
-
 async fn responses_passthrough_inner<B>(
     state: AppState,
     builder: B,
-    context: ResponsesPassthroughContext,
-    id: String,
-    started_at: Instant,
+    request_stream: bool,
+    request_body: String,
 ) -> Result<Response, AppError>
 where
     B: OpenAiRequestBuilder,
 {
-    let upstream_protocol = context.upstream_protocol.as_str().to_string();
-    let model = context.model;
-    let request_stream = context.request_stream;
-    let upstream_url = context.upstream_url;
-    let provider_name = context.provider_name;
-    let account_id = context.account_id;
-    let account_email = context.account_email;
-    let request_body = context.request_body;
-
-    log_http_event(
-        &state.logs,
-        &id,
-        LogStage::UpstreamRequest,
-        None,
-        Some(ClientProtocol::OpenAiResponses.as_str()),
-        Some(&upstream_protocol),
-        Some(&provider_name),
-        account_id.as_deref(),
-        account_email.as_deref(),
-        (!model.is_empty()).then_some(model.as_str()),
-        request_stream,
-        Some("POST"),
-        None,
-        Some(&upstream_url),
-        Some(request_body.clone()),
-        None,
-        None,
-    )
-    .await;
-
     let upstream = state
         .upstream
         .openai_send_passthrough(
@@ -1066,53 +502,8 @@ where
     let upstream_headers = upstream.headers().clone();
     let response_is_stream = is_event_stream_response(&upstream_headers);
 
-    let logs = state.logs.clone();
-    let id_for_stream = id.clone();
     if !response_is_stream {
         let response_bytes = upstream.bytes().await.map_err(AppError::upstream)?;
-        let response_body = String::from_utf8_lossy(&response_bytes).into_owned();
-        let elapsed = elapsed_ms(started_at);
-        log_http_event(
-            &logs,
-            &id,
-            LogStage::ClientResponse,
-            Some(upstream_status),
-            Some(ClientProtocol::OpenAiResponses.as_str()),
-            Some(&upstream_protocol),
-            Some(&provider_name),
-            account_id.as_deref(),
-            account_email.as_deref(),
-            (!model.is_empty()).then_some(model.as_str()),
-            request_stream,
-            Some("POST"),
-            None,
-            Some(&upstream_url),
-            Some(response_body.clone()),
-            None,
-            Some(elapsed),
-        )
-        .await;
-        log_http_event(
-            &logs,
-            &id,
-            LogStage::UpstreamResponse,
-            Some(upstream_status),
-            Some(ClientProtocol::OpenAiResponses.as_str()),
-            Some(&upstream_protocol),
-            Some(&provider_name),
-            account_id.as_deref(),
-            account_email.as_deref(),
-            (!model.is_empty()).then_some(model.as_str()),
-            request_stream,
-            Some("POST"),
-            Some(Config::responses_path()),
-            Some(&upstream_url),
-            Some(response_body),
-            None,
-            Some(elapsed),
-        )
-        .await;
-
         return build_passthrough_response(
             upstream_status,
             &upstream_headers,
@@ -1122,92 +513,15 @@ where
 
     let output = stream! {
         let mut stream = upstream.bytes_stream();
-        let mut response_body = String::new();
-        let mut final_response_sse_buffer = String::new();
-        let mut final_response_body: Option<String> = None;
-
         while let Some(result) = stream.next().await {
             match result {
-                Ok(chunk) => {
-                    let chunk_text = String::from_utf8_lossy(&chunk);
-                    append_to_log_buffer(&mut response_body, &chunk_text);
-                    capture_final_response_from_sse_chunk(
-                        &mut final_response_sse_buffer,
-                        &chunk_text,
-                        &mut final_response_body,
-                    );
-                    yield Ok::<Bytes, std::io::Error>(chunk);
-                }
+                Ok(chunk) => yield Ok::<Bytes, std::io::Error>(chunk),
                 Err(err) => {
-                    log_http_event(
-                        &logs,
-                        &id_for_stream,
-                        LogStage::Error,
-                        Some(StatusCode::BAD_GATEWAY),
-                        Some(ClientProtocol::OpenAiResponses.as_str()),
-                        Some(&upstream_protocol),
-                        Some(&provider_name),
-                        account_id.as_deref(),
-                        account_email.as_deref(),
-                        (!model.is_empty()).then_some(model.as_str()),
-                        request_stream,
-                        Some("POST"),
-                        Some(Config::responses_path()),
-                        Some(&upstream_url),
-                        Some(response_body.clone()),
-                        Some(err.to_string()),
-                        Some(elapsed_ms(started_at)),
-                    )
-                    .await;
                     yield Err(std::io::Error::other(err));
                     return;
                 }
             }
         }
-
-        let elapsed = elapsed_ms(started_at);
-        let logged_response_body =
-            logged_stream_response_body(final_response_body.as_deref(), &response_body);
-        log_http_event(
-            &logs,
-            &id_for_stream,
-            LogStage::ClientResponse,
-            Some(upstream_status),
-            Some(ClientProtocol::OpenAiResponses.as_str()),
-            Some(&upstream_protocol),
-            Some(&provider_name),
-            account_id.as_deref(),
-            account_email.as_deref(),
-            (!model.is_empty()).then_some(model.as_str()),
-            request_stream,
-            Some("POST"),
-            None,
-            Some(&upstream_url),
-            Some(logged_response_body.clone()),
-            None,
-            Some(elapsed),
-        )
-        .await;
-        log_http_event(
-            &logs,
-            &id_for_stream,
-            LogStage::UpstreamResponse,
-            Some(upstream_status),
-            Some(ClientProtocol::OpenAiResponses.as_str()),
-            Some(&upstream_protocol),
-            Some(&provider_name),
-            account_id.as_deref(),
-            account_email.as_deref(),
-            (!model.is_empty()).then_some(model.as_str()),
-            request_stream,
-            Some("POST"),
-            Some(Config::responses_path()),
-            Some(&upstream_url),
-            Some(logged_response_body),
-            None,
-            Some(elapsed),
-        )
-        .await;
     };
 
     build_passthrough_response(
@@ -1768,126 +1082,6 @@ fn encode_response_frame(frame: ResponseStreamFrame) -> Result<String, std::io::
         .map_err(|err| std::io::Error::other(err.to_string()))
 }
 
-pub(super) async fn log_http_event(
-    logs: &LogStore,
-    id: &str,
-    stage: LogStage,
-    status_code: Option<StatusCode>,
-    client_protocol: Option<&str>,
-    upstream_protocol: Option<&str>,
-    provider_name: Option<&str>,
-    account_id: Option<&str>,
-    account_email: Option<&str>,
-    model: Option<&str>,
-    stream: bool,
-    method: Option<&str>,
-    path: Option<&str>,
-    url: Option<&str>,
-    body: Option<String>,
-    error_message: Option<String>,
-    elapsed_ms: Option<i64>,
-) {
-    if let Err(_) = logs
-        .record(LogEvent {
-            id: id.to_string(),
-            stage,
-            status_code: status_code.map(|status| status.as_u16()),
-            client_protocol: client_protocol.map(ToOwned::to_owned),
-            upstream_protocol: upstream_protocol.map(ToOwned::to_owned),
-            provider_name: provider_name.map(ToOwned::to_owned),
-            account_id: account_id.map(ToOwned::to_owned),
-            account_email: account_email.map(ToOwned::to_owned),
-            model: model.map(ToOwned::to_owned),
-            stream,
-            method: method.map(ToOwned::to_owned),
-            path: path.map(ToOwned::to_owned),
-            url: url.map(ToOwned::to_owned),
-            body,
-            error_message,
-            elapsed_ms,
-        })
-        .await
-    {}
-}
-
-fn gateway_error_payload(message: &str) -> Value {
-    json!({
-        "error": {
-            "message": message,
-            "type": "proxy_error"
-        }
-    })
-}
-
-pub(super) fn json_value_for_storage(value: &Value) -> String {
-    value.to_string()
-}
-
-fn capture_final_response_from_sse_chunk(
-    buffer: &mut String,
-    chunk: &str,
-    final_response_body: &mut Option<String>,
-) {
-    buffer.push_str(chunk);
-
-    while let Some(line_end) = buffer.find('\n') {
-        let line: String = buffer.drain(..=line_end).collect();
-        capture_final_response_from_sse_line(line.trim_end(), final_response_body);
-    }
-}
-
-fn capture_final_response_from_sse_line(line: &str, final_response_body: &mut Option<String>) {
-    let Some(payload) = line.strip_prefix("data: ") else {
-        return;
-    };
-    if payload == "[DONE]" {
-        return;
-    }
-
-    let Ok(event) = serde_json::from_str::<Value>(payload) else {
-        return;
-    };
-    capture_final_response_from_event_value(&event, final_response_body);
-}
-
-fn capture_final_response_from_event_value(
-    event: &Value,
-    final_response_body: &mut Option<String>,
-) {
-    let Some(event_type) = event.get("type").and_then(Value::as_str) else {
-        return;
-    };
-    if matches!(
-        event_type,
-        "response.completed" | "response.failed" | "response.incomplete"
-    ) {
-        if let Some(response) = event.get("response") {
-            *final_response_body = Some(json_value_for_storage(response));
-        }
-    }
-}
-
-pub(super) fn logged_stream_response_body(
-    final_response_body: Option<&str>,
-    response_body: &str,
-) -> String {
-    if let Some(final_body) = final_response_body {
-        if extract_model_output_from_body(final_body).is_some() {
-            return final_body.to_string();
-        }
-    }
-
-    response_body.to_string()
-}
-
-pub(super) fn elapsed_ms(started_at: Instant) -> i64 {
-    started_at.elapsed().as_millis().min(i64::MAX as u128) as i64
-}
-
-pub(super) fn append_to_log_buffer(buffer: &mut String, chunk: &str) {
-    buffer.push_str(chunk);
-}
-
 #[derive(Debug)]
 pub struct AppError {
     pub(super) status: StatusCode,
@@ -1950,9 +1144,8 @@ impl IntoResponse for AppError {
 mod tests {
     use super::CodexAuthFile;
     use super::{
-        ChatCompletionsResponsesStream, ResolvedProvider, capture_final_response_from_sse_chunk,
-        drain_sse_payloads, logged_stream_response_body, openai_models_response,
-        provider_uses_openai_account, quota_from_openai_usage,
+        ChatCompletionsResponsesStream, ResolvedProvider, drain_sse_payloads,
+        openai_models_response, provider_uses_openai_account, quota_from_openai_usage,
     };
     use crate::models::{
         ApiProviderBillingMode, ApiProviderRecord, ProviderAuthMode, ProviderCompatibilityProfile,
@@ -2173,96 +1366,5 @@ mod tests {
         };
 
         assert!(provider_uses_openai_account(&provider));
-    }
-
-    #[test]
-    fn captures_completed_response_from_sse_for_log_storage() {
-        let mut buffer = String::new();
-        let mut final_response = None;
-
-        capture_final_response_from_sse_chunk(
-            &mut buffer,
-            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n",
-            &mut final_response,
-        );
-        assert!(final_response.is_none());
-
-        capture_final_response_from_sse_chunk(
-            &mut buffer,
-            "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"status\":\"completed\",\"output\":[]}}\n\ndata: [DONE]\n\n",
-            &mut final_response,
-        );
-
-        assert_eq!(
-            final_response.as_deref(),
-            Some("{\"id\":\"resp_1\",\"output\":[],\"status\":\"completed\"}")
-        );
-    }
-
-    #[test]
-    fn captures_failed_response_from_sse_for_log_storage() {
-        let mut buffer = String::new();
-        let mut final_response = None;
-
-        capture_final_response_from_sse_chunk(
-            &mut buffer,
-            "data: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp_1\",\"status\":\"failed\",\"error\":{\"message\":\"boom\"}}}\n\n",
-            &mut final_response,
-        );
-
-        assert_eq!(
-            final_response.as_deref(),
-            Some("{\"error\":{\"message\":\"boom\"},\"id\":\"resp_1\",\"status\":\"failed\"}")
-        );
-    }
-
-    #[test]
-    fn captures_completed_response_from_split_sse_chunk_for_log_storage() {
-        let mut buffer = String::new();
-        let mut final_response = None;
-
-        capture_final_response_from_sse_chunk(
-            &mut buffer,
-            "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_",
-            &mut final_response,
-        );
-        assert!(final_response.is_none());
-
-        capture_final_response_from_sse_chunk(
-            &mut buffer,
-            "split\",\"status\":\"completed\",\"output\":[]}}\n\n",
-            &mut final_response,
-        );
-
-        assert_eq!(
-            final_response.as_deref(),
-            Some("{\"id\":\"resp_split\",\"output\":[],\"status\":\"completed\"}")
-        );
-    }
-
-    #[test]
-    fn keeps_sse_body_when_completed_response_has_no_output_text() {
-        let final_response = r#"{"id":"resp_1","status":"completed","output":[]}"#;
-        let sse_body = concat!(
-            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n",
-            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"status\":\"completed\",\"output\":[]}}\n\n",
-            "data: [DONE]\n\n"
-        );
-
-        assert_eq!(
-            logged_stream_response_body(Some(final_response), sse_body),
-            sse_body
-        );
-    }
-
-    #[test]
-    fn keeps_compact_completed_response_when_it_has_output_text() {
-        let final_response = r#"{"id":"resp_1","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"done"}]}]}"#;
-        let sse_body = "data: ignored\n\n";
-
-        assert_eq!(
-            logged_stream_response_body(Some(final_response), sse_body),
-            final_response
-        );
     }
 }

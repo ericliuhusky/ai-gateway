@@ -1,7 +1,6 @@
 import * as React from "react";
 import {
   Activity,
-  Bug,
   Check,
   CheckCircle2,
   ChevronDown,
@@ -249,14 +248,6 @@ export function App() {
             >
               <Code2 className="size-3.5" />
               <span className="hidden sm:inline">Codex 接入</span>
-            </Button>
-            <Button
-              variant="outline"
-              size="icon"
-              title="打开调试页"
-              onClick={() => window.open("/debug", "_blank", "noopener,noreferrer")}
-            >
-              <Bug className="size-4" />
             </Button>
           </div>
         </div>
