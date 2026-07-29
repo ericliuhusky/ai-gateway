@@ -703,11 +703,11 @@ async fn choose_model_for_request(
     let routing_request = summarize_request(request);
     if routing_request.requires_safety_bypass() {
         let reason = if routing_request.has_visual_input {
-            "visual_input_requires_strong_model"
+            "visual_input_requires_max_model"
         } else {
             "tool_continuation_without_turn_binding"
         };
-        return Ok(RoutingDecision::bypass_strong(&settings, reason));
+        return Ok(RoutingDecision::bypass_max(&settings, reason));
     }
 
     let Some(classifier_model) = settings.classifier_model.as_deref() else {
@@ -862,9 +862,11 @@ fn safe_model_name(model: &str) -> Option<String> {
 
 fn routing_tier_from_log(tier: Option<&str>) -> Option<crate::routing::RoutingTier> {
     match tier {
-        Some("cheap") => Some(crate::routing::RoutingTier::Cheap),
+        // Preserve turn stickiness for rows written before the four-tier migration.
+        Some("cheap") | Some("light") => Some(crate::routing::RoutingTier::Light),
         Some("standard") => Some(crate::routing::RoutingTier::Standard),
-        Some("strong") => Some(crate::routing::RoutingTier::Strong),
+        Some("pro") => Some(crate::routing::RoutingTier::Pro),
+        Some("strong") | Some("max") => Some(crate::routing::RoutingTier::Max),
         _ => None,
     }
 }
@@ -1222,23 +1224,25 @@ fn normalize_auto_routing_settings(
     let settings = AutoRoutingSettings {
         enabled: request.enabled,
         classifier_model: normalize_optional_model(request.classifier_model),
-        cheap_model: normalize_optional_model(request.cheap_model),
+        light_model: normalize_optional_model(request.light_model),
         standard_model: normalize_optional_model(request.standard_model),
-        strong_model: normalize_optional_model(request.strong_model),
+        pro_model: normalize_optional_model(request.pro_model),
+        max_model: normalize_optional_model(request.max_model),
         low_confidence_threshold: request.low_confidence_threshold,
     };
     if settings.enabled
         && [
             settings.classifier_model.as_ref(),
-            settings.cheap_model.as_ref(),
+            settings.light_model.as_ref(),
             settings.standard_model.as_ref(),
-            settings.strong_model.as_ref(),
+            settings.pro_model.as_ref(),
+            settings.max_model.as_ref(),
         ]
         .iter()
         .any(|model| model.is_none())
     {
         return Err(AppError::bad_request(
-            "classifier_model, cheap_model, standard_model, and strong_model are required when automatic routing is enabled",
+            "classifier_model, light_model, standard_model, pro_model, and max_model are required when automatic routing is enabled",
         ));
     }
     Ok(settings)
@@ -1943,13 +1947,13 @@ mod tests {
             "event: response.output_text.delta\n",
             "data: {\"type\":\"response.output_text.delta\",\"delta\":\"{\\\"tier\\\":\"}\n\n",
             "event: response.output_text.delta\n",
-            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"\\\"cheap\\\",\\\"confidence\\\":0.95}\"}\n\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"\\\"light\\\",\\\"confidence\\\":0.95}\"}\n\n",
             "data: [DONE]\n\n"
         );
 
         assert_eq!(
             classifier_text_from_sse(body).as_deref(),
-            Some("{\"tier\":\"cheap\",\"confidence\":0.95}")
+            Some("{\"tier\":\"light\",\"confidence\":0.95}")
         );
     }
 

@@ -166,11 +166,13 @@ pub struct AutoRoutingSettings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub classifier_model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub cheap_model: Option<String>,
+    pub light_model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub standard_model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub strong_model: Option<String>,
+    pub pro_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_model: Option<String>,
     #[serde(default = "default_low_confidence_threshold")]
     pub low_confidence_threshold: f64,
 }
@@ -180,9 +182,10 @@ impl Default for AutoRoutingSettings {
         Self {
             enabled: false,
             classifier_model: None,
-            cheap_model: None,
+            light_model: None,
             standard_model: None,
-            strong_model: None,
+            pro_model: None,
+            max_model: None,
             low_confidence_threshold: default_low_confidence_threshold(),
         }
     }
@@ -194,12 +197,14 @@ pub struct UpdateAutoRoutingSettingsRequest {
     pub enabled: bool,
     #[serde(default)]
     pub classifier_model: Option<String>,
-    #[serde(default)]
-    pub cheap_model: Option<String>,
+    #[serde(default, alias = "cheap_model")]
+    pub light_model: Option<String>,
     #[serde(default)]
     pub standard_model: Option<String>,
     #[serde(default)]
-    pub strong_model: Option<String>,
+    pub pro_model: Option<String>,
+    #[serde(default, alias = "strong_model")]
+    pub max_model: Option<String>,
     #[serde(default = "default_low_confidence_threshold")]
     pub low_confidence_threshold: f64,
 }

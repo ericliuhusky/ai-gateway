@@ -282,18 +282,20 @@ impl SqliteStore {
     pub fn load_auto_routing_settings(&self) -> Result<AutoRoutingSettings, String> {
         let conn = self.connect()?;
         conn.query_row(
-            "SELECT routing_enabled, routing_classifier_model, routing_cheap_model,
-                    routing_standard_model, routing_strong_model, routing_low_confidence_threshold
+            "SELECT routing_enabled, routing_classifier_model, routing_light_model,
+                    routing_standard_model, routing_pro_model, routing_max_model,
+                    routing_low_confidence_threshold
              FROM gateway_state WHERE id = 1",
             [],
             |row| {
                 Ok(AutoRoutingSettings {
                     enabled: row.get::<_, i64>(0)? != 0,
                     classifier_model: row.get(1)?,
-                    cheap_model: row.get(2)?,
+                    light_model: row.get(2)?,
                     standard_model: row.get(3)?,
-                    strong_model: row.get(4)?,
-                    low_confidence_threshold: row.get(5)?,
+                    pro_model: row.get(4)?,
+                    max_model: row.get(5)?,
+                    low_confidence_threshold: row.get(6)?,
                 })
             },
         )
@@ -306,23 +308,31 @@ impl SqliteStore {
         let conn = self.connect()?;
         conn.execute(
             "INSERT INTO gateway_state (
-                id, routing_enabled, routing_classifier_model, routing_cheap_model,
-                routing_standard_model, routing_strong_model, routing_low_confidence_threshold,
+                id, routing_enabled, routing_classifier_model,
+                routing_cheap_model, routing_standard_model, routing_strong_model,
+                routing_light_model, routing_pro_model, routing_max_model,
+                routing_low_confidence_threshold,
                 route_updated_at
-             ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, 0)
+             ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0)
              ON CONFLICT(id) DO UPDATE SET
                 routing_enabled = excluded.routing_enabled,
                 routing_classifier_model = excluded.routing_classifier_model,
                 routing_cheap_model = excluded.routing_cheap_model,
                 routing_standard_model = excluded.routing_standard_model,
                 routing_strong_model = excluded.routing_strong_model,
+                routing_light_model = excluded.routing_light_model,
+                routing_pro_model = excluded.routing_pro_model,
+                routing_max_model = excluded.routing_max_model,
                 routing_low_confidence_threshold = excluded.routing_low_confidence_threshold",
             params![
                 i64::from(settings.enabled),
                 settings.classifier_model,
-                settings.cheap_model,
+                settings.light_model,
                 settings.standard_model,
-                settings.strong_model,
+                settings.max_model,
+                settings.light_model,
+                settings.pro_model,
+                settings.max_model,
                 settings.low_confidence_threshold,
             ],
         )
@@ -467,9 +477,13 @@ impl SqliteStore {
                 codex_client_version_override TEXT,
                 routing_enabled INTEGER NOT NULL DEFAULT 0,
                 routing_classifier_model TEXT,
+                -- Retained solely to migrate pre-four-tier configurations.
                 routing_cheap_model TEXT,
                 routing_standard_model TEXT,
                 routing_strong_model TEXT,
+                routing_light_model TEXT,
+                routing_pro_model TEXT,
+                routing_max_model TEXT,
                 routing_low_confidence_threshold REAL NOT NULL DEFAULT 0.7,
                 route_updated_at INTEGER NOT NULL DEFAULT 0,
                 FOREIGN KEY (selected_provider_id) REFERENCES providers(id) ON DELETE SET NULL
@@ -509,11 +523,32 @@ impl SqliteStore {
         ensure_gateway_state_column(&conn, "routing_cheap_model", "TEXT")?;
         ensure_gateway_state_column(&conn, "routing_standard_model", "TEXT")?;
         ensure_gateway_state_column(&conn, "routing_strong_model", "TEXT")?;
+        ensure_gateway_state_column(&conn, "routing_light_model", "TEXT")?;
+        ensure_gateway_state_column(&conn, "routing_pro_model", "TEXT")?;
+        ensure_gateway_state_column(&conn, "routing_max_model", "TEXT")?;
         ensure_gateway_state_column(
             &conn,
             "routing_low_confidence_threshold",
             "REAL NOT NULL DEFAULT 0.7",
         )?;
+        conn.execute(
+            "UPDATE gateway_state
+             SET routing_light_model = COALESCE(routing_light_model, routing_cheap_model),
+                 routing_pro_model = COALESCE(routing_pro_model, routing_strong_model),
+                 routing_max_model = COALESCE(routing_max_model, routing_strong_model)",
+            [],
+        )
+        .map_err(|err| format!("migrate automatic routing tiers failed: {err}"))?;
+        conn.execute(
+            "UPDATE turn_route_logs
+             SET routing_tier = CASE routing_tier
+                 WHEN 'cheap' THEN 'light'
+                 WHEN 'strong' THEN 'max'
+                 ELSE routing_tier
+             END",
+            [],
+        )
+        .map_err(|err| format!("migrate turn routing tiers failed: {err}"))?;
         ensure_table_column(
             &conn,
             "turn_route_logs",
@@ -817,6 +852,45 @@ mod tests {
             }
         );
         assert!(store.load_cached_models(&provider.id).unwrap().is_none());
+
+        let _ = fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn migrates_three_tier_routing_settings_to_four_tiers() {
+        let db_path = unique_test_db_path("four-tier-routing");
+        let conn = Connection::open(&db_path).expect("create legacy database");
+        conn.execute_batch(
+            "CREATE TABLE gateway_state (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                selected_provider_id TEXT,
+                codex_client_version_override TEXT,
+                routing_enabled INTEGER NOT NULL DEFAULT 0,
+                routing_classifier_model TEXT,
+                routing_cheap_model TEXT,
+                routing_standard_model TEXT,
+                routing_strong_model TEXT,
+                routing_low_confidence_threshold REAL NOT NULL DEFAULT 0.7,
+                route_updated_at INTEGER NOT NULL DEFAULT 0
+             );
+             INSERT INTO gateway_state (
+                id, routing_enabled, routing_classifier_model, routing_cheap_model,
+                routing_standard_model, routing_strong_model, routing_low_confidence_threshold
+             ) VALUES (1, 1, 'classifier', 'light-legacy', 'standard-legacy', 'strong-legacy', 0.8);",
+        )
+        .expect("seed legacy routing settings");
+        drop(conn);
+
+        let store = SqliteStore::for_test(db_path.clone()).expect("migrate legacy database");
+        let settings = store.load_auto_routing_settings().expect("load migrated settings");
+
+        assert!(settings.enabled);
+        assert_eq!(settings.classifier_model.as_deref(), Some("classifier"));
+        assert_eq!(settings.light_model.as_deref(), Some("light-legacy"));
+        assert_eq!(settings.standard_model.as_deref(), Some("standard-legacy"));
+        assert_eq!(settings.pro_model.as_deref(), Some("strong-legacy"));
+        assert_eq!(settings.max_model.as_deref(), Some("strong-legacy"));
+        assert_eq!(settings.low_confidence_threshold, 0.8);
 
         let _ = fs::remove_file(db_path);
     }

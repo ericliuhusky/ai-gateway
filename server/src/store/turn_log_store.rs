@@ -52,13 +52,13 @@ mod tests {
         let first = TurnRouteLogUpdate {
             turn_id: "turn_a".to_string(),
             provider_id: "provider_a".to_string(),
-            model: "cheap".to_string(),
+            model: "light".to_string(),
             routing_mode: "classifier".to_string(),
             routing_reason: "classifier_selected".to_string(),
             routing_detail: None,
-            routing_tier: Some("cheap".to_string()),
+            routing_tier: Some("light".to_string()),
             classifier_confidence: Some(0.9),
-            classifier_output: Some("{\"tier\":\"cheap\",\"confidence\":0.9}".to_string()),
+            classifier_output: Some("{\"tier\":\"light\",\"confidence\":0.9}".to_string()),
             reasoning_effort: Some("low".to_string()),
             user_input_preview: Some("hello".to_string()),
             is_tool_round: false,
@@ -74,7 +74,7 @@ mod tests {
             .unwrap();
 
         let log = store.get("turn_a").unwrap().unwrap();
-        assert_eq!(log.model, "cheap");
+        assert_eq!(log.model, "light");
         assert_eq!(log.request_count, 2);
         assert_eq!(log.tool_round_count, 1);
         assert_eq!(log.started_at, 10);
@@ -93,11 +93,11 @@ mod tests {
                     &TurnRouteLogUpdate {
                         turn_id: format!("turn_{timestamp}"),
                         provider_id: "provider_a".to_string(),
-                        model: "cheap".to_string(),
+                        model: "light".to_string(),
                         routing_mode: "classifier".to_string(),
                         routing_reason: "classifier_selected".to_string(),
                         routing_detail: None,
-                        routing_tier: Some("cheap".to_string()),
+                        routing_tier: Some("light".to_string()),
                         classifier_confidence: Some(0.9),
                         classifier_output: None,
                         reasoning_effort: None,

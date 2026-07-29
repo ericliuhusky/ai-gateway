@@ -42,9 +42,10 @@ export interface CodexClientVersionSetting {
 export interface AutoRoutingSettings {
   enabled: boolean;
   classifier_model?: string;
-  cheap_model?: string;
+  light_model?: string;
   standard_model?: string;
-  strong_model?: string;
+  pro_model?: string;
+  max_model?: string;
   low_confidence_threshold: number;
 }
 
@@ -55,7 +56,7 @@ export interface TurnRouteLog {
   routing_mode: string;
   routing_reason: string;
   routing_detail?: string;
-  routing_tier?: "cheap" | "standard" | "strong";
+  routing_tier?: "light" | "standard" | "pro" | "max";
   classifier_confidence?: number;
   classifier_output?: string;
   reasoning_effort?: string;

@@ -512,8 +512,8 @@ function TurnLogSection({ turns }: { turns: TurnRouteLog[] }) {
                   <td className="px-4 py-3.5 font-mono font-semibold">{turn.model}</td>
                   <td className="px-4 py-3.5">
                     <div className="flex items-center gap-2">
-                      <Badge tone={turn.routing_tier === "strong" ? "purple" : turn.routing_tier === "cheap" ? "green" : "blue"}>
-                        {turn.routing_tier ?? turn.routing_mode}
+                      <Badge tone={turn.routing_tier === "max" ? "purple" : turn.routing_tier === "light" ? "green" : "blue"}>
+                        {routingTierLabel(turn.routing_tier) ?? turn.routing_mode}
                       </Badge>
                       {turn.classifier_confidence !== undefined ? (
                         <span className="font-mono text-[10px] text-slate-400">
@@ -546,7 +546,7 @@ function TurnLogSection({ turns }: { turns: TurnRouteLog[] }) {
         )}
       </div>
       <p className="mt-2 px-1 text-[11px] leading-5 text-slate-400">
-        保存首条用户输入的 160 字预览，以及最多 500 字的分类错误或分类模型返回；不保存工具结果和最终回答。超过 1000 条按最近访问淘汰。
+        保存首条用户输入的 160 字预览，以及最多 500 字的分类错误或路由分类模型返回；不保存工具结果和最终回答。超过 1000 条按最近访问淘汰。
       </p>
     </section>
   );
@@ -557,16 +557,27 @@ function routingReasonLabel(reason: string) {
     automatic_routing_disabled: "自动路由未开启",
     selected_model_override: "手动选择模型覆盖",
     same_turn_model_reuse: "同一 Turn 复用既定模型",
-    visual_input_requires_strong_model: "图片输入保守使用强模型",
+    visual_input_requires_strong_model: "图片输入保守使用极致档模型",
+    visual_input_requires_max_model: "图片输入保守使用极致档模型",
     tool_continuation_without_turn_binding: "工具后续请求未关联到原 Turn",
-    classifier_model_not_configured: "分类模型未配置",
-    classifier_request_failed: "分类模型请求失败",
-    classifier_output_text_missing: "分类模型没有返回文本",
+    classifier_model_not_configured: "路由分类模型未配置",
+    classifier_request_failed: "路由分类模型请求失败",
+    classifier_output_text_missing: "路由分类模型没有返回文本",
     classifier_output_invalid: "分类结果无法解析",
-    classifier_selected: "分类模型直接选择",
+    classifier_selected: "路由分类模型直接选择",
     classifier_confidence_below_threshold: "分类置信度低于阈值",
   };
   return labels[reason] ?? reason;
+}
+
+function routingTierLabel(tier: TurnRouteLog["routing_tier"]) {
+  const labels = {
+    light: "轻量",
+    standard: "标准",
+    pro: "专业",
+    max: "极致",
+  };
+  return tier ? labels[tier] : undefined;
 }
 
 function turnLogTime(timestamp: number) {
@@ -1272,9 +1283,10 @@ function AutomaticRoutingPanel({
 
   const configured = [
     settings.classifier_model,
-    settings.cheap_model,
+    settings.light_model,
     settings.standard_model,
-    settings.strong_model,
+    settings.pro_model,
+    settings.max_model,
   ].every(Boolean);
   const canEnable = models.length > 0 && configured;
 
@@ -1302,7 +1314,7 @@ function AutomaticRoutingPanel({
         <div className="min-w-0 flex-1">
           <div className="text-sm font-bold">自动模型路由</div>
           <p className="mt-1 text-[11px] leading-5 text-slate-400">
-            分类模型只输出难度档位；原请求随后发送给对应模型。工具、图片、低置信度和分类失败会直接使用强模型。
+            路由分类模型只输出 light、standard、pro 或 max 档位；原请求随后发送给对应档位模型。工具、图片、低置信度和分类失败会直接使用极致档模型。
           </p>
         </div>
         <button
@@ -1327,10 +1339,11 @@ function AutomaticRoutingPanel({
         </div>
       ) : (
         <div className="mt-5 grid gap-4 sm:grid-cols-2">
-          <ModelRouteSelect label="分类模型（便宜）" value={settings.classifier_model} models={models} disabled={saving} onChange={(value) => update("classifier_model", value)} />
-          <ModelRouteSelect label="简单任务" value={settings.cheap_model} models={models} disabled={saving} onChange={(value) => update("cheap_model", value)} />
-          <ModelRouteSelect label="常规任务" value={settings.standard_model} models={models} disabled={saving} onChange={(value) => update("standard_model", value)} />
-          <ModelRouteSelect label="复杂 / 兜底任务" value={settings.strong_model} models={models} disabled={saving} onChange={(value) => update("strong_model", value)} />
+          <ModelRouteSelect label="路由分类模型" value={settings.classifier_model} models={models} disabled={saving} onChange={(value) => update("classifier_model", value)} />
+          <ModelRouteSelect label="轻量模型（light）" value={settings.light_model} models={models} disabled={saving} onChange={(value) => update("light_model", value)} />
+          <ModelRouteSelect label="标准模型（standard）" value={settings.standard_model} models={models} disabled={saving} onChange={(value) => update("standard_model", value)} />
+          <ModelRouteSelect label="专业模型（pro）" value={settings.pro_model} models={models} disabled={saving} onChange={(value) => update("pro_model", value)} />
+          <ModelRouteSelect label="极致模型（max，兜底）" value={settings.max_model} models={models} disabled={saving} onChange={(value) => update("max_model", value)} />
         </div>
       )}
 
@@ -1348,7 +1361,7 @@ function AutomaticRoutingPanel({
           />
         </FormField>
         <p className="mt-2 text-[11px] leading-5 text-slate-400">
-          分类结果低于此阈值时，为避免返工会升级到强模型。建议从 0.70 开始。
+          分类结果低于此阈值时，为避免返工会升级到极致模型。建议从 0.70 开始。
         </p>
       </div>
 

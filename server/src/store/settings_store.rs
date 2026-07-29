@@ -69,9 +69,10 @@ mod tests {
         let settings = AutoRoutingSettings {
             enabled: true,
             classifier_model: Some("small".to_string()),
-            cheap_model: Some("small".to_string()),
+            light_model: Some("small".to_string()),
             standard_model: Some("medium".to_string()),
-            strong_model: Some("large".to_string()),
+            pro_model: Some("large".to_string()),
+            max_model: Some("xlarge".to_string()),
             low_confidence_threshold: 0.8,
         };
 
