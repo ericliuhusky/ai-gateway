@@ -176,8 +176,8 @@ mod tests {
     use super::ProviderStore;
     use crate::{
         models::{
-            ApiProviderBillingMode, CreateApiProviderRequest, PROVIDER_OPENAI_PROXY,
-            ProviderCompatibilityProfile, ProviderUpstreamProtocol,
+            AccountRecord, AccountType, ApiProviderBillingMode, CreateApiProviderRequest,
+            PROVIDER_OPENAI_PROXY, ProviderCompatibilityProfile, ProviderUpstreamProtocol,
         },
         store::sqlite::SqliteStore,
     };
@@ -191,6 +191,20 @@ mod tests {
     #[tokio::test]
     async fn add_account_provider_creates_one_provider_per_account() {
         let sqlite = test_sqlite_store("multi-account-providers");
+        for id in ["account_1", "account_2"] {
+            sqlite
+                .upsert_account(&AccountRecord {
+                    id: id.to_string(),
+                    account_type: AccountType::Openai,
+                    email: format!("{id}@example.com"),
+                    access_token: "access".to_string(),
+                    refresh_token: "refresh".to_string(),
+                    expiry_timestamp: 0,
+                    client_id: None,
+                    upstream_account_id: None,
+                })
+                .expect("save account");
+        }
         let store = ProviderStore {
             sqlite,
             providers: Arc::new(Mutex::new(Vec::new())),

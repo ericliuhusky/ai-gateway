@@ -8,8 +8,6 @@ use crate::{
 };
 use rusqlite::{Connection, OptionalExtension, params};
 use std::{fs, path::PathBuf, sync::Arc};
-use url::Url;
-
 #[derive(Clone, Debug)]
 pub struct SqliteStore {
     db_path: PathBuf,
@@ -77,7 +75,8 @@ impl SqliteStore {
         let conn = self.connect()?;
         let mut stmt = conn
             .prepare(
-                "SELECT id, name, auth_mode, base_url, api_key, account_id, upstream_protocol, compatibility_profile, billing_mode
+                "SELECT id, name, auth_mode, COALESCE(base_url, ''), COALESCE(api_key, ''), account_id,
+                        upstream_protocol, compatibility_profile, billing_mode
                  FROM providers
                  ORDER BY rowid ASC",
             )
@@ -117,64 +116,72 @@ impl SqliteStore {
         let conn = self.connect()?;
         conn.execute("DELETE FROM providers WHERE id = ?1", params![provider_id])
             .map_err(|err| format!("delete provider failed: {err}"))?;
-        conn.execute(
-            "DELETE FROM provider_models WHERE provider_id = ?1",
-            params![provider_id],
-        )
-        .map_err(|err| format!("delete cached provider models failed: {err}"))?;
-        conn.execute(
-            "DELETE FROM provider_selected_models WHERE provider_id = ?1",
-            params![provider_id],
-        )
-        .map_err(|err| format!("delete provider selected model failed: {err}"))?;
         Ok(())
     }
 
     pub fn load_route(&self) -> Result<SelectedRoute, String> {
         let conn = self.connect()?;
-        let mut route = conn
-            .query_row(
-                "SELECT provider_id, updated_at FROM selected_provider WHERE id = 1",
-                [],
-                |row| {
-                    Ok(SelectedRoute {
-                        provider_id: row.get(0)?,
-                        selected_model: None,
-                        updated_at: row.get(1)?,
-                    })
-                },
-            )
-            .optional()
-            .map_err(|err| format!("load route failed: {err}"))?
-            .unwrap_or_default();
-
-        if let Some(provider_id) = route.provider_id.as_deref() {
-            route.selected_model = load_provider_selected_model_record(&conn, provider_id)?;
-        }
-
-        Ok(route)
+        conn.query_row(
+            "SELECT state.selected_provider_id, provider.preferred_model, state.route_updated_at
+             FROM gateway_state AS state
+             LEFT JOIN providers AS provider ON provider.id = state.selected_provider_id
+             WHERE state.id = 1",
+            [],
+            |row| {
+                Ok(SelectedRoute {
+                    provider_id: row.get(0)?,
+                    selected_model: row.get(1)?,
+                    updated_at: row.get(2)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|err| format!("load route failed: {err}"))
+        .map(|route| route.unwrap_or_default())
     }
 
     pub fn upsert_route(&self, route: &SelectedRoute) -> Result<(), String> {
-        let conn = self.connect()?;
-        upsert_route_record(&conn, route)?;
+        let mut conn = self.connect()?;
+        let tx = conn
+            .transaction()
+            .map_err(|err| format!("begin route transaction failed: {err}"))?;
+
+        tx.execute(
+            "INSERT INTO gateway_state (id, selected_provider_id, route_updated_at)
+             VALUES (1, ?1, ?2)
+             ON CONFLICT(id) DO UPDATE SET
+                selected_provider_id = excluded.selected_provider_id,
+                route_updated_at = excluded.route_updated_at",
+            params![route.provider_id, route.updated_at],
+        )
+        .map_err(|err| format!("upsert route failed: {err}"))?;
+
         if let Some(provider_id) = route.provider_id.as_deref() {
-            set_provider_selected_model_record(
-                &conn,
-                provider_id,
-                route.selected_model.as_deref(),
-                route.updated_at,
-            )?;
+            tx.execute(
+                "UPDATE providers SET preferred_model = ?1 WHERE id = ?2",
+                params![route.selected_model, provider_id],
+            )
+            .map_err(|err| format!("update provider preferred model failed: {err}"))?;
         }
+
+        tx.commit()
+            .map_err(|err| format!("commit route transaction failed: {err}"))?;
         Ok(())
     }
 
-    pub fn load_provider_selected_model(
+    pub fn load_provider_preferred_model(
         &self,
         provider_id: &str,
     ) -> Result<Option<String>, String> {
         let conn = self.connect()?;
-        load_provider_selected_model_record(&conn, provider_id)
+        conn.query_row(
+            "SELECT preferred_model FROM providers WHERE id = ?1",
+            params![provider_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|err| format!("load provider preferred model failed: {err}"))
+        .map(|value| value.flatten())
     }
 
     pub fn load_cached_models(
@@ -183,7 +190,9 @@ impl SqliteStore {
     ) -> Result<Option<CachedProviderModels>, String> {
         let conn = self.connect()?;
         conn.query_row(
-            "SELECT provider_id, models_json, updated_at FROM provider_models WHERE provider_id = ?1",
+            "SELECT provider_id, models_json, updated_at
+             FROM provider_model_cache
+             WHERE provider_id = ?1",
             params![provider_id],
             |row| {
                 Ok(CachedProviderModels {
@@ -200,7 +209,7 @@ impl SqliteStore {
     pub fn upsert_cached_models(&self, models: &CachedProviderModels) -> Result<(), String> {
         let conn = self.connect()?;
         conn.execute(
-            "INSERT INTO provider_models (provider_id, models_json, updated_at)
+            "INSERT INTO provider_model_cache (provider_id, models_json, updated_at)
              VALUES (?1, ?2, ?3)
              ON CONFLICT(provider_id) DO UPDATE SET
                 models_json = excluded.models_json,
@@ -214,42 +223,35 @@ impl SqliteStore {
     pub fn delete_cached_models(&self, provider_id: &str) -> Result<(), String> {
         let conn = self.connect()?;
         conn.execute(
-            "DELETE FROM provider_models WHERE provider_id = ?1",
+            "DELETE FROM provider_model_cache WHERE provider_id = ?1",
             params![provider_id],
         )
         .map_err(|err| format!("delete cached provider models failed: {err}"))?;
         Ok(())
     }
 
-    pub fn load_setting(&self, key: &str) -> Result<Option<String>, String> {
+    pub fn load_codex_client_version_override(&self) -> Result<Option<String>, String> {
         let conn = self.connect()?;
         conn.query_row(
-            "SELECT value FROM gateway_settings WHERE key = ?1",
-            params![key],
+            "SELECT codex_client_version_override FROM gateway_state WHERE id = 1",
+            [],
             |row| row.get(0),
         )
         .optional()
-        .map_err(|err| format!("load gateway setting failed: {err}"))
+        .map_err(|err| format!("load Codex client version override failed: {err}"))
+        .map(|value| value.flatten())
     }
 
-    pub fn upsert_setting(&self, key: &str, value: &str, updated_at: i64) -> Result<(), String> {
+    pub fn set_codex_client_version_override(&self, value: Option<&str>) -> Result<(), String> {
         let conn = self.connect()?;
         conn.execute(
-            "INSERT INTO gateway_settings (key, value, updated_at)
-             VALUES (?1, ?2, ?3)
-             ON CONFLICT(key) DO UPDATE SET
-                value = excluded.value,
-                updated_at = excluded.updated_at",
-            params![key, value, updated_at],
+            "INSERT INTO gateway_state (id, codex_client_version_override, route_updated_at)
+             VALUES (1, ?1, 0)
+             ON CONFLICT(id) DO UPDATE SET
+                codex_client_version_override = excluded.codex_client_version_override",
+            params![value],
         )
-        .map_err(|err| format!("upsert gateway setting failed: {err}"))?;
-        Ok(())
-    }
-
-    pub fn delete_setting(&self, key: &str) -> Result<(), String> {
-        let conn = self.connect()?;
-        conn.execute("DELETE FROM gateway_settings WHERE key = ?1", params![key])
-            .map_err(|err| format!("delete gateway setting failed: {err}"))?;
+        .map_err(|err| format!("upsert Codex client version override failed: {err}"))?;
         Ok(())
     }
 
@@ -258,7 +260,6 @@ impl SqliteStore {
         conn.execute_batch(
             "
             PRAGMA journal_mode = WAL;
-            PRAGMA foreign_keys = ON;
 
             CREATE TABLE IF NOT EXISTS accounts (
                 id TEXT PRIMARY KEY,
@@ -274,55 +275,56 @@ impl SqliteStore {
             CREATE TABLE IF NOT EXISTS providers (
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
-                auth_mode TEXT NOT NULL,
-                base_url TEXT NOT NULL,
-                api_key TEXT NOT NULL,
+                auth_mode TEXT NOT NULL CHECK (auth_mode IN ('api_key', 'account')),
+                base_url TEXT,
+                api_key TEXT,
                 account_id TEXT,
-                uses_chat_completions INTEGER NOT NULL DEFAULT 0,
-                upstream_protocol TEXT NOT NULL,
-                compatibility_profile TEXT NOT NULL,
-                billing_mode TEXT NOT NULL
+                upstream_protocol TEXT NOT NULL CHECK (
+                    upstream_protocol IN ('openai_responses', 'openai_chat_completions')
+                ),
+                compatibility_profile TEXT NOT NULL CHECK (
+                    compatibility_profile IN ('official_openai', 'generic_openai', 'openai_codex')
+                ),
+                billing_mode TEXT NOT NULL CHECK (billing_mode IN ('metered', 'subscription')),
+                preferred_model TEXT,
+                CHECK (
+                    (auth_mode = 'api_key' AND account_id IS NULL)
+                    OR (auth_mode = 'account' AND account_id IS NOT NULL)
+                ),
+                FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
             );
+            CREATE INDEX IF NOT EXISTS idx_providers_account_id ON providers(account_id);
 
-            CREATE TABLE IF NOT EXISTS selected_provider (
+            CREATE TABLE IF NOT EXISTS gateway_state (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
-                provider_id TEXT,
-                selected_model TEXT,
-                updated_at INTEGER NOT NULL
+                selected_provider_id TEXT,
+                codex_client_version_override TEXT,
+                route_updated_at INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY (selected_provider_id) REFERENCES providers(id) ON DELETE SET NULL
             );
 
-            CREATE TABLE IF NOT EXISTS provider_selected_models (
-                provider_id TEXT PRIMARY KEY,
-                selected_model TEXT NOT NULL,
-                updated_at INTEGER NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS provider_models (
+            CREATE TABLE IF NOT EXISTS provider_model_cache (
                 provider_id TEXT PRIMARY KEY,
                 models_json TEXT NOT NULL,
-                updated_at INTEGER NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS gateway_settings (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL,
-                updated_at INTEGER NOT NULL
+                updated_at INTEGER NOT NULL,
+                FOREIGN KEY (provider_id) REFERENCES providers(id) ON DELETE CASCADE
             );
             ",
         )
         .map_err(|err| format!("initialize sqlite schema failed: {err}"))?;
-        migrate_provider_schema(&conn)?;
-
         Ok(())
     }
 
     fn connect(&self) -> Result<Connection, String> {
-        Connection::open(&self.db_path).map_err(|err| {
+        let conn = Connection::open(&self.db_path).map_err(|err| {
             format!(
                 "open sqlite database {} failed: {err}",
                 self.db_path.display()
             )
-        })
+        })?;
+        conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;")
+            .map_err(|err| format!("configure sqlite connection failed: {err}"))?;
+        Ok(conn)
     }
 }
 
@@ -355,18 +357,24 @@ fn upsert_account_record(conn: &Connection, account: &AccountRecord) -> Result<(
 }
 
 fn upsert_provider_record(conn: &Connection, provider: &ApiProviderRecord) -> Result<(), String> {
+    let (base_url, api_key) = match provider.auth_mode {
+        ProviderAuthMode::ApiKey => (
+            Some(provider.base_url.as_str()),
+            Some(provider.api_key.as_str()),
+        ),
+        ProviderAuthMode::Account => (None, None),
+    };
     conn.execute(
         "INSERT INTO providers (
-            id, name, auth_mode, base_url, api_key, account_id, uses_chat_completions,
+            id, name, auth_mode, base_url, api_key, account_id,
             upstream_protocol, compatibility_profile, billing_mode
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
          ON CONFLICT(id) DO UPDATE SET
             name = excluded.name,
             auth_mode = excluded.auth_mode,
             base_url = excluded.base_url,
             api_key = excluded.api_key,
             account_id = excluded.account_id,
-            uses_chat_completions = excluded.uses_chat_completions,
             upstream_protocol = excluded.upstream_protocol,
             compatibility_profile = excluded.compatibility_profile,
             billing_mode = excluded.billing_mode",
@@ -374,181 +382,15 @@ fn upsert_provider_record(conn: &Connection, provider: &ApiProviderRecord) -> Re
             provider.id,
             provider.name,
             provider_auth_mode_to_str(&provider.auth_mode),
-            provider.base_url,
-            provider.api_key,
-            provider.account_id,
-            if provider.uses_chat_completions() {
-                1
-            } else {
-                0
-            },
+            base_url,
+            api_key,
+            provider.account_id.as_deref(),
             upstream_protocol_to_str(&provider.upstream_protocol),
             compatibility_profile_to_str(&provider.compatibility_profile),
             billing_mode_to_str(&provider.billing_mode)
         ],
     )
     .map_err(|err| format!("upsert provider failed: {err}"))?;
-    Ok(())
-}
-
-fn migrate_provider_schema(conn: &Connection) -> Result<(), String> {
-    ensure_column(conn, "providers", "upstream_protocol", "TEXT")?;
-    ensure_column(conn, "providers", "compatibility_profile", "TEXT")?;
-
-    conn.execute(
-        "UPDATE providers
-         SET upstream_protocol = CASE
-            WHEN uses_chat_completions = 1 THEN 'openai_chat_completions'
-            ELSE 'openai_responses'
-         END
-         WHERE upstream_protocol IS NULL OR trim(upstream_protocol) = ''",
-        [],
-    )
-    .map_err(|err| format!("migrate provider upstream protocol failed: {err}"))?;
-    conn.execute(
-        "UPDATE providers
-         SET upstream_protocol = CASE upstream_protocol
-            WHEN 'open_ai_chat_completions' THEN 'openai_chat_completions'
-            WHEN 'open_ai_responses' THEN 'openai_responses'
-            ELSE upstream_protocol
-         END",
-        [],
-    )
-    .map_err(|err| format!("normalize provider upstream protocol failed: {err}"))?;
-
-    conn.execute(
-        "UPDATE providers
-         SET compatibility_profile = CASE compatibility_profile
-            WHEN 'official_open_ai' THEN 'official_openai'
-            WHEN 'generic_open_ai' THEN 'generic_openai'
-            WHEN 'open_ai_codex' THEN 'openai_codex'
-            ELSE compatibility_profile
-         END",
-        [],
-    )
-    .map_err(|err| format!("normalize provider compatibility profile failed: {err}"))?;
-
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, auth_mode, base_url
-             FROM providers
-             WHERE compatibility_profile IS NULL OR trim(compatibility_profile) = ''",
-        )
-        .map_err(|err| format!("prepare provider profile migration failed: {err}"))?;
-    let rows = stmt
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-            ))
-        })
-        .map_err(|err| format!("query provider profile migration failed: {err}"))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|err| format!("read provider profile migration failed: {err}"))?;
-
-    for (id, auth_mode, base_url) in rows {
-        let profile = if auth_mode == "account" {
-            ProviderCompatibilityProfile::OpenAiCodex
-        } else if is_official_openai_base_url(&base_url) {
-            ProviderCompatibilityProfile::OfficialOpenAi
-        } else {
-            ProviderCompatibilityProfile::GenericOpenAi
-        };
-        conn.execute(
-            "UPDATE providers SET compatibility_profile = ?1 WHERE id = ?2",
-            params![compatibility_profile_to_str(&profile), id],
-        )
-        .map_err(|err| format!("migrate provider compatibility profile failed: {err}"))?;
-    }
-
-    Ok(())
-}
-
-fn ensure_column(
-    conn: &Connection,
-    table: &str,
-    column: &str,
-    definition: &str,
-) -> Result<bool, String> {
-    let mut stmt = conn
-        .prepare(&format!("PRAGMA table_info({table})"))
-        .map_err(|err| format!("prepare {table} schema query failed: {err}"))?;
-    let columns = stmt
-        .query_map([], |row| row.get::<_, String>(1))
-        .map_err(|err| format!("query {table} schema failed: {err}"))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|err| format!("read {table} schema failed: {err}"))?;
-    if columns.iter().any(|existing| existing == column) {
-        return Ok(false);
-    }
-
-    conn.execute(
-        &format!("ALTER TABLE {table} ADD COLUMN {column} {definition}"),
-        [],
-    )
-    .map_err(|err| format!("add {table}.{column} failed: {err}"))?;
-    Ok(true)
-}
-
-fn is_official_openai_base_url(base_url: &str) -> bool {
-    Url::parse(base_url.trim())
-        .ok()
-        .and_then(|url| url.host_str().map(str::to_string))
-        .is_some_and(|host| host.eq_ignore_ascii_case("api.openai.com"))
-}
-
-fn upsert_route_record(conn: &Connection, route: &SelectedRoute) -> Result<(), String> {
-    conn.execute(
-        "INSERT INTO selected_provider (id, provider_id, selected_model, updated_at)
-         VALUES (1, ?1, ?2, ?3)
-         ON CONFLICT(id) DO UPDATE SET
-            provider_id = excluded.provider_id,
-            selected_model = excluded.selected_model,
-            updated_at = excluded.updated_at",
-        params![route.provider_id, Option::<String>::None, route.updated_at],
-    )
-    .map_err(|err| format!("upsert route failed: {err}"))?;
-    Ok(())
-}
-
-fn load_provider_selected_model_record(
-    conn: &Connection,
-    provider_id: &str,
-) -> Result<Option<String>, String> {
-    conn.query_row(
-        "SELECT selected_model FROM provider_selected_models WHERE provider_id = ?1",
-        params![provider_id],
-        |row| row.get(0),
-    )
-    .optional()
-    .map_err(|err| format!("load provider selected model failed: {err}"))
-}
-
-fn set_provider_selected_model_record(
-    conn: &Connection,
-    provider_id: &str,
-    selected_model: Option<&str>,
-    updated_at: i64,
-) -> Result<(), String> {
-    if let Some(selected_model) = selected_model {
-        conn.execute(
-            "INSERT INTO provider_selected_models (provider_id, selected_model, updated_at)
-             VALUES (?1, ?2, ?3)
-             ON CONFLICT(provider_id) DO UPDATE SET
-                selected_model = excluded.selected_model,
-                updated_at = excluded.updated_at",
-            params![provider_id, selected_model, updated_at],
-        )
-        .map_err(|err| format!("upsert provider selected model failed: {err}"))?;
-    } else {
-        conn.execute(
-            "DELETE FROM provider_selected_models WHERE provider_id = ?1",
-            params![provider_id],
-        )
-        .map_err(|err| format!("delete provider selected model failed: {err}"))?;
-    }
-
     Ok(())
 }
 
@@ -640,7 +482,11 @@ fn billing_mode_from_str(
 #[cfg(test)]
 mod tests {
     use super::SqliteStore;
-    use crate::models::{ProviderCompatibilityProfile, ProviderUpstreamProtocol};
+    use crate::models::{
+        AccountRecord, AccountType, ApiProviderBillingMode, ApiProviderRecord,
+        CachedProviderModels, ProviderAuthMode, ProviderCompatibilityProfile,
+        ProviderUpstreamProtocol, SelectedRoute,
+    };
     use rusqlite::Connection;
     use std::{
         fs,
@@ -649,58 +495,97 @@ mod tests {
     };
 
     #[test]
-    fn migrates_legacy_provider_protocol_and_profile_columns() {
-        let db_path = unique_test_db_path("legacy-provider-profile");
-        let conn = Connection::open(&db_path).expect("create legacy database");
-        conn.execute_batch(
-            "
-            CREATE TABLE providers (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                auth_mode TEXT NOT NULL,
-                base_url TEXT NOT NULL,
-                api_key TEXT NOT NULL,
-                account_id TEXT,
-                uses_chat_completions INTEGER NOT NULL DEFAULT 0,
-                billing_mode TEXT NOT NULL
-            );
-            INSERT INTO providers (
-                id, name, auth_mode, base_url, api_key, account_id,
-                uses_chat_completions, billing_mode
-            ) VALUES
-                ('official', 'official', 'api_key', 'https://api.openai.com/v1', 'sk-a', NULL, 0, 'metered'),
-                ('chat', 'chat', 'api_key', 'https://example.com/v1', 'sk-b', NULL, 1, 'metered'),
-                ('account', 'account', 'account', '', '', 'account-1', 0, 'subscription');
-            ",
-        )
-        .expect("write legacy provider rows");
-        drop(conn);
+    fn deleting_provider_cascades_cache_and_clears_active_route() {
+        let db_path = unique_test_db_path("provider-cascade");
+        let store = SqliteStore::for_test(db_path.clone()).expect("create compact database");
+        let provider = api_provider("provider-a");
+        store.upsert_provider(&provider).expect("save provider");
+        store
+            .upsert_cached_models(&CachedProviderModels {
+                provider_id: provider.id.clone(),
+                models_json: "{\"object\":\"list\",\"data\":[]}".to_string(),
+                updated_at: 1,
+            })
+            .expect("save model cache");
+        store
+            .upsert_route(&SelectedRoute {
+                provider_id: Some(provider.id.clone()),
+                selected_model: Some("model-a".to_string()),
+                updated_at: 2,
+            })
+            .expect("save route");
 
-        let store = SqliteStore::for_test(db_path.clone()).expect("migrate legacy database");
-        let providers = store.load_providers().expect("load migrated providers");
+        store
+            .delete_provider(&provider.id)
+            .expect("delete provider");
 
         assert_eq!(
-            providers[0].compatibility_profile,
-            ProviderCompatibilityProfile::OfficialOpenAi
+            store.load_route().unwrap(),
+            SelectedRoute {
+                provider_id: None,
+                selected_model: None,
+                updated_at: 2,
+            }
         );
-        assert_eq!(
-            providers[0].upstream_protocol,
-            ProviderUpstreamProtocol::OpenAiResponses
-        );
-        assert_eq!(
-            providers[1].compatibility_profile,
-            ProviderCompatibilityProfile::GenericOpenAi
-        );
-        assert_eq!(
-            providers[1].upstream_protocol,
-            ProviderUpstreamProtocol::OpenAiChatCompletions
-        );
-        assert_eq!(
-            providers[2].compatibility_profile,
-            ProviderCompatibilityProfile::OpenAiCodex
-        );
+        assert!(store.load_cached_models(&provider.id).unwrap().is_none());
 
         let _ = fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn account_provider_uses_null_transport_credentials() {
+        let db_path = unique_test_db_path("account-provider-null-credentials");
+        let store = SqliteStore::for_test(db_path.clone()).expect("create compact database");
+        let account = AccountRecord {
+            id: "account-1".to_string(),
+            account_type: AccountType::Openai,
+            email: "account@example.com".to_string(),
+            access_token: "access".to_string(),
+            refresh_token: "refresh".to_string(),
+            expiry_timestamp: 1,
+            client_id: Some("client".to_string()),
+            upstream_account_id: Some("upstream".to_string()),
+        };
+        store.upsert_account(&account).expect("save account");
+        let provider = ApiProviderRecord {
+            id: "provider-account".to_string(),
+            name: "account".to_string(),
+            auth_mode: ProviderAuthMode::Account,
+            base_url: String::new(),
+            api_key: String::new(),
+            account_id: Some(account.id.clone()),
+            upstream_protocol: ProviderUpstreamProtocol::OpenAiResponses,
+            compatibility_profile: ProviderCompatibilityProfile::OpenAiCodex,
+            billing_mode: ApiProviderBillingMode::Subscription,
+        };
+        store.upsert_provider(&provider).expect("save provider");
+
+        let conn = Connection::open(&db_path).expect("open compact database");
+        let (base_url, api_key): (Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT base_url, api_key FROM providers WHERE id = 'provider-account'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read provider row");
+        assert_eq!(base_url, None);
+        assert_eq!(api_key, None);
+
+        let _ = fs::remove_file(db_path);
+    }
+
+    fn api_provider(id: &str) -> ApiProviderRecord {
+        ApiProviderRecord {
+            id: id.to_string(),
+            name: id.to_string(),
+            auth_mode: ProviderAuthMode::ApiKey,
+            base_url: "https://example.com/v1".to_string(),
+            api_key: "sk-test".to_string(),
+            account_id: None,
+            upstream_protocol: ProviderUpstreamProtocol::OpenAiResponses,
+            compatibility_profile: ProviderCompatibilityProfile::GenericOpenAi,
+            billing_mode: ApiProviderBillingMode::Metered,
+        }
     }
 
     fn unique_test_db_path(prefix: &str) -> PathBuf {

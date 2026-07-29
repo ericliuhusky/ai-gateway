@@ -1,9 +1,7 @@
-use crate::{config::Config, support::time::now_unix};
+use crate::config::Config;
 use std::sync::Arc;
 
 use super::sqlite::SqliteStore;
-
-const CODEX_CLIENT_VERSION_KEY: &str = "codex_client_version";
 
 #[derive(Clone, Debug)]
 pub struct SettingsStore {
@@ -18,16 +16,15 @@ impl SettingsStore {
     }
 
     pub fn codex_client_version_override(&self) -> Result<Option<String>, String> {
-        self.sqlite.load_setting(CODEX_CLIENT_VERSION_KEY)
+        self.sqlite.load_codex_client_version_override()
     }
 
     pub fn set_codex_client_version(&self, version: &str) -> Result<(), String> {
-        self.sqlite
-            .upsert_setting(CODEX_CLIENT_VERSION_KEY, version, now_unix() as i64)
+        self.sqlite.set_codex_client_version_override(Some(version))
     }
 
     pub fn clear_codex_client_version(&self) -> Result<(), String> {
-        self.sqlite.delete_setting(CODEX_CLIENT_VERSION_KEY)
+        self.sqlite.set_codex_client_version_override(None)
     }
 }
 

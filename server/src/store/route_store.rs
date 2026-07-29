@@ -32,7 +32,7 @@ impl RouteStore {
     pub async fn set_provider(&self, provider_id: Option<String>) -> Result<SelectedRoute, String> {
         let mut route = self.route.lock().await.clone();
         route.selected_model = match provider_id.as_deref() {
-            Some(provider_id) => self.sqlite.load_provider_selected_model(provider_id)?,
+            Some(provider_id) => self.sqlite.load_provider_preferred_model(provider_id)?,
             None => None,
         };
         route.provider_id = provider_id;
@@ -55,7 +55,13 @@ impl RouteStore {
 #[cfg(test)]
 mod tests {
     use super::RouteStore;
-    use crate::{models::SelectedRoute, store::sqlite::SqliteStore};
+    use crate::{
+        models::{
+            ApiProviderBillingMode, ApiProviderRecord, ProviderAuthMode,
+            ProviderCompatibilityProfile, ProviderUpstreamProtocol, SelectedRoute,
+        },
+        store::sqlite::SqliteStore,
+    };
     use std::{
         path::PathBuf,
         sync::Arc,
@@ -66,6 +72,11 @@ mod tests {
     #[tokio::test]
     async fn remembers_selected_model_per_provider() {
         let sqlite = test_sqlite_store("provider-selected-models");
+        for provider_id in ["provider_a", "provider_b"] {
+            sqlite
+                .upsert_provider(&api_provider(provider_id))
+                .expect("save provider");
+        }
         let store = RouteStore {
             sqlite,
             route: Arc::new(Mutex::new(SelectedRoute::default())),
@@ -111,6 +122,20 @@ mod tests {
     fn test_sqlite_store(prefix: &str) -> SqliteStore {
         let db_path = unique_test_db_path(prefix);
         SqliteStore::for_test(db_path).expect("create sqlite store")
+    }
+
+    fn api_provider(id: &str) -> ApiProviderRecord {
+        ApiProviderRecord {
+            id: id.to_string(),
+            name: id.to_string(),
+            auth_mode: ProviderAuthMode::ApiKey,
+            base_url: "https://example.com/v1".to_string(),
+            api_key: "sk-test".to_string(),
+            account_id: None,
+            upstream_protocol: ProviderUpstreamProtocol::OpenAiResponses,
+            compatibility_profile: ProviderCompatibilityProfile::GenericOpenAi,
+            billing_mode: ApiProviderBillingMode::Metered,
+        }
     }
 
     fn unique_test_db_path(prefix: &str) -> PathBuf {
