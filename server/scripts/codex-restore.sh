@@ -11,14 +11,12 @@ fail() {
 [ -n "${HOME:-}" ] || fail "缺少 HOME 环境变量"
 
 codex_dir=${CODEX_HOME:-"$HOME/.codex"}
-data_dir="$HOME/.ai-gateway"
 config_path="$codex_dir/config.toml"
-backup_path="$data_dir/codex-config.before-ai-gateway.toml"
-absent_marker="$data_dir/codex-config.before-ai-gateway.absent"
-lock_dir="$data_dir/codex-config-script.lock"
+lock_dir="$codex_dir/.ai-gateway-config.lock"
 temp_path=
 
-mkdir -p "$codex_dir" "$data_dir"
+[ -f "$config_path" ] || fail "Codex 配置不存在：$config_path"
+
 if ! mkdir "$lock_dir" 2>/dev/null; then
   fail "另一个 Codex 配置脚本正在运行"
 fi
@@ -31,28 +29,80 @@ cleanup() {
 }
 trap cleanup 0 1 2 3 15
 
-if [ ! -f "$backup_path" ] && [ ! -f "$absent_marker" ]; then
-  fail "没有可恢复的 Codex 配置备份"
+temp_path="$codex_dir/.config.toml.ai-gateway-restore.$$"
+
+if ! awk '
+BEGIN {
+  marker_prefix = "# ai-gateway.previous-model-provider: "
+  marker_seen = 0
+  previous_provider_line = ""
+  in_root = 1
+  root_count = 0
+  root_flushed = 0
+}
+
+function flush_root(    i) {
+  if (root_flushed) {
+    return
+  }
+
+  if (!marker_seen) {
+    exit 42
+  }
+
+  if (previous_provider_line != "<absent>") {
+    print previous_provider_line
+  }
+
+  for (i = 1; i <= root_count; i++) {
+    print root_lines[i]
+  }
+
+  root_flushed = 1
+}
+
+{
+  line = $0
+
+  if (in_root) {
+    if (line ~ /^[[:space:]]*\[/) {
+      flush_root()
+      in_root = 0
+    } else {
+      if (index(line, marker_prefix) == 1) {
+        if (!marker_seen) {
+          previous_provider_line = substr(line, length(marker_prefix) + 1)
+          marker_seen = 1
+        }
+        next
+      }
+
+      if (line ~ /^[[:space:]]*model_provider[[:space:]]*=/) {
+        next
+      }
+
+      root_lines[++root_count] = line
+      next
+    }
+  }
+
+  print line
+}
+
+END {
+  if (in_root) {
+    flush_root()
+  }
+}
+' "$config_path" > "$temp_path"; then
+  fail "没有找到 AI Gateway 保存的原模型供应商"
 fi
 
-if [ -f "$config_path" ]; then
-  timestamp=$(date '+%Y%m%d-%H%M%S')
-  safety_path="$data_dir/codex-config.before-restore.$timestamp.toml"
-  cp "$config_path" "$safety_path"
-  printf '当前配置已额外备份到 %s\n' "$safety_path"
-fi
+chmod 600 "$temp_path"
+mv "$temp_path" "$config_path"
+temp_path=
 
-if [ -f "$backup_path" ]; then
-  temp_path="$codex_dir/.config.toml.ai-gateway-restore.$$"
-  cp "$backup_path" "$temp_path"
-  chmod 600 "$temp_path"
-  mv "$temp_path" "$config_path"
-  temp_path=
-  rm -f "$backup_path" "$absent_marker"
-  printf 'Codex 配置已恢复到接入 AI Gateway 之前的状态。\n'
-else
-  rm -f "$config_path" "$absent_marker"
-  printf '接入前不存在 Codex 配置，已移除脚本创建的配置文件。\n'
-fi
-
-printf '请重新启动 Codex 或新建任务使配置生效。\n'
+printf '%s\n' \
+  "已恢复原模型供应商。" \
+  "ai-gateway 的 Provider 配置已保留，之后可再次直接切换。" \
+  "请重新启动 Codex 或新建任务使配置生效。"

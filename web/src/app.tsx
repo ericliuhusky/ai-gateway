@@ -909,7 +909,7 @@ function SetupDialog({ onClose }: { onClose: () => void }) {
     >
       <div className="space-y-5">
         <div className="rounded-2xl border border-blue-500/15 bg-blue-500/5 p-4 text-xs leading-5 text-blue-700 dark:text-blue-300">
-          在本机终端执行接入命令。脚本只会备份并修改 <code>~/.codex/config.toml</code>，不会安装程序或启动后台服务。
+          在本机终端执行接入命令。脚本只会记录原模型供应商并修改 <code>~/.codex/config.toml</code>，不会安装程序或启动后台服务。
         </div>
         <FormField label="Gateway Base URL">
           <div className="flex gap-2">

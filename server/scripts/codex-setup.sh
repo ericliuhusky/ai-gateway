@@ -33,14 +33,11 @@ done
 [ -n "${HOME:-}" ] || fail "缺少 HOME 环境变量"
 
 codex_dir=${CODEX_HOME:-"$HOME/.codex"}
-data_dir="$HOME/.ai-gateway"
 config_path="$codex_dir/config.toml"
-backup_path="$data_dir/codex-config.before-ai-gateway.toml"
-absent_marker="$data_dir/codex-config.before-ai-gateway.absent"
-lock_dir="$data_dir/codex-config-script.lock"
+lock_dir="$codex_dir/.ai-gateway-config.lock"
 temp_path=
 
-mkdir -p "$codex_dir" "$data_dir"
+mkdir -p "$codex_dir"
 if ! mkdir "$lock_dir" 2>/dev/null; then
   fail "另一个 Codex 配置脚本正在运行"
 fi
@@ -53,14 +50,6 @@ cleanup() {
 }
 trap cleanup 0 1 2 3 15
 
-if [ ! -f "$backup_path" ] && [ ! -f "$absent_marker" ]; then
-  if [ -f "$config_path" ]; then
-    cp "$config_path" "$backup_path"
-  else
-    : > "$absent_marker"
-  fi
-fi
-
 temp_path="$codex_dir/.config.toml.ai-gateway.$$"
 source_path=$config_path
 if [ ! -f "$source_path" ]; then
@@ -69,16 +58,35 @@ fi
 
 awk '
 BEGIN {
+  marker_prefix = "# ai-gateway.previous-model-provider: "
   in_root = 1
+  root_count = 0
+  root_flushed = 0
   skipping_gateway = 0
-  inserted_provider = 0
+  previous_provider_line = ""
+  existing_marker = ""
 }
 
-function insert_provider() {
-  if (!inserted_provider) {
-    print "model_provider = \"ai-gateway\""
-    inserted_provider = 1
+function flush_root(    i) {
+  if (root_flushed) {
+    return
   }
+
+  if (existing_marker != "") {
+    print existing_marker
+  } else if (previous_provider_line != "") {
+    print marker_prefix previous_provider_line
+  } else {
+    print marker_prefix "<absent>"
+  }
+
+  print "model_provider = \"ai-gateway\""
+
+  for (i = 1; i <= root_count; i++) {
+    print root_lines[i]
+  }
+
+  root_flushed = 1
 }
 
 {
@@ -97,20 +105,37 @@ function insert_provider() {
     next
   }
 
-  if (in_root && line ~ /^[[:space:]]*\[/) {
-    insert_provider()
-    in_root = 0
-  }
+  if (in_root) {
+    if (line ~ /^[[:space:]]*\[/) {
+      flush_root()
+      in_root = 0
+    } else {
+      if (index(line, marker_prefix) == 1) {
+        if (existing_marker == "") {
+          existing_marker = line
+        }
+        next
+      }
 
-  if (in_root && line ~ /^[[:space:]]*model_provider[[:space:]]*=/) {
-    next
+      if (line ~ /^[[:space:]]*model_provider[[:space:]]*=/) {
+        if (previous_provider_line == "") {
+          previous_provider_line = line
+        }
+        next
+      }
+
+      root_lines[++root_count] = line
+      next
+    }
   }
 
   print line
 }
 
 END {
-  insert_provider()
+  if (in_root) {
+    flush_root()
+  }
 }
 ' "$source_path" > "$temp_path"
 
@@ -129,4 +154,5 @@ temp_path=
 printf '%s\n' \
   "AI Gateway 已写入 $config_path" \
   "Gateway: $gateway_base_url" \
+  "原模型供应商已记录在 config.toml 注释中。" \
   "请重新启动 Codex 或新建任务使配置生效。"

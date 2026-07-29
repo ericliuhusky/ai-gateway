@@ -53,7 +53,7 @@ curl -fsSL 'https://gateway.example.com/codex/setup.sh' |
 
 脚本会：
 
-- 首次运行时备份 `~/.codex/config.toml`
+- 在 `config.toml` 注释中记录切换前的 `model_provider`
 - 将 `model_provider` 指向 `ai-gateway`
 - 写入当前 Gateway 的 `base_url`
 - 使用临时文件原子替换配置
@@ -65,7 +65,7 @@ curl -fsSL 'https://gateway.example.com/codex/setup.sh' |
 curl -fsSL 'https://gateway.example.com/codex/restore.sh' | sh
 ```
 
-恢复前，脚本还会将当前配置额外备份到 `~/.ai-gateway`。
+恢复脚本只将 `model_provider` 切回原值，并移除保存原值的注释。`model_providers.ai-gateway` 配置会继续保留，之后可以再次切换，不会恢复或覆盖整个配置文件。
 
 第一阶段脚本只处理 Provider 配置，不修改 `state_5.sqlite`，也不为旧历史创建 Provider 别名。
 

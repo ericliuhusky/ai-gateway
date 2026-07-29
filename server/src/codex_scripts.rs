@@ -44,13 +44,16 @@ mod tests {
         assert!(SETUP_SCRIPT.contains("gateway_base_url=${1:-}"));
         assert!(SETUP_SCRIPT.contains("[model_providers.ai-gateway]"));
         assert!(SETUP_SCRIPT.contains("wire_api = \"responses\""));
+        assert!(SETUP_SCRIPT.contains("# ai-gateway.previous-model-provider: "));
+        assert!(!SETUP_SCRIPT.contains("codex-config.before-ai-gateway.toml"));
         assert!(!SETUP_SCRIPT.contains("state_5.sqlite"));
     }
 
     #[test]
-    fn restore_script_uses_the_original_config_backup() {
-        assert!(RESTORE_SCRIPT.contains("codex-config.before-ai-gateway.toml"));
-        assert!(RESTORE_SCRIPT.contains("codex-config.before-restore."));
+    fn restore_script_restores_only_the_previous_provider() {
+        assert!(RESTORE_SCRIPT.contains("# ai-gateway.previous-model-provider: "));
+        assert!(RESTORE_SCRIPT.contains("Provider 配置已保留"));
+        assert!(!RESTORE_SCRIPT.contains("codex-config.before-ai-gateway.toml"));
         assert!(!RESTORE_SCRIPT.contains("state_5.sqlite"));
     }
 }
