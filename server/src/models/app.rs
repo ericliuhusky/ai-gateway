@@ -204,17 +204,26 @@ pub struct UpdateAutoRoutingSettingsRequest {
     pub low_confidence_threshold: f64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TurnRouteLog {
     /// Opaque, hashed identifier. Raw client IDs and request contents are never stored.
     pub turn_id: String,
     pub provider_id: String,
     pub model: String,
     pub routing_mode: String,
+    pub routing_reason: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub routing_detail: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub routing_tier: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub classifier_confidence: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub classifier_output: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_input_preview: Option<String>,
     pub started_at: i64,
     pub updated_at: i64,
     pub request_count: i64,
@@ -227,8 +236,13 @@ pub struct TurnRouteLogUpdate {
     pub provider_id: String,
     pub model: String,
     pub routing_mode: String,
+    pub routing_reason: String,
+    pub routing_detail: Option<String>,
     pub routing_tier: Option<String>,
+    pub classifier_confidence: Option<f64>,
+    pub classifier_output: Option<String>,
     pub reasoning_effort: Option<String>,
+    pub user_input_preview: Option<String>,
     pub is_tool_round: bool,
     pub timestamp: i64,
 }

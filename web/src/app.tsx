@@ -488,13 +488,13 @@ function TurnLogSection({ turns }: { turns: TurnRouteLog[] }) {
         {!turns.length ? (
           <div className="px-5 py-8 text-center text-xs text-slate-400">还没有可观测的路由 turn。</div>
         ) : (
-          <table className="w-full min-w-[720px] text-left text-xs">
+          <table className="w-full min-w-[980px] text-left text-xs">
             <thead className="border-b border-slate-200/70 text-[10px] uppercase tracking-[0.1em] text-slate-400 dark:border-white/8">
               <tr>
                 <th className="px-5 py-3 font-bold">时间</th>
-                <th className="px-4 py-3 font-bold">Turn</th>
+                <th className="px-4 py-3 font-bold">用户输入</th>
                 <th className="px-4 py-3 font-bold">模型</th>
-                <th className="px-4 py-3 font-bold">路由</th>
+                <th className="px-4 py-3 font-bold">路由原因</th>
                 <th className="px-4 py-3 font-bold">推理度</th>
                 <th className="px-5 py-3 text-right font-bold">回合</th>
               </tr>
@@ -503,12 +503,37 @@ function TurnLogSection({ turns }: { turns: TurnRouteLog[] }) {
               {turns.map((turn) => (
                 <tr key={turn.turn_id} className="border-b border-slate-100/80 last:border-0 dark:border-white/[0.055]">
                   <td className="whitespace-nowrap px-5 py-3.5 text-slate-500 dark:text-slate-400">{turnLogTime(turn.updated_at)}</td>
-                  <td className="px-4 py-3.5 font-mono text-[11px] text-slate-500 dark:text-slate-400">{turn.turn_id.slice(0, 17)}</td>
+                  <td className="max-w-[300px] px-4 py-3.5">
+                    <div className="truncate font-medium" title={turn.user_input_preview}>
+                      {turn.user_input_preview ?? ""}
+                    </div>
+                    <div className="mt-1 font-mono text-[9px] text-slate-400">{turn.turn_id.slice(0, 17)}</div>
+                  </td>
                   <td className="px-4 py-3.5 font-mono font-semibold">{turn.model}</td>
                   <td className="px-4 py-3.5">
-                    <Badge tone={turn.routing_tier === "strong" ? "purple" : turn.routing_tier === "cheap" ? "green" : "blue"}>
-                      {turn.routing_tier ?? turn.routing_mode}
-                    </Badge>
+                    <div className="flex items-center gap-2">
+                      <Badge tone={turn.routing_tier === "strong" ? "purple" : turn.routing_tier === "cheap" ? "green" : "blue"}>
+                        {turn.routing_tier ?? turn.routing_mode}
+                      </Badge>
+                      {turn.classifier_confidence !== undefined ? (
+                        <span className="font-mono text-[10px] text-slate-400">
+                          {(turn.classifier_confidence * 100).toFixed(0)}%
+                        </span>
+                      ) : null}
+                    </div>
+                    <div className="mt-1 text-[10px] text-slate-400" title={turn.routing_reason}>
+                      {routingReasonLabel(turn.routing_reason)}
+                    </div>
+                    {turn.routing_detail ? (
+                      <div className="mt-1 max-w-[360px] break-words text-[10px] leading-4 text-red-500" title={turn.routing_detail}>
+                        {turn.routing_detail}
+                      </div>
+                    ) : null}
+                    {turn.classifier_output ? (
+                      <div className="mt-1 max-w-[360px] truncate font-mono text-[10px] text-slate-500 dark:text-slate-400" title={turn.classifier_output}>
+                        返回：{turn.classifier_output}
+                      </div>
+                    ) : null}
                   </td>
                   <td className="px-4 py-3.5 text-slate-500 dark:text-slate-400">{turn.reasoning_effort ?? "—"}</td>
                   <td className="px-5 py-3.5 text-right text-slate-500 dark:text-slate-400">
@@ -521,10 +546,27 @@ function TurnLogSection({ turns }: { turns: TurnRouteLog[] }) {
         )}
       </div>
       <p className="mt-2 px-1 text-[11px] leading-5 text-slate-400">
-        只保存哈希 turn ID、路由模型、推理度和计数；不保存请求、工具结果或回答内容。超过 1000 条按最近访问淘汰。
+        保存首条用户输入的 160 字预览，以及最多 500 字的分类错误或分类模型返回；不保存工具结果和最终回答。超过 1000 条按最近访问淘汰。
       </p>
     </section>
   );
+}
+
+function routingReasonLabel(reason: string) {
+  const labels: Record<string, string> = {
+    automatic_routing_disabled: "自动路由未开启",
+    selected_model_override: "手动选择模型覆盖",
+    same_turn_model_reuse: "同一 Turn 复用既定模型",
+    visual_input_requires_strong_model: "图片输入保守使用强模型",
+    tool_continuation_without_turn_binding: "工具后续请求未关联到原 Turn",
+    classifier_model_not_configured: "分类模型未配置",
+    classifier_request_failed: "分类模型请求失败",
+    classifier_output_text_missing: "分类模型没有返回文本",
+    classifier_output_invalid: "分类结果无法解析",
+    classifier_selected: "分类模型直接选择",
+    classifier_confidence_below_threshold: "分类置信度低于阈值",
+  };
+  return labels[reason] ?? reason;
 }
 
 function turnLogTime(timestamp: number) {

@@ -25,6 +25,9 @@ impl RoutingTier {
 pub struct RoutingDecision {
     pub model: Option<String>,
     pub mode: &'static str,
+    pub reason: &'static str,
+    pub detail: Option<String>,
+    pub classifier_output: Option<String>,
     pub tier: Option<RoutingTier>,
     pub confidence: Option<f64>,
 }
@@ -34,6 +37,9 @@ impl RoutingDecision {
         Self {
             model: None,
             mode: "disabled",
+            reason: "automatic_routing_disabled",
+            detail: None,
+            classifier_output: None,
             tier: None,
             confidence: None,
         }
@@ -43,24 +49,33 @@ impl RoutingDecision {
         Self {
             model: Some(model),
             mode: "selected_model",
+            reason: "selected_model_override",
+            detail: None,
+            classifier_output: None,
             tier: None,
             confidence: None,
         }
     }
 
-    pub fn bypass_strong(settings: &AutoRoutingSettings) -> Self {
+    pub fn bypass_strong(settings: &AutoRoutingSettings, reason: &'static str) -> Self {
         Self {
             model: settings.strong_model.clone(),
             mode: "safety_bypass",
+            reason,
+            detail: None,
+            classifier_output: None,
             tier: Some(RoutingTier::Strong),
             confidence: None,
         }
     }
 
-    pub fn classifier_failure(settings: &AutoRoutingSettings) -> Self {
+    pub fn classifier_failure(settings: &AutoRoutingSettings, reason: &'static str) -> Self {
         Self {
             model: settings.strong_model.clone(),
             mode: "classifier_fallback",
+            reason,
+            detail: None,
+            classifier_output: None,
             tier: Some(RoutingTier::Strong),
             confidence: None,
         }
@@ -157,6 +172,13 @@ pub fn decision_from_classifier_output(
         } else {
             "low_confidence_fallback"
         },
+        reason: if tier == reported_tier {
+            "classifier_selected"
+        } else {
+            "classifier_confidence_below_threshold"
+        },
+        detail: None,
+        classifier_output: Some(diagnostic_preview(text, 500)),
         tier: Some(tier),
         confidence: Some(output.confidence),
     })
@@ -222,6 +244,62 @@ pub fn is_tool_round(request: &Value) -> bool {
     contains_tool_output(request.get("input"))
 }
 
+pub fn user_input_preview(request: &Value, max_chars: usize) -> Option<String> {
+    let input = request.get("input")?;
+    let mut preview = String::new();
+    match input {
+        Value::String(text) => append_preview_text(&mut preview, text, max_chars),
+        Value::Array(items) => {
+            for item in items.iter().rev() {
+                if item.get("role").and_then(Value::as_str) == Some("user") {
+                    append_preview_value(&mut preview, item.get("content"), max_chars);
+                    if !preview.is_empty() {
+                        break;
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    let preview = preview.split_whitespace().collect::<Vec<_>>().join(" ");
+    (!preview.is_empty()).then_some(preview)
+}
+
+pub fn diagnostic_preview(text: &str, max_chars: usize) -> String {
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(max_chars)
+        .collect()
+}
+
+fn append_preview_value(output: &mut String, value: Option<&Value>, max_chars: usize) {
+    match value {
+        Some(Value::String(text)) => append_preview_text(output, text, max_chars),
+        Some(Value::Array(items)) => {
+            for item in items {
+                if item.get("type").and_then(Value::as_str) == Some("input_text") {
+                    append_preview_value(output, item.get("text"), max_chars);
+                }
+            }
+        }
+        Some(Value::Object(object)) => append_preview_value(output, object.get("text"), max_chars),
+        _ => {}
+    }
+}
+
+fn append_preview_text(output: &mut String, text: &str, max_chars: usize) {
+    let remaining = max_chars.saturating_sub(output.chars().count());
+    if remaining == 0 {
+        return;
+    }
+    if !output.is_empty() {
+        output.push(' ');
+    }
+    output.extend(text.chars().take(remaining));
+}
+
 fn contains_tool_output(value: Option<&Value>) -> bool {
     match value {
         Some(Value::Array(items)) => items.iter().any(|item| contains_tool_output(Some(item))),
@@ -255,6 +333,7 @@ fn strip_markdown_code_fence(text: &str) -> &str {
 mod tests {
     use super::{
         RoutingTier, classifier_prompt, decision_from_classifier_output, summarize_request,
+        user_input_preview,
     };
     use crate::models::AutoRoutingSettings;
     use serde_json::json;
@@ -286,6 +365,22 @@ mod tests {
     }
 
     #[test]
+    fn stores_only_a_short_user_input_preview() {
+        let request = json!({
+            "instructions": "secret system instructions",
+            "input": [{
+                "role": "user",
+                "content": [{"type": "input_text", "text": "你好，请帮我处理这个任务"}]
+            }]
+        });
+
+        assert_eq!(
+            user_input_preview(&request, 5).as_deref(),
+            Some("你好，请帮")
+        );
+    }
+
+    #[test]
     fn sends_tool_result_requests_directly_to_strong_model() {
         let request = summarize_request(&json!({
             "input": "inspect the repo",
@@ -305,6 +400,7 @@ mod tests {
                 .expect("valid decision");
 
         assert_eq!(decision.mode, "low_confidence_fallback");
+        assert_eq!(decision.reason, "classifier_confidence_below_threshold");
         assert_eq!(decision.tier, Some(RoutingTier::Strong));
         assert_eq!(decision.model.as_deref(), Some("strong"));
     }

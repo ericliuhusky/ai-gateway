@@ -333,7 +333,9 @@ impl SqliteStore {
     pub fn load_turn_route_log(&self, turn_id: &str) -> Result<Option<TurnRouteLog>, String> {
         let conn = self.connect()?;
         conn.query_row(
-            "SELECT turn_id, provider_id, model, routing_mode, routing_tier, reasoning_effort,
+            "SELECT turn_id, provider_id, model, routing_mode, routing_reason, routing_detail,
+                    routing_tier, classifier_confidence, classifier_output,
+                    reasoning_effort, user_input_preview,
                     started_at, updated_at, request_count, tool_round_count
              FROM turn_route_logs WHERE turn_id = ?1",
             params![turn_id],
@@ -347,7 +349,9 @@ impl SqliteStore {
         let conn = self.connect()?;
         let mut statement = conn
             .prepare(
-                "SELECT turn_id, provider_id, model, routing_mode, routing_tier, reasoning_effort,
+                "SELECT turn_id, provider_id, model, routing_mode, routing_reason, routing_detail,
+                        routing_tier, classifier_confidence, classifier_output,
+                        reasoning_effort, user_input_preview,
                         started_at, updated_at, request_count, tool_round_count
                  FROM turn_route_logs
                  ORDER BY updated_at DESC, rowid DESC
@@ -373,21 +377,29 @@ impl SqliteStore {
         transaction
             .execute(
                 "INSERT INTO turn_route_logs (
-                    turn_id, provider_id, model, routing_mode, routing_tier, reasoning_effort,
+                    turn_id, provider_id, model, routing_mode, routing_reason, routing_detail,
+                    routing_tier, classifier_confidence, classifier_output,
+                    reasoning_effort, user_input_preview,
                     started_at, updated_at, request_count, tool_round_count
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, 1, ?8)
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12, 1, ?13)
                  ON CONFLICT(turn_id) DO UPDATE SET
                     updated_at = excluded.updated_at,
                     request_count = turn_route_logs.request_count + 1,
                     tool_round_count = turn_route_logs.tool_round_count + excluded.tool_round_count,
-                    reasoning_effort = COALESCE(excluded.reasoning_effort, turn_route_logs.reasoning_effort)",
+                    reasoning_effort = COALESCE(excluded.reasoning_effort, turn_route_logs.reasoning_effort),
+                    user_input_preview = COALESCE(turn_route_logs.user_input_preview, excluded.user_input_preview)",
                 params![
                     update.turn_id,
                     update.provider_id,
                     update.model,
                     update.routing_mode,
+                    update.routing_reason,
+                    update.routing_detail,
                     update.routing_tier,
+                    update.classifier_confidence,
+                    update.classifier_output,
                     update.reasoning_effort,
+                    update.user_input_preview,
                     update.timestamp,
                     i64::from(update.is_tool_round),
                 ],
@@ -475,8 +487,13 @@ impl SqliteStore {
                 provider_id TEXT NOT NULL,
                 model TEXT NOT NULL,
                 routing_mode TEXT NOT NULL,
+                routing_reason TEXT NOT NULL DEFAULT 'unknown',
+                routing_detail TEXT,
                 routing_tier TEXT,
+                classifier_confidence REAL,
+                classifier_output TEXT,
                 reasoning_effort TEXT,
+                user_input_preview TEXT,
                 started_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
                 request_count INTEGER NOT NULL,
@@ -497,6 +514,16 @@ impl SqliteStore {
             "routing_low_confidence_threshold",
             "REAL NOT NULL DEFAULT 0.7",
         )?;
+        ensure_table_column(
+            &conn,
+            "turn_route_logs",
+            "routing_reason",
+            "TEXT NOT NULL DEFAULT 'unknown'",
+        )?;
+        ensure_table_column(&conn, "turn_route_logs", "routing_detail", "TEXT")?;
+        ensure_table_column(&conn, "turn_route_logs", "classifier_confidence", "REAL")?;
+        ensure_table_column(&conn, "turn_route_logs", "classifier_output", "TEXT")?;
+        ensure_table_column(&conn, "turn_route_logs", "user_input_preview", "TEXT")?;
         Ok(())
     }
 
@@ -519,12 +546,17 @@ fn turn_route_log_from_row(row: &rusqlite::Row<'_>) -> Result<TurnRouteLog, rusq
         provider_id: row.get(1)?,
         model: row.get(2)?,
         routing_mode: row.get(3)?,
-        routing_tier: row.get(4)?,
-        reasoning_effort: row.get(5)?,
-        started_at: row.get(6)?,
-        updated_at: row.get(7)?,
-        request_count: row.get(8)?,
-        tool_round_count: row.get(9)?,
+        routing_reason: row.get(4)?,
+        routing_detail: row.get(5)?,
+        routing_tier: row.get(6)?,
+        classifier_confidence: row.get(7)?,
+        classifier_output: row.get(8)?,
+        reasoning_effort: row.get(9)?,
+        user_input_preview: row.get(10)?,
+        started_at: row.get(11)?,
+        updated_at: row.get(12)?,
+        request_count: row.get(13)?,
+        tool_round_count: row.get(14)?,
     })
 }
 
@@ -548,6 +580,29 @@ fn ensure_gateway_state_column(
         "ALTER TABLE gateway_state ADD COLUMN {column_name} {column_definition};"
     ))
     .map_err(|err| format!("add `{column_name}` to gateway state failed: {err}"))
+}
+
+fn ensure_table_column(
+    conn: &Connection,
+    table_name: &str,
+    column_name: &str,
+    column_definition: &str,
+) -> Result<(), String> {
+    let mut statement = conn
+        .prepare(&format!("PRAGMA table_info({table_name})"))
+        .map_err(|err| format!("inspect `{table_name}` schema failed: {err}"))?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|err| format!("list `{table_name}` columns failed: {err}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| format!("read `{table_name}` columns failed: {err}"))?;
+    if columns.iter().any(|column| column == column_name) {
+        return Ok(());
+    }
+    conn.execute_batch(&format!(
+        "ALTER TABLE {table_name} ADD COLUMN {column_name} {column_definition};"
+    ))
+    .map_err(|err| format!("add `{column_name}` to `{table_name}` failed: {err}"))
 }
 
 fn upsert_account_record(

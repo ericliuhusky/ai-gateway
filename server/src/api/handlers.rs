@@ -19,7 +19,8 @@ use crate::{
     openai_tokens::OpenAiTokenService,
     routing::{
         RoutingDecision, classifier_instructions, classifier_prompt,
-        decision_from_classifier_output, is_tool_round, summarize_request,
+        decision_from_classifier_output, diagnostic_preview, is_tool_round, summarize_request,
+        user_input_preview,
     },
     store::{AccountStore, ModelStore, ProviderStore, RouteStore, SettingsStore, TurnLogStore},
     support::time::now_unix,
@@ -372,16 +373,21 @@ pub async fn clear_selected_model(State(state): State<AppState>) -> Result<Json<
     Ok(Json(json!({ "selected_model": route_payload(route) })))
 }
 
-pub async fn responses(State(state): State<AppState>, body: Bytes) -> Result<Response, AppError> {
+pub async fn responses(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, AppError> {
     let raw_body = std::str::from_utf8(&body)
         .map_err(|_| AppError::bad_request("request body must be valid UTF-8"))?
         .to_owned();
-    responses_inner(state, raw_body).await
+    responses_inner(state, raw_body, codex_turn_metadata(&headers)).await
 }
 
 pub(super) async fn responses_inner(
     state: AppState,
     raw_body: String,
+    turn_metadata: Option<CodexTurnMetadata>,
 ) -> Result<Response, AppError> {
     let provider = resolve_selected_provider(&state).await?;
     let mut request_json: Value = serde_json::from_str(&raw_body)
@@ -390,7 +396,7 @@ pub(super) async fn responses_inner(
     let requested_model = responses_request_model(&request_json)
         .unwrap_or_default()
         .to_string();
-    let turn = turn_context_from_request(&request_json);
+    let turn = turn_context_from_request(&request_json, turn_metadata.as_ref());
     let routing = choose_model_for_request(&state, &provider, &turn, &request_json).await?;
     record_turn_route(&state, &provider, &turn, &routing, &requested_model);
     let model_overridden = apply_routing_model_to_raw_request(&routing, &mut request_json);
@@ -674,6 +680,9 @@ async fn choose_model_for_request(
         return Ok(RoutingDecision {
             model: Some(existing.model),
             mode: "turn_sticky",
+            reason: "same_turn_model_reuse",
+            detail: None,
+            classifier_output: None,
             tier: routing_tier_from_log(existing.routing_tier.as_deref()),
             confidence: None,
         });
@@ -693,28 +702,53 @@ async fn choose_model_for_request(
 
     let routing_request = summarize_request(request);
     if routing_request.requires_safety_bypass() {
-        return Ok(RoutingDecision::bypass_strong(&settings));
+        let reason = if routing_request.has_visual_input {
+            "visual_input_requires_strong_model"
+        } else {
+            "tool_continuation_without_turn_binding"
+        };
+        return Ok(RoutingDecision::bypass_strong(&settings, reason));
     }
 
     let Some(classifier_model) = settings.classifier_model.as_deref() else {
-        return Ok(RoutingDecision::classifier_failure(&settings));
+        return Ok(RoutingDecision::classifier_failure(
+            &settings,
+            "classifier_model_not_configured",
+        ));
     };
-    let response = invoke_routing_classifier(
+    let response = match invoke_routing_classifier(
         state,
         provider,
         classifier_model,
         classifier_prompt(&routing_request),
     )
-    .await;
-    let Some(text) = response
-        .ok()
-        .and_then(|response| classifier_text_from_response(&response))
-    else {
-        return Ok(RoutingDecision::classifier_failure(&settings));
+    .await
+    {
+        Ok(response) => response,
+        Err(error) => {
+            let mut decision =
+                RoutingDecision::classifier_failure(&settings, "classifier_request_failed");
+            decision.detail = Some(diagnostic_preview(&error, 500));
+            return Ok(decision);
+        }
+    };
+    let Some(text) = classifier_text_from_response(&response) else {
+        let mut decision =
+            RoutingDecision::classifier_failure(&settings, "classifier_output_text_missing");
+        decision.detail = Some("upstream response contained no classifier output text".to_string());
+        decision.classifier_output = classifier_response_preview(&response);
+        return Ok(decision);
     };
 
-    Ok(decision_from_classifier_output(&text, &settings)
-        .unwrap_or_else(|| RoutingDecision::classifier_failure(&settings)))
+    Ok(
+        decision_from_classifier_output(&text, &settings).unwrap_or_else(|| {
+            let mut decision =
+                RoutingDecision::classifier_failure(&settings, "classifier_output_invalid");
+            decision.detail = Some("expected JSON with tier and confidence fields".to_string());
+            decision.classifier_output = Some(diagnostic_preview(&text, 500));
+            decision
+        }),
+    )
 }
 
 #[derive(Debug)]
@@ -722,12 +756,34 @@ struct TurnContext {
     id: String,
     is_tool_round: bool,
     reasoning_effort: Option<String>,
+    user_input_preview: Option<String>,
 }
 
-fn turn_context_from_request(request: &Value) -> TurnContext {
-    let raw_turn_id = request
-        .pointer("/client_metadata/turn_id")
-        .and_then(Value::as_str)
+#[derive(Debug, Deserialize)]
+pub(super) struct CodexTurnMetadata {
+    #[serde(default)]
+    turn_id: Option<String>,
+}
+
+fn codex_turn_metadata(headers: &HeaderMap) -> Option<CodexTurnMetadata> {
+    headers
+        .get("x-codex-turn-metadata")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| serde_json::from_str(value).ok())
+}
+
+fn turn_context_from_request(
+    request: &Value,
+    turn_metadata: Option<&CodexTurnMetadata>,
+) -> TurnContext {
+    let raw_turn_id = turn_metadata
+        .and_then(|metadata| metadata.turn_id.as_deref())
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            request
+                .pointer("/client_metadata/turn_id")
+                .and_then(Value::as_str)
+        })
         .or_else(|| {
             request
                 .pointer("/client_metadata/turnId")
@@ -747,6 +803,7 @@ fn turn_context_from_request(request: &Value) -> TurnContext {
         id,
         is_tool_round: is_tool_round(request),
         reasoning_effort,
+        user_input_preview: user_input_preview(request, 160),
     }
 }
 
@@ -781,8 +838,13 @@ fn record_turn_route(
         provider_id,
         model,
         routing_mode: routing.mode.to_string(),
+        routing_reason: routing.reason.to_string(),
+        routing_detail: routing.detail.clone(),
         routing_tier: routing.tier.map(|tier| tier.as_str().to_string()),
+        classifier_confidence: routing.confidence,
+        classifier_output: routing.classifier_output.clone(),
         reasoning_effort: turn.reasoning_effort.clone(),
+        user_input_preview: turn.user_input_preview.clone(),
         is_tool_round: turn.is_tool_round,
         timestamp: now_unix() as i64,
     });
@@ -823,27 +885,25 @@ async fn invoke_routing_classifier(
             account_id: account.upstream_account_id(),
             client_version: None,
         };
-        let body = json!({
-            "model": classifier_model,
-            "input": prompt,
-            "instructions": classifier_instructions(),
-            "stream": false,
-            "store": false
-        })
-        .to_string();
-        return state
+        let body = private_classifier_request_body(classifier_model, prompt);
+        let response = state
             .upstream
             .openai_send(
                 &request,
                 OpenAiEndpoint::Responses {
                     body: OpenAiRequestBody::Raw(body),
-                    stream: false,
+                    stream: true,
                 },
             )
-            .await?
-            .json()
+            .await?;
+        let body = response
+            .text()
             .await
-            .map_err(|err| format!("parse routing classifier response failed: {err}"));
+            .map_err(|err| format!("read routing classifier stream failed: {err}"))?;
+        return Ok(json!({
+            "output_text": classifier_text_from_sse(&body),
+            "raw_classifier_output": diagnostic_preview(&body, 500),
+        }));
     }
 
     let record = provider.record.as_ref().ok_or_else(|| {
@@ -898,6 +958,32 @@ async fn invoke_routing_classifier(
         .map_err(|err| format!("parse routing classifier response failed: {err}"))
 }
 
+fn private_classifier_request_body(classifier_model: &str, prompt: String) -> String {
+    json!({
+        "model": classifier_model,
+        // The Codex backend's private Responses endpoint only accepts the
+        // canonical item-list form, unlike some public-compatible endpoints
+        // which also accept a plain input string.
+        "input": [{
+            "type": "message",
+            "role": "user",
+            "content": [{
+                "type": "input_text",
+                "text": prompt
+            }]
+        }],
+        "instructions": classifier_instructions(),
+        "tools": [],
+        "tool_choice": "auto",
+        "parallel_tool_calls": false,
+        "reasoning": {"effort": "low", "summary": "auto"},
+        "include": [],
+        "stream": true,
+        "store": false
+    })
+    .to_string()
+}
+
 fn classifier_text_from_response(response: &Value) -> Option<String> {
     response
         .get("output_text")
@@ -930,6 +1016,41 @@ fn classifier_text_from_response(response: &Value) -> Option<String> {
                     })
                 })
         })
+}
+
+fn classifier_response_preview(response: &Value) -> Option<String> {
+    response
+        .get("raw_classifier_output")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| Some(diagnostic_preview(&response.to_string(), 500)))
+}
+
+fn classifier_text_from_sse(body: &str) -> Option<String> {
+    let mut buffer = String::new();
+    let mut text = String::new();
+    let payloads = drain_sse_payloads(&mut buffer, &format!("{body}\n\n"));
+    for payload in payloads {
+        if payload == "[DONE]" {
+            continue;
+        }
+        let Ok(event) = serde_json::from_str::<Value>(&payload) else {
+            continue;
+        };
+        if event.get("type").and_then(Value::as_str) == Some("response.output_text.delta")
+            && let Some(delta) = event.get("delta").and_then(Value::as_str)
+        {
+            text.push_str(delta);
+            continue;
+        }
+        if text.is_empty()
+            && let Some(completed) = event.get("response")
+            && let Some(completed_text) = classifier_text_from_response(completed)
+        {
+            text = completed_text;
+        }
+    }
+    (!text.trim().is_empty()).then_some(text)
 }
 
 fn is_event_stream_response(headers: &HeaderMap) -> bool {
@@ -1595,14 +1716,44 @@ impl IntoResponse for AppError {
 mod tests {
     use super::CodexAuthFile;
     use super::{
-        ChatCompletionsResponsesStream, ResolvedProvider, drain_sse_payloads,
-        openai_models_response, provider_uses_openai_account, quota_from_openai_usage,
+        ChatCompletionsResponsesStream, ResolvedProvider, classifier_response_preview,
+        classifier_text_from_sse, codex_turn_metadata, drain_sse_payloads, opaque_turn_id,
+        openai_models_response, private_classifier_request_body, provider_uses_openai_account,
+        quota_from_openai_usage, turn_context_from_request,
     };
     use crate::models::{
         ApiProviderBillingMode, ApiProviderRecord, ProviderAuthMode, ProviderCompatibilityProfile,
         ProviderUpstreamProtocol, ResponseStreamFrame,
     };
     use serde_json::json;
+
+    #[test]
+    fn uses_codex_turn_metadata_header_to_bind_tool_rounds() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            "x-codex-turn-metadata",
+            axum::http::HeaderValue::from_static(
+                "{\"turn_id\":\"019fbf39-3cf8-7b72-8571-4c773cd29c24\"}",
+            ),
+        );
+        let metadata = codex_turn_metadata(&headers).expect("metadata should parse");
+        let context = turn_context_from_request(
+            &json!({
+                "input": [{
+                    "type": "function_call_output",
+                    "call_id": "call_1",
+                    "output": "ok"
+                }]
+            }),
+            Some(&metadata),
+        );
+
+        assert_eq!(
+            context.id,
+            opaque_turn_id("019fbf39-3cf8-7b72-8571-4c773cd29c24")
+        );
+        assert!(context.is_tool_round);
+    }
 
     #[test]
     fn validates_codex_client_version_override() {
@@ -1784,6 +1935,55 @@ mod tests {
 
         assert!(joined.contains("\"type\":\"response.output_text.delta\""));
         assert!(joined.contains("\"delta\":\"hi\""));
+    }
+
+    #[test]
+    fn collects_classifier_text_from_responses_sse() {
+        let body = concat!(
+            "event: response.output_text.delta\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"{\\\"tier\\\":\"}\n\n",
+            "event: response.output_text.delta\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"\\\"cheap\\\",\\\"confidence\\\":0.95}\"}\n\n",
+            "data: [DONE]\n\n"
+        );
+
+        assert_eq!(
+            classifier_text_from_sse(body).as_deref(),
+            Some("{\"tier\":\"cheap\",\"confidence\":0.95}")
+        );
+    }
+
+    #[test]
+    fn preserves_raw_classifier_stream_when_no_text_is_available() {
+        let body = concat!(
+            "event: response.failed\n",
+            "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"message\":\"unsupported parameter\"}}}\n\n"
+        );
+        let response = json!({
+            "output_text": classifier_text_from_sse(body),
+            "raw_classifier_output": body,
+        });
+
+        assert!(classifier_text_from_sse(body).is_none());
+        assert!(
+            classifier_response_preview(&response)
+                .expect("raw stream should be retained")
+                .contains("response.failed")
+        );
+    }
+
+    #[test]
+    fn private_classifier_uses_canonical_input_item_list() {
+        let body: serde_json::Value = serde_json::from_str(&private_classifier_request_body(
+            "gpt-5.6-luna",
+            "classify".into(),
+        ))
+        .expect("request should be JSON");
+
+        assert_eq!(body["input"][0]["type"], "message");
+        assert_eq!(body["input"][0]["role"], "user");
+        assert_eq!(body["input"][0]["content"][0]["type"], "input_text");
+        assert_eq!(body["input"][0]["content"][0]["text"], "classify");
     }
 
     #[test]

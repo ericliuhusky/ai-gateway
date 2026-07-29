@@ -53,8 +53,13 @@ export interface TurnRouteLog {
   provider_id: string;
   model: string;
   routing_mode: string;
+  routing_reason: string;
+  routing_detail?: string;
   routing_tier?: "cheap" | "standard" | "strong";
+  classifier_confidence?: number;
+  classifier_output?: string;
   reasoning_effort?: string;
+  user_input_preview?: string;
   started_at: number;
   updated_at: number;
   request_count: number;
