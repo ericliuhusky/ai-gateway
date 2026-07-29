@@ -8,6 +8,7 @@ use axum::{
 
 const SETUP_SCRIPT: &str = include_str!("../scripts/codex-setup.sh");
 const RESTORE_SCRIPT: &str = include_str!("../scripts/codex-restore.sh");
+const INSTANCES_SCRIPT: &str = include_str!("../scripts/codex-instances.sh");
 
 pub async fn setup_script() -> Response {
     shell_script_response(SETUP_SCRIPT, "setup.sh")
@@ -15,6 +16,10 @@ pub async fn setup_script() -> Response {
 
 pub async fn restore_script() -> Response {
     shell_script_response(RESTORE_SCRIPT, "restore.sh")
+}
+
+pub async fn instances_script() -> Response {
+    shell_script_response(INSTANCES_SCRIPT, "instances.sh")
 }
 
 fn shell_script_response(script: &'static str, filename: &'static str) -> Response {
@@ -39,6 +44,8 @@ fn shell_script_response(script: &'static str, filename: &'static str) -> Respon
 mod tests {
     use super::*;
     use rusqlite::{Connection, params};
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
     use std::{
         fs,
         path::PathBuf,
@@ -64,6 +71,106 @@ mod tests {
         assert!(RESTORE_SCRIPT.contains("Provider 配置已保留"));
         assert!(!RESTORE_SCRIPT.contains("codex-config.before-ai-gateway.toml"));
         assert!(!RESTORE_SCRIPT.contains("state_5.sqlite"));
+    }
+
+    #[test]
+    fn instances_script_uses_isolated_codex_and_electron_directories() {
+        assert!(INSTANCES_SCRIPT.contains("CODEX_HOME=$codex_home"));
+        assert!(INSTANCES_SCRIPT.contains("CODEX_ELECTRON_USER_DATA_PATH=$electron_home"));
+        assert!(INSTANCES_SCRIPT.contains("--user-data-dir=$electron_home"));
+        assert!(INSTANCES_SCRIPT.contains("auth.json is intentionally never copied"));
+        assert!(INSTANCES_SCRIPT.contains("link_shared_path \"$template_home/skills\""));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn instances_script_creates_an_isolated_profile_without_copying_auth() {
+        let test_dir = test_dir("instances");
+        let home_dir = test_dir.join("home");
+        let template_home = home_dir.join(".codex");
+        let instances_root = test_dir.join("instances");
+        let bin_dir = test_dir.join("bin");
+        let open_args_path = test_dir.join("open-args");
+        fs::create_dir_all(template_home.join("skills")).expect("create template skills");
+        fs::create_dir_all(&bin_dir).expect("create fake bin");
+        fs::write(
+            template_home.join("config.toml"),
+            "model_provider = \"openai\"\n\
+             model = \"gpt-5.4\"\n\
+             [mcp_servers.node_repl.env]\n\
+             CODEX_HOME = \"/old/default/.codex\"\n",
+        )
+        .expect("write template config");
+        fs::write(
+            template_home.join("auth.json"),
+            "{\"tokens\":\"must-not-copy\"}",
+        )
+        .expect("write template auth");
+
+        let fake_uname = bin_dir.join("uname");
+        fs::write(&fake_uname, "#!/bin/sh\nprintf '%s\\n' Darwin\n").expect("write fake uname");
+        let fake_open = bin_dir.join("open");
+        fs::write(
+            &fake_open,
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$AI_GATEWAY_TEST_OPEN_ARGS\"\n",
+        )
+        .expect("write fake open");
+        for executable in [&fake_uname, &fake_open] {
+            let mut permissions = fs::metadata(executable)
+                .expect("read fake executable metadata")
+                .permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(executable, permissions).expect("mark fake executable executable");
+        }
+
+        let script_path = test_dir.join("instances.sh");
+        fs::write(&script_path, INSTANCES_SCRIPT).expect("write instances script");
+        let path = format!(
+            "{}:{}",
+            bin_dir.display(),
+            std::env::var("PATH").expect("PATH must be present")
+        );
+        let output = Command::new("sh")
+            .arg(&script_path)
+            .args([
+                "create",
+                "account-a",
+                "https://gateway.example.com/openai/v1",
+            ])
+            .env("HOME", &home_dir)
+            .env("PATH", path)
+            .env("AI_GATEWAY_CODEX_INSTANCES_DIR", &instances_root)
+            .env("AI_GATEWAY_TEST_OPEN_ARGS", &open_args_path)
+            .output()
+            .expect("run instances script");
+        assert!(
+            output.status.success(),
+            "instances script failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let codex_home = instances_root.join("account-a/codex-home");
+        let config =
+            fs::read_to_string(codex_home.join("config.toml")).expect("read instance config");
+        assert!(config.contains("model_provider = \"ai-gateway\""));
+        assert!(config.contains("base_url = \"https://gateway.example.com/openai/v1\""));
+        assert!(config.contains(&format!("CODEX_HOME = \"{}\"", codex_home.display())));
+        assert!(!codex_home.join("auth.json").exists());
+        assert!(
+            fs::symlink_metadata(codex_home.join("skills"))
+                .expect("read linked skills metadata")
+                .file_type()
+                .is_symlink()
+        );
+
+        let open_args = fs::read_to_string(&open_args_path).expect("read fake open arguments");
+        assert!(open_args.contains(&format!("CODEX_HOME={}", codex_home.display())));
+        assert!(open_args.contains(&format!(
+            "--user-data-dir={}",
+            instances_root.join("account-a/electron").display()
+        )));
+
+        fs::remove_dir_all(test_dir).expect("remove test dir");
     }
 
     #[test]

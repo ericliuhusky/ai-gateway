@@ -910,14 +910,16 @@ function AccountDialog({
 }
 
 function SetupDialog({ onClose }: { onClose: () => void }) {
-  const [copied, setCopied] = React.useState<"setup" | "restore" | null>(null);
+  const [copied, setCopied] = React.useState<"setup" | "restore" | "instance" | null>(null);
   const gatewayUrl = `${window.location.origin}/openai/v1`;
   const setupScriptUrl = `${window.location.origin}/codex/setup.sh`;
   const restoreScriptUrl = `${window.location.origin}/codex/restore.sh`;
+  const instancesScriptUrl = `${window.location.origin}/codex/instances.sh`;
   const setupCommand = `curl -fsSL ${shellQuote(setupScriptUrl)} | sh -s -- ${shellQuote(gatewayUrl)}`;
   const restoreCommand = `curl -fsSL ${shellQuote(restoreScriptUrl)} | sh`;
+  const instanceCommand = `curl -fsSL ${shellQuote(instancesScriptUrl)} | sh -s -- create account-a ${shellQuote(gatewayUrl)}`;
 
-  function copyCommand(kind: "setup" | "restore", command: string) {
+  function copyCommand(kind: "setup" | "restore" | "instance", command: string) {
     void copyText(command);
     setCopied(kind);
     window.setTimeout(() => setCopied(null), 1500);
@@ -957,6 +959,25 @@ function SetupDialog({ onClose }: { onClose: () => void }) {
             >
               {copied === "setup" ? <Check className="size-4" /> : <Copy className="size-4" />}
             </button>
+          </div>
+        </FormField>
+        <FormField label="创建隔离多实例（macOS）">
+          <div className="space-y-2">
+            <p className="text-xs leading-5 text-slate-500">
+              每个实例使用独立的 <code>CODEX_HOME</code>、<code>auth.json</code> 和 Electron 数据目录；新窗口需分别登录账号。
+              将 <code>account-a</code> 改成实例名称，再为第二个账号执行一次即可。
+            </p>
+            <div className="relative">
+              <pre className="overflow-x-auto rounded-2xl bg-slate-950 p-4 pr-12 text-[11px] leading-5 text-slate-200">{instanceCommand}</pre>
+              <button
+                className="absolute right-3 top-3 flex size-8 items-center justify-center rounded-lg bg-white/10 text-white hover:bg-white/15"
+                type="button"
+                aria-label="复制多实例创建命令"
+                onClick={() => copyCommand("instance", instanceCommand)}
+              >
+                {copied === "instance" ? <Check className="size-4" /> : <Copy className="size-4" />}
+              </button>
+            </div>
           </div>
         </FormField>
         <FormField label="恢复原配置">

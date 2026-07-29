@@ -15,6 +15,10 @@ Codex -> https://gateway.example.com/openai/v1 -> server -> upstream provider
 Browser -> Web 管理端 -> 生成一次性 setup.sh / restore.sh 命令
                            -> 修改或恢复 ~/.codex/config.toml
                            -> 为原 Provider 历史创建 ai-gateway 别名
+
+Browser -> Web 管理端 -> 生成一次性 instances.sh 命令（macOS）
+                           -> 每个 Codex 窗口使用独立的 CODEX_HOME
+                           -> 每个实例使用独立的 auth.json 和 Electron 数据目录
 ```
 
 ## Server
@@ -96,6 +100,27 @@ curl -fsSL 'https://gateway.example.com/codex/restore.sh' | sh
 恢复脚本只将 `model_provider` 切回原值，并移除保存原值的注释。`model_providers.ai-gateway` 配置和已经创建的历史别名会继续保留，之后可以再次切换，不会恢复或覆盖整个配置文件。
 
 历史同步只复制任务记录和对应 rollout，不修改原任务。映射保存在 `~/.codex/.ai-gateway-history/aliases.tsv`，首次同步前的数据库快照保存在同目录的 `state_5.before-first-sync.sqlite`。如果原 rollout 文件已经缺失，该任务会被跳过并输出警告，不影响 Provider 配置切换。
+
+### Codex 多实例（macOS）
+
+为两个账号分别创建隔离的 Codex 窗口：
+
+```bash
+curl -fsSL 'https://gateway.example.com/codex/instances.sh' |
+  sh -s -- create account-a 'https://gateway.example.com/openai/v1'
+
+curl -fsSL 'https://gateway.example.com/codex/instances.sh' |
+  sh -s -- create account-b 'https://gateway.example.com/openai/v1'
+```
+
+实例保存在 `~/.ai-gateway/codex-instances/<name>/`。每个实例有独立的 `CODEX_HOME`、`config.toml`、`auth.json`、会话记录和 Electron 用户数据目录，因此可分别在窗口中登录不同的 Codex 账号。创建时不会复制默认实例的 `auth.json`。`skills`、`rules` 和 `AGENTS.md` 会从默认 `~/.codex` 共享，便于复用本地工作流。
+
+查看或再次启动实例：
+
+```bash
+curl -fsSL 'https://gateway.example.com/codex/instances.sh' | sh -s -- list
+curl -fsSL 'https://gateway.example.com/codex/instances.sh' | sh -s -- start account-a
+```
 
 ## Web 管理端
 

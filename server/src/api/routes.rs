@@ -22,6 +22,7 @@ pub fn build_router(state: AppState, web_dir: PathBuf) -> Router {
         .route("/healthz", get(healthz))
         .route("/codex/setup.sh", get(codex_scripts::setup_script))
         .route("/codex/restore.sh", get(codex_scripts::restore_script))
+        .route("/codex/instances.sh", get(codex_scripts::instances_script))
         .route("/accounts/openai/import-token", post(import_openai_token))
         .route("/providers", get(list_providers).post(add_provider))
         .route("/providers/:provider_id", delete(delete_provider))
