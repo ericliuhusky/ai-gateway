@@ -37,12 +37,36 @@ cargo run -p ai-gateway
 | --- | --- | --- |
 | `AI_GATEWAY_BIND_ADDR` | `0.0.0.0:4242` | HTTP 监听地址 |
 | `AI_GATEWAY_DATA_DIR` | `$HOME/.ai-gateway` | SQLite 数据目录 |
+| `AI_GATEWAY_ENCRYPTION_KEY` | 无（必填） | 用于加密数据库凭据的 Base64 编码 32 字节密钥 |
 
 Server 不再读取或修改服务器用户的 `~/.codex`。
 
 Codex 模型接口的客户端版本默认使用代码内置值 `0.146.0`。可在 Web 管理端的“网关设置”中写入数据库覆盖值；恢复默认时会删除数据库覆盖值并重新使用代码内置版本。更新或恢复版本都会自动清理 OpenAI 模型缓存。
 
 当前网关接口还没有客户端鉴权。正式暴露到公网前，应放在带 TLS 和访问控制的反向代理后，或者先完成网关 API Key/多租户改造。
+
+## 数据库凭据加密
+
+网关使用 AES-256-GCM 对 SQLite 中的以下凭据列进行应用层加密（每次写入使用随机 nonce，并带完整性校验）：
+
+- `accounts.access_token`
+- `accounts.refresh_token`
+- `providers.api_key`
+
+密钥不能放进数据库或 Git 仓库。为服务进程和迁移脚本设置同一个密钥，例如：
+
+```bash
+export AI_GATEWAY_ENCRYPTION_KEY="$(openssl rand -base64 32)"
+```
+
+现有数据库需要在**停止网关服务后**迁移一次。下面的脚本会先使用 SQLite 的 `.backup` 创建备份，再在单个事务中加密上述列；已加密的值会被校验但不会重复加密：
+
+```bash
+AI_GATEWAY_ENCRYPTION_KEY='同一个Base64密钥' \
+  ./server/scripts/encrypt-existing-db.sh "$HOME/.ai-gateway/db.sqlite"
+```
+
+迁移成功后再以相同的 `AI_GATEWAY_ENCRYPTION_KEY` 启动服务。丢失或更换该密钥将无法恢复已有凭据，因此请将密钥保存在独立的密钥管理系统或受限的部署环境变量中。
 
 ## Codex 接入脚本
 

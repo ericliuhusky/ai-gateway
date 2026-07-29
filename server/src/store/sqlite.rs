@@ -1,5 +1,6 @@
 use crate::{
     config::Config,
+    crypto::FieldEncryptor,
     models::{
         AccountRecord, AccountType, ApiProviderBillingMode, ApiProviderRecord,
         CachedProviderModels, ProviderAuthMode, ProviderCompatibilityProfile,
@@ -11,6 +12,7 @@ use std::{fs, path::PathBuf, sync::Arc};
 #[derive(Clone, Debug)]
 pub struct SqliteStore {
     db_path: PathBuf,
+    encryption: FieldEncryptor,
 }
 
 impl SqliteStore {
@@ -20,6 +22,7 @@ impl SqliteStore {
 
         let store = Self {
             db_path: config.sqlite_path(),
+            encryption: config.encryption(),
         };
         store.init()?;
         Ok(store)
@@ -32,7 +35,13 @@ impl SqliteStore {
                 .map_err(|err| format!("create test data dir failed: {err}"))?;
         }
 
-        let store = Self { db_path };
+        let store = Self {
+            db_path,
+            encryption: FieldEncryptor::from_base64_key(
+                "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=",
+            )
+            .expect("hard-coded test key is valid"),
+        };
         store.init()?;
         Ok(store)
     }
@@ -46,15 +55,20 @@ impl SqliteStore {
                  ORDER BY rowid ASC",
             )
             .map_err(|err| format!("prepare accounts query failed: {err}"))?;
+        let encryption = self.encryption.clone();
         let rows = stmt
-            .query_map([], |row| {
+            .query_map([], move |row| {
                 Ok(AccountRecord {
                     id: row.get(0)?,
                     account_type: account_type_from_str(&row.get::<_, String>(1)?)
                         .map_err(rusqlite::Error::ToSqlConversionFailure)?,
                     email: row.get(2)?,
-                    access_token: row.get(3)?,
-                    refresh_token: row.get(4)?,
+                    access_token: encryption
+                        .decrypt(&row.get::<_, String>(3)?)
+                        .map_err(decrypt_conversion_error)?,
+                    refresh_token: encryption
+                        .decrypt(&row.get::<_, String>(4)?)
+                        .map_err(decrypt_conversion_error)?,
                     expiry_timestamp: row.get(5)?,
                     client_id: row.get(6)?,
                     upstream_account_id: row.get(7)?,
@@ -68,7 +82,7 @@ impl SqliteStore {
 
     pub fn upsert_account(&self, account: &AccountRecord) -> Result<(), String> {
         let conn = self.connect()?;
-        upsert_account_record(&conn, account)
+        upsert_account_record(&conn, &self.encryption, account)
     }
 
     pub fn load_providers(&self) -> Result<Vec<ApiProviderRecord>, String> {
@@ -81,15 +95,25 @@ impl SqliteStore {
                  ORDER BY rowid ASC",
             )
             .map_err(|err| format!("prepare providers query failed: {err}"))?;
+        let encryption = self.encryption.clone();
         let rows = stmt
-            .query_map([], |row| {
+            .query_map([], move |row| {
                 Ok(ApiProviderRecord {
                     id: row.get(0)?,
                     name: row.get(1)?,
                     auth_mode: provider_auth_mode_from_str(&row.get::<_, String>(2)?)
                         .map_err(rusqlite::Error::ToSqlConversionFailure)?,
                     base_url: row.get(3)?,
-                    api_key: row.get(4)?,
+                    api_key: {
+                        let api_key = row.get::<_, String>(4)?;
+                        if api_key.is_empty() {
+                            String::new()
+                        } else {
+                            encryption
+                                .decrypt(&api_key)
+                                .map_err(decrypt_conversion_error)?
+                        }
+                    },
                     account_id: row.get(5)?,
                     upstream_protocol: upstream_protocol_from_str(&row.get::<_, String>(6)?)
                         .map_err(rusqlite::Error::ToSqlConversionFailure)?,
@@ -109,7 +133,7 @@ impl SqliteStore {
 
     pub fn upsert_provider(&self, provider: &ApiProviderRecord) -> Result<(), String> {
         let conn = self.connect()?;
-        upsert_provider_record(&conn, provider)
+        upsert_provider_record(&conn, &self.encryption, provider)
     }
 
     pub fn delete_provider(&self, provider_id: &str) -> Result<(), String> {
@@ -328,7 +352,11 @@ impl SqliteStore {
     }
 }
 
-fn upsert_account_record(conn: &Connection, account: &AccountRecord) -> Result<(), String> {
+fn upsert_account_record(
+    conn: &Connection,
+    encryption: &FieldEncryptor,
+    account: &AccountRecord,
+) -> Result<(), String> {
     conn.execute(
         "INSERT INTO accounts (
             id, account_type, email, access_token, refresh_token, expiry_timestamp, client_id, upstream_account_id
@@ -345,8 +373,8 @@ fn upsert_account_record(conn: &Connection, account: &AccountRecord) -> Result<(
             account.id,
             account_type_to_str(&account.account_type),
             account.email,
-            account.access_token,
-            account.refresh_token,
+            encryption.encrypt(&account.access_token)?,
+            encryption.encrypt(&account.refresh_token)?,
             account.expiry_timestamp,
             account.client_id,
             account.upstream_account_id
@@ -356,11 +384,15 @@ fn upsert_account_record(conn: &Connection, account: &AccountRecord) -> Result<(
     Ok(())
 }
 
-fn upsert_provider_record(conn: &Connection, provider: &ApiProviderRecord) -> Result<(), String> {
+fn upsert_provider_record(
+    conn: &Connection,
+    encryption: &FieldEncryptor,
+    provider: &ApiProviderRecord,
+) -> Result<(), String> {
     let (base_url, api_key) = match provider.auth_mode {
         ProviderAuthMode::ApiKey => (
             Some(provider.base_url.as_str()),
-            Some(provider.api_key.as_str()),
+            Some(encryption.encrypt(&provider.api_key)?),
         ),
         ProviderAuthMode::Account => (None, None),
     };
@@ -479,6 +511,10 @@ fn billing_mode_from_str(
     }
 }
 
+fn decrypt_conversion_error(error: String) -> rusqlite::Error {
+    rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::other(error)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::SqliteStore;
@@ -570,6 +606,58 @@ mod tests {
             .expect("read provider row");
         assert_eq!(base_url, None);
         assert_eq!(api_key, None);
+
+        let _ = fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn stores_credentials_as_authenticated_ciphertext() {
+        let db_path = unique_test_db_path("encrypted-credentials");
+        let store = SqliteStore::for_test(db_path.clone()).expect("create encrypted database");
+        let account = AccountRecord {
+            id: "account-1".to_string(),
+            account_type: AccountType::Openai,
+            email: "account@example.com".to_string(),
+            access_token: "access-secret".to_string(),
+            refresh_token: "refresh-secret".to_string(),
+            expiry_timestamp: 1,
+            client_id: None,
+            upstream_account_id: None,
+        };
+        store.upsert_account(&account).expect("save account");
+        store
+            .upsert_provider(&api_provider("provider-1"))
+            .expect("save provider");
+
+        let conn = Connection::open(&db_path).expect("open encrypted database");
+        let (access_token, refresh_token): (String, String) = conn
+            .query_row(
+                "SELECT access_token, refresh_token FROM accounts WHERE id = ?1",
+                ["account-1"],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read account credentials");
+        let api_key: String = conn
+            .query_row(
+                "SELECT api_key FROM providers WHERE id = ?1",
+                ["provider-1"],
+                |row| row.get(0),
+            )
+            .expect("read provider credential");
+
+        for (stored, plaintext) in [
+            (access_token, "access-secret"),
+            (refresh_token, "refresh-secret"),
+            (api_key, "sk-test"),
+        ] {
+            assert!(stored.starts_with("aigw:v1:"));
+            assert_ne!(stored, plaintext);
+            assert!(!stored.contains(plaintext));
+        }
+        let loaded_account = store.load_accounts().unwrap().pop().unwrap();
+        assert_eq!(loaded_account.access_token, account.access_token);
+        assert_eq!(loaded_account.refresh_token, account.refresh_token);
+        assert_eq!(store.load_providers().unwrap()[0].api_key, "sk-test");
 
         let _ = fs::remove_file(db_path);
     }

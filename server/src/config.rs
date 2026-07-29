@@ -1,13 +1,16 @@
+use crate::crypto::FieldEncryptor;
 use std::{env, net::SocketAddr, path::PathBuf};
 
 const DEFAULT_BIND_ADDR: &str = "0.0.0.0:4242";
 pub const DEFAULT_CODEX_CLIENT_VERSION: &str = "0.146.0";
+const ENCRYPTION_KEY_ENV: &str = "AI_GATEWAY_ENCRYPTION_KEY";
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Config {
     bind_addr: SocketAddr,
     data_dir: PathBuf,
     web_dir: PathBuf,
+    encryption: FieldEncryptor,
 }
 
 impl Config {
@@ -31,11 +34,16 @@ impl Config {
             Ok(path) if !path.trim().is_empty() => PathBuf::from(path),
             _ => data_dir.join("web"),
         };
+        let encryption_key = env::var(ENCRYPTION_KEY_ENV).map_err(|_| {
+            format!("{ENCRYPTION_KEY_ENV} is required; generate one with `openssl rand -base64 32`")
+        })?;
+        let encryption = FieldEncryptor::from_base64_key(&encryption_key)?;
 
         Ok(Self {
             bind_addr,
             data_dir,
             web_dir,
+            encryption,
         })
     }
 
@@ -53,5 +61,9 @@ impl Config {
 
     pub fn web_dir(&self) -> PathBuf {
         self.web_dir.clone()
+    }
+
+    pub fn encryption(&self) -> FieldEncryptor {
+        self.encryption.clone()
     }
 }

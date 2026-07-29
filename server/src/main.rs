@@ -2,6 +2,7 @@ mod adapters;
 mod api;
 mod codex_scripts;
 mod config;
+mod crypto;
 mod models;
 mod openai_tokens;
 mod store;
