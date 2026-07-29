@@ -2,11 +2,13 @@ use crate::{
     config::Config,
     models::{
         AccountRecord, AccountType, ApiProviderBillingMode, ApiProviderRecord,
-        CachedProviderModels, ProviderAuthMode, SelectedRoute,
+        CachedProviderModels, ProviderAuthMode, ProviderCompatibilityProfile,
+        ProviderUpstreamProtocol, SelectedRoute,
     },
 };
 use rusqlite::{Connection, OptionalExtension, params};
 use std::{fs, path::PathBuf, sync::Arc};
+use url::Url;
 
 #[derive(Clone, Debug)]
 pub struct SqliteStore {
@@ -75,7 +77,7 @@ impl SqliteStore {
         let conn = self.connect()?;
         let mut stmt = conn
             .prepare(
-                "SELECT id, name, auth_mode, base_url, api_key, account_id, uses_chat_completions, billing_mode
+                "SELECT id, name, auth_mode, base_url, api_key, account_id, upstream_protocol, compatibility_profile, billing_mode
                  FROM providers
                  ORDER BY rowid ASC",
             )
@@ -90,8 +92,13 @@ impl SqliteStore {
                     base_url: row.get(3)?,
                     api_key: row.get(4)?,
                     account_id: row.get(5)?,
-                    uses_chat_completions: row.get::<_, i64>(6)? != 0,
-                    billing_mode: billing_mode_from_str(&row.get::<_, String>(7)?)
+                    upstream_protocol: upstream_protocol_from_str(&row.get::<_, String>(6)?)
+                        .map_err(rusqlite::Error::ToSqlConversionFailure)?,
+                    compatibility_profile: compatibility_profile_from_str(
+                        &row.get::<_, String>(7)?,
+                    )
+                    .map_err(rusqlite::Error::ToSqlConversionFailure)?,
+                    billing_mode: billing_mode_from_str(&row.get::<_, String>(8)?)
                         .map_err(rusqlite::Error::ToSqlConversionFailure)?,
                 })
             })
@@ -230,6 +237,8 @@ impl SqliteStore {
                 api_key TEXT NOT NULL,
                 account_id TEXT,
                 uses_chat_completions INTEGER NOT NULL DEFAULT 0,
+                upstream_protocol TEXT NOT NULL,
+                compatibility_profile TEXT NOT NULL,
                 billing_mode TEXT NOT NULL
             );
 
@@ -254,6 +263,7 @@ impl SqliteStore {
             ",
         )
         .map_err(|err| format!("initialize sqlite schema failed: {err}"))?;
+        migrate_provider_schema(&conn)?;
 
         Ok(())
     }
@@ -299,8 +309,9 @@ fn upsert_account_record(conn: &Connection, account: &AccountRecord) -> Result<(
 fn upsert_provider_record(conn: &Connection, provider: &ApiProviderRecord) -> Result<(), String> {
     conn.execute(
         "INSERT INTO providers (
-            id, name, auth_mode, base_url, api_key, account_id, uses_chat_completions, billing_mode
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            id, name, auth_mode, base_url, api_key, account_id, uses_chat_completions,
+            upstream_protocol, compatibility_profile, billing_mode
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
          ON CONFLICT(id) DO UPDATE SET
             name = excluded.name,
             auth_mode = excluded.auth_mode,
@@ -308,6 +319,8 @@ fn upsert_provider_record(conn: &Connection, provider: &ApiProviderRecord) -> Re
             api_key = excluded.api_key,
             account_id = excluded.account_id,
             uses_chat_completions = excluded.uses_chat_completions,
+            upstream_protocol = excluded.upstream_protocol,
+            compatibility_profile = excluded.compatibility_profile,
             billing_mode = excluded.billing_mode",
         params![
             provider.id,
@@ -316,12 +329,125 @@ fn upsert_provider_record(conn: &Connection, provider: &ApiProviderRecord) -> Re
             provider.base_url,
             provider.api_key,
             provider.account_id,
-            if provider.uses_chat_completions { 1 } else { 0 },
+            if provider.uses_chat_completions() {
+                1
+            } else {
+                0
+            },
+            upstream_protocol_to_str(&provider.upstream_protocol),
+            compatibility_profile_to_str(&provider.compatibility_profile),
             billing_mode_to_str(&provider.billing_mode)
         ],
     )
     .map_err(|err| format!("upsert provider failed: {err}"))?;
     Ok(())
+}
+
+fn migrate_provider_schema(conn: &Connection) -> Result<(), String> {
+    ensure_column(conn, "providers", "upstream_protocol", "TEXT")?;
+    ensure_column(conn, "providers", "compatibility_profile", "TEXT")?;
+
+    conn.execute(
+        "UPDATE providers
+         SET upstream_protocol = CASE
+            WHEN uses_chat_completions = 1 THEN 'openai_chat_completions'
+            ELSE 'openai_responses'
+         END
+         WHERE upstream_protocol IS NULL OR trim(upstream_protocol) = ''",
+        [],
+    )
+    .map_err(|err| format!("migrate provider upstream protocol failed: {err}"))?;
+    conn.execute(
+        "UPDATE providers
+         SET upstream_protocol = CASE upstream_protocol
+            WHEN 'open_ai_chat_completions' THEN 'openai_chat_completions'
+            WHEN 'open_ai_responses' THEN 'openai_responses'
+            ELSE upstream_protocol
+         END",
+        [],
+    )
+    .map_err(|err| format!("normalize provider upstream protocol failed: {err}"))?;
+
+    conn.execute(
+        "UPDATE providers
+         SET compatibility_profile = CASE compatibility_profile
+            WHEN 'official_open_ai' THEN 'official_openai'
+            WHEN 'generic_open_ai' THEN 'generic_openai'
+            WHEN 'open_ai_codex' THEN 'openai_codex'
+            ELSE compatibility_profile
+         END",
+        [],
+    )
+    .map_err(|err| format!("normalize provider compatibility profile failed: {err}"))?;
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, auth_mode, base_url
+             FROM providers
+             WHERE compatibility_profile IS NULL OR trim(compatibility_profile) = ''",
+        )
+        .map_err(|err| format!("prepare provider profile migration failed: {err}"))?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(|err| format!("query provider profile migration failed: {err}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| format!("read provider profile migration failed: {err}"))?;
+
+    for (id, auth_mode, base_url) in rows {
+        let profile = if auth_mode == "account" {
+            ProviderCompatibilityProfile::OpenAiCodex
+        } else if is_official_openai_base_url(&base_url) {
+            ProviderCompatibilityProfile::OfficialOpenAi
+        } else {
+            ProviderCompatibilityProfile::GenericOpenAi
+        };
+        conn.execute(
+            "UPDATE providers SET compatibility_profile = ?1 WHERE id = ?2",
+            params![compatibility_profile_to_str(&profile), id],
+        )
+        .map_err(|err| format!("migrate provider compatibility profile failed: {err}"))?;
+    }
+
+    Ok(())
+}
+
+fn ensure_column(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    definition: &str,
+) -> Result<bool, String> {
+    let mut stmt = conn
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .map_err(|err| format!("prepare {table} schema query failed: {err}"))?;
+    let columns = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|err| format!("query {table} schema failed: {err}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| format!("read {table} schema failed: {err}"))?;
+    if columns.iter().any(|existing| existing == column) {
+        return Ok(false);
+    }
+
+    conn.execute(
+        &format!("ALTER TABLE {table} ADD COLUMN {column} {definition}"),
+        [],
+    )
+    .map_err(|err| format!("add {table}.{column} failed: {err}"))?;
+    Ok(true)
+}
+
+fn is_official_openai_base_url(base_url: &str) -> bool {
+    Url::parse(base_url.trim())
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_string))
+        .is_some_and(|host| host.eq_ignore_ascii_case("api.openai.com"))
 }
 
 fn upsert_route_record(conn: &Connection, route: &SelectedRoute) -> Result<(), String> {
@@ -410,6 +536,42 @@ fn provider_auth_mode_from_str(
     }
 }
 
+fn upstream_protocol_to_str(value: &ProviderUpstreamProtocol) -> &'static str {
+    match value {
+        ProviderUpstreamProtocol::OpenAiResponses => "openai_responses",
+        ProviderUpstreamProtocol::OpenAiChatCompletions => "openai_chat_completions",
+    }
+}
+
+fn upstream_protocol_from_str(
+    value: &str,
+) -> Result<ProviderUpstreamProtocol, Box<dyn std::error::Error + Send + Sync>> {
+    match value {
+        "openai_responses" => Ok(ProviderUpstreamProtocol::OpenAiResponses),
+        "openai_chat_completions" => Ok(ProviderUpstreamProtocol::OpenAiChatCompletions),
+        other => Err(format!("unknown upstream_protocol: {other}").into()),
+    }
+}
+
+fn compatibility_profile_to_str(value: &ProviderCompatibilityProfile) -> &'static str {
+    match value {
+        ProviderCompatibilityProfile::OfficialOpenAi => "official_openai",
+        ProviderCompatibilityProfile::GenericOpenAi => "generic_openai",
+        ProviderCompatibilityProfile::OpenAiCodex => "openai_codex",
+    }
+}
+
+fn compatibility_profile_from_str(
+    value: &str,
+) -> Result<ProviderCompatibilityProfile, Box<dyn std::error::Error + Send + Sync>> {
+    match value {
+        "official_openai" => Ok(ProviderCompatibilityProfile::OfficialOpenAi),
+        "generic_openai" => Ok(ProviderCompatibilityProfile::GenericOpenAi),
+        "openai_codex" => Ok(ProviderCompatibilityProfile::OpenAiCodex),
+        other => Err(format!("unknown compatibility_profile: {other}").into()),
+    }
+}
+
 fn billing_mode_to_str(value: &ApiProviderBillingMode) -> &'static str {
     match value {
         ApiProviderBillingMode::Metered => "metered",
@@ -424,5 +586,80 @@ fn billing_mode_from_str(
         "metered" => Ok(ApiProviderBillingMode::Metered),
         "subscription" => Ok(ApiProviderBillingMode::Subscription),
         other => Err(format!("unknown billing_mode: {other}").into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SqliteStore;
+    use crate::models::{ProviderCompatibilityProfile, ProviderUpstreamProtocol};
+    use rusqlite::Connection;
+    use std::{
+        fs,
+        path::PathBuf,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    #[test]
+    fn migrates_legacy_provider_protocol_and_profile_columns() {
+        let db_path = unique_test_db_path("legacy-provider-profile");
+        let conn = Connection::open(&db_path).expect("create legacy database");
+        conn.execute_batch(
+            "
+            CREATE TABLE providers (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                auth_mode TEXT NOT NULL,
+                base_url TEXT NOT NULL,
+                api_key TEXT NOT NULL,
+                account_id TEXT,
+                uses_chat_completions INTEGER NOT NULL DEFAULT 0,
+                billing_mode TEXT NOT NULL
+            );
+            INSERT INTO providers (
+                id, name, auth_mode, base_url, api_key, account_id,
+                uses_chat_completions, billing_mode
+            ) VALUES
+                ('official', 'official', 'api_key', 'https://api.openai.com/v1', 'sk-a', NULL, 0, 'metered'),
+                ('chat', 'chat', 'api_key', 'https://example.com/v1', 'sk-b', NULL, 1, 'metered'),
+                ('account', 'account', 'account', '', '', 'account-1', 0, 'subscription');
+            ",
+        )
+        .expect("write legacy provider rows");
+        drop(conn);
+
+        let store = SqliteStore::for_test(db_path.clone()).expect("migrate legacy database");
+        let providers = store.load_providers().expect("load migrated providers");
+
+        assert_eq!(
+            providers[0].compatibility_profile,
+            ProviderCompatibilityProfile::OfficialOpenAi
+        );
+        assert_eq!(
+            providers[0].upstream_protocol,
+            ProviderUpstreamProtocol::OpenAiResponses
+        );
+        assert_eq!(
+            providers[1].compatibility_profile,
+            ProviderCompatibilityProfile::GenericOpenAi
+        );
+        assert_eq!(
+            providers[1].upstream_protocol,
+            ProviderUpstreamProtocol::OpenAiChatCompletions
+        );
+        assert_eq!(
+            providers[2].compatibility_profile,
+            ProviderCompatibilityProfile::OpenAiCodex
+        );
+
+        let _ = fs::remove_file(db_path);
+    }
+
+    fn unique_test_db_path(prefix: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        std::env::temp_dir().join(format!("ai_gateway_{prefix}_{unique}.sqlite"))
     }
 }

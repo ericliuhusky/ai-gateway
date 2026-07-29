@@ -2,10 +2,11 @@ use crate::{
     config::Config,
     models::{
         ApiProviderBillingMode, ApiProviderRecord, ApiProviderSummary, CreateApiProviderRequest,
-        ProviderAuthMode,
+        ProviderAuthMode, ProviderCompatibilityProfile, ProviderUpstreamProtocol,
     },
     store::sqlite::SqliteStore,
 };
+use reqwest::Url;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use uuid::Uuid;
@@ -43,7 +44,9 @@ impl ProviderStore {
                 base_url: provider.base_url.clone(),
                 account_id: provider.account_id.clone(),
                 account_email: None,
-                uses_chat_completions: provider.uses_chat_completions,
+                upstream_protocol: provider.upstream_protocol.clone(),
+                compatibility_profile: provider.compatibility_profile.clone(),
+                uses_chat_completions: provider.uses_chat_completions(),
                 billing_mode: provider.billing_mode.clone(),
             })
             .collect()
@@ -66,6 +69,23 @@ impl ProviderStore {
         if base_url.is_empty() {
             return Err("base_url cannot be empty".to_string());
         }
+        let legacy_upstream_protocol = if request.uses_chat_completions {
+            ProviderUpstreamProtocol::OpenAiChatCompletions
+        } else {
+            ProviderUpstreamProtocol::OpenAiResponses
+        };
+        let upstream_protocol = request
+            .upstream_protocol
+            .unwrap_or(legacy_upstream_protocol);
+        let compatibility_profile = request
+            .compatibility_profile
+            .unwrap_or_else(|| compatibility_profile_for_base_url(&base_url));
+        if compatibility_profile == ProviderCompatibilityProfile::OpenAiCodex {
+            return Err(
+                "compatibility_profile `openai_codex` is reserved for imported account providers"
+                    .to_string(),
+            );
+        }
 
         let mut providers = self.providers.lock().await;
         if providers.iter().any(|provider| provider.name == name) {
@@ -79,7 +99,8 @@ impl ProviderStore {
             base_url,
             api_key,
             account_id: None,
-            uses_chat_completions: request.uses_chat_completions,
+            upstream_protocol,
+            compatibility_profile,
             billing_mode: request
                 .billing_mode
                 .unwrap_or(ApiProviderBillingMode::Metered),
@@ -112,7 +133,8 @@ impl ProviderStore {
             base_url: String::new(),
             api_key: String::new(),
             account_id: Some(account_id.to_string()),
-            uses_chat_completions: false,
+            upstream_protocol: ProviderUpstreamProtocol::OpenAiResponses,
+            compatibility_profile: ProviderCompatibilityProfile::OpenAiCodex,
             billing_mode: ApiProviderBillingMode::Subscription,
         };
         providers.push(provider.clone());
@@ -137,11 +159,26 @@ impl ProviderStore {
     }
 }
 
+fn compatibility_profile_for_base_url(base_url: &str) -> ProviderCompatibilityProfile {
+    let is_official_openai = Url::parse(base_url.trim())
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_string))
+        .is_some_and(|host| host.eq_ignore_ascii_case("api.openai.com"));
+    if is_official_openai {
+        ProviderCompatibilityProfile::OfficialOpenAi
+    } else {
+        ProviderCompatibilityProfile::GenericOpenAi
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::ProviderStore;
     use crate::{
-        models::{ApiProviderBillingMode, PROVIDER_OPENAI_PROXY},
+        models::{
+            ApiProviderBillingMode, CreateApiProviderRequest, PROVIDER_OPENAI_PROXY,
+            ProviderCompatibilityProfile, ProviderUpstreamProtocol,
+        },
         store::sqlite::SqliteStore,
     };
     use std::{
@@ -175,6 +212,14 @@ mod tests {
         assert_eq!(second.account_id.as_deref(), Some("account_2"));
         assert_eq!(first.billing_mode, ApiProviderBillingMode::Subscription);
         assert_eq!(second.billing_mode, ApiProviderBillingMode::Subscription);
+        assert_eq!(
+            first.compatibility_profile,
+            ProviderCompatibilityProfile::OpenAiCodex
+        );
+        assert_eq!(
+            first.upstream_protocol,
+            ProviderUpstreamProtocol::OpenAiResponses
+        );
 
         let providers = store.list().await;
         assert_eq!(providers.len(), 2);
@@ -184,6 +229,37 @@ mod tests {
                 .filter(|provider| provider.name == PROVIDER_OPENAI_PROXY)
                 .count(),
             2
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_create_input_is_resolved_to_explicit_protocol_and_profile() {
+        let sqlite = test_sqlite_store("legacy-create-provider");
+        let store = ProviderStore {
+            sqlite,
+            providers: Arc::new(Mutex::new(Vec::new())),
+        };
+
+        let provider = store
+            .upsert(CreateApiProviderRequest {
+                name: "official".to_string(),
+                base_url: Some("https://api.openai.com/v1".to_string()),
+                api_key: Some("sk-test".to_string()),
+                upstream_protocol: None,
+                compatibility_profile: None,
+                uses_chat_completions: true,
+                billing_mode: None,
+            })
+            .await
+            .expect("create legacy provider");
+
+        assert_eq!(
+            provider.upstream_protocol,
+            ProviderUpstreamProtocol::OpenAiChatCompletions
+        );
+        assert_eq!(
+            provider.compatibility_profile,
+            ProviderCompatibilityProfile::OfficialOpenAi
         );
     }
 

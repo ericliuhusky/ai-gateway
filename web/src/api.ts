@@ -1,8 +1,10 @@
 import type {
   CodexAuthPayload,
   GatewayBillingMode,
+  GatewayCompatibilityProfile,
   GatewayModel,
   GatewayProvider,
+  GatewayUpstreamProtocol,
   ProviderQuotaSummary,
   SelectedProvider,
 } from "./types";
@@ -87,7 +89,8 @@ export const gatewayApi = {
     base_url: string;
     api_key: string;
     billing_mode: GatewayBillingMode;
-    uses_chat_completions: boolean;
+    upstream_protocol: GatewayUpstreamProtocol;
+    compatibility_profile: GatewayCompatibilityProfile;
   }) {
     return request("/providers", { method: "POST", body: JSON.stringify(input) });
   },

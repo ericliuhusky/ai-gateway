@@ -116,6 +116,15 @@ AI_GATEWAY_WEB_DIR=/path/to/web
 
 Web 页面与它所在的远程 Server 同源通信，不需要单独配置 Server URL。浏览器无法直接修改用户电脑上的 `~/.codex`，因此 Codex 配置写入与历史同步仍由本地 `agent` 完成；页面中的“Codex 接入”会生成连接当前 Server 的本机 agent 命令。
 
+API Key 供应商使用显式的上游协议和兼容 Profile：
+
+- `openai_responses`：上游原生支持 Responses。
+- `openai_chat_completions`：网关负责 Responses 与 Chat Completions 的双向转换。
+- `official_openai`：保持 Responses 请求 Body 原样。
+- `generic_openai`：应用通用兼容清理规则。
+
+适配架构和后续拆分计划见 `docs/adapter-architecture.md`。
+
 ## Token 导入
 
 浏览器 OAuth 登录已经移除。OpenAI 账号只通过粘贴 Codex Token 导入：

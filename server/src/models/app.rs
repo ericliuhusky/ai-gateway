@@ -24,6 +24,32 @@ pub enum ProviderAuthMode {
     Account,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub enum ProviderUpstreamProtocol {
+    #[default]
+    #[serde(rename = "openai_responses")]
+    OpenAiResponses,
+    #[serde(rename = "openai_chat_completions")]
+    OpenAiChatCompletions,
+}
+
+impl ProviderUpstreamProtocol {
+    pub fn uses_chat_completions(&self) -> bool {
+        matches!(self, Self::OpenAiChatCompletions)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub enum ProviderCompatibilityProfile {
+    #[serde(rename = "official_openai")]
+    OfficialOpenAi,
+    #[default]
+    #[serde(rename = "generic_openai")]
+    GenericOpenAi,
+    #[serde(rename = "openai_codex")]
+    OpenAiCodex,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AccountType {
@@ -39,6 +65,12 @@ pub struct CreateApiProviderRequest {
     pub base_url: Option<String>,
     #[serde(default)]
     pub api_key: Option<String>,
+    #[serde(default)]
+    pub upstream_protocol: Option<ProviderUpstreamProtocol>,
+    #[serde(default)]
+    pub compatibility_profile: Option<ProviderCompatibilityProfile>,
+    /// Legacy input kept for API compatibility. New clients should send
+    /// `upstream_protocol`.
     #[serde(default)]
     pub uses_chat_completions: bool,
     #[serde(default)]
@@ -58,9 +90,17 @@ pub struct ApiProviderRecord {
     #[serde(default)]
     pub account_id: Option<String>,
     #[serde(default)]
-    pub uses_chat_completions: bool,
+    pub upstream_protocol: ProviderUpstreamProtocol,
+    #[serde(default)]
+    pub compatibility_profile: ProviderCompatibilityProfile,
     #[serde(default)]
     pub billing_mode: ApiProviderBillingMode,
+}
+
+impl ApiProviderRecord {
+    pub fn uses_chat_completions(&self) -> bool {
+        self.upstream_protocol.uses_chat_completions()
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -73,6 +113,9 @@ pub struct ApiProviderSummary {
     pub account_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub account_email: Option<String>,
+    pub upstream_protocol: ProviderUpstreamProtocol,
+    pub compatibility_profile: ProviderCompatibilityProfile,
+    /// Legacy output kept while older Web clients are still in use.
     pub uses_chat_completions: bool,
     pub billing_mode: ApiProviderBillingMode,
 }
@@ -339,4 +382,33 @@ pub struct GatewayLogSettingsResponse {
 #[derive(Debug, Clone, Deserialize)]
 pub struct UpdateGatewayLogSettingsRequest {
     pub enabled: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ProviderCompatibilityProfile, ProviderUpstreamProtocol};
+
+    #[test]
+    fn provider_protocol_and_profile_use_stable_api_names() {
+        assert_eq!(
+            serde_json::to_value(ProviderUpstreamProtocol::OpenAiResponses).unwrap(),
+            "openai_responses"
+        );
+        assert_eq!(
+            serde_json::to_value(ProviderUpstreamProtocol::OpenAiChatCompletions).unwrap(),
+            "openai_chat_completions"
+        );
+        assert_eq!(
+            serde_json::to_value(ProviderCompatibilityProfile::OfficialOpenAi).unwrap(),
+            "official_openai"
+        );
+        assert_eq!(
+            serde_json::to_value(ProviderCompatibilityProfile::GenericOpenAi).unwrap(),
+            "generic_openai"
+        );
+        assert_eq!(
+            serde_json::to_value(ProviderCompatibilityProfile::OpenAiCodex).unwrap(),
+            "openai_codex"
+        );
+    }
 }

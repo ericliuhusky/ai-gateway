@@ -210,7 +210,9 @@ pub async fn add_provider(
             "base_url": provider.base_url,
             "api_key": provider.api_key,
             "account_id": provider.account_id,
-            "uses_chat_completions": provider.uses_chat_completions,
+            "upstream_protocol": provider.upstream_protocol,
+            "compatibility_profile": provider.compatibility_profile,
+            "uses_chat_completions": provider.uses_chat_completions(),
             "billing_mode": provider.billing_mode,
         }
     })))
@@ -969,6 +971,9 @@ pub(super) async fn responses_inner(
                 .map_err(|err| AppError::internal(err.to_string()))?)
         }
         PreparedResponsesUpstream::ApiResponsesPassthrough(prepared) => {
+            // The structured trace is produced now so the adapter no longer hides
+            // mutations. It will be persisted by the next logging migration.
+            let _request_transform_changes = prepared.request_transform_changes;
             let public_responses = PublicOpenAiRequestBuilder {
                 base_url: prepared.provider.base_url.as_str(),
                 api_key: prepared.provider.api_key.as_str(),
@@ -1619,7 +1624,9 @@ async fn provider_summary_for_resolved(
         base_url: record.base_url.clone(),
         account_id: record.account_id.clone(),
         account_email: None,
-        uses_chat_completions: record.uses_chat_completions,
+        upstream_protocol: record.upstream_protocol.clone(),
+        compatibility_profile: record.compatibility_profile.clone(),
+        uses_chat_completions: record.uses_chat_completions(),
         billing_mode: record.billing_mode.clone(),
     };
     hydrate_provider_summary(state, &mut summary).await;
@@ -1948,7 +1955,8 @@ mod tests {
         provider_uses_openai_account, quota_from_openai_usage,
     };
     use crate::models::{
-        ApiProviderBillingMode, ApiProviderRecord, ProviderAuthMode, ResponseStreamFrame,
+        ApiProviderBillingMode, ApiProviderRecord, ProviderAuthMode, ProviderCompatibilityProfile,
+        ProviderUpstreamProtocol, ResponseStreamFrame,
     };
     use serde_json::json;
 
@@ -2158,7 +2166,8 @@ mod tests {
                 base_url: String::new(),
                 api_key: String::new(),
                 account_id: Some("account-123".to_string()),
-                uses_chat_completions: false,
+                upstream_protocol: ProviderUpstreamProtocol::OpenAiResponses,
+                compatibility_profile: ProviderCompatibilityProfile::OpenAiCodex,
                 billing_mode: ApiProviderBillingMode::Subscription,
             }),
         };

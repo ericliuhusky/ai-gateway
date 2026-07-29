@@ -1043,14 +1043,12 @@ fn LongTextBlock(text: String, quoted: bool, class_name: &'static str) -> impl I
 
 fn truncate_preview(text: &str, limit: usize) -> String {
     let mut preview = String::new();
-    let mut count = 0usize;
-    for ch in text.chars() {
+    for (count, ch) in text.chars().enumerate() {
         if count == limit {
             preview.push_str("...");
             return preview;
         }
         preview.push(ch);
-        count += 1;
     }
     preview
 }
@@ -1177,9 +1175,7 @@ fn parse_sse_content(content: &str) -> Option<Value> {
             continue;
         }
 
-        let Some((field, value)) = line.split_once(':') else {
-            return None;
-        };
+        let (field, value) = line.split_once(':')?;
         let value = value.strip_prefix(' ').unwrap_or(value);
         match field {
             "event" => {
@@ -1222,8 +1218,7 @@ fn push_sse_event(
 
     if !data_lines.is_empty() {
         let data = data_lines.join("\n");
-        let data_value =
-            serde_json::from_str::<Value>(&data).unwrap_or_else(|_| Value::String(data));
+        let data_value = serde_json::from_str::<Value>(&data).unwrap_or(Value::String(data));
         event.insert("data".to_string(), data_value);
         data_lines.clear();
     }
@@ -1285,8 +1280,8 @@ fn build_json_diff_summary(node: &JsonDiffNode) -> Option<JsonDiffNode> {
             .map(|(path, summary)| JsonDiffField {
                 key: path,
                 change: JsonDiffChange::Modified(JsonDiffNode::Summary {
-                    client_value: summary.into_value(true),
-                    upstream_value: summary.into_value(false),
+                    client_value: summary.value_for_side(true),
+                    upstream_value: summary.value_for_side(false),
                     count: summary.count,
                 }),
             })
@@ -1312,7 +1307,7 @@ impl SummaryLeaf {
         self.count += 1;
     }
 
-    fn into_value(&self, is_client: bool) -> Option<Value> {
+    fn value_for_side(&self, is_client: bool) -> Option<Value> {
         let values = if is_client {
             &self.client_values
         } else {

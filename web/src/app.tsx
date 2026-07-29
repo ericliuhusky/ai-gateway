@@ -31,6 +31,8 @@ import type {
   ProviderQuotaSummary,
   ProviderQuotaWindow,
   SelectedProvider,
+  GatewayCompatibilityProfile,
+  GatewayUpstreamProtocol,
 } from "./types";
 
 type Dialog = "api" | "account" | "setup" | null;
@@ -39,6 +41,18 @@ type ErrorMap = Record<string, string | undefined>;
 
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
+}
+
+function suggestedCompatibilityProfile(
+  baseUrl: string,
+): GatewayCompatibilityProfile {
+  try {
+    return new URL(baseUrl).hostname.toLowerCase() === "api.openai.com"
+      ? "official_openai"
+      : "generic_openai";
+  } catch {
+    return "generic_openai";
+  }
 }
 
 function remaining(window: ProviderQuotaWindow) {
@@ -475,7 +489,18 @@ function ProviderCard({
             <Badge tone={provider.billing_mode === "subscription" ? "purple" : "amber"}>
               {provider.billing_mode === "subscription" ? "订阅" : "按量"}
             </Badge>
-            {provider.uses_chat_completions ? <Badge tone="slate">Chat Completions</Badge> : null}
+            <Badge tone="slate">
+              {provider.upstream_protocol === "openai_chat_completions"
+                ? "Chat Completions"
+                : "Responses"}
+            </Badge>
+            <Badge tone="slate">
+              {provider.compatibility_profile === "official_openai"
+                ? "OpenAI 官方"
+                : provider.compatibility_profile === "openai_codex"
+                  ? "Codex 账户"
+                  : "兼容接口"}
+            </Badge>
           </div>
         </div>
         {selected ? (
@@ -709,7 +734,10 @@ function ApiProviderDialog({
   const [baseUrl, setBaseUrl] = React.useState("");
   const [apiKey, setApiKey] = React.useState("");
   const [billing, setBilling] = React.useState<GatewayBillingMode>("metered");
-  const [chatCompletions, setChatCompletions] = React.useState(false);
+  const [upstreamProtocol, setUpstreamProtocol] =
+    React.useState<GatewayUpstreamProtocol>("openai_responses");
+  const [compatibilityProfile, setCompatibilityProfile] =
+    React.useState<GatewayCompatibilityProfile>("generic_openai");
   const [submitting, setSubmitting] = React.useState(false);
   const valid = name.trim() && baseUrl.trim() && apiKey.trim();
 
@@ -723,7 +751,8 @@ function ApiProviderDialog({
         base_url: baseUrl.trim(),
         api_key: apiKey.trim(),
         billing_mode: billing,
-        uses_chat_completions: chatCompletions,
+        upstream_protocol: upstreamProtocol,
+        compatibility_profile: compatibilityProfile,
       });
       await onCreated();
     } catch (submitError) {
@@ -739,7 +768,16 @@ function ApiProviderDialog({
           <input className="field" value={name} onChange={(event) => setName(event.target.value)} placeholder="openai-proxy" autoFocus />
         </FormField>
         <FormField label="Base URL">
-          <input className="field font-mono text-xs" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://api.example.com/v1" />
+          <input
+            className="field font-mono text-xs"
+            value={baseUrl}
+            onChange={(event) => {
+              const value = event.target.value;
+              setBaseUrl(value);
+              setCompatibilityProfile(suggestedCompatibilityProfile(value));
+            }}
+            placeholder="https://api.example.com/v1"
+          />
         </FormField>
         <FormField label="API Key">
           <input className="field font-mono text-xs" type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder="sk-..." />
@@ -762,11 +800,36 @@ function ApiProviderDialog({
               ))}
             </div>
           </FormField>
-          <label className="flex items-center gap-3 self-end rounded-xl border border-slate-200/70 px-3 py-2.5 text-xs font-semibold dark:border-white/10">
-            <input type="checkbox" checked={chatCompletions} onChange={(event) => setChatCompletions(event.target.checked)} />
-            Chat Completions
-          </label>
+          <FormField label="上游协议">
+            <select
+              className="field text-xs"
+              value={upstreamProtocol}
+              onChange={(event) =>
+                setUpstreamProtocol(event.target.value as GatewayUpstreamProtocol)
+              }
+            >
+              <option value="openai_responses">OpenAI Responses</option>
+              <option value="openai_chat_completions">OpenAI Chat Completions</option>
+            </select>
+          </FormField>
         </div>
+        <FormField label="兼容 Profile">
+          <select
+            className="field text-xs"
+            value={compatibilityProfile}
+            onChange={(event) =>
+              setCompatibilityProfile(
+                event.target.value as GatewayCompatibilityProfile,
+              )
+            }
+          >
+            <option value="generic_openai">通用 OpenAI 兼容接口</option>
+            <option value="official_openai">OpenAI 官方 API</option>
+          </select>
+          <p className="mt-2 text-[11px] leading-5 text-slate-400">
+            通用 Profile 会移除已知不兼容的 Codex 客户端工具；官方 Profile 保持 Responses 请求 Body 原样。
+          </p>
+        </FormField>
         <DialogActions onClose={onClose} disabled={!valid || submitting} submitting={submitting} label="创建供应商" />
       </form>
     </DialogFrame>

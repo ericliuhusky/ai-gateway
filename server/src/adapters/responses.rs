@@ -1,12 +1,15 @@
+mod request_policy;
+
 use crate::{
     config::Config,
     models::{
-        ApiProviderRecord, ProviderAuthMode, ResponseCreateParams, UpstreamProtocol,
-        responses_to_chat_completions,
+        ApiProviderRecord, ProviderAuthMode, ProviderUpstreamProtocol, ResponseCreateParams,
+        UpstreamProtocol, responses_to_chat_completions,
     },
     upstream::{chat_completions_api_url, responses_api_url},
 };
-use reqwest::Url;
+pub use request_policy::RequestTransformChange;
+use request_policy::apply_responses_request_policy;
 use serde_json::Value;
 
 #[derive(Debug)]
@@ -60,6 +63,7 @@ pub struct PreparedApiResponsesPassthrough {
     pub upstream_protocol: UpstreamProtocol,
     pub upstream_url: String,
     pub request_body: String,
+    pub request_transform_changes: Vec<RequestTransformChange>,
 }
 
 #[derive(Clone, Debug)]
@@ -132,7 +136,9 @@ pub fn prepare_responses_upstream(
     }
 
     let upstream_url = responses_api_url(&native_provider.base_url);
-    let request_body = adapt_native_responses_passthrough_body(&native_provider, request_body)?;
+    let transformed =
+        apply_responses_request_policy(&native_provider.compatibility_profile, request_body)
+            .map_err(ResponsesAdapterError::BadRequest)?;
     Ok(PreparedResponsesUpstream::ApiResponsesPassthrough(
         PreparedApiResponsesPassthrough {
             provider_name: provider.name,
@@ -141,13 +147,14 @@ pub fn prepare_responses_upstream(
             request_stream,
             upstream_protocol: native_target.upstream,
             upstream_url,
-            request_body,
+            request_body: transformed.body,
+            request_transform_changes: transformed.changes,
         },
     ))
 }
 
 fn resolve_native_target(provider: &ApiProviderRecord, requested_model: &str) -> NativeTarget {
-    if provider.uses_chat_completions {
+    if provider.upstream_protocol == ProviderUpstreamProtocol::OpenAiChatCompletions {
         return NativeTarget {
             upstream_model: requested_model.to_string(),
             upstream: UpstreamProtocol::NativeChatCompletions,
@@ -162,61 +169,20 @@ fn resolve_native_target(provider: &ApiProviderRecord, requested_model: &str) ->
     }
 }
 
-const NON_OPENAI_RESPONSES_FILTERED_FUNCTION_TOOLS: &[&str] =
-    &["list_available_plugins_to_install", "get_goal"];
-const NON_OPENAI_RESPONSES_FILTERED_TOOL_TYPES: &[&str] = &["tool_search"];
-
-fn adapt_native_responses_passthrough_body(
-    provider: &ApiProviderRecord,
-    request_body: String,
-) -> Result<String, ResponsesAdapterError> {
-    if is_official_openai_api_key_provider(provider) {
-        return Ok(request_body);
-    }
-
-    let mut body: Value = serde_json::from_str(&request_body)
-        .map_err(|err| ResponsesAdapterError::BadRequest(format!("invalid request JSON: {err}")))?;
-    filter_non_openai_responses_tools(&mut body);
-    serde_json::to_string(&body).map_err(|err| ResponsesAdapterError::Internal(err.to_string()))
-}
-
-fn is_official_openai_api_key_provider(provider: &ApiProviderRecord) -> bool {
-    Url::parse(provider.base_url.trim())
-        .ok()
-        .and_then(|url| url.host_str().map(str::to_string))
-        .as_deref()
-        == Some("api.openai.com")
-}
-
-fn filter_non_openai_responses_tools(body: &mut Value) {
-    let Some(tools) = body.get_mut("tools").and_then(Value::as_array_mut) else {
-        return;
-    };
-
-    tools.retain(|tool| {
-        let Some(tool_type) = tool.get("type").and_then(Value::as_str) else {
-            return true;
-        };
-        if NON_OPENAI_RESPONSES_FILTERED_TOOL_TYPES.contains(&tool_type) {
-            return false;
-        }
-        !(tool_type == "function"
-            && tool
-                .get("name")
-                .and_then(Value::as_str)
-                .is_some_and(|name| NON_OPENAI_RESPONSES_FILTERED_FUNCTION_TOOLS.contains(&name)))
-    });
-}
-
 #[cfg(test)]
 mod tests {
     use super::{PreparedResponsesUpstream, ResponsesAdapterProvider, prepare_responses_upstream};
     use crate::models::{
-        ApiProviderBillingMode, ApiProviderRecord, ProviderAuthMode, UpstreamProtocol,
+        ApiProviderBillingMode, ApiProviderRecord, ProviderAuthMode, ProviderCompatibilityProfile,
+        ProviderUpstreamProtocol, UpstreamProtocol,
     };
     use serde_json::json;
 
-    fn api_provider(base_url: &str, uses_chat_completions: bool) -> ApiProviderRecord {
+    fn api_provider(
+        base_url: &str,
+        upstream_protocol: ProviderUpstreamProtocol,
+        compatibility_profile: ProviderCompatibilityProfile,
+    ) -> ApiProviderRecord {
         ApiProviderRecord {
             id: "provider-123".to_string(),
             name: "custom-compatible".to_string(),
@@ -224,7 +190,8 @@ mod tests {
             base_url: base_url.to_string(),
             api_key: "sk-test".to_string(),
             account_id: None,
-            uses_chat_completions,
+            upstream_protocol,
+            compatibility_profile,
             billing_mode: ApiProviderBillingMode::Metered,
         }
     }
@@ -246,7 +213,11 @@ mod tests {
 
     #[test]
     fn api_provider_uses_responses_by_default_even_for_compatible_provider_name() {
-        let provider = api_provider("https://example.com/v1", false);
+        let provider = api_provider(
+            "https://example.com/v1",
+            ProviderUpstreamProtocol::OpenAiResponses,
+            ProviderCompatibilityProfile::GenericOpenAi,
+        );
         let prepared = prepare_responses_upstream(
             ResponsesAdapterProvider {
                 name: provider.name.clone(),
@@ -272,7 +243,11 @@ mod tests {
 
     #[test]
     fn api_provider_uses_chat_completions_only_when_enabled() {
-        let provider = api_provider("https://example.com/v1", true);
+        let provider = api_provider(
+            "https://example.com/v1",
+            ProviderUpstreamProtocol::OpenAiChatCompletions,
+            ProviderCompatibilityProfile::GenericOpenAi,
+        );
         let prepared = prepare_responses_upstream(
             ResponsesAdapterProvider {
                 name: provider.name.clone(),
@@ -299,7 +274,11 @@ mod tests {
 
     #[test]
     fn filters_known_incompatible_response_tools_for_non_openai_provider() {
-        let provider = api_provider("https://example.com/v1", false);
+        let provider = api_provider(
+            "https://example.com/v1",
+            ProviderUpstreamProtocol::OpenAiResponses,
+            ProviderCompatibilityProfile::GenericOpenAi,
+        );
         let body = json!({
             "model": "external/gpt-5.5",
             "tools": [
@@ -361,11 +340,16 @@ mod tests {
         assert_eq!(tools.len(), 2);
         assert_eq!(tools[0]["name"], "exec_command");
         assert_eq!(tools[1]["type"], "namespace");
+        assert_eq!(prepared.request_transform_changes.len(), 3);
     }
 
     #[test]
     fn keeps_response_tools_for_official_openai_api_key_provider() {
-        let provider = api_provider("https://api.openai.com/v1", false);
+        let provider = api_provider(
+            "https://api.openai.com/v1",
+            ProviderUpstreamProtocol::OpenAiResponses,
+            ProviderCompatibilityProfile::OfficialOpenAi,
+        );
         let body = json!({
             "model": "gpt-5.4",
             "tools": [
@@ -399,5 +383,6 @@ mod tests {
         let adapted: serde_json::Value = serde_json::from_str(&prepared.request_body).unwrap();
 
         assert_eq!(adapted["tools"].as_array().unwrap().len(), 1);
+        assert!(prepared.request_transform_changes.is_empty());
     }
 }
