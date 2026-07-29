@@ -7,6 +7,24 @@ AI Gateway 现在由远程 Server 和 Web 管理端组成：
 
 浏览器不能直接修改本机文件，因此 Web 管理端会生成一次性 Shell 命令，由用户在本机终端执行。接入过程不需要安装客户端或启动后台服务。
 
+## 自动模型路由
+
+网关可选地使用一个低成本分类模型，为每个普通文本请求选择经济、标准或强模型。它默认关闭。新 turn 若配置了“已选模型”，会优先使用该模型；同一 turn 在后续工具回合中会粘住首回合选定的模型，不会中途切换。
+
+在 Web 管理端的“网关设置 → 自动模型路由”中配置：
+
+- 分类模型：仅返回 `cheap`、`standard` 或 `strong` 和置信度。
+- 简单、常规、复杂/兜底模型：对应最终执行模型。
+- 低置信度阈值：分类置信度低于阈值时，自动升级到复杂/兜底模型。
+
+图片、低置信度、分类失败、返回无效结果或配置不完整时会保守使用复杂/兜底模型。工具**声明**本身仍会交给分类器判断；带工具结果的后续请求则复用该 turn 的既定模型。
+
+观测数据保存在同一 SQLite 数据库的 `turn_route_logs` 表中，不会写入响应头。每个 turn 一行，仅记录哈希后的 turn ID、模型、路由档位/原因、推理度、请求次数、工具回合数和时间；不保存提示词、工具结果或回答内容。表最多保留 1000 条，按 `updated_at` 作为 LRU 淘汰最旧数据。管理端首页会显示“最近路由 Turn”。
+
+网关使用 `client_metadata.turn_id`（兼容 `turnId`）聚合同一 turn；原始 ID 不会落库，仅保存不可逆哈希。如果客户端未提供该字段，网关会为该请求生成独立的匿名 turn，无法跨工具回合保持模型粘性。
+
+分类器读取的是经长度限制的文本摘要，且业务输入会以不可信用户内容传给分类器，不会作为系统指令执行。
+
 ## 架构
 
 ```text
@@ -206,6 +224,9 @@ GET    /providers/:provider_id/quota
 GET    /settings/codex-client-version
 PUT    /settings/codex-client-version
 DELETE /settings/codex-client-version
+GET    /settings/automatic-routing
+PUT    /settings/automatic-routing
+GET    /routing/turns?limit=50
 GET    /selected-provider
 PUT    /selected-provider
 GET    /selected-model

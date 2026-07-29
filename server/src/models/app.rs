@@ -155,6 +155,84 @@ pub struct UpdateCodexClientVersionRequest {
     pub version: String,
 }
 
+fn default_low_confidence_threshold() -> f64 {
+    0.7
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AutoRoutingSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub classifier_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cheap_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub standard_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub strong_model: Option<String>,
+    #[serde(default = "default_low_confidence_threshold")]
+    pub low_confidence_threshold: f64,
+}
+
+impl Default for AutoRoutingSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            classifier_model: None,
+            cheap_model: None,
+            standard_model: None,
+            strong_model: None,
+            low_confidence_threshold: default_low_confidence_threshold(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpdateAutoRoutingSettingsRequest {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub classifier_model: Option<String>,
+    #[serde(default)]
+    pub cheap_model: Option<String>,
+    #[serde(default)]
+    pub standard_model: Option<String>,
+    #[serde(default)]
+    pub strong_model: Option<String>,
+    #[serde(default = "default_low_confidence_threshold")]
+    pub low_confidence_threshold: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TurnRouteLog {
+    /// Opaque, hashed identifier. Raw client IDs and request contents are never stored.
+    pub turn_id: String,
+    pub provider_id: String,
+    pub model: String,
+    pub routing_mode: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub routing_tier: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
+    pub started_at: i64,
+    pub updated_at: i64,
+    pub request_count: i64,
+    pub tool_round_count: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct TurnRouteLogUpdate {
+    pub turn_id: String,
+    pub provider_id: String,
+    pub model: String,
+    pub routing_mode: String,
+    pub routing_tier: Option<String>,
+    pub reasoning_effort: Option<String>,
+    pub is_tool_round: bool,
+    pub timestamp: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelListResponse {
     pub object: String,

@@ -24,6 +24,7 @@ import { gatewayApi } from "./api";
 import { Button } from "./components/ui/button";
 import { cn } from "./lib/utils";
 import type {
+  AutoRoutingSettings,
   CodexAuthPayload,
   CodexClientVersionSetting,
   GatewayBillingMode,
@@ -32,6 +33,7 @@ import type {
   ProviderQuotaSummary,
   ProviderQuotaWindow,
   SelectedProvider,
+  TurnRouteLog,
   GatewayCompatibilityProfile,
   GatewayUpstreamProtocol,
 } from "./types";
@@ -91,6 +93,7 @@ export function App() {
   const [providers, setProviders] = React.useState<GatewayProvider[]>([]);
   const [selected, setSelected] = React.useState<SelectedProvider>({ updated_at: 0 });
   const [models, setModels] = React.useState<GatewayModel[]>([]);
+  const [turnLogs, setTurnLogs] = React.useState<TurnRouteLog[]>([]);
   const [quotas, setQuotas] = React.useState<QuotaMap>({});
   const [quotaErrors, setQuotaErrors] = React.useState<ErrorMap>({});
   const [loadingQuotas, setLoadingQuotas] = React.useState<Set<string>>(new Set());
@@ -147,15 +150,17 @@ export function App() {
   const refresh = React.useCallback(async () => {
     setLoading(true);
     try {
-      const [health, providerList, route] = await Promise.all([
+      const [health, providerList, route, turns] = await Promise.all([
         gatewayApi.health(),
         gatewayApi.providers(),
         gatewayApi.selectedProvider(),
+        gatewayApi.routingTurns(),
       ]);
       setServerOnline(health.trim() === "ok");
       const sorted = [...providerList].sort((a, b) => a.name.localeCompare(b.name));
       setProviders(sorted);
       setSelected(route);
+      setTurnLogs(turns);
       setError(null);
       if (route.provider_id) {
         void loadModels();
@@ -366,6 +371,7 @@ export function App() {
               onDelete={deleteProvider}
               onRefreshQuota={refreshQuota}
             />
+            <TurnLogSection turns={turnLogs} />
           </div>
         )}
       </main>
@@ -393,6 +399,7 @@ export function App() {
       ) : null}
       {dialog === "settings" ? (
         <SettingsDialog
+          models={models}
           onClose={() => setDialog(null)}
           onChanged={async () => {
             if (selectedProvider?.name === "openai-proxy") {
@@ -464,6 +471,71 @@ function ProviderSection(props: {
       </div>
     </section>
   );
+}
+
+function TurnLogSection({ turns }: { turns: TurnRouteLog[] }) {
+  return (
+    <section>
+      <div className="mb-3 flex items-center gap-3 px-1">
+        <h2 className="text-xs font-bold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">
+          最近路由 Turn
+        </h2>
+        <span className="rounded-full bg-white/60 px-2 py-0.5 text-[10px] font-bold text-slate-400 dark:bg-white/5">
+          {turns.length} / 1000
+        </span>
+      </div>
+      <div className="overflow-x-auto rounded-[22px] border border-white/70 bg-white/55 shadow-sm backdrop-blur-xl dark:border-white/8 dark:bg-white/[0.035]">
+        {!turns.length ? (
+          <div className="px-5 py-8 text-center text-xs text-slate-400">还没有可观测的路由 turn。</div>
+        ) : (
+          <table className="w-full min-w-[720px] text-left text-xs">
+            <thead className="border-b border-slate-200/70 text-[10px] uppercase tracking-[0.1em] text-slate-400 dark:border-white/8">
+              <tr>
+                <th className="px-5 py-3 font-bold">时间</th>
+                <th className="px-4 py-3 font-bold">Turn</th>
+                <th className="px-4 py-3 font-bold">模型</th>
+                <th className="px-4 py-3 font-bold">路由</th>
+                <th className="px-4 py-3 font-bold">推理度</th>
+                <th className="px-5 py-3 text-right font-bold">回合</th>
+              </tr>
+            </thead>
+            <tbody>
+              {turns.map((turn) => (
+                <tr key={turn.turn_id} className="border-b border-slate-100/80 last:border-0 dark:border-white/[0.055]">
+                  <td className="whitespace-nowrap px-5 py-3.5 text-slate-500 dark:text-slate-400">{turnLogTime(turn.updated_at)}</td>
+                  <td className="px-4 py-3.5 font-mono text-[11px] text-slate-500 dark:text-slate-400">{turn.turn_id.slice(0, 17)}</td>
+                  <td className="px-4 py-3.5 font-mono font-semibold">{turn.model}</td>
+                  <td className="px-4 py-3.5">
+                    <Badge tone={turn.routing_tier === "strong" ? "purple" : turn.routing_tier === "cheap" ? "green" : "blue"}>
+                      {turn.routing_tier ?? turn.routing_mode}
+                    </Badge>
+                  </td>
+                  <td className="px-4 py-3.5 text-slate-500 dark:text-slate-400">{turn.reasoning_effort ?? "—"}</td>
+                  <td className="px-5 py-3.5 text-right text-slate-500 dark:text-slate-400">
+                    {turn.request_count} 请求 · {turn.tool_round_count} 工具
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+      <p className="mt-2 px-1 text-[11px] leading-5 text-slate-400">
+        只保存哈希 turn ID、路由模型、推理度和计数；不保存请求、工具结果或回答内容。超过 1000 条按最近访问淘汰。
+      </p>
+    </section>
+  );
+}
+
+function turnLogTime(timestamp: number) {
+  return new Date(timestamp * 1000).toLocaleString("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
 }
 
 function ProviderCard({
@@ -1002,10 +1074,12 @@ function SetupDialog({ onClose }: { onClose: () => void }) {
 }
 
 function SettingsDialog({
+  models,
   onClose,
   onChanged,
   onError,
 }: {
+  models: GatewayModel[];
   onClose: () => void;
   onChanged: () => Promise<void>;
   onError: (message: string) => void;
@@ -1065,60 +1139,214 @@ function SettingsDialog({
           <LoaderCircle className="size-6 animate-spin text-slate-400" />
         </div>
       ) : (
-        <form onSubmit={save}>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <div className="rounded-2xl border border-white/65 bg-white/45 p-4 dark:border-white/8 dark:bg-white/[0.035]">
-              <div className="eyebrow">代码默认版本</div>
-              <div className="mt-2 font-mono text-sm font-bold">{setting.default_version}</div>
-            </div>
-            <div className="rounded-2xl border border-blue-500/15 bg-blue-500/5 p-4">
-              <div className="eyebrow">当前生效版本</div>
-              <div className="mt-2 flex items-center gap-2 font-mono text-sm font-bold text-blue-600 dark:text-blue-300">
-                {setting.effective_version}
-                <span className="rounded-full bg-blue-500/10 px-2 py-0.5 font-sans text-[10px]">
-                  {setting.is_overridden ? "数据库覆盖" : "代码默认"}
-                </span>
+        <div className="space-y-8">
+          <form onSubmit={save}>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="rounded-2xl border border-white/65 bg-white/45 p-4 dark:border-white/8 dark:bg-white/[0.035]">
+                <div className="eyebrow">代码默认版本</div>
+                <div className="mt-2 font-mono text-sm font-bold">{setting.default_version}</div>
+              </div>
+              <div className="rounded-2xl border border-blue-500/15 bg-blue-500/5 p-4">
+                <div className="eyebrow">当前生效版本</div>
+                <div className="mt-2 flex items-center gap-2 font-mono text-sm font-bold text-blue-600 dark:text-blue-300">
+                  {setting.effective_version}
+                  <span className="rounded-full bg-blue-500/10 px-2 py-0.5 font-sans text-[10px]">
+                    {setting.is_overridden ? "数据库覆盖" : "代码默认"}
+                  </span>
+                </div>
               </div>
             </div>
-          </div>
 
-          <div className="mt-5">
-            <FormField label="自定义 Codex Client Version">
-              <input
-                className="field w-full font-mono text-sm"
-                value={version}
-                placeholder={setting.default_version}
-                disabled={submitting}
-                onChange={(event) => setVersion(event.target.value)}
-              />
-            </FormField>
-            <div className="mt-2 text-[11px] leading-5 text-slate-400">
-              保存后写入 SQLite，并自动清理 OpenAI 模型缓存。留空不会保存；需要取消覆盖时使用“恢复代码默认”。
+            <div className="mt-5">
+              <FormField label="自定义 Codex Client Version">
+                <input
+                  className="field w-full font-mono text-sm"
+                  value={version}
+                  placeholder={setting.default_version}
+                  disabled={submitting}
+                  onChange={(event) => setVersion(event.target.value)}
+                />
+              </FormField>
+              <div className="mt-2 text-[11px] leading-5 text-slate-400">
+                保存后写入 SQLite，并自动清理 OpenAI 模型缓存。留空不会保存；需要取消覆盖时使用“恢复代码默认”。
+              </div>
             </div>
-          </div>
 
-          <div className="mt-7 flex flex-wrap justify-end gap-2">
-            <Button
-              type="button"
-              variant="outline"
-              disabled={!setting.is_overridden || submitting}
-              onClick={() => void restoreDefault()}
-            >
-              <RefreshCw className="size-4" />
-              恢复代码默认
-            </Button>
-            <Button type="button" variant="outline" onClick={onClose}>取消</Button>
-            <Button
-              type="submit"
-              disabled={submitting || !version.trim() || version.trim() === setting.override_version}
-            >
-              {submitting ? <LoaderCircle className="size-4 animate-spin" /> : <Check className="size-4" />}
-              {submitting ? "保存中" : "保存覆盖"}
-            </Button>
+            <div className="mt-7 flex flex-wrap justify-end gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                disabled={!setting.is_overridden || submitting}
+                onClick={() => void restoreDefault()}
+              >
+                <RefreshCw className="size-4" />
+                恢复代码默认
+              </Button>
+              <Button
+                type="submit"
+                disabled={submitting || !version.trim() || version.trim() === setting.override_version}
+              >
+                {submitting ? <LoaderCircle className="size-4 animate-spin" /> : <Check className="size-4" />}
+                {submitting ? "保存中" : "保存覆盖"}
+              </Button>
+            </div>
+          </form>
+          <AutomaticRoutingPanel models={models} onError={onError} />
+          <div className="flex justify-end">
+            <Button type="button" variant="outline" onClick={onClose}>完成</Button>
           </div>
-        </form>
+        </div>
       )}
     </DialogFrame>
+  );
+}
+
+function AutomaticRoutingPanel({
+  models,
+  onError,
+}: {
+  models: GatewayModel[];
+  onError: (message: string) => void;
+}) {
+  const [settings, setSettings] = React.useState<AutoRoutingSettings | null>(null);
+  const [saving, setSaving] = React.useState(false);
+
+  React.useEffect(() => {
+    void gatewayApi
+      .automaticRouting()
+      .then(setSettings)
+      .catch((loadError) => onError(errorMessage(loadError)));
+  }, [onError]);
+
+  if (!settings) {
+    return (
+      <section className="border-t border-slate-200/70 pt-7 dark:border-white/10">
+        <div className="flex h-20 items-center justify-center">
+          <LoaderCircle className="size-5 animate-spin text-slate-400" />
+        </div>
+      </section>
+    );
+  }
+
+  const configured = [
+    settings.classifier_model,
+    settings.cheap_model,
+    settings.standard_model,
+    settings.strong_model,
+  ].every(Boolean);
+  const canEnable = models.length > 0 && configured;
+
+  async function save() {
+    const nextSettings = settings;
+    if (!nextSettings) return;
+    if (nextSettings.enabled && !canEnable) return;
+    setSaving(true);
+    try {
+      setSettings(await gatewayApi.setAutomaticRouting(nextSettings));
+    } catch (saveError) {
+      onError(errorMessage(saveError));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function update<K extends keyof AutoRoutingSettings>(key: K, value: AutoRoutingSettings[K]) {
+    setSettings((current) => (current ? { ...current, [key]: value } : current));
+  }
+
+  return (
+    <section className="border-t border-slate-200/70 pt-7 dark:border-white/10">
+      <div className="flex items-start gap-4">
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-bold">自动模型路由</div>
+          <p className="mt-1 text-[11px] leading-5 text-slate-400">
+            分类模型只输出难度档位；原请求随后发送给对应模型。工具、图片、低置信度和分类失败会直接使用强模型。
+          </p>
+        </div>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={settings.enabled}
+          disabled={saving || (!settings.enabled && !canEnable)}
+          className={cn(
+            "mt-0.5 flex h-6 w-11 shrink-0 items-center rounded-full p-0.5 transition",
+            settings.enabled ? "bg-blue-500" : "bg-slate-200 dark:bg-white/15",
+            (saving || (!settings.enabled && !canEnable)) && "cursor-not-allowed opacity-50",
+          )}
+          onClick={() => update("enabled", !settings.enabled)}
+        >
+          <span className={cn("size-5 rounded-full bg-white shadow-sm transition", settings.enabled && "translate-x-5")} />
+        </button>
+      </div>
+
+      {!models.length ? (
+        <div className="mt-4 rounded-xl bg-amber-500/10 px-3 py-2 text-[11px] leading-5 text-amber-700 dark:text-amber-300">
+          先在主页选择供应商并刷新模型列表，再配置自动路由。
+        </div>
+      ) : (
+        <div className="mt-5 grid gap-4 sm:grid-cols-2">
+          <ModelRouteSelect label="分类模型（便宜）" value={settings.classifier_model} models={models} disabled={saving} onChange={(value) => update("classifier_model", value)} />
+          <ModelRouteSelect label="简单任务" value={settings.cheap_model} models={models} disabled={saving} onChange={(value) => update("cheap_model", value)} />
+          <ModelRouteSelect label="常规任务" value={settings.standard_model} models={models} disabled={saving} onChange={(value) => update("standard_model", value)} />
+          <ModelRouteSelect label="复杂 / 兜底任务" value={settings.strong_model} models={models} disabled={saving} onChange={(value) => update("strong_model", value)} />
+        </div>
+      )}
+
+      <div className="mt-4">
+        <FormField label="低置信度阈值">
+          <input
+            className="field font-mono text-sm"
+            type="number"
+            min="0"
+            max="1"
+            step="0.05"
+            value={settings.low_confidence_threshold}
+            disabled={saving}
+            onChange={(event) => update("low_confidence_threshold", Number(event.target.value))}
+          />
+        </FormField>
+        <p className="mt-2 text-[11px] leading-5 text-slate-400">
+          分类结果低于此阈值时，为避免返工会升级到强模型。建议从 0.70 开始。
+        </p>
+      </div>
+
+      <div className="mt-5 flex justify-end">
+        <Button type="button" disabled={saving || (settings.enabled && !canEnable)} onClick={() => void save()}>
+          {saving ? <LoaderCircle className="size-4 animate-spin" /> : <Check className="size-4" />}
+          {saving ? "保存中" : "保存路由配置"}
+        </Button>
+      </div>
+    </section>
+  );
+}
+
+function ModelRouteSelect({
+  label,
+  value,
+  models,
+  disabled,
+  onChange,
+}: {
+  label: string;
+  value?: string;
+  models: GatewayModel[];
+  disabled: boolean;
+  onChange: (value: string | undefined) => void;
+}) {
+  return (
+    <FormField label={label}>
+      <select
+        className="field font-mono text-xs"
+        value={value ?? ""}
+        disabled={disabled}
+        onChange={(event) => onChange(event.target.value || undefined)}
+      >
+        <option value="">选择模型</option>
+        {models.map((model) => (
+          <option key={model.id} value={model.id}>{model.id}</option>
+        ))}
+      </select>
+    </FormField>
   );
 }
 

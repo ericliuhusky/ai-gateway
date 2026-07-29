@@ -39,6 +39,28 @@ export interface CodexClientVersionSetting {
   is_overridden: boolean;
 }
 
+export interface AutoRoutingSettings {
+  enabled: boolean;
+  classifier_model?: string;
+  cheap_model?: string;
+  standard_model?: string;
+  strong_model?: string;
+  low_confidence_threshold: number;
+}
+
+export interface TurnRouteLog {
+  turn_id: string;
+  provider_id: string;
+  model: string;
+  routing_mode: string;
+  routing_tier?: "cheap" | "standard" | "strong";
+  reasoning_effort?: string;
+  started_at: number;
+  updated_at: number;
+  request_count: number;
+  tool_round_count: number;
+}
+
 export interface ProviderQuotaWindow {
   used_percent: number;
   window_minutes?: number;

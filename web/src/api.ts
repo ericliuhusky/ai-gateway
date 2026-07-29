@@ -1,5 +1,6 @@
 import type {
   CodexAuthPayload,
+  AutoRoutingSettings,
   CodexClientVersionSetting,
   GatewayBillingMode,
   GatewayCompatibilityProfile,
@@ -8,6 +9,7 @@ import type {
   GatewayUpstreamProtocol,
   ProviderQuotaSummary,
   SelectedProvider,
+  TurnRouteLog,
 } from "./types";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -59,6 +61,22 @@ export const gatewayApi = {
     return request<CodexClientVersionSetting>("/settings/codex-client-version", {
       method: "DELETE",
     });
+  },
+
+  automaticRouting() {
+    return request<AutoRoutingSettings>("/settings/automatic-routing");
+  },
+
+  setAutomaticRouting(settings: AutoRoutingSettings) {
+    return request<AutoRoutingSettings>("/settings/automatic-routing", {
+      method: "PUT",
+      body: JSON.stringify(settings),
+    });
+  },
+
+  async routingTurns(limit = 50) {
+    const payload = await request<{ turns: TurnRouteLog[] }>(`/routing/turns?limit=${limit}`);
+    return payload.turns;
   },
 
   async providers() {

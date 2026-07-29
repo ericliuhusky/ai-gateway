@@ -1,4 +1,4 @@
-use crate::config::Config;
+use crate::{config::Config, models::AutoRoutingSettings};
 use std::sync::Arc;
 
 use super::sqlite::SqliteStore;
@@ -26,12 +26,20 @@ impl SettingsStore {
     pub fn clear_codex_client_version(&self) -> Result<(), String> {
         self.sqlite.set_codex_client_version_override(None)
     }
+
+    pub fn auto_routing_settings(&self) -> Result<AutoRoutingSettings, String> {
+        self.sqlite.load_auto_routing_settings()
+    }
+
+    pub fn set_auto_routing_settings(&self, settings: &AutoRoutingSettings) -> Result<(), String> {
+        self.sqlite.set_auto_routing_settings(settings)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::SettingsStore;
-    use crate::store::sqlite::SqliteStore;
+    use crate::{models::AutoRoutingSettings, store::sqlite::SqliteStore};
     use std::{
         path::PathBuf,
         time::{SystemTime, UNIX_EPOCH},
@@ -51,6 +59,24 @@ mod tests {
         );
         store.clear_codex_client_version().unwrap();
         assert_eq!(store.codex_client_version_override().unwrap(), None);
+    }
+
+    #[test]
+    fn stores_automatic_routing_settings() {
+        let sqlite = SqliteStore::for_test(unique_test_db_path("automatic-routing"))
+            .expect("create settings database");
+        let store = SettingsStore { sqlite };
+        let settings = AutoRoutingSettings {
+            enabled: true,
+            classifier_model: Some("small".to_string()),
+            cheap_model: Some("small".to_string()),
+            standard_model: Some("medium".to_string()),
+            strong_model: Some("large".to_string()),
+            low_confidence_threshold: 0.8,
+        };
+
+        store.set_auto_routing_settings(&settings).unwrap();
+        assert_eq!(store.auto_routing_settings().unwrap(), settings);
     }
 
     fn unique_test_db_path(prefix: &str) -> PathBuf {

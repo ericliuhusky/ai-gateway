@@ -5,6 +5,7 @@ mod config;
 mod crypto;
 mod models;
 mod openai_tokens;
+mod routing;
 mod store;
 mod support;
 mod upstream;
@@ -14,7 +15,7 @@ use config::Config;
 use openai_tokens::OpenAiTokenService;
 use reqwest::Client;
 use std::sync::Arc;
-use store::{AccountStore, ModelStore, ProviderStore, RouteStore, SettingsStore};
+use store::{AccountStore, ModelStore, ProviderStore, RouteStore, SettingsStore, TurnLogStore};
 use upstream::UpstreamClient;
 
 #[tokio::main]
@@ -28,6 +29,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     routes.load().await?;
     let models = ModelStore::new(config.clone())?;
     let settings = SettingsStore::new(config.clone())?;
+    let turn_logs = TurnLogStore::new(config.clone())?;
     let openai_tokens = OpenAiTokenService::new();
     let upstream = UpstreamClient::new();
     let state = AppState {
@@ -39,6 +41,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         routes,
         models,
         settings,
+        turn_logs,
         upstream,
     };
 

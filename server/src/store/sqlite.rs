@@ -2,9 +2,9 @@ use crate::{
     config::Config,
     crypto::FieldEncryptor,
     models::{
-        AccountRecord, AccountType, ApiProviderBillingMode, ApiProviderRecord,
+        AccountRecord, AccountType, ApiProviderBillingMode, ApiProviderRecord, AutoRoutingSettings,
         CachedProviderModels, ProviderAuthMode, ProviderCompatibilityProfile,
-        ProviderUpstreamProtocol, SelectedRoute,
+        ProviderUpstreamProtocol, SelectedRoute, TurnRouteLog, TurnRouteLogUpdate,
     },
 };
 use rusqlite::{Connection, OptionalExtension, params};
@@ -279,6 +279,136 @@ impl SqliteStore {
         Ok(())
     }
 
+    pub fn load_auto_routing_settings(&self) -> Result<AutoRoutingSettings, String> {
+        let conn = self.connect()?;
+        conn.query_row(
+            "SELECT routing_enabled, routing_classifier_model, routing_cheap_model,
+                    routing_standard_model, routing_strong_model, routing_low_confidence_threshold
+             FROM gateway_state WHERE id = 1",
+            [],
+            |row| {
+                Ok(AutoRoutingSettings {
+                    enabled: row.get::<_, i64>(0)? != 0,
+                    classifier_model: row.get(1)?,
+                    cheap_model: row.get(2)?,
+                    standard_model: row.get(3)?,
+                    strong_model: row.get(4)?,
+                    low_confidence_threshold: row.get(5)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|err| format!("load automatic routing settings failed: {err}"))
+        .map(|settings| settings.unwrap_or_default())
+    }
+
+    pub fn set_auto_routing_settings(&self, settings: &AutoRoutingSettings) -> Result<(), String> {
+        let conn = self.connect()?;
+        conn.execute(
+            "INSERT INTO gateway_state (
+                id, routing_enabled, routing_classifier_model, routing_cheap_model,
+                routing_standard_model, routing_strong_model, routing_low_confidence_threshold,
+                route_updated_at
+             ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, 0)
+             ON CONFLICT(id) DO UPDATE SET
+                routing_enabled = excluded.routing_enabled,
+                routing_classifier_model = excluded.routing_classifier_model,
+                routing_cheap_model = excluded.routing_cheap_model,
+                routing_standard_model = excluded.routing_standard_model,
+                routing_strong_model = excluded.routing_strong_model,
+                routing_low_confidence_threshold = excluded.routing_low_confidence_threshold",
+            params![
+                i64::from(settings.enabled),
+                settings.classifier_model,
+                settings.cheap_model,
+                settings.standard_model,
+                settings.strong_model,
+                settings.low_confidence_threshold,
+            ],
+        )
+        .map_err(|err| format!("upsert automatic routing settings failed: {err}"))?;
+        Ok(())
+    }
+
+    pub fn load_turn_route_log(&self, turn_id: &str) -> Result<Option<TurnRouteLog>, String> {
+        let conn = self.connect()?;
+        conn.query_row(
+            "SELECT turn_id, provider_id, model, routing_mode, routing_tier, reasoning_effort,
+                    started_at, updated_at, request_count, tool_round_count
+             FROM turn_route_logs WHERE turn_id = ?1",
+            params![turn_id],
+            turn_route_log_from_row,
+        )
+        .optional()
+        .map_err(|err| format!("load turn route log failed: {err}"))
+    }
+
+    pub fn list_turn_route_logs(&self, limit: i64) -> Result<Vec<TurnRouteLog>, String> {
+        let conn = self.connect()?;
+        let mut statement = conn
+            .prepare(
+                "SELECT turn_id, provider_id, model, routing_mode, routing_tier, reasoning_effort,
+                        started_at, updated_at, request_count, tool_round_count
+                 FROM turn_route_logs
+                 ORDER BY updated_at DESC, rowid DESC
+                 LIMIT ?1",
+            )
+            .map_err(|err| format!("prepare turn route log list failed: {err}"))?;
+        statement
+            .query_map(params![limit], turn_route_log_from_row)
+            .map_err(|err| format!("query turn route logs failed: {err}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|err| format!("read turn route logs failed: {err}"))
+    }
+
+    pub fn record_turn_route_log(
+        &self,
+        update: &TurnRouteLogUpdate,
+        limit: i64,
+    ) -> Result<(), String> {
+        let mut conn = self.connect()?;
+        let transaction = conn
+            .transaction()
+            .map_err(|err| format!("begin turn route log transaction failed: {err}"))?;
+        transaction
+            .execute(
+                "INSERT INTO turn_route_logs (
+                    turn_id, provider_id, model, routing_mode, routing_tier, reasoning_effort,
+                    started_at, updated_at, request_count, tool_round_count
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, 1, ?8)
+                 ON CONFLICT(turn_id) DO UPDATE SET
+                    updated_at = excluded.updated_at,
+                    request_count = turn_route_logs.request_count + 1,
+                    tool_round_count = turn_route_logs.tool_round_count + excluded.tool_round_count,
+                    reasoning_effort = COALESCE(excluded.reasoning_effort, turn_route_logs.reasoning_effort)",
+                params![
+                    update.turn_id,
+                    update.provider_id,
+                    update.model,
+                    update.routing_mode,
+                    update.routing_tier,
+                    update.reasoning_effort,
+                    update.timestamp,
+                    i64::from(update.is_tool_round),
+                ],
+            )
+            .map_err(|err| format!("upsert turn route log failed: {err}"))?;
+        transaction
+            .execute(
+                "DELETE FROM turn_route_logs
+                 WHERE turn_id IN (
+                    SELECT turn_id FROM turn_route_logs
+                    ORDER BY updated_at DESC, rowid DESC
+                    LIMIT -1 OFFSET ?1
+                 )",
+                params![limit],
+            )
+            .map_err(|err| format!("trim turn route logs failed: {err}"))?;
+        transaction
+            .commit()
+            .map_err(|err| format!("commit turn route log transaction failed: {err}"))
+    }
+
     fn init(&self) -> Result<(), String> {
         let conn = self.connect()?;
         conn.execute_batch(
@@ -323,6 +453,12 @@ impl SqliteStore {
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 selected_provider_id TEXT,
                 codex_client_version_override TEXT,
+                routing_enabled INTEGER NOT NULL DEFAULT 0,
+                routing_classifier_model TEXT,
+                routing_cheap_model TEXT,
+                routing_standard_model TEXT,
+                routing_strong_model TEXT,
+                routing_low_confidence_threshold REAL NOT NULL DEFAULT 0.7,
                 route_updated_at INTEGER NOT NULL DEFAULT 0,
                 FOREIGN KEY (selected_provider_id) REFERENCES providers(id) ON DELETE SET NULL
             );
@@ -333,9 +469,34 @@ impl SqliteStore {
                 updated_at INTEGER NOT NULL,
                 FOREIGN KEY (provider_id) REFERENCES providers(id) ON DELETE CASCADE
             );
+
+            CREATE TABLE IF NOT EXISTS turn_route_logs (
+                turn_id TEXT PRIMARY KEY,
+                provider_id TEXT NOT NULL,
+                model TEXT NOT NULL,
+                routing_mode TEXT NOT NULL,
+                routing_tier TEXT,
+                reasoning_effort TEXT,
+                started_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                request_count INTEGER NOT NULL,
+                tool_round_count INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_turn_route_logs_updated_at
+                ON turn_route_logs(updated_at DESC);
             ",
         )
         .map_err(|err| format!("initialize sqlite schema failed: {err}"))?;
+        ensure_gateway_state_column(&conn, "routing_enabled", "INTEGER NOT NULL DEFAULT 0")?;
+        ensure_gateway_state_column(&conn, "routing_classifier_model", "TEXT")?;
+        ensure_gateway_state_column(&conn, "routing_cheap_model", "TEXT")?;
+        ensure_gateway_state_column(&conn, "routing_standard_model", "TEXT")?;
+        ensure_gateway_state_column(&conn, "routing_strong_model", "TEXT")?;
+        ensure_gateway_state_column(
+            &conn,
+            "routing_low_confidence_threshold",
+            "REAL NOT NULL DEFAULT 0.7",
+        )?;
         Ok(())
     }
 
@@ -350,6 +511,43 @@ impl SqliteStore {
             .map_err(|err| format!("configure sqlite connection failed: {err}"))?;
         Ok(conn)
     }
+}
+
+fn turn_route_log_from_row(row: &rusqlite::Row<'_>) -> Result<TurnRouteLog, rusqlite::Error> {
+    Ok(TurnRouteLog {
+        turn_id: row.get(0)?,
+        provider_id: row.get(1)?,
+        model: row.get(2)?,
+        routing_mode: row.get(3)?,
+        routing_tier: row.get(4)?,
+        reasoning_effort: row.get(5)?,
+        started_at: row.get(6)?,
+        updated_at: row.get(7)?,
+        request_count: row.get(8)?,
+        tool_round_count: row.get(9)?,
+    })
+}
+
+fn ensure_gateway_state_column(
+    conn: &Connection,
+    column_name: &str,
+    column_definition: &str,
+) -> Result<(), String> {
+    let mut statement = conn
+        .prepare("PRAGMA table_info(gateway_state)")
+        .map_err(|err| format!("inspect gateway state schema failed: {err}"))?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|err| format!("list gateway state columns failed: {err}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| format!("read gateway state columns failed: {err}"))?;
+    if columns.iter().any(|column| column == column_name) {
+        return Ok(());
+    }
+    conn.execute_batch(&format!(
+        "ALTER TABLE gateway_state ADD COLUMN {column_name} {column_definition};"
+    ))
+    .map_err(|err| format!("add `{column_name}` to gateway state failed: {err}"))
 }
 
 fn upsert_account_record(

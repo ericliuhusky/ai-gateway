@@ -1,8 +1,8 @@
 use crate::api::handlers::{
     add_provider, clear_codex_client_version, clear_selected_model, delete_provider,
-    get_codex_client_version, get_provider_quota, get_route, get_selected_model, healthz,
-    import_openai_token, list_models, list_providers, responses, set_codex_client_version,
-    set_route, set_selected_model,
+    get_auto_routing_settings, get_codex_client_version, get_provider_quota, get_route,
+    get_selected_model, healthz, import_openai_token, list_models, list_providers, list_turn_logs,
+    responses, set_auto_routing_settings, set_codex_client_version, set_route, set_selected_model,
 };
 use crate::codex_scripts;
 use axum::{
@@ -33,6 +33,11 @@ pub fn build_router(state: AppState, web_dir: PathBuf) -> Router {
                 .put(set_codex_client_version)
                 .delete(clear_codex_client_version),
         )
+        .route(
+            "/settings/automatic-routing",
+            get(get_auto_routing_settings).put(set_auto_routing_settings),
+        )
+        .route("/routing/turns", get(list_turn_logs))
         .route("/selected-provider", get(get_route).put(set_route))
         .route(
             "/selected-model",

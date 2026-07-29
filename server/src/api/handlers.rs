@@ -8,15 +8,20 @@ use crate::{
         CodexUsageCredits, CodexUsageRateLimit, CodexUsageRateLimitWindow, CodexUsageResponse,
     },
     models::{
-        AccountRecord, ApiProviderRecord, ApiProviderSummary, ChatCompletionsResponsesStream,
-        CodexClientVersionSetting, CreateApiProviderRequest, ModelListItem, ModelListResponse,
-        PROVIDER_OPENAI_PROXY, ProviderAuthMode, ProviderQuotaCredits, ProviderQuotaResponse,
-        ProviderQuotaSnapshot, ProviderQuotaSummary, ProviderQuotaWindow, QuotaSource,
-        QuotaSupportStatus, ResponseStreamFrame, SelectedRoute, UpdateCodexClientVersionRequest,
-        UpdateSelectedModelRequest, UpdateSelectedProviderRequest,
+        AccountRecord, ApiProviderRecord, ApiProviderSummary, AutoRoutingSettings,
+        ChatCompletionsResponsesStream, CodexClientVersionSetting, CreateApiProviderRequest,
+        ModelListItem, ModelListResponse, PROVIDER_OPENAI_PROXY, ProviderAuthMode,
+        ProviderQuotaCredits, ProviderQuotaResponse, ProviderQuotaSnapshot, ProviderQuotaSummary,
+        ProviderQuotaWindow, ProviderUpstreamProtocol, QuotaSource, QuotaSupportStatus,
+        ResponseStreamFrame, SelectedRoute, TurnRouteLogUpdate, UpdateAutoRoutingSettingsRequest,
+        UpdateCodexClientVersionRequest, UpdateSelectedModelRequest, UpdateSelectedProviderRequest,
     },
     openai_tokens::OpenAiTokenService,
-    store::{AccountStore, ModelStore, ProviderStore, RouteStore, SettingsStore},
+    routing::{
+        RoutingDecision, classifier_instructions, classifier_prompt,
+        decision_from_classifier_output, is_tool_round, summarize_request,
+    },
+    store::{AccountStore, ModelStore, ProviderStore, RouteStore, SettingsStore, TurnLogStore},
     support::time::now_unix,
     upstream::{
         OPENAI_CODEX_BASE_URL, OpenAiEndpoint, OpenAiRequestBody, OpenAiRequestBuilder,
@@ -35,7 +40,9 @@ use reqwest::Client;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::sync::Arc;
+use uuid::Uuid;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -47,6 +54,7 @@ pub struct AppState {
     pub routes: RouteStore,
     pub models: ModelStore,
     pub settings: SettingsStore,
+    pub turn_logs: TurnLogStore,
     pub upstream: UpstreamClient,
 }
 
@@ -88,6 +96,50 @@ pub async fn clear_codex_client_version(
         .map_err(AppError::internal)?;
     clear_openai_model_caches(&state).await?;
     Ok(Json(codex_client_version_setting(&state)?))
+}
+
+pub async fn get_auto_routing_settings(
+    State(state): State<AppState>,
+) -> Result<Json<AutoRoutingSettings>, AppError> {
+    Ok(Json(
+        state
+            .settings
+            .auto_routing_settings()
+            .map_err(AppError::internal)?,
+    ))
+}
+
+pub async fn set_auto_routing_settings(
+    State(state): State<AppState>,
+    Json(request): Json<UpdateAutoRoutingSettingsRequest>,
+) -> Result<Json<AutoRoutingSettings>, AppError> {
+    let settings = normalize_auto_routing_settings(request)?;
+    state
+        .settings
+        .set_auto_routing_settings(&settings)
+        .map_err(AppError::internal)?;
+    Ok(Json(settings))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ListTurnLogsQuery {
+    #[serde(default = "default_turn_log_limit")]
+    pub limit: i64,
+}
+
+fn default_turn_log_limit() -> i64 {
+    50
+}
+
+pub async fn list_turn_logs(
+    State(state): State<AppState>,
+    Query(query): Query<ListTurnLogsQuery>,
+) -> Result<Json<Value>, AppError> {
+    let turns = state
+        .turn_logs
+        .list(query.limit)
+        .map_err(AppError::internal)?;
+    Ok(Json(json!({ "turns": turns })))
 }
 
 #[derive(Debug, Deserialize)]
@@ -335,8 +387,13 @@ pub(super) async fn responses_inner(
     let mut request_json: Value = serde_json::from_str(&raw_body)
         .map_err(|err| AppError::bad_request(format!("invalid request JSON: {err}")))?;
     let request_stream = responses_request_stream(&request_json);
-    let model_overridden =
-        apply_selected_model_override_to_raw_request(&state, &mut request_json).await;
+    let requested_model = responses_request_model(&request_json)
+        .unwrap_or_default()
+        .to_string();
+    let turn = turn_context_from_request(&request_json);
+    let routing = choose_model_for_request(&state, &provider, &turn, &request_json).await?;
+    record_turn_route(&state, &provider, &turn, &routing, &requested_model);
+    let model_overridden = apply_routing_model_to_raw_request(&routing, &mut request_json);
     let request_body = if model_overridden {
         request_json.to_string()
     } else {
@@ -360,7 +417,7 @@ pub(super) async fn responses_inner(
     )
     .map_err(adapter_error_to_app_error)?;
 
-    match prepared {
+    let response = match prepared {
         PreparedResponsesUpstream::OpenAiAccountResponsesPassthrough(prepared) => {
             let account = resolve_account_for_provider(&state, &provider).await?;
             let private_responses = PrivateOpenAiRequestBuilder {
@@ -375,7 +432,7 @@ pub(super) async fn responses_inner(
                 prepared.request_stream,
                 prepared.request_body,
             )
-            .await
+            .await?
         }
         PreparedResponsesUpstream::ApiChatCompletions(prepared) => {
             let public_chat = PublicOpenAiRequestBuilder {
@@ -477,7 +534,7 @@ pub(super) async fn responses_inner(
                 }
             };
 
-            Ok(Response::builder()
+            Response::builder()
                 .status(StatusCode::OK)
                 .header(
                     "content-type",
@@ -491,7 +548,7 @@ pub(super) async fn responses_inner(
                         .map_err(|err| AppError::internal(err.to_string()))?,
                 )
                 .body(Body::from_stream(output))
-                .map_err(|err| AppError::internal(err.to_string()))?)
+                .map_err(|err| AppError::internal(err.to_string()))?
         }
         PreparedResponsesUpstream::ApiResponsesPassthrough(prepared) => {
             let public_responses = PublicOpenAiRequestBuilder {
@@ -504,9 +561,11 @@ pub(super) async fn responses_inner(
                 prepared.request_stream,
                 prepared.request_body,
             )
-            .await
+            .await?
         }
-    }
+    };
+
+    Ok(response)
 }
 
 async fn responses_passthrough_inner<B>(
@@ -594,18 +653,283 @@ fn responses_request_stream(request: &Value) -> bool {
         .unwrap_or(false)
 }
 
-async fn apply_selected_model_override_to_raw_request(
-    state: &AppState,
-    request: &mut Value,
-) -> bool {
-    let Some(model) = state.routes.get().await.selected_model else {
+fn apply_routing_model_to_raw_request(routing: &RoutingDecision, request: &mut Value) -> bool {
+    let Some(model) = routing.model.as_ref() else {
         return false;
     };
     let Some(object) = request.as_object_mut() else {
         return false;
     };
-    object.insert("model".to_string(), Value::String(model));
+    object.insert("model".to_string(), Value::String(model.clone()));
     true
+}
+
+async fn choose_model_for_request(
+    state: &AppState,
+    provider: &ResolvedProvider,
+    turn: &TurnContext,
+    request: &Value,
+) -> Result<RoutingDecision, AppError> {
+    if let Some(existing) = state.turn_logs.get(&turn.id).ok().flatten() {
+        return Ok(RoutingDecision {
+            model: Some(existing.model),
+            mode: "turn_sticky",
+            tier: routing_tier_from_log(existing.routing_tier.as_deref()),
+            confidence: None,
+        });
+    }
+
+    if let Some(model) = state.routes.get().await.selected_model {
+        return Ok(RoutingDecision::selected_model(model));
+    }
+
+    let settings = state
+        .settings
+        .auto_routing_settings()
+        .map_err(AppError::internal)?;
+    if !settings.enabled {
+        return Ok(RoutingDecision::disabled());
+    }
+
+    let routing_request = summarize_request(request);
+    if routing_request.requires_safety_bypass() {
+        return Ok(RoutingDecision::bypass_strong(&settings));
+    }
+
+    let Some(classifier_model) = settings.classifier_model.as_deref() else {
+        return Ok(RoutingDecision::classifier_failure(&settings));
+    };
+    let response = invoke_routing_classifier(
+        state,
+        provider,
+        classifier_model,
+        classifier_prompt(&routing_request),
+    )
+    .await;
+    let Some(text) = response
+        .ok()
+        .and_then(|response| classifier_text_from_response(&response))
+    else {
+        return Ok(RoutingDecision::classifier_failure(&settings));
+    };
+
+    Ok(decision_from_classifier_output(&text, &settings)
+        .unwrap_or_else(|| RoutingDecision::classifier_failure(&settings)))
+}
+
+#[derive(Debug)]
+struct TurnContext {
+    id: String,
+    is_tool_round: bool,
+    reasoning_effort: Option<String>,
+}
+
+fn turn_context_from_request(request: &Value) -> TurnContext {
+    let raw_turn_id = request
+        .pointer("/client_metadata/turn_id")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            request
+                .pointer("/client_metadata/turnId")
+                .and_then(Value::as_str)
+        })
+        .filter(|value| !value.trim().is_empty());
+    let id = raw_turn_id
+        .map(opaque_turn_id)
+        .unwrap_or_else(|| format!("turn_{}", Uuid::new_v4().simple()));
+    let reasoning_effort = request
+        .pointer("/reasoning/effort")
+        .and_then(Value::as_str)
+        .filter(|effort| matches!(*effort, "minimal" | "low" | "medium" | "high" | "xhigh"))
+        .map(str::to_string);
+
+    TurnContext {
+        id,
+        is_tool_round: is_tool_round(request),
+        reasoning_effort,
+    }
+}
+
+fn opaque_turn_id(raw_turn_id: &str) -> String {
+    let digest = Sha256::digest(raw_turn_id.as_bytes());
+    let mut encoded = String::with_capacity(32);
+    for byte in digest.iter().take(16) {
+        use std::fmt::Write;
+        let _ = write!(&mut encoded, "{byte:02x}");
+    }
+    format!("turn_{encoded}")
+}
+
+fn record_turn_route(
+    state: &AppState,
+    provider: &ResolvedProvider,
+    turn: &TurnContext,
+    routing: &RoutingDecision,
+    requested_model: &str,
+) {
+    let Some(provider_id) = provider.record.as_ref().map(|provider| provider.id.clone()) else {
+        return;
+    };
+    let model = routing
+        .model
+        .as_deref()
+        .or((!requested_model.is_empty()).then_some(requested_model))
+        .and_then(safe_model_name)
+        .unwrap_or_else(|| "unknown".to_string());
+    let _ = state.turn_logs.record(&TurnRouteLogUpdate {
+        turn_id: turn.id.clone(),
+        provider_id,
+        model,
+        routing_mode: routing.mode.to_string(),
+        routing_tier: routing.tier.map(|tier| tier.as_str().to_string()),
+        reasoning_effort: turn.reasoning_effort.clone(),
+        is_tool_round: turn.is_tool_round,
+        timestamp: now_unix() as i64,
+    });
+}
+
+fn safe_model_name(model: &str) -> Option<String> {
+    let model = model.trim();
+    (!model.is_empty()
+        && model.len() <= 128
+        && model
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || "._:/-".contains(character)))
+    .then(|| model.to_string())
+}
+
+fn routing_tier_from_log(tier: Option<&str>) -> Option<crate::routing::RoutingTier> {
+    match tier {
+        Some("cheap") => Some(crate::routing::RoutingTier::Cheap),
+        Some("standard") => Some(crate::routing::RoutingTier::Standard),
+        Some("strong") => Some(crate::routing::RoutingTier::Strong),
+        _ => None,
+    }
+}
+
+async fn invoke_routing_classifier(
+    state: &AppState,
+    provider: &ResolvedProvider,
+    classifier_model: &str,
+    prompt: String,
+) -> Result<Value, String> {
+    if provider.auth_mode == ProviderAuthMode::Account && provider_uses_openai_account(provider) {
+        let account = resolve_account_for_provider(state, provider)
+            .await
+            .map_err(|err| err.message)?;
+        let request = PrivateOpenAiRequestBuilder {
+            base_url: OPENAI_CODEX_BASE_URL,
+            access_token: account.access_token(),
+            account_id: account.upstream_account_id(),
+            client_version: None,
+        };
+        let body = json!({
+            "model": classifier_model,
+            "input": prompt,
+            "instructions": classifier_instructions(),
+            "stream": false,
+            "store": false
+        })
+        .to_string();
+        return state
+            .upstream
+            .openai_send(
+                &request,
+                OpenAiEndpoint::Responses {
+                    body: OpenAiRequestBody::Raw(body),
+                    stream: false,
+                },
+            )
+            .await?
+            .json()
+            .await
+            .map_err(|err| format!("parse routing classifier response failed: {err}"));
+    }
+
+    let record = provider.record.as_ref().ok_or_else(|| {
+        format!(
+            "routing classifier cannot resolve provider `{}`",
+            provider.name
+        )
+    })?;
+    let public = PublicOpenAiRequestBuilder {
+        base_url: record.base_url.as_str(),
+        api_key: record.api_key.as_str(),
+    };
+
+    if record.upstream_protocol == ProviderUpstreamProtocol::OpenAiChatCompletions {
+        let body = json!({
+            "model": classifier_model,
+            "temperature": 0,
+            "messages": [
+                {"role": "system", "content": classifier_instructions()},
+                {"role": "user", "content": prompt}
+            ]
+        });
+        return state
+            .upstream
+            .openai_send(&public, OpenAiEndpoint::ChatCompletions { body })
+            .await?
+            .json()
+            .await
+            .map_err(|err| format!("parse routing classifier response failed: {err}"));
+    }
+
+    let body = json!({
+        "model": classifier_model,
+        "input": prompt,
+        "instructions": classifier_instructions(),
+        "stream": false,
+        "store": false
+    })
+    .to_string();
+    state
+        .upstream
+        .openai_send(
+            &public,
+            OpenAiEndpoint::Responses {
+                body: OpenAiRequestBody::Raw(body),
+                stream: false,
+            },
+        )
+        .await?
+        .json()
+        .await
+        .map_err(|err| format!("parse routing classifier response failed: {err}"))
+}
+
+fn classifier_text_from_response(response: &Value) -> Option<String> {
+    response
+        .get("output_text")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| {
+            response
+                .pointer("/choices/0/message/content")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .or_else(|| {
+            response
+                .get("output")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .flat_map(|item| {
+                    item.get("content")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                })
+                .find_map(|content| {
+                    let text = content.get("text")?;
+                    text.as_str().map(str::to_string).or_else(|| {
+                        text.get("value")
+                            .and_then(Value::as_str)
+                            .map(str::to_string)
+                    })
+                })
+        })
 }
 
 fn is_event_stream_response(headers: &HeaderMap) -> bool {
@@ -761,6 +1085,49 @@ fn normalize_codex_client_version(version: String) -> Result<String, AppError> {
         ));
     }
     Ok(version.to_string())
+}
+
+fn normalize_auto_routing_settings(
+    request: UpdateAutoRoutingSettingsRequest,
+) -> Result<AutoRoutingSettings, AppError> {
+    if !request.low_confidence_threshold.is_finite()
+        || !(0.0..=1.0).contains(&request.low_confidence_threshold)
+    {
+        return Err(AppError::bad_request(
+            "low_confidence_threshold must be between 0 and 1",
+        ));
+    }
+
+    let settings = AutoRoutingSettings {
+        enabled: request.enabled,
+        classifier_model: normalize_optional_model(request.classifier_model),
+        cheap_model: normalize_optional_model(request.cheap_model),
+        standard_model: normalize_optional_model(request.standard_model),
+        strong_model: normalize_optional_model(request.strong_model),
+        low_confidence_threshold: request.low_confidence_threshold,
+    };
+    if settings.enabled
+        && [
+            settings.classifier_model.as_ref(),
+            settings.cheap_model.as_ref(),
+            settings.standard_model.as_ref(),
+            settings.strong_model.as_ref(),
+        ]
+        .iter()
+        .any(|model| model.is_none())
+    {
+        return Err(AppError::bad_request(
+            "classifier_model, cheap_model, standard_model, and strong_model are required when automatic routing is enabled",
+        ));
+    }
+    Ok(settings)
+}
+
+fn normalize_optional_model(model: Option<String>) -> Option<String> {
+    model.and_then(|model| {
+        let trimmed = model.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_string())
+    })
 }
 
 async fn clear_openai_model_caches(state: &AppState) -> Result<(), AppError> {
