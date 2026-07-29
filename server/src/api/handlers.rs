@@ -53,6 +53,8 @@ pub struct AppState {
 pub struct ListModelsQuery {
     #[serde(default)]
     pub force: bool,
+    #[serde(default)]
+    pub client_version: Option<String>,
 }
 
 pub async fn healthz() -> &'static str {
@@ -174,7 +176,13 @@ pub async fn list_models(
     Query(query): Query<ListModelsQuery>,
 ) -> Result<Json<ModelListResponse>, AppError> {
     let provider = resolve_selected_provider(&state).await?;
-    let mut response = load_provider_models(&state, &provider, query.force).await?;
+    let mut response = load_provider_models(
+        &state,
+        &provider,
+        query.force,
+        query.client_version.as_deref(),
+    )
+    .await?;
     ensure_codex_model_infos(&mut response);
 
     Ok(Json(response))
@@ -264,7 +272,7 @@ pub async fn set_selected_model(
 ) -> Result<Json<Value>, AppError> {
     let model = normalize_selected_model(request.model)?;
     let provider = resolve_selected_provider(&state).await?;
-    let models = load_provider_models(&state, &provider, false).await?;
+    let models = load_provider_models(&state, &provider, false, None).await?;
     if !models.data.iter().any(|item| item.id == model) {
         return Err(AppError::bad_request(format!(
             "model `{model}` is not available for selected provider `{}`",
@@ -620,11 +628,15 @@ fn build_passthrough_response(
 async fn fetch_provider_models(
     state: &AppState,
     provider: &ResolvedProvider,
+    requested_client_version: Option<&str>,
 ) -> Result<ModelListResponse, AppError> {
     if provider.auth_mode == ProviderAuthMode::Account {
         let account = resolve_account_for_provider(state, provider).await?;
         if provider.name == PROVIDER_OPENAI_PROXY {
-            let client_version = state._config.codex_client_version();
+            let client_version = effective_codex_client_version(
+                requested_client_version,
+                state._config.codex_client_version(),
+            );
             let private_models = PrivateOpenAiRequestBuilder {
                 base_url: OPENAI_CODEX_BASE_URL,
                 access_token: account.access_token(),
@@ -667,7 +679,11 @@ async fn load_provider_models(
     state: &AppState,
     provider: &ResolvedProvider,
     force_refresh: bool,
+    requested_client_version: Option<&str>,
 ) -> Result<ModelListResponse, AppError> {
+    let requested_client_version = requested_client_version
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
     let provider_id = provider
         .record
         .as_ref()
@@ -677,18 +693,25 @@ async fn load_provider_models(
             AppError::bad_request(format!("provider cache key missing: {}", provider.name))
         })?;
 
-    if !force_refresh {
+    if !force_refresh && requested_client_version.is_none() {
         if let Some(cached) = state.models.load(provider_id).map_err(AppError::internal)? {
             return Ok(cached);
         }
     }
 
-    let models = fetch_provider_models(state, provider).await?;
+    let models = fetch_provider_models(state, provider, requested_client_version).await?;
     state
         .models
         .save(provider_id, &models)
         .map_err(AppError::internal)?;
     Ok(models)
+}
+
+fn effective_codex_client_version<'a>(requested: Option<&'a str>, configured: &'a str) -> &'a str {
+    requested
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(configured)
 }
 
 fn normalize_selected_provider_id(provider_id: Option<String>) -> Result<String, AppError> {
@@ -1152,6 +1175,18 @@ mod tests {
         ProviderUpstreamProtocol, ResponseStreamFrame,
     };
     use serde_json::json;
+
+    #[test]
+    fn requested_codex_client_version_overrides_configured_fallback() {
+        assert_eq!(
+            super::effective_codex_client_version(Some(" 0.147.0 "), "0.146.0"),
+            "0.147.0"
+        );
+        assert_eq!(
+            super::effective_codex_client_version(Some("  "), "0.146.0"),
+            "0.146.0"
+        );
+    }
 
     #[test]
     fn parses_minimal_pasted_codex_auth_json() {

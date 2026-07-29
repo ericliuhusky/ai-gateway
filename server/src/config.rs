@@ -1,7 +1,7 @@
 use std::{env, net::SocketAddr, path::PathBuf};
 
 const DEFAULT_BIND_ADDR: &str = "0.0.0.0:4242";
-const DEFAULT_CODEX_CLIENT_VERSION: &str = "0.130.0";
+const DEFAULT_CODEX_CLIENT_VERSION: &str = "0.146.0";
 
 #[derive(Clone, Debug)]
 pub struct Config {

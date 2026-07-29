@@ -30,13 +30,107 @@ pub(crate) fn responses_to_chat_completions(
 
 impl ChatCompletionCreateParams {
     fn normalize_messages_for_chat_completions(messages: &mut Vec<ChatCompletionMessageParam>) {
-        for message in &mut *messages {
+        let original = std::mem::take(messages);
+        let mut leading_system_message: Option<ChatCompletionMessageParam> = None;
+        let mut normalized = Vec::with_capacity(original.len());
+
+        for mut message in original {
             if message.role == "developer" {
                 message.role = "system".to_string();
             }
+
+            if message.role == "system" {
+                message.tool_calls = None;
+                message.tool_call_id = None;
+                message.name = None;
+                message.content = normalize_system_message_content(message.content);
+                if let Some(system_message) = &mut leading_system_message {
+                    merge_chat_message_content(&mut system_message.content, message.content);
+                } else {
+                    leading_system_message = Some(message);
+                }
+            } else {
+                normalized.push(message);
+            }
         }
+
+        if let Some(system_message) = leading_system_message {
+            normalized.insert(0, system_message);
+        }
+
+        *messages = normalized;
         reorder_tool_messages_for_chat_completions(messages);
     }
+}
+
+fn normalize_system_message_content(
+    content: Option<ChatCompletionMessageContent>,
+) -> Option<ChatCompletionMessageContent> {
+    let Some(ChatCompletionMessageContent::Array(parts)) = content else {
+        return content;
+    };
+    if !parts
+        .iter()
+        .all(|part| matches!(part, ChatCompletionContentPart::Text { .. }))
+    {
+        return Some(ChatCompletionMessageContent::Array(parts));
+    }
+
+    let text = parts
+        .into_iter()
+        .map(|part| match part {
+            ChatCompletionContentPart::Text { text } => text,
+            ChatCompletionContentPart::ImageUrl { .. } => unreachable!(),
+        })
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    Some(ChatCompletionMessageContent::String(text))
+}
+
+fn merge_chat_message_content(
+    target: &mut Option<ChatCompletionMessageContent>,
+    incoming: Option<ChatCompletionMessageContent>,
+) {
+    *target = match (target.take(), incoming) {
+        (None, incoming) => incoming,
+        (target, None) => target,
+        (
+            Some(ChatCompletionMessageContent::String(mut current)),
+            Some(ChatCompletionMessageContent::String(next)),
+        ) => {
+            if !current.is_empty() && !next.is_empty() {
+                current.push_str("\n\n");
+            }
+            current.push_str(&next);
+            Some(ChatCompletionMessageContent::String(current))
+        }
+        (
+            Some(ChatCompletionMessageContent::Array(mut current)),
+            Some(ChatCompletionMessageContent::Array(mut next)),
+        ) => {
+            current.append(&mut next);
+            Some(ChatCompletionMessageContent::Array(current))
+        }
+        (
+            Some(ChatCompletionMessageContent::String(current)),
+            Some(ChatCompletionMessageContent::Array(mut next)),
+        ) => {
+            if !current.is_empty() {
+                next.insert(0, ChatCompletionContentPart::Text { text: current });
+            }
+            Some(ChatCompletionMessageContent::Array(next))
+        }
+        (
+            Some(ChatCompletionMessageContent::Array(mut current)),
+            Some(ChatCompletionMessageContent::String(next)),
+        ) => {
+            if !next.is_empty() {
+                current.push(ChatCompletionContentPart::Text { text: next });
+            }
+            Some(ChatCompletionMessageContent::Array(current))
+        }
+    };
 }
 
 impl TryFrom<&ResponseCreateParams> for ChatCompletionCreateParams {
@@ -960,6 +1054,50 @@ mod tests {
         assert_eq!(body["messages"][1]["role"], "assistant");
         assert_eq!(body["messages"][2]["role"], "tool");
         assert_eq!(body["messages"][2]["tool_call_id"], "call_1");
+    }
+
+    #[test]
+    fn merges_all_system_and_developer_messages_at_the_beginning() {
+        let request: ResponseCreateParams =
+            serde_json::from_value(merge_strict_responses_request_defaults(json!({
+                "model": "qwen3.5-plus",
+                "instructions": "top-level instructions",
+                "input": [
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{ "type": "input_text", "text": "first user message" }]
+                    },
+                    {
+                        "type": "message",
+                        "role": "developer",
+                        "content": [{ "type": "input_text", "text": "late developer instructions" }]
+                    },
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{ "type": "input_text", "text": "second user message" }]
+                    }
+                ]
+            })))
+            .expect("request should parse");
+
+        let body = chat_body(&request, "qwen3.5-plus");
+        let messages = body["messages"].as_array().expect("messages array");
+
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[0]["role"], "system");
+        assert_eq!(
+            messages[0]["content"],
+            "top-level instructions\n\nlate developer instructions"
+        );
+        assert_eq!(messages[1]["role"], "user");
+        assert_eq!(messages[2]["role"], "user");
+        assert!(
+            messages[1..]
+                .iter()
+                .all(|message| message["role"] != "system")
+        );
     }
 
     #[test]

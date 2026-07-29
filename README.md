@@ -37,7 +37,7 @@ cargo run -p ai-gateway
 | --- | --- | --- |
 | `AI_GATEWAY_BIND_ADDR` | `0.0.0.0:4242` | HTTP 监听地址 |
 | `AI_GATEWAY_DATA_DIR` | `$HOME/.ai-gateway` | SQLite 数据目录 |
-| `AI_GATEWAY_CODEX_CLIENT_VERSION` | `0.130.0` | 调用 ChatGPT Codex 私有模型接口时使用的客户端版本 |
+| `AI_GATEWAY_CODEX_CLIENT_VERSION` | `0.146.0` | 浏览器刷新模型时调用 ChatGPT Codex 私有模型接口使用的回退版本；Codex 客户端请求自带的 `client_version` 会优先透传 |
 
 Server 不再读取或修改服务器用户的 `~/.codex`。
 
