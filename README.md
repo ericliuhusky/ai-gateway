@@ -1,21 +1,19 @@
 # ai-gateway
 
-AI Gateway 现在拆分为远程 Server、Web 管理端和本地 Agent：
+AI Gateway 现在由远程 Server 和 Web 管理端组成：
 
 - `server`：部署在服务器上的网关核心，负责 Provider、账号 Token、路由、协议适配、额度和上游请求。
 - `web`：由 `server` 同源托管的管理端，负责远程 Provider、模型、额度和接入配置。
-- `agent`：只运行在用户电脑上的本地集成进程，负责修改 `~/.codex` 配置和同步本地历史。
 
-浏览器不能直接修改本机文件，因此 Web 管理端不替代本地 `agent`。
+浏览器不能直接修改本机文件，因此 Web 管理端会生成一次性 Shell 命令，由用户在本机终端执行。接入过程不需要安装客户端或启动后台服务。
 
 ## 架构
 
 ```text
 Codex -> https://gateway.example.com/openai/v1 -> server -> upstream provider
-  |
-  +-> local agent (127.0.0.1:10101)
-        - apply/restore ~/.codex/config.toml
-        - sync ~/.codex/state_5.sqlite and rollout aliases
+
+Browser -> Web 管理端 -> 生成一次性 setup.sh / restore.sh 命令
+                           -> 修改或恢复 ~/.codex/config.toml
 ```
 
 ## Server
@@ -44,45 +42,32 @@ Server 不再读取或修改服务器用户的 `~/.codex`。
 
 当前网关接口还没有客户端鉴权。正式暴露到公网前，应放在带 TLS 和访问控制的反向代理后，或者先完成网关 API Key/多租户改造。
 
-## Agent
+## Codex 接入脚本
 
-### 运行
-
-```bash
-cargo run -p ai-gateway-agent
-```
-
-Agent 默认只监听：
-
-```text
-127.0.0.1:10101
-```
-
-可通过 `AI_GATEWAY_AGENT_BIND_ADDR` 修改，但不建议暴露到局域网或公网。
-
-### 应用 Codex 配置
+无需安装本地 Agent。在本机终端执行：
 
 ```bash
-curl -X PUT http://127.0.0.1:10101/codex-config \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "gateway_base_url": "https://gateway.example.com/openai/v1"
-  }'
+curl -fsSL 'https://gateway.example.com/codex/setup.sh' |
+  sh -s -- 'https://gateway.example.com/openai/v1'
 ```
 
-Agent 会：
+脚本会：
 
-- 备份并修改 `~/.codex/config.toml`
+- 首次运行时备份 `~/.codex/config.toml`
 - 将 `model_provider` 指向 `ai-gateway`
-- 尝试为现有 OpenAI 历史创建 `ai-gateway` 别名
-
-历史数据库不存在时不会阻止配置写入，响应中的 `history_warning` 会说明原因。
+- 写入当前 Gateway 的 `base_url`
+- 使用临时文件原子替换配置
+- 执行完成后立即退出，不安装程序或启动后台服务
 
 恢复：
 
 ```bash
-curl -X DELETE http://127.0.0.1:10101/codex-config
+curl -fsSL 'https://gateway.example.com/codex/restore.sh' | sh
 ```
+
+恢复前，脚本还会将当前配置额外备份到 `~/.ai-gateway`。
+
+第一阶段脚本只处理 Provider 配置，不修改 `state_5.sqlite`，也不为旧历史创建 Provider 别名。
 
 ## Web 管理端
 
@@ -114,7 +99,7 @@ http://127.0.0.1:4242/
 AI_GATEWAY_WEB_DIR=/path/to/web
 ```
 
-Web 页面与它所在的远程 Server 同源通信，不需要单独配置 Server URL。浏览器无法直接修改用户电脑上的 `~/.codex`，因此 Codex 配置写入与历史同步仍由本地 `agent` 完成；页面中的“Codex 接入”会生成连接当前 Server 的本机 agent 命令。
+Web 页面与它所在的远程 Server 同源通信，不需要单独配置 Server URL。页面中的“Codex 接入”会根据当前 Server 地址生成一次性接入和恢复命令。
 
 API Key 供应商使用显式的上游协议和兼容 Profile：
 
@@ -158,6 +143,8 @@ Server 会从 Token 中提取邮箱、过期时间和 ChatGPT Account ID，并�
 
 ```text
 GET    /healthz
+GET    /codex/setup.sh
+GET    /codex/restore.sh
 POST   /accounts/openai/import-token
 GET    /providers
 POST   /providers

@@ -81,6 +81,10 @@ function copyText(text: string) {
   return navigator.clipboard.writeText(text);
 }
 
+function shellQuote(text: string) {
+  return `'${text.replace(/'/g, `'\"'\"'`)}'`;
+}
+
 export function App() {
   const [providers, setProviders] = React.useState<GatewayProvider[]>([]);
   const [selected, setSelected] = React.useState<SelectedProvider>({ updated_at: 0 });
@@ -884,19 +888,28 @@ function AccountDialog({
 }
 
 function SetupDialog({ onClose }: { onClose: () => void }) {
-  const [copied, setCopied] = React.useState(false);
+  const [copied, setCopied] = React.useState<"setup" | "restore" | null>(null);
   const gatewayUrl = `${window.location.origin}/openai/v1`;
-  const command = `curl -X PUT http://127.0.0.1:10101/codex-config \\\n  -H 'Content-Type: application/json' \\\n  -d '${JSON.stringify({ gateway_base_url: gatewayUrl })}'`;
+  const setupScriptUrl = `${window.location.origin}/codex/setup.sh`;
+  const restoreScriptUrl = `${window.location.origin}/codex/restore.sh`;
+  const setupCommand = `curl -fsSL ${shellQuote(setupScriptUrl)} | sh -s -- ${shellQuote(gatewayUrl)}`;
+  const restoreCommand = `curl -fsSL ${shellQuote(restoreScriptUrl)} | sh`;
+
+  function copyCommand(kind: "setup" | "restore", command: string) {
+    void copyText(command);
+    setCopied(kind);
+    window.setTimeout(() => setCopied(null), 1500);
+  }
 
   return (
     <DialogFrame
       title="Codex 接入"
-      description="Web 管理端运行在远程 Server；修改本机 ~/.codex 仍需要本地 agent。"
+      description="运行一次脚本即可写入本机 Codex 配置，不需要安装或启动本地 Agent。"
       onClose={onClose}
     >
       <div className="space-y-5">
         <div className="rounded-2xl border border-blue-500/15 bg-blue-500/5 p-4 text-xs leading-5 text-blue-700 dark:text-blue-300">
-          浏览器不能直接修改本机文件。请先启动 <code>ai-gateway-agent</code>，再在本机终端执行以下命令。
+          在本机终端执行接入命令。脚本只会备份并修改 <code>~/.codex/config.toml</code>，不会安装程序或启动后台服务。
         </div>
         <FormField label="Gateway Base URL">
           <div className="flex gap-2">
@@ -911,20 +924,29 @@ function SetupDialog({ onClose }: { onClose: () => void }) {
             </Button>
           </div>
         </FormField>
-        <FormField label="本机 Agent 命令">
+        <FormField label="接入命令">
           <div className="relative">
-            <pre className="overflow-x-auto rounded-2xl bg-slate-950 p-4 pr-12 text-[11px] leading-5 text-slate-200">{command}</pre>
+            <pre className="overflow-x-auto rounded-2xl bg-slate-950 p-4 pr-12 text-[11px] leading-5 text-slate-200">{setupCommand}</pre>
             <button
               className="absolute right-3 top-3 flex size-8 items-center justify-center rounded-lg bg-white/10 text-white hover:bg-white/15"
               type="button"
-              aria-label="复制本机 Agent 命令"
-              onClick={() => {
-                void copyText(command);
-                setCopied(true);
-                window.setTimeout(() => setCopied(false), 1500);
-              }}
+              aria-label="复制接入命令"
+              onClick={() => copyCommand("setup", setupCommand)}
             >
-              {copied ? <Check className="size-4" /> : <Copy className="size-4" />}
+              {copied === "setup" ? <Check className="size-4" /> : <Copy className="size-4" />}
+            </button>
+          </div>
+        </FormField>
+        <FormField label="恢复原配置">
+          <div className="relative">
+            <pre className="overflow-x-auto rounded-2xl bg-slate-950 p-4 pr-12 text-[11px] leading-5 text-slate-200">{restoreCommand}</pre>
+            <button
+              className="absolute right-3 top-3 flex size-8 items-center justify-center rounded-lg bg-white/10 text-white hover:bg-white/15"
+              type="button"
+              aria-label="复制恢复命令"
+              onClick={() => copyCommand("restore", restoreCommand)}
+            >
+              {copied === "restore" ? <Check className="size-4" /> : <Copy className="size-4" />}
             </button>
           </div>
         </FormField>

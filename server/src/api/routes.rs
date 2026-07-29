@@ -3,6 +3,7 @@ use crate::api::handlers::{
     get_selected_model, healthz, import_openai_token, list_models, list_providers, responses,
     set_route, set_selected_model,
 };
+use crate::codex_scripts;
 use axum::{
     Router,
     routing::{delete, get, post},
@@ -18,6 +19,8 @@ pub fn build_router(state: AppState, web_dir: PathBuf) -> Router {
 
     Router::new()
         .route("/healthz", get(healthz))
+        .route("/codex/setup.sh", get(codex_scripts::setup_script))
+        .route("/codex/restore.sh", get(codex_scripts::restore_script))
         .route("/accounts/openai/import-token", post(import_openai_token))
         .route("/providers", get(list_providers).post(add_provider))
         .route("/providers/:provider_id", delete(delete_provider))

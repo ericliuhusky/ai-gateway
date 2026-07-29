@@ -1,5 +1,6 @@
 mod adapters;
 mod api;
+mod codex_scripts;
 mod config;
 mod models;
 mod openai_tokens;
