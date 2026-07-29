@@ -37,4 +37,8 @@ impl ModelStore {
             updated_at: now_unix() as i64,
         })
     }
+
+    pub fn delete(&self, provider_id: &str) -> Result<(), String> {
+        self.sqlite.delete_cached_models(provider_id)
+    }
 }

@@ -141,6 +141,20 @@ pub struct UpdateSelectedModelRequest {
     pub model: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CodexClientVersionSetting {
+    pub default_version: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub override_version: Option<String>,
+    pub effective_version: String,
+    pub is_overridden: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpdateCodexClientVersionRequest {
+    pub version: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelListResponse {
     pub object: String,

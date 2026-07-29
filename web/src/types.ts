@@ -32,6 +32,13 @@ export interface GatewayModel {
   id: string;
 }
 
+export interface CodexClientVersionSetting {
+  default_version: string;
+  override_version?: string;
+  effective_version: string;
+  is_overridden: boolean;
+}
+
 export interface ProviderQuotaWindow {
   used_percent: number;
   window_minutes?: number;

@@ -211,6 +211,48 @@ impl SqliteStore {
         Ok(())
     }
 
+    pub fn delete_cached_models(&self, provider_id: &str) -> Result<(), String> {
+        let conn = self.connect()?;
+        conn.execute(
+            "DELETE FROM provider_models WHERE provider_id = ?1",
+            params![provider_id],
+        )
+        .map_err(|err| format!("delete cached provider models failed: {err}"))?;
+        Ok(())
+    }
+
+    pub fn load_setting(&self, key: &str) -> Result<Option<String>, String> {
+        let conn = self.connect()?;
+        conn.query_row(
+            "SELECT value FROM gateway_settings WHERE key = ?1",
+            params![key],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|err| format!("load gateway setting failed: {err}"))
+    }
+
+    pub fn upsert_setting(&self, key: &str, value: &str, updated_at: i64) -> Result<(), String> {
+        let conn = self.connect()?;
+        conn.execute(
+            "INSERT INTO gateway_settings (key, value, updated_at)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(key) DO UPDATE SET
+                value = excluded.value,
+                updated_at = excluded.updated_at",
+            params![key, value, updated_at],
+        )
+        .map_err(|err| format!("upsert gateway setting failed: {err}"))?;
+        Ok(())
+    }
+
+    pub fn delete_setting(&self, key: &str) -> Result<(), String> {
+        let conn = self.connect()?;
+        conn.execute("DELETE FROM gateway_settings WHERE key = ?1", params![key])
+            .map_err(|err| format!("delete gateway setting failed: {err}"))?;
+        Ok(())
+    }
+
     fn init(&self) -> Result<(), String> {
         let conn = self.connect()?;
         conn.execute_batch(
@@ -258,6 +300,12 @@ impl SqliteStore {
             CREATE TABLE IF NOT EXISTS provider_models (
                 provider_id TEXT PRIMARY KEY,
                 models_json TEXT NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS gateway_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
                 updated_at INTEGER NOT NULL
             );
             ",

@@ -14,6 +14,7 @@ import {
   Plus,
   RefreshCw,
   Server,
+  Settings2,
   Trash2,
   UserRound,
   X,
@@ -24,6 +25,7 @@ import { Button } from "./components/ui/button";
 import { cn } from "./lib/utils";
 import type {
   CodexAuthPayload,
+  CodexClientVersionSetting,
   GatewayBillingMode,
   GatewayModel,
   GatewayProvider,
@@ -34,7 +36,7 @@ import type {
   GatewayUpstreamProtocol,
 } from "./types";
 
-type Dialog = "api" | "account" | "setup" | null;
+type Dialog = "api" | "account" | "settings" | "setup" | null;
 type QuotaMap = Record<string, ProviderQuotaSummary | undefined>;
 type ErrorMap = Record<string, string | undefined>;
 
@@ -247,6 +249,15 @@ export function App() {
             <Button
               variant="outline"
               size="sm"
+              aria-label="网关设置"
+              onClick={() => setDialog("settings")}
+            >
+              <Settings2 className="size-3.5" />
+              <span className="hidden sm:inline">网关设置</span>
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
               aria-label="Codex 接入"
               onClick={() => setDialog("setup")}
             >
@@ -376,6 +387,17 @@ export function App() {
           onCreated={async () => {
             setDialog(null);
             await refresh();
+          }}
+          onError={setError}
+        />
+      ) : null}
+      {dialog === "settings" ? (
+        <SettingsDialog
+          onClose={() => setDialog(null)}
+          onChanged={async () => {
+            if (selectedProvider?.name === "openai-proxy") {
+              await loadModels(true);
+            }
           }}
           onError={setError}
         />
@@ -954,6 +976,127 @@ function SetupDialog({ onClose }: { onClose: () => void }) {
           <Button onClick={onClose}>完成</Button>
         </div>
       </div>
+    </DialogFrame>
+  );
+}
+
+function SettingsDialog({
+  onClose,
+  onChanged,
+  onError,
+}: {
+  onClose: () => void;
+  onChanged: () => Promise<void>;
+  onError: (message: string) => void;
+}) {
+  const [setting, setSetting] = React.useState<CodexClientVersionSetting | null>(null);
+  const [version, setVersion] = React.useState("");
+  const [submitting, setSubmitting] = React.useState(false);
+
+  React.useEffect(() => {
+    void gatewayApi
+      .codexClientVersion()
+      .then((value) => {
+        setSetting(value);
+        setVersion(value.override_version ?? "");
+      })
+      .catch((loadError) => onError(errorMessage(loadError)));
+  }, [onError]);
+
+  async function save(event: React.FormEvent) {
+    event.preventDefault();
+    if (!version.trim()) return;
+    setSubmitting(true);
+    try {
+      const value = await gatewayApi.setCodexClientVersion(version.trim());
+      setSetting(value);
+      setVersion(value.override_version ?? "");
+      await onChanged();
+    } catch (saveError) {
+      onError(errorMessage(saveError));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function restoreDefault() {
+    setSubmitting(true);
+    try {
+      const value = await gatewayApi.clearCodexClientVersion();
+      setSetting(value);
+      setVersion("");
+      await onChanged();
+    } catch (restoreError) {
+      onError(errorMessage(restoreError));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <DialogFrame
+      title="网关设置"
+      description="集中管理网关向 ChatGPT Codex 模型接口发送的客户端版本号。数据库配置优先于代码默认值。"
+      onClose={onClose}
+    >
+      {!setting ? (
+        <div className="flex min-h-40 items-center justify-center">
+          <LoaderCircle className="size-6 animate-spin text-slate-400" />
+        </div>
+      ) : (
+        <form onSubmit={save}>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="rounded-2xl border border-white/65 bg-white/45 p-4 dark:border-white/8 dark:bg-white/[0.035]">
+              <div className="eyebrow">代码默认版本</div>
+              <div className="mt-2 font-mono text-sm font-bold">{setting.default_version}</div>
+            </div>
+            <div className="rounded-2xl border border-blue-500/15 bg-blue-500/5 p-4">
+              <div className="eyebrow">当前生效版本</div>
+              <div className="mt-2 flex items-center gap-2 font-mono text-sm font-bold text-blue-600 dark:text-blue-300">
+                {setting.effective_version}
+                <span className="rounded-full bg-blue-500/10 px-2 py-0.5 font-sans text-[10px]">
+                  {setting.is_overridden ? "数据库覆盖" : "代码默认"}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-5">
+            <FormField label="自定义 Codex Client Version">
+              <input
+                className="field w-full font-mono text-sm"
+                value={version}
+                placeholder={setting.default_version}
+                disabled={submitting}
+                onChange={(event) => setVersion(event.target.value)}
+              />
+            </FormField>
+            <div className="mt-2 text-[11px] leading-5 text-slate-400">
+              保存后写入 SQLite，并自动清理 OpenAI 模型缓存。留空不会保存；需要取消覆盖时使用“恢复代码默认”。
+            </div>
+          </div>
+
+          <div className="mt-7 flex flex-wrap justify-end gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              disabled={!setting.is_overridden || submitting}
+              onClick={() => void restoreDefault()}
+            >
+              <RefreshCw className="size-4" />
+              恢复代码默认
+            </Button>
+            <Button type="button" variant="outline" onClick={onClose}>取消</Button>
+            <Button
+              type="submit"
+              disabled={submitting || !version.trim() || version.trim() === setting.override_version}
+            >
+              {submitting ? <LoaderCircle className="size-4 animate-spin" /> : <Check className="size-4" />}
+              {submitting ? "保存中" : "保存覆盖"}
+            </Button>
+          </div>
+        </form>
+      )}
     </DialogFrame>
   );
 }

@@ -13,7 +13,7 @@ use config::Config;
 use openai_tokens::OpenAiTokenService;
 use reqwest::Client;
 use std::sync::Arc;
-use store::{AccountStore, ModelStore, ProviderStore, RouteStore};
+use store::{AccountStore, ModelStore, ProviderStore, RouteStore, SettingsStore};
 use upstream::UpstreamClient;
 
 #[tokio::main]
@@ -26,6 +26,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let routes = RouteStore::new(config.clone())?;
     routes.load().await?;
     let models = ModelStore::new(config.clone())?;
+    let settings = SettingsStore::new(config.clone())?;
     let openai_tokens = OpenAiTokenService::new();
     let upstream = UpstreamClient::new();
     let state = AppState {
@@ -36,6 +37,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         providers,
         routes,
         models,
+        settings,
         upstream,
     };
 

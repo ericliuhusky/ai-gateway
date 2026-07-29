@@ -1,5 +1,6 @@
 import type {
   CodexAuthPayload,
+  CodexClientVersionSetting,
   GatewayBillingMode,
   GatewayCompatibilityProfile,
   GatewayModel,
@@ -43,6 +44,22 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const gatewayApi = {
   health: () => request<string>("/healthz"),
+
+  codexClientVersion: () =>
+    request<CodexClientVersionSetting>("/settings/codex-client-version"),
+
+  setCodexClientVersion(version: string) {
+    return request<CodexClientVersionSetting>("/settings/codex-client-version", {
+      method: "PUT",
+      body: JSON.stringify({ version }),
+    });
+  },
+
+  clearCodexClientVersion() {
+    return request<CodexClientVersionSetting>("/settings/codex-client-version", {
+      method: "DELETE",
+    });
+  },
 
   async providers() {
     const payload = await request<{ providers: GatewayProvider[] }>("/providers");

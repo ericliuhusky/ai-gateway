@@ -3,20 +3,20 @@ use crate::{
         PreparedResponsesUpstream, ResponsesAdapterError, ResponsesAdapterProvider,
         prepare_responses_upstream,
     },
-    config::Config,
+    config::{Config, DEFAULT_CODEX_CLIENT_VERSION},
     models::openai::responses::{
         CodexUsageCredits, CodexUsageRateLimit, CodexUsageRateLimitWindow, CodexUsageResponse,
     },
     models::{
         AccountRecord, ApiProviderRecord, ApiProviderSummary, ChatCompletionsResponsesStream,
-        CreateApiProviderRequest, ModelListItem, ModelListResponse, PROVIDER_OPENAI_PROXY,
-        ProviderAuthMode, ProviderQuotaCredits, ProviderQuotaResponse, ProviderQuotaSnapshot,
-        ProviderQuotaSummary, ProviderQuotaWindow, QuotaSource, QuotaSupportStatus,
-        ResponseStreamFrame, SelectedRoute, UpdateSelectedModelRequest,
-        UpdateSelectedProviderRequest,
+        CodexClientVersionSetting, CreateApiProviderRequest, ModelListItem, ModelListResponse,
+        PROVIDER_OPENAI_PROXY, ProviderAuthMode, ProviderQuotaCredits, ProviderQuotaResponse,
+        ProviderQuotaSnapshot, ProviderQuotaSummary, ProviderQuotaWindow, QuotaSource,
+        QuotaSupportStatus, ResponseStreamFrame, SelectedRoute, UpdateCodexClientVersionRequest,
+        UpdateSelectedModelRequest, UpdateSelectedProviderRequest,
     },
     openai_tokens::OpenAiTokenService,
-    store::{AccountStore, ModelStore, ProviderStore, RouteStore},
+    store::{AccountStore, ModelStore, ProviderStore, RouteStore, SettingsStore},
     support::time::now_unix,
     upstream::{
         OPENAI_CODEX_BASE_URL, OpenAiEndpoint, OpenAiRequestBody, OpenAiRequestBuilder,
@@ -46,6 +46,7 @@ pub struct AppState {
     pub providers: ProviderStore,
     pub routes: RouteStore,
     pub models: ModelStore,
+    pub settings: SettingsStore,
     pub upstream: UpstreamClient,
 }
 
@@ -53,12 +54,40 @@ pub struct AppState {
 pub struct ListModelsQuery {
     #[serde(default)]
     pub force: bool,
-    #[serde(default)]
-    pub client_version: Option<String>,
 }
 
 pub async fn healthz() -> &'static str {
     "ok"
+}
+
+pub async fn get_codex_client_version(
+    State(state): State<AppState>,
+) -> Result<Json<CodexClientVersionSetting>, AppError> {
+    Ok(Json(codex_client_version_setting(&state)?))
+}
+
+pub async fn set_codex_client_version(
+    State(state): State<AppState>,
+    Json(request): Json<UpdateCodexClientVersionRequest>,
+) -> Result<Json<CodexClientVersionSetting>, AppError> {
+    let version = normalize_codex_client_version(request.version)?;
+    state
+        .settings
+        .set_codex_client_version(&version)
+        .map_err(AppError::internal)?;
+    clear_openai_model_caches(&state).await?;
+    Ok(Json(codex_client_version_setting(&state)?))
+}
+
+pub async fn clear_codex_client_version(
+    State(state): State<AppState>,
+) -> Result<Json<CodexClientVersionSetting>, AppError> {
+    state
+        .settings
+        .clear_codex_client_version()
+        .map_err(AppError::internal)?;
+    clear_openai_model_caches(&state).await?;
+    Ok(Json(codex_client_version_setting(&state)?))
 }
 
 #[derive(Debug, Deserialize)]
@@ -176,13 +205,7 @@ pub async fn list_models(
     Query(query): Query<ListModelsQuery>,
 ) -> Result<Json<ModelListResponse>, AppError> {
     let provider = resolve_selected_provider(&state).await?;
-    let mut response = load_provider_models(
-        &state,
-        &provider,
-        query.force,
-        query.client_version.as_deref(),
-    )
-    .await?;
+    let mut response = load_provider_models(&state, &provider, query.force).await?;
     ensure_codex_model_infos(&mut response);
 
     Ok(Json(response))
@@ -272,7 +295,7 @@ pub async fn set_selected_model(
 ) -> Result<Json<Value>, AppError> {
     let model = normalize_selected_model(request.model)?;
     let provider = resolve_selected_provider(&state).await?;
-    let models = load_provider_models(&state, &provider, false, None).await?;
+    let models = load_provider_models(&state, &provider, false).await?;
     if !models.data.iter().any(|item| item.id == model) {
         return Err(AppError::bad_request(format!(
             "model `{model}` is not available for selected provider `{}`",
@@ -628,20 +651,16 @@ fn build_passthrough_response(
 async fn fetch_provider_models(
     state: &AppState,
     provider: &ResolvedProvider,
-    requested_client_version: Option<&str>,
 ) -> Result<ModelListResponse, AppError> {
     if provider.auth_mode == ProviderAuthMode::Account {
         let account = resolve_account_for_provider(state, provider).await?;
         if provider.name == PROVIDER_OPENAI_PROXY {
-            let client_version = effective_codex_client_version(
-                requested_client_version,
-                state._config.codex_client_version(),
-            );
+            let client_version = effective_codex_client_version(state)?;
             let private_models = PrivateOpenAiRequestBuilder {
                 base_url: OPENAI_CODEX_BASE_URL,
                 access_token: account.access_token(),
                 account_id: account.upstream_account_id(),
-                client_version: Some(client_version),
+                client_version: Some(client_version.as_str()),
             };
             let upstream = state
                 .upstream
@@ -679,11 +698,7 @@ async fn load_provider_models(
     state: &AppState,
     provider: &ResolvedProvider,
     force_refresh: bool,
-    requested_client_version: Option<&str>,
 ) -> Result<ModelListResponse, AppError> {
-    let requested_client_version = requested_client_version
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
     let provider_id = provider
         .record
         .as_ref()
@@ -693,13 +708,13 @@ async fn load_provider_models(
             AppError::bad_request(format!("provider cache key missing: {}", provider.name))
         })?;
 
-    if !force_refresh && requested_client_version.is_none() {
+    if !force_refresh {
         if let Some(cached) = state.models.load(provider_id).map_err(AppError::internal)? {
             return Ok(cached);
         }
     }
 
-    let models = fetch_provider_models(state, provider, requested_client_version).await?;
+    let models = fetch_provider_models(state, provider).await?;
     state
         .models
         .save(provider_id, &models)
@@ -707,11 +722,57 @@ async fn load_provider_models(
     Ok(models)
 }
 
-fn effective_codex_client_version<'a>(requested: Option<&'a str>, configured: &'a str) -> &'a str {
-    requested
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or(configured)
+fn effective_codex_client_version(state: &AppState) -> Result<String, AppError> {
+    Ok(state
+        .settings
+        .codex_client_version_override()
+        .map_err(AppError::internal)?
+        .unwrap_or_else(|| DEFAULT_CODEX_CLIENT_VERSION.to_string()))
+}
+
+fn codex_client_version_setting(state: &AppState) -> Result<CodexClientVersionSetting, AppError> {
+    let override_version = state
+        .settings
+        .codex_client_version_override()
+        .map_err(AppError::internal)?;
+    let effective_version = override_version
+        .clone()
+        .unwrap_or_else(|| DEFAULT_CODEX_CLIENT_VERSION.to_string());
+    Ok(CodexClientVersionSetting {
+        default_version: DEFAULT_CODEX_CLIENT_VERSION.to_string(),
+        is_overridden: override_version.is_some(),
+        override_version,
+        effective_version,
+    })
+}
+
+fn normalize_codex_client_version(version: String) -> Result<String, AppError> {
+    let version = version.trim();
+    if version.is_empty() {
+        return Err(AppError::bad_request("client version cannot be empty"));
+    }
+    if version.len() > 64
+        || !version
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || ".-+_".contains(character))
+    {
+        return Err(AppError::bad_request(
+            "client version may only contain letters, numbers, `.`, `-`, `+`, and `_`",
+        ));
+    }
+    Ok(version.to_string())
+}
+
+async fn clear_openai_model_caches(state: &AppState) -> Result<(), AppError> {
+    for provider in state.providers.list().await {
+        if provider.name == PROVIDER_OPENAI_PROXY {
+            state
+                .models
+                .delete(&provider.id)
+                .map_err(AppError::internal)?;
+        }
+    }
+    Ok(())
 }
 
 fn normalize_selected_provider_id(provider_id: Option<String>) -> Result<String, AppError> {
@@ -1177,15 +1238,12 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn requested_codex_client_version_overrides_configured_fallback() {
+    fn validates_codex_client_version_override() {
         assert_eq!(
-            super::effective_codex_client_version(Some(" 0.147.0 "), "0.146.0"),
-            "0.147.0"
+            super::normalize_codex_client_version(" 0.147.0-beta.1 ".to_string()).unwrap(),
+            "0.147.0-beta.1"
         );
-        assert_eq!(
-            super::effective_codex_client_version(Some("  "), "0.146.0"),
-            "0.146.0"
-        );
+        assert!(super::normalize_codex_client_version("0.147.0 ?".to_string()).is_err());
     }
 
     #[test]

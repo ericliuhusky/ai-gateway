@@ -1,14 +1,13 @@
 use std::{env, net::SocketAddr, path::PathBuf};
 
 const DEFAULT_BIND_ADDR: &str = "0.0.0.0:4242";
-const DEFAULT_CODEX_CLIENT_VERSION: &str = "0.146.0";
+pub const DEFAULT_CODEX_CLIENT_VERSION: &str = "0.146.0";
 
 #[derive(Clone, Debug)]
 pub struct Config {
     bind_addr: SocketAddr,
     data_dir: PathBuf,
     web_dir: PathBuf,
-    codex_client_version: String,
 }
 
 impl Config {
@@ -28,12 +27,6 @@ impl Config {
             }
         };
 
-        let codex_client_version = env::var("AI_GATEWAY_CODEX_CLIENT_VERSION")
-            .ok()
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| DEFAULT_CODEX_CLIENT_VERSION.to_string());
-
         let web_dir = match env::var("AI_GATEWAY_WEB_DIR") {
             Ok(path) if !path.trim().is_empty() => PathBuf::from(path),
             _ => data_dir.join("web"),
@@ -43,7 +36,6 @@ impl Config {
             bind_addr,
             data_dir,
             web_dir,
-            codex_client_version,
         })
     }
 
@@ -61,9 +53,5 @@ impl Config {
 
     pub fn web_dir(&self) -> PathBuf {
         self.web_dir.clone()
-    }
-
-    pub fn codex_client_version(&self) -> &str {
-        &self.codex_client_version
     }
 }

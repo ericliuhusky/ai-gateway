@@ -1,6 +1,7 @@
 use crate::api::handlers::{
-    add_provider, clear_selected_model, delete_provider, get_provider_quota, get_route,
-    get_selected_model, healthz, import_openai_token, list_models, list_providers, responses,
+    add_provider, clear_codex_client_version, clear_selected_model, delete_provider,
+    get_codex_client_version, get_provider_quota, get_route, get_selected_model, healthz,
+    import_openai_token, list_models, list_providers, responses, set_codex_client_version,
     set_route, set_selected_model,
 };
 use crate::codex_scripts;
@@ -25,6 +26,12 @@ pub fn build_router(state: AppState, web_dir: PathBuf) -> Router {
         .route("/providers", get(list_providers).post(add_provider))
         .route("/providers/:provider_id", delete(delete_provider))
         .route("/providers/:provider_id/quota", get(get_provider_quota))
+        .route(
+            "/settings/codex-client-version",
+            get(get_codex_client_version)
+                .put(set_codex_client_version)
+                .delete(clear_codex_client_version),
+        )
         .route("/selected-provider", get(get_route).put(set_route))
         .route(
             "/selected-model",
