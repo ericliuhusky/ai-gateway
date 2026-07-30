@@ -138,7 +138,7 @@ curl -fsSL 'https://gateway.example.com/codex/instances.sh' |
 
 ### 按 URL path 隔离网关路由
 
-`/openai/v1` 保持原有默认路由。每个 `/instances/<instance-id>/openai/v1` path 都有独立的已选供应商、固定模型、推理强度和自动路由配置；供应商凭据仍在同一个网关中共享。`instance-id` 只能使用字母、数字、`_` 和 `-`。 在 Web 管理端顶部点击“Codex 实例”即可新建、编辑实例配置并复制对应的 macOS 启动命令。
+`/openai/v1` 保持原有默认路由。每个 `/instances/<instance-id>/openai/v1` path 都有独立的已选供应商、固定模型、推理强度和自动路由配置；供应商凭据仍在同一个网关中共享。`instance-id` 只能使用字母、数字、`_` 和 `-`。 在 Web 管理端顶部点击“实例”即可新建、编辑实例配置并复制对应的 macOS 启动命令。
 
 先在管理端创建好供应商，然后分别写入实例配置。例如 `account-a` 固定使用一个模型，`account-b` 启用自动路由：
 

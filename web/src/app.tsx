@@ -288,14 +288,14 @@ export function App() {
             <Button
               variant="outline"
               size="sm"
-              aria-label="管理 Codex 实例"
+              aria-label="管理实例"
               onClick={() => {
                 setInstanceToEdit(null);
                 setDialog("instances");
               }}
             >
               <Server className="size-3.5" />
-              <span className="hidden sm:inline">Codex 实例</span>
+              <span className="hidden sm:inline">实例</span>
             </Button>
             <Button
               variant="outline"
@@ -316,7 +316,7 @@ export function App() {
         ) : (
           <>
             <InstanceSection
-              title="默认实例"
+              showHeader={false}
               instances={[{
                 instance_id: "default",
                 provider_id: selected.provider_id,
@@ -337,7 +337,7 @@ export function App() {
 
             <div className="mt-5">
               <InstanceSection
-                title="Codex 实例"
+                title="实例"
                 instances={instances}
                 providers={providers}
                 onAdd={() => {
@@ -446,6 +446,7 @@ function StatusPill({ online }: { online: boolean }) {
 
 function InstanceSection({
   title,
+  showHeader = true,
   instances,
   providers,
   onAdd,
@@ -453,7 +454,8 @@ function InstanceSection({
   onChanged,
   onError,
 }: {
-  title: string;
+  title?: string;
+  showHeader?: boolean;
   instances: InstanceRoutingConfig[];
   providers: GatewayProvider[];
   onAdd?: () => void;
@@ -578,16 +580,18 @@ function InstanceSection({
 
   return (
     <section>
-      <div className="mb-3 flex items-center gap-3 px-1">
-        <h2 className="text-xs font-bold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">{title}</h2>
-        {onAdd ? <span className="rounded-full bg-white/60 px-2 py-0.5 text-[10px] font-bold text-slate-400 dark:bg-white/5">{allInstances.length}</span> : null}
-        {onAdd ? (
-          <Button className="ml-auto" variant="outline" size="sm" onClick={onAdd}>
-            <Plus className="size-3.5" />
-            新建实例
-          </Button>
-        ) : null}
-      </div>
+      {showHeader ? (
+        <div className="mb-3 flex items-center gap-3 px-1">
+          {title ? <h2 className="text-xs font-bold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">{title}</h2> : null}
+          {onAdd ? <span className="rounded-full bg-white/60 px-2 py-0.5 text-[10px] font-bold text-slate-400 dark:bg-white/5">{allInstances.length}</span> : null}
+          {onAdd ? (
+            <Button className="ml-auto" variant="outline" size="sm" onClick={onAdd}>
+              <Plus className="size-3.5" />
+              新建实例
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
       <div className="space-y-3">
         {allInstances.map((instance) => (
           <InstanceCard
@@ -648,7 +652,7 @@ function InstanceCard({
   return (
     <article className="glass-panel flex flex-col gap-4 rounded-[22px] p-4 lg:flex-row lg:items-center lg:gap-5">
       <div className="min-w-0 flex-1">
-        <h3 className="truncate text-lg font-bold tracking-[-0.025em]">{isDefault ? "默认实例" : instance.instance_id}</h3>
+        <h3 className="truncate text-lg font-bold tracking-[-0.025em]">{isDefault ? "AI网关" : instance.instance_id}</h3>
         <div className="mt-1.5 truncate font-mono text-[11px] text-slate-400" title={isDefault ? "/openai/v1" : `/instances/${instance.instance_id}/openai/v1`}>
           {isDefault ? "/openai/v1" : `/instances/${instance.instance_id}/openai/v1`}
         </div>
@@ -1435,7 +1439,7 @@ function CodexInstancesDialog({
 
   return (
     <DialogFrame
-      title="Codex 实例"
+      title="实例"
       description="每个实例使用不同的 Gateway URL path，并保存一套独立的供应商、固定模型或自动路由配置。"
       onClose={onClose}
     >
