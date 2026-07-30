@@ -105,8 +105,6 @@ export function App() {
   const [deleting, setDeleting] = React.useState<Set<string>>(new Set());
 
   const selectedProvider = providers.find((provider) => provider.id === selected.provider_id);
-  const accountProviders = providers.filter((provider) => provider.auth_mode === "account");
-  const apiProviders = providers.filter((provider) => provider.auth_mode === "api_key");
 
   const loadQuotas = React.useCallback(async (items: GatewayProvider[], visibleLoading = true) => {
     const ids = items.filter((item) => item.auth_mode === "account").map((item) => item.id);
@@ -385,20 +383,8 @@ export function App() {
         ) : (
           <div className="space-y-9">
             <ProviderSection
-              title="账户供应商"
-              providers={accountProviders}
-              selectedId={selected.provider_id}
-              quotas={quotas}
-              quotaErrors={quotaErrors}
-              loadingQuotas={loadingQuotas}
-              deleting={deleting}
-              onSelect={selectProvider}
-              onDelete={deleteProvider}
-              onRefreshQuota={refreshQuota}
-            />
-            <ProviderSection
-              title="API Key 供应商"
-              providers={apiProviders}
+              title="供应商"
+              providers={providers}
               selectedId={selected.provider_id}
               quotas={quotas}
               quotaErrors={quotaErrors}
@@ -653,7 +639,7 @@ function ProviderCard({
   return (
     <article
       className={cn(
-        "provider-card group relative flex min-h-[212px] cursor-pointer flex-col rounded-[24px] p-5",
+        "provider-card group relative flex h-[252px] cursor-pointer flex-col rounded-[24px] p-5",
         selected && "selected",
         deleting && "pointer-events-none opacity-60",
       )}
@@ -661,13 +647,14 @@ function ProviderCard({
     >
       <div className="flex items-start gap-3">
         <div className="min-w-0 flex-1">
-          <h3 className="truncate text-lg font-bold tracking-[-0.025em]">{provider.name}</h3>
+          <h3 className="truncate text-lg font-bold tracking-[-0.025em]">
+            {provider.auth_mode === "account"
+              ? (provider.account_email ?? "等待 Token 导入")
+              : provider.name}
+          </h3>
           <div className="mt-2 flex flex-wrap gap-1.5">
             <Badge tone={provider.auth_mode === "account" ? "green" : "blue"}>
               {provider.auth_mode === "account" ? "账户" : "API Key"}
-            </Badge>
-            <Badge tone="slate">
-              Responses
             </Badge>
             <Badge tone="slate">
               {provider.compatibility_profile === "official_openai"
@@ -697,21 +684,14 @@ function ProviderCard({
         )}
       </div>
 
-      {provider.auth_mode === "account" ? (
-        <div className="mt-4">
-          <div className="eyebrow">邮箱</div>
-          <div className="mt-1 truncate font-mono text-xs font-semibold">
-            {provider.account_email ?? "等待 Token 导入"}
-          </div>
-        </div>
-      ) : (
-        <div className="mt-auto pt-7">
+      {provider.auth_mode !== "account" ? (
+        <div className="mt-auto pt-3">
           <div className="eyebrow">Base URL</div>
           <div className="mt-1.5 truncate font-mono text-[11px] text-slate-500 dark:text-slate-400">
             {provider.base_url}
           </div>
         </div>
-      )}
+      ) : null}
 
       {provider.auth_mode === "account" ? (
         <QuotaPanel
@@ -741,7 +721,7 @@ function QuotaPanel({
   const secondary = snapshot?.secondary;
 
   return (
-    <div className="mt-4 rounded-2xl border border-white/65 bg-white/45 p-3 dark:border-white/8 dark:bg-white/[0.035]">
+    <div className="mt-auto rounded-2xl border border-white/65 bg-white/45 p-3 dark:border-white/8 dark:bg-white/[0.035]">
       <div className="mb-2.5 flex items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <Gauge className="size-3.5 text-slate-400" />
