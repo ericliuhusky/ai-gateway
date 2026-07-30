@@ -961,12 +961,29 @@ function ProviderCard({
           </div>
         </div>
         {selected ? (
-          <CheckCircle2 className="size-5 shrink-0 text-blue-500" />
+          <div className="relative size-5 shrink-0">
+            <CheckCircle2 className="size-5 text-blue-500" />
+            {deleting ? (
+              <LoaderCircle className="absolute right-0 top-6 size-5 animate-spin text-slate-400" />
+            ) : (
+              <button
+                className="absolute -right-1.5 top-6 flex size-8 items-center justify-center rounded-xl text-slate-400 opacity-0 transition hover:bg-black/5 hover:text-red-500 group-hover:opacity-100 focus-visible:opacity-100 dark:hover:bg-white/8"
+                type="button"
+                title="删除供应商"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onDelete();
+                }}
+              >
+                <Trash2 className="size-3.5" />
+              </button>
+            )}
+          </div>
         ) : deleting ? (
-          <LoaderCircle className="size-5 animate-spin text-slate-400" />
+          <LoaderCircle className="size-5 shrink-0 animate-spin text-slate-400" />
         ) : (
           <button
-            className="flex size-8 shrink-0 items-center justify-center rounded-xl text-slate-400 opacity-0 transition hover:bg-black/5 hover:text-red-500 group-hover:opacity-100 dark:hover:bg-white/8"
+            className="flex size-8 shrink-0 items-center justify-center rounded-xl text-slate-400 opacity-0 transition hover:bg-black/5 hover:text-red-500 group-hover:opacity-100 focus-visible:opacity-100 dark:hover:bg-white/8"
             type="button"
             title="删除供应商"
             onClick={(event) => {
