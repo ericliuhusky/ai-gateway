@@ -40,7 +40,7 @@ import type {
   OpenAiDeviceLoginStart,
 } from "./types";
 
-type Dialog = "api" | "account" | "instances" | "settings" | "setup" | null;
+type Dialog = "provider" | "instances" | "settings" | "setup" | null;
 type QuotaMap = Record<string, ProviderQuotaSummary | undefined>;
 type ErrorMap = Record<string, string | undefined>;
 
@@ -59,6 +59,12 @@ function suggestedCompatibilityProfile(
     return "generic_openai";
   }
 }
+
+const NINEBOT_PRIVATE_DEPLOYMENT_PRESET = {
+  name: "九号私有部署",
+  baseUrl: "https://ai-service.segway-ninebot.com/v1",
+  compatibilityProfile: "generic_openai" as const,
+};
 
 function remaining(window: ProviderQuotaWindow) {
   return Math.min(100, Math.max(0, 100 - window.used_percent));
@@ -355,7 +361,7 @@ export function App() {
             </div>
 
             {providers.length === 0 ? (
-              <div className="mt-8"><EmptyState onAddApi={() => setDialog("api")} onAddAccount={() => setDialog("account")} /></div>
+              <div className="mt-8"><EmptyState onAdd={() => setDialog("provider")} /></div>
             ) : (
               <div className="mt-8 space-y-9">
                 <ProviderSection
@@ -369,8 +375,7 @@ export function App() {
                   onSelect={selectProvider}
                   onDelete={deleteProvider}
                   onRefreshQuota={refreshQuota}
-                  onAddApi={() => setDialog("api")}
-                  onAddAccount={() => setDialog("account")}
+                  onAdd={() => setDialog("provider")}
                 />
                 <TurnLogSection turns={turnLogs} />
               </div>
@@ -380,18 +385,8 @@ export function App() {
       </main>
 
       {error ? <ErrorToast message={error} onClose={() => setError(null)} /> : null}
-      {dialog === "api" ? (
-        <ApiProviderDialog
-          onClose={() => setDialog(null)}
-          onCreated={async () => {
-            setDialog(null);
-            await refresh();
-          }}
-          onError={setError}
-        />
-      ) : null}
-      {dialog === "account" ? (
-        <AccountDialog
+      {dialog === "provider" ? (
+        <ProviderDialog
           onClose={() => setDialog(null)}
           onCreated={async () => {
             setDialog(null);
@@ -747,8 +742,7 @@ function ProviderSection(props: {
   onSelect: (provider: GatewayProvider) => void;
   onDelete: (provider: GatewayProvider) => void;
   onRefreshQuota: (provider: GatewayProvider) => void;
-  onAddApi: () => void;
-  onAddAccount: () => void;
+  onAdd: () => void;
 }) {
   if (!props.providers.length) return null;
   return (
@@ -760,12 +754,10 @@ function ProviderSection(props: {
         <span className="rounded-full bg-white/60 px-2 py-0.5 text-[10px] font-bold text-slate-400 dark:bg-white/5">
           {props.providers.length}
         </span>
-        <div className="ml-auto flex items-center gap-2">
-          <Button variant="outline" size="icon" title="添加 API Key 供应商" onClick={props.onAddApi}>
-            <KeyRound className="size-4" />
-          </Button>
-          <Button variant="outline" size="icon" title="登录 ChatGPT 账户" onClick={props.onAddAccount}>
-            <UserRound className="size-4" />
+        <div className="ml-auto">
+          <Button variant="outline" size="sm" onClick={props.onAdd}>
+            <Plus className="size-4" />
+            添加供应商
           </Button>
         </div>
       </div>
@@ -1169,7 +1161,68 @@ function DialogFrame({
   );
 }
 
-function ApiProviderDialog({
+function ProviderDialog({
+  onClose,
+  onCreated,
+  onError,
+}: {
+  onClose: () => void;
+  onCreated: () => Promise<void>;
+  onError: (message: string) => void;
+}) {
+  const [providerType, setProviderType] = React.useState<"api" | "account">("account");
+  const [apiTabVisited, setApiTabVisited] = React.useState(false);
+
+  return (
+    <DialogFrame
+      title="添加供应商"
+      description="选择使用 API Key 接入 OpenAI 兼容接口，或添加 ChatGPT 账户。"
+      onClose={onClose}
+    >
+      <div className="mb-5 flex rounded-xl bg-slate-100 p-1 text-xs font-semibold dark:bg-white/[0.06]">
+        <button
+          type="button"
+          className={cn(
+            "flex flex-1 items-center justify-center gap-2 rounded-lg px-3 py-2 transition",
+            providerType === "account"
+              ? "bg-white text-slate-900 shadow-sm dark:bg-slate-800 dark:text-white"
+              : "text-slate-500",
+          )}
+          onClick={() => setProviderType("account")}
+        >
+          <UserRound className="size-3.5" />
+          ChatGPT 账户
+        </button>
+        <button
+          type="button"
+          className={cn(
+            "flex flex-1 items-center justify-center gap-2 rounded-lg px-3 py-2 transition",
+            providerType === "api"
+              ? "bg-white text-slate-900 shadow-sm dark:bg-slate-800 dark:text-white"
+              : "text-slate-500",
+          )}
+          onClick={() => {
+            setApiTabVisited(true);
+            setProviderType("api");
+          }}
+        >
+          <KeyRound className="size-3.5" />
+          API Key
+        </button>
+      </div>
+      <div className={providerType === "account" ? undefined : "hidden"}>
+        <AccountProviderForm onClose={onClose} onCreated={onCreated} onError={onError} />
+      </div>
+      {apiTabVisited ? (
+        <div className={providerType === "api" ? undefined : "hidden"}>
+          <ApiProviderForm onClose={onClose} onCreated={onCreated} onError={onError} />
+        </div>
+      ) : null}
+    </DialogFrame>
+  );
+}
+
+function ApiProviderForm({
   onClose,
   onCreated,
   onError,
@@ -1204,51 +1257,74 @@ function ApiProviderDialog({
     }
   }
 
+  function applyNinebotPrivateDeploymentPreset() {
+    setName(NINEBOT_PRIVATE_DEPLOYMENT_PRESET.name);
+    setBaseUrl(NINEBOT_PRIVATE_DEPLOYMENT_PRESET.baseUrl);
+    setCompatibilityProfile(
+      NINEBOT_PRIVATE_DEPLOYMENT_PRESET.compatibilityProfile,
+    );
+  }
+
   return (
-    <DialogFrame title="添加 API Key 供应商" description="接入 OpenAI 兼容接口。" onClose={onClose}>
-      <form className="space-y-5" onSubmit={submit}>
-        <FormField label="名称">
-          <input className="field" value={name} onChange={(event) => setName(event.target.value)} placeholder="openai-proxy" autoFocus />
-        </FormField>
-        <FormField label="Base URL">
-          <input
-            className="field font-mono text-xs"
-            value={baseUrl}
-            onChange={(event) => {
-              const value = event.target.value;
-              setBaseUrl(value);
-              setCompatibilityProfile(suggestedCompatibilityProfile(value));
-            }}
-            placeholder="https://api.example.com/v1"
-          />
-        </FormField>
-        <FormField label="API Key">
-          <input className="field font-mono text-xs" type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder="sk-..." />
-        </FormField>
-        <FormField label="兼容 Profile">
-          <select
-            className="field text-xs"
-            value={compatibilityProfile}
-            onChange={(event) =>
-              setCompatibilityProfile(
-                event.target.value as GatewayCompatibilityProfile,
-              )
-            }
-          >
-            <option value="generic_openai">通用 OpenAI 兼容接口</option>
-            <option value="official_openai">OpenAI 官方 API</option>
-          </select>
-          <p className="mt-2 text-[11px] leading-5 text-slate-400">
-            通用 Profile 会移除已知不兼容的 Codex 客户端工具；官方 Profile 保持 Responses 请求 Body 原样。
-          </p>
-        </FormField>
-        <DialogActions onClose={onClose} disabled={!valid || submitting} submitting={submitting} label="创建供应商" />
-      </form>
-    </DialogFrame>
+    <form className="space-y-5" onSubmit={submit}>
+      <div>
+        <div className="mb-2 text-[11px] font-bold text-slate-500 dark:text-slate-400">预置供应商</div>
+        <Button
+          type="button"
+          variant="outline"
+          className="h-auto w-full justify-start px-3 py-3 text-left"
+          onClick={applyNinebotPrivateDeploymentPreset}
+        >
+          <Server className="size-4 shrink-0 text-blue-500" />
+          <span className="min-w-0">
+            <span className="block text-xs font-bold">九号私有部署</span>
+            <span className="mt-0.5 block truncate font-mono text-[10px] font-normal text-slate-400">
+              https://ai-service.segway-ninebot.com/v1
+            </span>
+          </span>
+        </Button>
+      </div>
+      <FormField label="名称">
+        <input className="field" value={name} onChange={(event) => setName(event.target.value)} placeholder="openai-proxy" autoFocus />
+      </FormField>
+      <FormField label="Base URL">
+        <input
+          className="field font-mono text-xs"
+          value={baseUrl}
+          onChange={(event) => {
+            const value = event.target.value;
+            setBaseUrl(value);
+            setCompatibilityProfile(suggestedCompatibilityProfile(value));
+          }}
+          placeholder="https://api.example.com/v1"
+        />
+      </FormField>
+      <FormField label="API Key">
+        <input className="field font-mono text-xs" type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder="sk-..." />
+      </FormField>
+      <FormField label="兼容 Profile">
+        <select
+          className="field text-xs"
+          value={compatibilityProfile}
+          onChange={(event) =>
+            setCompatibilityProfile(
+              event.target.value as GatewayCompatibilityProfile,
+            )
+          }
+        >
+          <option value="generic_openai">通用 OpenAI 兼容接口</option>
+          <option value="official_openai">OpenAI 官方 API</option>
+        </select>
+        <p className="mt-2 text-[11px] leading-5 text-slate-400">
+          通用 Profile 会移除已知不兼容的 Codex 客户端工具；官方 Profile 保持 Responses 请求 Body 原样。
+        </p>
+      </FormField>
+      <DialogActions onClose={onClose} disabled={!valid || submitting} submitting={submitting} label="创建供应商" />
+    </form>
   );
 }
 
-function AccountDialog({
+function AccountProviderForm({
   onClose,
   onCreated,
   onError,
@@ -1303,7 +1379,13 @@ function AccountDialog({
   }, [loginState, mode, startLogin]);
 
   React.useEffect(() => {
-    if (!deviceLogin || (loginState !== "waiting" && loginState !== "finalizing")) return;
+    if (
+      mode !== "login" ||
+      !deviceLogin ||
+      (loginState !== "waiting" && loginState !== "finalizing")
+    ) {
+      return;
+    }
     const timer = window.setInterval(() => {
       void (async () => {
         try {
@@ -1327,7 +1409,7 @@ function AccountDialog({
       })();
     }, Math.max(2_000, deviceLogin.interval_seconds * 1_000));
     return () => window.clearInterval(timer);
-  }, [deviceLogin, loginState, onCreated]);
+  }, [deviceLogin, loginState, mode, onCreated]);
 
   React.useEffect(() => () => {
     if (deviceLogin) {
@@ -1335,15 +1417,11 @@ function AccountDialog({
     }
   }, [deviceLogin]);
 
-  React.useEffect(() => {
-    if (mode !== "token" || !deviceLogin) return;
-    void gatewayApi.cancelOpenAiDeviceLogin(deviceLogin.login_id).catch(() => {});
-    setDeviceLogin(null);
-    setLoginState("idle");
-  }, [deviceLogin, mode]);
-
   return (
-    <DialogFrame title="添加 ChatGPT 账户" description="通过 OpenAI 官方设备授权登录；凭据会加密保存在本机。" onClose={onClose}>
+    <div>
+      <p className="mb-5 text-xs leading-5 text-slate-500 dark:text-slate-400">
+        通过 OpenAI 官方设备授权登录；凭据会加密保存在本机。
+      </p>
       <div className="mb-5 flex rounded-xl bg-slate-100 p-1 text-xs font-semibold dark:bg-white/[0.06]">
         <button
           type="button"
@@ -1420,7 +1498,7 @@ function AccountDialog({
           <DialogActions onClose={onClose} disabled={!parsed || submitting} submitting={submitting} label="导入 Token" />
         </form>
       )}
-    </DialogFrame>
+    </div>
   );
 }
 
@@ -2156,7 +2234,7 @@ function LoadingState() {
   );
 }
 
-function EmptyState({ onAddApi, onAddAccount }: { onAddApi: () => void; onAddAccount: () => void }) {
+function EmptyState({ onAdd }: { onAdd: () => void }) {
   return (
     <div className="glass-panel flex min-h-[420px] flex-col items-center justify-center rounded-[28px] px-6 text-center">
       <div className="flex size-14 items-center justify-center rounded-2xl bg-slate-900 text-white dark:bg-white dark:text-slate-950">
@@ -2164,11 +2242,10 @@ function EmptyState({ onAddApi, onAddAccount }: { onAddApi: () => void; onAddAcc
       </div>
       <h2 className="mt-5 text-xl font-bold">还没有供应商</h2>
       <p className="mt-2 max-w-md text-sm leading-6 text-slate-500">
-        添加一个 OpenAI 兼容 API，或者导入 Codex Token 自动生成账户供应商。
+        添加 OpenAI 兼容 API，或登录、导入 ChatGPT 账户。
       </p>
-      <div className="mt-6 flex flex-wrap justify-center gap-2">
-        <Button onClick={onAddApi}><KeyRound className="size-4" />添加 API Key</Button>
-        <Button variant="outline" onClick={onAddAccount}><UserRound className="size-4" />导入账户</Button>
+      <div className="mt-6">
+        <Button onClick={onAdd}><Plus className="size-4" />添加供应商</Button>
       </div>
     </div>
   );
