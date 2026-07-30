@@ -29,6 +29,10 @@ impl RouteStore {
         self.route.lock().await.clone()
     }
 
+    pub fn delete_instance(&self, instance_id: &str) -> Result<bool, String> {
+        self.sqlite.delete_instance_route(instance_id)
+    }
+
     pub fn list_instance_ids(&self) -> Result<Vec<String>, String> {
         self.sqlite.list_instance_ids()
     }
@@ -115,6 +119,31 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
     use tokio::sync::Mutex;
+
+    #[test]
+    fn deletes_only_the_requested_instance_route() {
+        let sqlite = test_sqlite_store("delete-instance");
+        sqlite
+            .upsert_provider(&api_provider("provider_a"))
+            .expect("save provider");
+        let store = RouteStore {
+            sqlite,
+            route: Arc::new(Mutex::new(SelectedRoute::default())),
+        };
+        store
+            .set_for_instance("remove-me", Some("provider_a".to_string()), None, None)
+            .expect("save instance");
+        store
+            .set_for_instance("keep-me", Some("provider_a".to_string()), None, None)
+            .expect("save instance");
+
+        assert!(store.delete_instance("remove-me").expect("delete instance"));
+        assert!(!store.delete_instance("remove-me").expect("repeat deletion"));
+        assert_eq!(
+            store.list_instance_ids().expect("list instances"),
+            vec!["keep-me"]
+        );
+    }
 
     #[test]
     fn keeps_routing_state_isolated_per_instance() {

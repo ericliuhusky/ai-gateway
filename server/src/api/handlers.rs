@@ -448,6 +448,28 @@ pub async fn clear_selected_reasoning_effort(
     })))
 }
 
+pub async fn delete_instance(
+    State(state): State<AppState>,
+    AxumPath(instance_id): AxumPath<String>,
+) -> Result<Json<Value>, AppError> {
+    let instance_id = normalize_instance_id(&instance_id)?;
+    if instance_id == "default" {
+        return Err(AppError::bad_request(
+            "the default instance cannot be deleted",
+        ));
+    }
+    let deleted = state
+        .routes
+        .delete_instance(&instance_id)
+        .map_err(AppError::internal)?;
+    if !deleted {
+        return Err(AppError::bad_request(format!(
+            "unknown instance: {instance_id}"
+        )));
+    }
+    Ok(Json(json!({ "deleted_instance": instance_id })))
+}
+
 pub async fn list_instance_routing_configs(
     State(state): State<AppState>,
 ) -> Result<Json<Value>, AppError> {

@@ -141,6 +141,17 @@ impl SqliteStore {
         Ok(())
     }
 
+    pub fn delete_instance_route(&self, instance_id: &str) -> Result<bool, String> {
+        let conn = self.connect()?;
+        let deleted = conn
+            .execute(
+                "DELETE FROM gateway_instance_state WHERE instance_id = ?1",
+                params![instance_id],
+            )
+            .map_err(|err| format!("delete instance route failed: {err}"))?;
+        Ok(deleted > 0)
+    }
+
     pub fn list_instance_ids(&self) -> Result<Vec<String>, String> {
         let conn = self.connect()?;
         let mut statement = conn

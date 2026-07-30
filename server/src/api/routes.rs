@@ -1,6 +1,6 @@
 use crate::api::handlers::{
     add_provider, clear_codex_client_version, clear_selected_model,
-    clear_selected_reasoning_effort, delete_provider, get_auto_routing_settings,
+    clear_selected_reasoning_effort, delete_instance, delete_provider, get_auto_routing_settings,
     get_codex_client_version, get_instance_routing_config, get_provider_quota, get_route,
     get_selected_model, get_selected_reasoning_effort, healthz, import_openai_token,
     list_instance_routing_configs, list_models, list_models_for_instance, list_providers,
@@ -58,6 +58,7 @@ pub fn build_router(state: AppState, web_dir: PathBuf) -> Router {
         .route("/openai/v1/models", get(list_models))
         .route("/openai/v1/responses", post(responses))
         .route("/instances", get(list_instance_routing_configs))
+        .route("/instances/:instance_id", delete(delete_instance))
         .route(
             "/instances/:instance_id/config",
             get(get_instance_routing_config).put(set_instance_routing_config),

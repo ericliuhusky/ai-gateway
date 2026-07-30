@@ -568,6 +568,14 @@ function InstanceSection({
     });
   }
 
+  function deleteInstance(instance: InstanceRoutingConfig) {
+    if (instance.instance_id === "default") return;
+    if (!window.confirm(`确定删除实例“${instance.instance_id}”吗？
+
+这只会删除网关中的实例路由配置，不会关闭 Codex 窗口或删除本机实例文件。`)) return;
+    void run(instance.instance_id, () => gatewayApi.deleteInstance(instance.instance_id));
+  }
+
   return (
     <section>
       <div className="mb-3 flex items-center gap-3 px-1">
@@ -594,6 +602,7 @@ function InstanceSection({
             onReasoningChange={(effort) => updateReasoning(instance, effort)}
             onToggleAutomatic={() => toggleAutomaticRouting(instance)}
             onConfigureAutomatic={() => onConfigure(instance.instance_id)}
+            onDelete={instance.instance_id === "default" ? undefined : () => deleteInstance(instance)}
           />
         ))}
       </div>
@@ -612,6 +621,7 @@ function InstanceCard({
   onReasoningChange,
   onToggleAutomatic,
   onConfigureAutomatic,
+  onDelete,
 }: {
   instance: InstanceRoutingConfig;
   providers: GatewayProvider[];
@@ -623,6 +633,7 @@ function InstanceCard({
   onReasoningChange: (effort: ReasoningEffort | "") => void;
   onToggleAutomatic: () => void;
   onConfigureAutomatic: () => void;
+  onDelete?: () => void;
 }) {
   const isDefault = instance.instance_id === "default";
   const automaticReady = [
@@ -710,6 +721,11 @@ function InstanceCard({
         <Button type="button" variant="outline" size="sm" onClick={onConfigureAutomatic}>
           路由配置
         </Button>
+        {onDelete ? (
+          <Button type="button" variant="outline" size="icon" title="删除实例" disabled={saving} onClick={onDelete}>
+            <Trash2 className="size-4 text-red-500" />
+          </Button>
+        ) : null}
       </div>
     </article>
   );

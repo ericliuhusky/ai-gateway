@@ -93,6 +93,12 @@ export const gatewayApi = {
     });
   },
 
+  deleteInstance(instanceId: string) {
+    return request<{ deleted_instance: string }>(`/instances/${encodeURIComponent(instanceId)}`, {
+      method: "DELETE",
+    });
+  },
+
   async routingTurns(limit = 50) {
     const payload = await request<{ turns: TurnRouteLog[] }>(`/routing/turns?limit=${limit}`);
     return payload.turns;
