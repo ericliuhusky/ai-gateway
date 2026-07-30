@@ -16,7 +16,7 @@ import {
   Plus,
   RefreshCw,
   Server,
-  Settings2,
+  Settings,
   Trash2,
   UserRound,
   LogOut,
@@ -45,7 +45,8 @@ import type {
   OpenAiDeviceLoginStart,
 } from "./types";
 
-type Dialog = "provider" | "instances" | "settings" | "scripts" | "account" | null;
+type Dialog = "provider" | "instances" | "scripts" | null;
+type Page = "home" | "account" | "admin";
 type QuotaMap = Record<string, ProviderQuotaSummary | undefined>;
 type ErrorMap = Record<string, string | undefined>;
 
@@ -160,8 +161,8 @@ export function GatewayDashboard() {
   const [loadingQuotas, setLoadingQuotas] = React.useState<Set<string>>(new Set());
   const [loading, setLoading] = React.useState(true);
   const [loadingModels, setLoadingModels] = React.useState(false);
-  const [serverOnline, setServerOnline] = React.useState(false);
   const [dialog, setDialog] = React.useState<Dialog>(null);
+  const [activePage, setActivePage] = React.useState<Page>("home");
   const [error, setError] = React.useState<string | null>(null);
   const [deleting, setDeleting] = React.useState<Set<string>>(new Set());
 
@@ -209,15 +210,13 @@ export function GatewayDashboard() {
   const refresh = React.useCallback(async () => {
     setLoading(true);
     try {
-      const [health, providerList, route, turns, instanceList, automaticRouting] = await Promise.all([
-        gatewayApi.health(),
+      const [providerList, route, turns, instanceList, automaticRouting] = await Promise.all([
         gatewayApi.providers(),
         gatewayApi.selectedProvider(),
         gatewayApi.routingTurns(),
         gatewayApi.instances(),
         gatewayApi.automaticRouting(),
       ]);
-      setServerOnline(health.trim() === "ok");
       const sorted = [...providerList].sort((a, b) => a.name.localeCompare(b.name));
       setProviders(sorted);
       setInstances(instanceList);
@@ -232,7 +231,6 @@ export function GatewayDashboard() {
       }
       void loadQuotas(sorted);
     } catch (loadError) {
-      setServerOnline(false);
       setError(errorMessage(loadError));
     } finally {
       setLoading(false);
@@ -319,38 +317,47 @@ export function GatewayDashboard() {
     <div className="min-h-screen">
       <header className="relative z-50 border-b border-white/50 bg-white/55 backdrop-blur-xl dark:border-white/8 dark:bg-slate-950/55">
         <div className="mx-auto flex h-16 max-w-[1480px] items-center gap-3 px-5 sm:px-8">
-          <div className="flex size-9 items-center justify-center rounded-xl bg-slate-900 text-white shadow-lg shadow-slate-900/15 dark:bg-white dark:text-slate-950">
-            <Cloud className="size-[18px]" />
-          </div>
-          <div>
-            <div className="text-[15px] font-bold tracking-[-0.02em]">AI Gateway</div>
-            <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-400">
-              Remote Console
-            </div>
-          </div>
+          <button
+            type="button"
+            className="flex items-center gap-3 rounded-xl text-left outline-none transition-opacity hover:opacity-80 focus-visible:ring-2 focus-visible:ring-blue-500"
+            aria-label="返回首页"
+            onClick={() => setActivePage("home")}
+          >
+            <span className="flex size-9 items-center justify-center rounded-xl bg-slate-900 text-white shadow-lg shadow-slate-900/15 dark:bg-white dark:text-slate-950">
+              <Cloud className="size-[18px]" />
+            </span>
+            <span className="text-[15px] font-bold tracking-[-0.02em]">AI网关</span>
+          </button>
           <div className="ml-auto flex items-center gap-2">
-            <StatusPill online={serverOnline} />
             <AccountMenu
               user={currentUser}
-              showLogout
-              onOpenSettings={() => setDialog("account")}
+              showAccountSettings={authMode === "required"}
+              showLogout={authMode === "required"}
+              showAdminSettings={currentUser.role === "admin"}
+              onOpenAccountSettings={() => setActivePage("account")}
+              onOpenAdminSettings={() => setActivePage("admin")}
               onLogout={() => { void logout(); }}
             />
-            {currentUser.role === "admin" ? <Button
-              variant="outline"
-              size="sm"
-              aria-label="网关设置"
-              onClick={() => setDialog("settings")}
-            >
-              <Settings2 className="size-3.5" />
-              <span className="hidden sm:inline">网关设置</span>
-            </Button> : null}
           </div>
         </div>
       </header>
 
       <main className="mx-auto max-w-[1480px] px-5 py-6 sm:px-8 sm:py-8">
-        {loading ? (
+        {activePage === "account" ? (
+          <AccountSettingsPage authMode={authMode} onError={setError} />
+        ) : activePage === "admin" ? (
+          <AdminSettingsPage
+            onChanged={async () => {
+              if (
+                selectedProvider?.auth_mode === "account"
+                && selectedProvider.compatibility_profile === "openai_codex"
+              ) {
+                await loadModels(true);
+              }
+            }}
+            onError={setError}
+          />
+        ) : loading ? (
           <LoadingState />
         ) : (
           <>
@@ -457,28 +464,6 @@ export function GatewayDashboard() {
           onError={setError}
         />
       ) : null}
-      {dialog === "settings" ? (
-        <SettingsDialog
-          onClose={() => setDialog(null)}
-          onChanged={async () => {
-            if (
-              selectedProvider?.auth_mode === "account"
-              && selectedProvider.compatibility_profile === "openai_codex"
-            ) {
-              await loadModels(true);
-            }
-          }}
-          onError={setError}
-        />
-      ) : null}
-      {dialog === "account" ? (
-        <AccountSettingsDialog
-          user={currentUser}
-          authMode={authMode}
-          onClose={() => setDialog(null)}
-          onError={setError}
-        />
-      ) : null}
       {dialog === "instances" ? (
         <CodexInstancesDialog
           providers={providers}
@@ -509,31 +494,21 @@ export function GatewayDashboard() {
   );
 }
 
-function StatusPill({ online }: { online: boolean }) {
-  return (
-    <div
-      className={cn(
-        "flex h-8 items-center gap-2 rounded-full px-3 text-xs font-bold",
-        online
-          ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
-          : "bg-red-500/10 text-red-600 dark:text-red-400",
-      )}
-    >
-      <span className={cn("size-1.5 rounded-full", online ? "bg-emerald-500" : "bg-red-500")} />
-      {online ? "Server 在线" : "连接失败"}
-    </div>
-  );
-}
-
 function AccountMenu({
   user,
+  showAccountSettings,
   showLogout,
-  onOpenSettings,
+  showAdminSettings,
+  onOpenAccountSettings,
+  onOpenAdminSettings,
   onLogout,
 }: {
   user: { id: number; name: string; avatar_url: string; role: "admin" | "user" };
+  showAccountSettings: boolean;
   showLogout: boolean;
-  onOpenSettings: () => void;
+  showAdminSettings: boolean;
+  onOpenAccountSettings: () => void;
+  onOpenAdminSettings: () => void;
   onLogout: () => void;
 }) {
   const [open, setOpen] = React.useState(false);
@@ -580,18 +555,34 @@ function AccountMenu({
             <div className="truncate text-xs font-bold text-slate-800 dark:text-slate-100">{user.name}</div>
             <div className="mt-0.5 text-[10px] text-slate-400">{user.role === "admin" ? "管理员" : "成员"}</div>
           </div>
-          <button
+          {showAccountSettings ? (
+            <button
             type="button"
             role="menuitem"
             className="mx-1.5 flex w-[calc(100%-0.75rem)] items-center gap-2.5 rounded-xl px-3 py-2 text-left text-xs font-medium text-slate-600 transition hover:bg-slate-900/5 dark:text-slate-300 dark:hover:bg-white/8"
             onClick={() => {
               setOpen(false);
-              onOpenSettings();
+              onOpenAccountSettings();
             }}
           >
-            <Settings2 className="size-3.5 text-slate-400" />
+            <Settings className="size-3.5 text-slate-400" />
             账户设置
           </button>
+          ) : null}
+          {showAdminSettings ? (
+            <button
+              type="button"
+              role="menuitem"
+              className="mx-1.5 flex w-[calc(100%-0.75rem)] items-center gap-2.5 rounded-xl px-3 py-2 text-left text-xs font-medium text-slate-600 transition hover:bg-slate-900/5 dark:text-slate-300 dark:hover:bg-white/8"
+              onClick={() => {
+                setOpen(false);
+                onOpenAdminSettings();
+              }}
+            >
+              <Settings className="size-3.5 text-slate-400" />
+              管理员设置
+            </button>
+          ) : null}
           {showLogout ? (
             <button
               type="button"
@@ -2056,12 +2047,10 @@ function CommandBlock({
   );
 }
 
-function SettingsDialog({
-  onClose,
+function AdminSettingsPage({
   onChanged,
   onError,
 }: {
-  onClose: () => void;
   onChanged: () => Promise<void>;
   onError: (message: string) => void;
 }) {
@@ -2110,12 +2099,19 @@ function SettingsDialog({
   }
 
   return (
-    <DialogFrame
-      title="网关设置"
-      description="集中管理网关向 ChatGPT Codex 模型接口发送的客户端版本号。数据库配置优先于代码默认值。"
-      onClose={onClose}
+    <SettingsPageFrame
+      title="管理员设置"
+      description="集中管理网关配置。后续管理员设置会继续添加到此标签页。"
+      tabs={["Codex 版本"]}
     >
-      {!setting ? (
+      <section>
+        <div className="mb-4">
+          <h2 className="text-base font-bold">Codex 版本</h2>
+          <p className="mt-1 text-xs leading-5 text-slate-400">
+            配置网关向 ChatGPT Codex 模型接口发送的客户端版本号。数据库配置优先于代码默认值。
+          </p>
+        </div>
+        {!setting ? (
         <div className="flex min-h-40 items-center justify-center">
           <LoaderCircle className="size-6 animate-spin text-slate-400" />
         </div>
@@ -2172,24 +2168,18 @@ function SettingsDialog({
               </Button>
             </div>
           </form>
-          <div className="flex justify-end">
-            <Button type="button" variant="outline" onClick={onClose}>完成</Button>
-          </div>
         </div>
       )}
-    </DialogFrame>
+      </section>
+    </SettingsPageFrame>
   );
 }
 
-function AccountSettingsDialog({
-  user,
+function AccountSettingsPage({
   authMode,
-  onClose,
   onError,
 }: {
-  user: { id: number; name: string; avatar_url: string; role: "admin" | "user" };
   authMode: "disabled" | "required";
-  onClose: () => void;
   onError: (message: string) => void;
 }) {
   const [token, setToken] = React.useState<string | null>(null);
@@ -2222,21 +2212,12 @@ function AccountSettingsDialog({
   }
 
   return (
-    <DialogFrame
+    <SettingsPageFrame
       title="账户设置"
-      description="查看当前登录账户，并管理用于访问 AI Gateway 的个人 API Key。"
-      onClose={onClose}
+      description="管理用于访问 AI网关的个人 API Key。后续账户设置会继续添加到此标签页。"
+      tabs={["API Key"]}
     >
-      <div className="flex items-center gap-3 rounded-2xl border border-white/65 bg-white/45 p-4 dark:border-white/8 dark:bg-white/[0.035]">
-        <span className="flex size-10 shrink-0 items-center justify-center overflow-hidden rounded-full bg-slate-900 text-sm font-bold text-white dark:bg-white dark:text-slate-950">
-          {user.avatar_url ? <img src={user.avatar_url} alt="" className="size-full object-cover" /> : user.name.trim().charAt(0).toUpperCase() || <UserRound className="size-4" />}
-        </span>
-        <div className="min-w-0">
-          <div className="truncate text-sm font-bold">{user.name}</div>
-          <div className="mt-0.5 text-[11px] text-slate-400">{user.role === "admin" ? "管理员" : "成员"}</div>
-        </div>
-      </div>
-      <section className="mt-5">
+      <section>
         <div className="mb-2">
           <h3 className="text-sm font-bold">API Key</h3>
           <p className="mt-1 text-[11px] leading-5 text-slate-400">
@@ -2294,15 +2275,49 @@ function AccountSettingsDialog({
         )}
       </section>
       <div className="mt-7 flex justify-end gap-2">
-        <Button type="button" variant="outline" onClick={onClose}>完成</Button>
         {authMode === "required" ? (
           <Button type="button" disabled={creating || !token} onClick={() => void regenerateToken()}>
             {creating ? <LoaderCircle className="size-4 animate-spin" /> : <KeyRound className="size-4" />}
             {creating ? "生成中" : "重新生成"}
           </Button>
-        ) : null}
+          ) : null}
       </div>
-    </DialogFrame>
+    </SettingsPageFrame>
+  );
+}
+
+function SettingsPageFrame({
+  title,
+  description,
+  tabs,
+  children,
+}: {
+  title: string;
+  description: string;
+  tabs: string[];
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="glass-panel mx-auto max-w-3xl rounded-[26px] p-5 sm:p-7">
+      <div className="border-b border-slate-200/70 pb-5 dark:border-white/10">
+        <h1 className="text-xl font-bold tracking-[-0.025em]">{title}</h1>
+        <p className="mt-1.5 text-xs leading-5 text-slate-500 dark:text-slate-400">{description}</p>
+      </div>
+      <div className="mt-5 border-b border-slate-200/70 dark:border-white/10" role="tablist">
+        {tabs.map((tab) => (
+          <button
+            key={tab}
+            type="button"
+            role="tab"
+            aria-selected="true"
+            className="-mb-px border-b-2 border-blue-600 px-1 pb-3 text-sm font-bold text-blue-600 dark:border-blue-400 dark:text-blue-300"
+          >
+            {tab}
+          </button>
+        ))}
+      </div>
+      <div className="pt-6">{children}</div>
+    </section>
   );
 }
 
