@@ -40,7 +40,7 @@ import type {
   OpenAiDeviceLoginStart,
 } from "./types";
 
-type Dialog = "provider" | "instances" | "settings" | "setup" | null;
+type Dialog = "provider" | "instances" | "settings" | "scripts" | null;
 type QuotaMap = Record<string, ProviderQuotaSummary | undefined>;
 type ErrorMap = Record<string, string | undefined>;
 
@@ -128,6 +128,7 @@ export function App() {
     enabled: false,
   });
   const [instanceToEdit, setInstanceToEdit] = React.useState<string | null>(null);
+  const [scriptInstanceId, setScriptInstanceId] = React.useState<string | null>(null);
   const [selected, setSelected] = React.useState<SelectedProvider>({ updated_at: 0 });
   const [models, setModels] = React.useState<GatewayModel[]>([]);
   const [turnLogs, setTurnLogs] = React.useState<TurnRouteLog[]>([]);
@@ -315,15 +316,6 @@ export function App() {
               <Settings2 className="size-3.5" />
               <span className="hidden sm:inline">网关设置</span>
             </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              aria-label="Codex 接入"
-              onClick={() => setDialog("setup")}
-            >
-              <Code2 className="size-3.5" />
-              <span className="hidden sm:inline">Codex 接入</span>
-            </Button>
           </div>
         </div>
       </header>
@@ -367,7 +359,11 @@ export function App() {
                   automatic_routing: defaultAutomaticRouting,
                 }]}
                 providers={providers}
-              onConfigure={(instanceId) => {
+                onShowScripts={(instanceId) => {
+                  setScriptInstanceId(instanceId);
+                  setDialog("scripts");
+                }}
+                onConfigure={(instanceId) => {
                 if (instanceId === "default") {
                   setInstanceToEdit(instanceId);
                   setDialog("instances");
@@ -384,6 +380,10 @@ export function App() {
                   title="实例"
                   instances={instances}
                   providers={providers}
+                  onShowScripts={(instanceId) => {
+                    setScriptInstanceId(instanceId);
+                    setDialog("scripts");
+                  }}
                   onConfigure={(instanceId) => {
                     setInstanceToEdit(instanceId);
                     setDialog("instances");
@@ -451,10 +451,23 @@ export function App() {
             setDialog(null);
           }}
           onChanged={refresh}
+          onCreated={(instanceId) => {
+            setInstanceToEdit(null);
+            setScriptInstanceId(instanceId);
+            setDialog("scripts");
+          }}
           onError={setError}
         />
       ) : null}
-      {dialog === "setup" ? <SetupDialog onClose={() => setDialog(null)} /> : null}
+      {dialog === "scripts" && scriptInstanceId ? (
+        <CodexScriptsDialog
+          instanceId={scriptInstanceId}
+          onClose={() => {
+            setScriptInstanceId(null);
+            setDialog(null);
+          }}
+        />
+      ) : null}
     </div>
   );
 }
@@ -480,6 +493,7 @@ function InstanceSection({
   showHeader = true,
   instances,
   providers,
+  onShowScripts,
   onConfigure,
   onChanged,
   onError,
@@ -488,6 +502,7 @@ function InstanceSection({
   showHeader?: boolean;
   instances: InstanceRoutingConfig[];
   providers: GatewayProvider[];
+  onShowScripts: (instanceId: string) => void;
   onConfigure: (instanceId: string) => void;
   onChanged: () => Promise<void>;
   onError: (message: string) => void;
@@ -496,6 +511,7 @@ function InstanceSection({
   const [modelsByProvider, setModelsByProvider] = React.useState<Record<string, GatewayModel[]>>({});
   const [loadingModels, setLoadingModels] = React.useState(true);
   const [savingIds, setSavingIds] = React.useState<Set<string>>(new Set());
+  const [instancePendingDeletion, setInstancePendingDeletion] = React.useState<InstanceRoutingConfig | null>(null);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -603,10 +619,13 @@ function InstanceSection({
   }
 
   function deleteInstance(instance: InstanceRoutingConfig) {
-    if (instance.instance_id === "default") return;
-    if (!window.confirm(`确定删除实例“${instance.instance_id}”吗？
+    if (instance.instance_id !== "default") setInstancePendingDeletion(instance);
+  }
 
-这只会删除网关中的实例路由配置，不会关闭 Codex 窗口或删除本机实例文件。`)) return;
+  function confirmDeleteInstance() {
+    if (!instancePendingDeletion) return;
+    const instance = instancePendingDeletion;
+    setInstancePendingDeletion(null);
     void run(instance.instance_id, () => gatewayApi.deleteInstance(instance.instance_id));
   }
 
@@ -632,10 +651,19 @@ function InstanceSection({
             onReasoningChange={(effort) => updateReasoning(instance, effort)}
             onToggleAutomatic={() => toggleAutomaticRouting(instance)}
             onConfigureAutomatic={() => onConfigure(instance.instance_id)}
+            onCodexScripts={() => onShowScripts(instance.instance_id)}
             onDelete={instance.instance_id === "default" ? undefined : () => deleteInstance(instance)}
           />
         ))}
       </div>
+      {instancePendingDeletion ? (
+        <DeleteInstanceDialog
+          instanceId={instancePendingDeletion.instance_id}
+          deleting={savingIds.has(instancePendingDeletion.instance_id)}
+          onClose={() => setInstancePendingDeletion(null)}
+          onConfirm={confirmDeleteInstance}
+        />
+      ) : null}
     </section>
   );
 }
@@ -651,6 +679,7 @@ function InstanceCard({
   onReasoningChange,
   onToggleAutomatic,
   onConfigureAutomatic,
+  onCodexScripts,
   onDelete,
 }: {
   instance: InstanceRoutingConfig;
@@ -663,6 +692,7 @@ function InstanceCard({
   onReasoningChange: (effort: ReasoningEffort | "") => void;
   onToggleAutomatic: () => void;
   onConfigureAutomatic: () => void;
+  onCodexScripts: () => void;
   onDelete?: () => void;
 }) {
   const isDefault = instance.instance_id === "default";
@@ -749,6 +779,10 @@ function InstanceCard({
         </button>
         <Button type="button" variant="outline" size="sm" onClick={onConfigureAutomatic}>
           路由配置
+        </Button>
+        <Button type="button" variant="outline" size="sm" onClick={onCodexScripts}>
+          <Code2 className="size-3.5" />
+          Codex 脚本
         </Button>
         {onDelete ? (
           <Button type="button" variant="outline" size="icon" title="删除实例" disabled={saving} onClick={onDelete}>
@@ -1550,12 +1584,14 @@ function CodexInstancesDialog({
   initialInstanceId,
   onClose,
   onChanged,
+  onCreated,
   onError,
 }: {
   providers: GatewayProvider[];
   initialInstanceId?: string;
   onClose: () => void;
   onChanged: () => Promise<void>;
+  onCreated: (instanceId: string) => void;
   onError: (message: string) => void;
 }) {
   const [instanceIds, setInstanceIds] = React.useState<string[]>([]);
@@ -1649,7 +1685,7 @@ function CodexInstancesDialog({
       setAutomaticRouting(saved.automatic_routing);
       await Promise.all([refreshInstances(), onChanged()]);
       if (creatingInstance) {
-        onClose();
+        onCreated(saved.instance_id);
         return;
       }
       setIsCreating(false);
@@ -1722,18 +1758,80 @@ function CodexInstancesDialog({
   );
 }
 
-function SetupDialog({ onClose }: { onClose: () => void }) {
-  const [copied, setCopied] = React.useState<"setup" | "restore" | "instance" | null>(null);
-  const gatewayUrl = `${window.location.origin}/openai/v1`;
-  const setupScriptUrl = `${window.location.origin}/codex/setup.sh`;
-  const restoreScriptUrl = `${window.location.origin}/codex/restore.sh`;
+function DeleteInstanceDialog({
+  instanceId,
+  deleting,
+  onClose,
+  onConfirm,
+}: {
+  instanceId: string;
+  deleting: boolean;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  const [copied, setCopied] = React.useState(false);
   const instancesScriptUrl = `${window.location.origin}/codex/instances.sh`;
-  const setupCommand = `curl -fsSL ${shellQuote(setupScriptUrl)} | sh -s -- ${shellQuote(gatewayUrl)}`;
-  const restoreCommand = `curl -fsSL ${shellQuote(restoreScriptUrl)} | sh`;
-  const instanceGatewayUrl = `${window.location.origin}/instances/account-a/openai/v1`;
-  const instanceCommand = `curl -fsSL ${shellQuote(instancesScriptUrl)} | sh -s -- create account-a ${shellQuote(instanceGatewayUrl)}`;
+  const deleteCommand = `curl -fsSL ${shellQuote(instancesScriptUrl)} | sh -s -- delete ${shellQuote(instanceId)}`;
 
-  function copyCommand(kind: "setup" | "restore" | "instance", command: string) {
+  function copyDeleteCommand() {
+    void copyText(deleteCommand);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1500);
+  }
+
+  return (
+    <DialogFrame
+      title={`删除实例：${instanceId}`}
+      description="删除前请按需保存该 Codex 实例的本地清理命令。"
+      onClose={onClose}
+    >
+      <div className="space-y-5">
+        <div className="rounded-2xl border border-amber-500/20 bg-amber-500/5 p-4 text-xs leading-5 text-amber-700 dark:text-amber-300">
+          确认删除只会删除网关中的实例路由配置。下方命令会删除本机的 Codex 实例文件夹，包括独立配置、登录信息、会话和 Electron 数据。
+        </div>
+        <FormField label="清理 / 删除 Codex 实例">
+          <CommandBlock
+            command={deleteCommand}
+            copied={copied}
+            copyLabel="复制 Codex 实例删除命令"
+            onCopy={copyDeleteCommand}
+          />
+        </FormField>
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button type="button" variant="outline" disabled={deleting} onClick={onClose}>取消</Button>
+          <Button type="button" disabled={deleting} onClick={onConfirm} className="bg-red-600 text-white hover:bg-red-700">
+            {deleting ? <LoaderCircle className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
+            {deleting ? "删除中" : "确认删除实例"}
+          </Button>
+        </div>
+      </div>
+    </DialogFrame>
+  );
+}
+
+function CodexScriptsDialog({
+  instanceId,
+  onClose,
+}: {
+  instanceId: string;
+  onClose: () => void;
+}) {
+  const [copied, setCopied] = React.useState<"setup" | "cleanup" | null>(null);
+  const isDefault = instanceId === "default";
+  const setupScriptUrl = `${window.location.origin}/codex/setup.sh`;
+  const cleanupScriptUrl = `${window.location.origin}/codex/restore.sh`;
+  const instancesScriptUrl = `${window.location.origin}/codex/instances.sh`;
+  const gatewayUrl = isDefault
+    ? `${window.location.origin}/openai/v1`
+    : `${window.location.origin}/instances/${encodeURIComponent(instanceId)}/openai/v1`;
+  const setupCommand = isDefault
+    ? `curl -fsSL ${shellQuote(setupScriptUrl)} | sh -s -- ${shellQuote(gatewayUrl)}`
+    : `curl -fsSL ${shellQuote(instancesScriptUrl)} | sh -s -- create ${shellQuote(instanceId)} ${shellQuote(gatewayUrl)}`;
+  const cleanupCommand = isDefault
+    ? `curl -fsSL ${shellQuote(cleanupScriptUrl)} | sh`
+    : `curl -fsSL ${shellQuote(instancesScriptUrl)} | sh -s -- delete ${shellQuote(instanceId)}`;
+
+  function copyCommand(kind: "setup" | "cleanup", command: string) {
     void copyText(command);
     setCopied(kind);
     window.setTimeout(() => setCopied(null), 1500);
@@ -1741,77 +1839,63 @@ function SetupDialog({ onClose }: { onClose: () => void }) {
 
   return (
     <DialogFrame
-      title="Codex 接入"
-      description="运行一次脚本即可写入本机 Codex 配置并同步历史别名，不需要安装或启动本地 Agent。"
+      title={isDefault ? "默认 Codex 脚本" : `Codex 实例脚本：${instanceId}`}
+      description={isDefault ? "设置默认 Codex，或清理 AI Gateway 写入的默认实例配置。" : "创建独立的 Codex 窗口，或删除该窗口的全部本地实例文件。"}
       onClose={onClose}
     >
       <div className="space-y-5">
         <div className="rounded-2xl border border-blue-500/15 bg-blue-500/5 p-4 text-xs leading-5 text-blue-700 dark:text-blue-300">
-          在本机终端执行接入命令。脚本会记录原模型供应商、修改 <code>~/.codex/config.toml</code> 并为旧任务创建历史别名，不会安装程序或启动后台服务。多实例命令会把实例名写入 Gateway URL path，使每个窗口拥有独立路由配置。
+          {isDefault
+            ? <>设置脚本会修改 <code>~/.codex/config.toml</code> 并同步历史别名；清理脚本会还原原模型供应商，并移除 AI Gateway 写入的 TOML 配置。</>
+            : <>新建脚本会创建独立的 <code>CODEX_HOME</code> 和 Electron 数据目录，请在新窗口中单独登录账号。清理脚本会删除该实例文件夹及其中的登录信息、会话和 Electron 数据。</>}
         </div>
-        <FormField label="Gateway Base URL">
-          <div className="flex gap-2">
-            <input className="field min-w-0 flex-1 font-mono text-xs" readOnly value={gatewayUrl} />
-            <Button
-              variant="outline"
-              size="icon"
-              aria-label="复制 Gateway Base URL"
-              onClick={() => void copyText(gatewayUrl)}
-            >
-              <Copy className="size-4" />
-            </Button>
-          </div>
+        <FormField label={isDefault ? "设置默认 Codex" : "新建 Codex 实例（macOS）"}>
+          <CommandBlock
+            command={setupCommand}
+            copied={copied === "setup"}
+            copyLabel={isDefault ? "复制默认 Codex 设置命令" : "复制新建 Codex 实例命令"}
+            onCopy={() => copyCommand("setup", setupCommand)}
+          />
         </FormField>
-        <FormField label="接入命令">
-          <div className="relative">
-            <pre className="overflow-x-auto rounded-2xl bg-slate-950 p-4 pr-12 text-[11px] leading-5 text-slate-200">{setupCommand}</pre>
-            <button
-              className="absolute right-3 top-3 flex size-8 items-center justify-center rounded-lg bg-white/10 text-white hover:bg-white/15"
-              type="button"
-              aria-label="复制接入命令"
-              onClick={() => copyCommand("setup", setupCommand)}
-            >
-              {copied === "setup" ? <Check className="size-4" /> : <Copy className="size-4" />}
-            </button>
-          </div>
-        </FormField>
-        <FormField label="创建隔离多实例（macOS）">
-          <div className="space-y-2">
-            <p className="text-xs leading-5 text-slate-500">
-              每个实例使用独立的 <code>CODEX_HOME</code>、<code>auth.json</code> 和 Electron 数据目录；新窗口需分别登录账号。
-              将 <code>account-a</code> 改成实例名称，再为第二个账号执行一次即可。
-            </p>
-            <div className="relative">
-              <pre className="overflow-x-auto rounded-2xl bg-slate-950 p-4 pr-12 text-[11px] leading-5 text-slate-200">{instanceCommand}</pre>
-              <button
-                className="absolute right-3 top-3 flex size-8 items-center justify-center rounded-lg bg-white/10 text-white hover:bg-white/15"
-                type="button"
-                aria-label="复制多实例创建命令"
-                onClick={() => copyCommand("instance", instanceCommand)}
-              >
-                {copied === "instance" ? <Check className="size-4" /> : <Copy className="size-4" />}
-              </button>
-            </div>
-          </div>
-        </FormField>
-        <FormField label="恢复原配置">
-          <div className="relative">
-            <pre className="overflow-x-auto rounded-2xl bg-slate-950 p-4 pr-12 text-[11px] leading-5 text-slate-200">{restoreCommand}</pre>
-            <button
-              className="absolute right-3 top-3 flex size-8 items-center justify-center rounded-lg bg-white/10 text-white hover:bg-white/15"
-              type="button"
-              aria-label="复制恢复命令"
-              onClick={() => copyCommand("restore", restoreCommand)}
-            >
-              {copied === "restore" ? <Check className="size-4" /> : <Copy className="size-4" />}
-            </button>
-          </div>
+        <FormField label={isDefault ? "清理默认 Codex 设置" : "清理 / 删除 Codex 实例"}>
+          <CommandBlock
+            command={cleanupCommand}
+            copied={copied === "cleanup"}
+            copyLabel={isDefault ? "复制默认 Codex 清理命令" : "复制 Codex 实例删除命令"}
+            onCopy={() => copyCommand("cleanup", cleanupCommand)}
+          />
         </FormField>
         <div className="flex justify-end">
           <Button onClick={onClose}>完成</Button>
         </div>
       </div>
     </DialogFrame>
+  );
+}
+
+function CommandBlock({
+  command,
+  copied,
+  copyLabel,
+  onCopy,
+}: {
+  command: string;
+  copied: boolean;
+  copyLabel: string;
+  onCopy: () => void;
+}) {
+  return (
+    <div className="relative">
+      <pre className="overflow-x-auto rounded-2xl bg-slate-950 p-4 pr-12 text-[11px] leading-5 text-slate-200">{command}</pre>
+      <button
+        className="absolute right-3 top-3 flex size-8 items-center justify-center rounded-lg bg-white/10 text-white hover:bg-white/15"
+        type="button"
+        aria-label={copyLabel}
+        onClick={onCopy}
+      >
+        {copied ? <Check className="size-4" /> : <Copy className="size-4" />}
+      </button>
+    </div>
   );
 }
 

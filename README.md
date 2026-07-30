@@ -112,13 +112,13 @@ curl -fsSL 'https://gateway.example.com/codex/setup.sh' |
 - 使用临时文件原子替换配置
 - 执行完成后立即退出，不安装程序或启动后台服务
 
-恢复：
+清理默认 Codex 设置：
 
 ```bash
 curl -fsSL 'https://gateway.example.com/codex/restore.sh' | sh
 ```
 
-恢复脚本只将 `model_provider` 切回原值，并移除保存原值的注释。`model_providers.ai-gateway` 配置和已经创建的历史别名会继续保留，之后可以再次切换，不会恢复或覆盖整个配置文件。
+清理脚本会将 `model_provider` 切回原值，并移除保存原值的注释及 `[model_providers.ai-gateway]` TOML 配置。历史别名不会删除，以免误删已有任务记录。
 
 历史同步只复制任务记录和对应 rollout，不修改原任务。映射保存在 `~/.codex/.ai-gateway-history/aliases.tsv`，首次同步前的数据库快照保存在同目录的 `state_5.before-first-sync.sqlite`。如果原 rollout 文件已经缺失，该任务会被跳过并输出警告，不影响 Provider 配置切换。
 
@@ -135,6 +135,13 @@ curl -fsSL 'https://gateway.example.com/codex/instances.sh' |
 ```
 
 实例保存在 `~/.ai-gateway/codex-instances/<name>/`。每个实例有独立的 `CODEX_HOME`、`config.toml`、`auth.json`、会话记录和 Electron 用户数据目录，因此可分别在窗口中登录不同的 Codex 账号。创建时不会复制默认实例的 `auth.json`。`skills`、`rules` 和 `AGENTS.md` 会从默认 `~/.codex` 共享，便于复用本地工作流。
+
+删除本机隔离实例及其配置、登录信息、会话和 Electron 数据：
+
+```bash
+curl -fsSL 'https://gateway.example.com/codex/instances.sh' |
+  sh -s -- delete account-a
+```
 
 ### 按 URL path 隔离网关路由
 
@@ -197,7 +204,7 @@ $HOME/.ai-gateway/web
 http://127.0.0.1:4242/
 ```
 
-Web 页面与它所在的远程 Server 同源通信，不需要单独配置 Server URL。页面中的“Codex 接入”会根据当前 Server 地址生成一次性接入和恢复命令。
+Web 页面与它所在的远程 Server 同源通信，不需要单独配置 Server URL。默认实例和每个普通实例卡片都提供“Codex 脚本”按钮：默认实例展示设置与清理命令，普通实例展示新建与删除隔离 Codex 实例的命令。新建普通实例后会自动显示对应的新建脚本；删除前也会展示本地实例清理命令。
 
 API Key 供应商上游统一使用 OpenAI Responses 接口，并可选择兼容 Profile：
 

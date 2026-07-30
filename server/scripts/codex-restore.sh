@@ -39,6 +39,7 @@ BEGIN {
   in_root = 1
   root_count = 0
   root_flushed = 0
+  skipping_gateway = 0
 }
 
 function flush_root(    i) {
@@ -63,6 +64,19 @@ function flush_root(    i) {
 
 {
   line = $0
+
+  if (skipping_gateway) {
+    if (line ~ /^[[:space:]]*\[/) {
+      skipping_gateway = 0
+    } else {
+      next
+    }
+  }
+
+  if (line ~ /^[[:space:]]*\[model_providers[[:space:]]*\.[[:space:]]*ai-gateway[[:space:]]*\][[:space:]]*($|#)/) {
+    skipping_gateway = 1
+    next
+  }
 
   if (in_root) {
     if (line ~ /^[[:space:]]*\[/) {
@@ -103,6 +117,6 @@ mv "$temp_path" "$config_path"
 temp_path=
 
 printf '%s\n' \
-  "已恢复原模型供应商。" \
-  "ai-gateway 的 Provider 配置已保留，之后可再次直接切换。" \
+  "已清理 AI Gateway 的 Codex 配置，并恢复原模型供应商。" \
+  "已移除 ai-gateway Provider 配置和切换标记。" \
   "请重新启动 Codex 或新建任务使配置生效。"

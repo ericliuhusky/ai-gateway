@@ -19,6 +19,7 @@ usage() {
 Usage:
   instances.sh create <name> <gateway-base-url>
   instances.sh start <name>
+  instances.sh delete <name>
   instances.sh list
   instances.sh path <name>
 
@@ -255,6 +256,16 @@ create_instance() {
   start_instance "$name"
 }
 
+delete_instance() {
+  name=$1
+  require_instance_name "$name"
+  root=$(instance_dir "$name")
+
+  [ -e "$root" ] || [ -L "$root" ] || fail "实例不存在：$name"
+  rm -rf "$root"
+  printf '%s\n' "已删除 Codex 实例及其本地配置：$name"
+}
+
 list_instances() {
   [ -d "$instances_root" ] || {
     printf '%s\n' "尚未创建实例。"
@@ -295,6 +306,13 @@ case "$command" in
       exit 1
     }
     start_instance "$2"
+    ;;
+  delete)
+    [ "$#" -eq 2 ] || {
+      usage
+      exit 1
+    }
+    delete_instance "$2"
     ;;
   list)
     [ "$#" -eq 1 ] || {

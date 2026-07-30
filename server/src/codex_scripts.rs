@@ -66,9 +66,10 @@ mod tests {
     }
 
     #[test]
-    fn restore_script_restores_only_the_previous_provider() {
+    fn restore_script_removes_the_gateway_provider_configuration() {
         assert!(RESTORE_SCRIPT.contains("# ai-gateway.previous-model-provider: "));
-        assert!(RESTORE_SCRIPT.contains("Provider 配置已保留"));
+        assert!(RESTORE_SCRIPT.contains("skipping_gateway"));
+        assert!(RESTORE_SCRIPT.contains("已移除 ai-gateway Provider 配置和切换标记"));
         assert!(!RESTORE_SCRIPT.contains("codex-config.before-ai-gateway.toml"));
         assert!(!RESTORE_SCRIPT.contains("state_5.sqlite"));
     }
@@ -80,6 +81,8 @@ mod tests {
         assert!(INSTANCES_SCRIPT.contains("--user-data-dir=$electron_home"));
         assert!(INSTANCES_SCRIPT.contains("auth.json is intentionally never copied"));
         assert!(INSTANCES_SCRIPT.contains("link_shared_path \"$template_home/skills\""));
+        assert!(INSTANCES_SCRIPT.contains("instances.sh delete <name>"));
+        assert!(INSTANCES_SCRIPT.contains("rm -rf \"$root\""));
     }
 
     #[cfg(unix)]
@@ -138,7 +141,7 @@ mod tests {
                 "https://gateway.example.com/openai/v1",
             ])
             .env("HOME", &home_dir)
-            .env("PATH", path)
+            .env("PATH", &path)
             .env("AI_GATEWAY_CODEX_INSTANCES_DIR", &instances_root)
             .env("AI_GATEWAY_TEST_OPEN_ARGS", &open_args_path)
             .output()
@@ -169,6 +172,64 @@ mod tests {
             "--user-data-dir={}",
             instances_root.join("account-a/electron").display()
         )));
+
+        let output = Command::new("sh")
+            .arg(&script_path)
+            .args(["delete", "account-a"])
+            .env("HOME", &home_dir)
+            .env("PATH", &path)
+            .env("AI_GATEWAY_CODEX_INSTANCES_DIR", &instances_root)
+            .output()
+            .expect("delete isolated instance");
+        assert!(
+            output.status.success(),
+            "instances delete failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!instances_root.join("account-a").exists());
+
+        fs::remove_dir_all(test_dir).expect("remove test dir");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restore_script_cleans_gateway_toml_configuration() {
+        let test_dir = test_dir("restore-config");
+        let codex_dir = test_dir.join("codex");
+        fs::create_dir_all(&codex_dir).expect("create codex dir");
+        fs::write(
+            codex_dir.join("config.toml"),
+            "# ai-gateway.previous-model-provider: model_provider = \"openai\"\n\
+             model_provider = \"ai-gateway\"\n\
+             model = \"gpt-5.4\"\n\
+             [model_providers.ai-gateway]\n\
+             name = \"ai-gateway\"\n\
+             base_url = \"https://gateway.example.com/openai/v1\"\n\
+             wire_api = \"responses\"\n\
+             [features]\n\
+             web_search_request = true\n",
+        )
+        .expect("write config");
+
+        let script_path = test_dir.join("restore.sh");
+        fs::write(&script_path, RESTORE_SCRIPT).expect("write restore script");
+        let output = Command::new("sh")
+            .arg(&script_path)
+            .env("HOME", &test_dir)
+            .env("CODEX_HOME", &codex_dir)
+            .output()
+            .expect("run restore script");
+        assert!(
+            output.status.success(),
+            "restore script failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let config =
+            fs::read_to_string(codex_dir.join("config.toml")).expect("read cleaned config");
+        assert!(config.contains("model_provider = \"openai\""));
+        assert!(!config.contains("ai-gateway"));
+        assert!(config.contains("[features]"));
 
         fs::remove_dir_all(test_dir).expect("remove test dir");
     }
