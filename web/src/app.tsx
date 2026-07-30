@@ -1689,6 +1689,7 @@ function CodexInstancesDialog({
         return;
       }
       setIsCreating(false);
+      onClose();
     } catch (saveError) {
       onError(errorMessage(saveError));
     } finally {
