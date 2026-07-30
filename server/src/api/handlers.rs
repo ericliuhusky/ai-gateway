@@ -9,13 +9,13 @@ use crate::{
     },
     models::{
         AccountRecord, ApiProviderRecord, ApiProviderSummary, AutoRoutingSettings,
-        CodexClientVersionSetting, CreateApiProviderRequest, ModelListItem, ModelListResponse,
-        PROVIDER_OPENAI_PROXY, ProviderAuthMode, ProviderQuotaCredits, ProviderQuotaResponse,
-        ProviderQuotaSnapshot, ProviderQuotaSummary, ProviderQuotaWindow, QuotaSource,
-        QuotaSupportStatus, RoutingModelTarget, SelectedRoute, TurnRouteLogUpdate,
+        CodexClientVersionSetting, CreateApiProviderRequest, InstanceRoutingConfig, ModelListItem,
+        ModelListResponse, PROVIDER_OPENAI_PROXY, ProviderAuthMode, ProviderQuotaCredits,
+        ProviderQuotaResponse, ProviderQuotaSnapshot, ProviderQuotaSummary, ProviderQuotaWindow,
+        QuotaSource, QuotaSupportStatus, RoutingModelTarget, SelectedRoute, TurnRouteLogUpdate,
         UpdateAutoRoutingSettingsRequest, UpdateCodexClientVersionRequest,
-        UpdateSelectedModelRequest, UpdateSelectedProviderRequest,
-        UpdateSelectedReasoningEffortRequest,
+        UpdateInstanceRoutingConfigRequest, UpdateSelectedModelRequest,
+        UpdateSelectedProviderRequest, UpdateSelectedReasoningEffortRequest,
     },
     openai_tokens::OpenAiTokenService,
     routing::{
@@ -261,15 +261,31 @@ pub async fn list_models(
     State(state): State<AppState>,
     Query(query): Query<ListModelsQuery>,
 ) -> Result<Json<ModelListResponse>, AppError> {
+    list_models_for_instance_inner(&state, query, None).await
+}
+
+pub async fn list_models_for_instance(
+    State(state): State<AppState>,
+    AxumPath(instance_id): AxumPath<String>,
+    Query(query): Query<ListModelsQuery>,
+) -> Result<Json<ModelListResponse>, AppError> {
+    let instance_id = normalize_instance_id(&instance_id)?;
+    list_models_for_instance_inner(&state, query, Some(&instance_id)).await
+}
+
+async fn list_models_for_instance_inner(
+    state: &AppState,
+    query: ListModelsQuery,
+    instance_id: Option<&str>,
+) -> Result<Json<ModelListResponse>, AppError> {
     let provider = match query.provider_id.as_deref().map(str::trim) {
         Some(provider_id) if !provider_id.is_empty() => {
-            resolve_provider_by_id(&state, provider_id).await?
+            resolve_provider_by_id(state, provider_id).await?
         }
-        _ => resolve_selected_provider(&state).await?,
+        _ => resolve_selected_provider_for_instance(state, instance_id).await?,
     };
-    let mut response = load_provider_models(&state, &provider, query.force).await?;
+    let mut response = load_provider_models(state, &provider, query.force).await?;
     ensure_codex_model_infos(&mut response);
-
     Ok(Json(response))
 }
 
@@ -309,6 +325,14 @@ pub async fn delete_provider(
     state
         .settings
         .clear_auto_routing_provider(&provider_id)
+        .map_err(AppError::internal)?;
+    state
+        .settings
+        .clear_instance_auto_routing_provider(&provider_id)
+        .map_err(AppError::internal)?;
+    state
+        .routes
+        .clear_instance_provider(&provider_id)
         .map_err(AppError::internal)?;
     let deleted = state
         .providers
@@ -424,6 +448,89 @@ pub async fn clear_selected_reasoning_effort(
     })))
 }
 
+pub async fn list_instance_routing_configs(
+    State(state): State<AppState>,
+) -> Result<Json<Value>, AppError> {
+    let instances = state
+        .routes
+        .list_instance_ids()
+        .map_err(AppError::internal)?;
+    Ok(Json(json!({ "instances": instances })))
+}
+
+pub async fn get_instance_routing_config(
+    State(state): State<AppState>,
+    AxumPath(instance_id): AxumPath<String>,
+) -> Result<Json<InstanceRoutingConfig>, AppError> {
+    let instance_id = normalize_instance_id(&instance_id)?;
+    Ok(Json(InstanceRoutingConfig {
+        route: state
+            .routes
+            .get_for_instance(&instance_id)
+            .map_err(AppError::internal)?,
+        automatic_routing: state
+            .settings
+            .instance_auto_routing_settings(&instance_id)
+            .map_err(AppError::internal)?,
+        instance_id,
+    }))
+}
+
+pub async fn set_instance_routing_config(
+    State(state): State<AppState>,
+    AxumPath(instance_id): AxumPath<String>,
+    Json(request): Json<UpdateInstanceRoutingConfigRequest>,
+) -> Result<Json<InstanceRoutingConfig>, AppError> {
+    let instance_id = normalize_instance_id(&instance_id)?;
+    let provider_id = normalize_selected_provider_id(request.provider_id)?;
+    let provider = resolve_provider_by_id(&state, &provider_id).await?;
+    let selected_model = request
+        .selected_model
+        .map(normalize_selected_model)
+        .transpose()?;
+    if let Some(model) = selected_model.as_deref() {
+        let models = load_provider_models(&state, &provider, false).await?;
+        if !models.data.iter().any(|item| item.id == model) {
+            return Err(AppError::bad_request(format!(
+                "model `{model}` is not available for provider `{}`",
+                provider.name
+            )));
+        }
+    }
+    let selected_reasoning_effort = request
+        .selected_reasoning_effort
+        .map(normalize_selected_reasoning_effort)
+        .transpose()?;
+    let automatic_routing = match request.automatic_routing {
+        Some(settings) => {
+            validate_auto_routing_targets(&state, &settings).await?;
+            state
+                .settings
+                .set_instance_auto_routing_settings(&instance_id, &settings)
+                .map_err(AppError::internal)?;
+            settings
+        }
+        None => state
+            .settings
+            .instance_auto_routing_settings(&instance_id)
+            .map_err(AppError::internal)?,
+    };
+    let route = state
+        .routes
+        .set_for_instance(
+            &instance_id,
+            Some(provider_id),
+            selected_model,
+            selected_reasoning_effort,
+        )
+        .map_err(AppError::internal)?;
+    Ok(Json(InstanceRoutingConfig {
+        instance_id,
+        route,
+        automatic_routing,
+    }))
+}
+
 pub async fn responses(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -435,22 +542,53 @@ pub async fn responses(
     responses_inner(state, raw_body, codex_turn_metadata(&headers)).await
 }
 
+pub async fn responses_for_instance(
+    State(state): State<AppState>,
+    AxumPath(instance_id): AxumPath<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, AppError> {
+    let instance_id = normalize_instance_id(&instance_id)?;
+    let raw_body = std::str::from_utf8(&body)
+        .map_err(|_| AppError::bad_request("request body must be valid UTF-8"))?
+        .to_owned();
+    responses_inner_for_instance(
+        state,
+        raw_body,
+        codex_turn_metadata(&headers),
+        Some(&instance_id),
+    )
+    .await
+}
+
 pub(super) async fn responses_inner(
     state: AppState,
     raw_body: String,
     turn_metadata: Option<CodexTurnMetadata>,
 ) -> Result<Response, AppError> {
-    let provider = resolve_selected_provider(&state).await?;
+    responses_inner_for_instance(state, raw_body, turn_metadata, None).await
+}
+
+async fn responses_inner_for_instance(
+    state: AppState,
+    raw_body: String,
+    turn_metadata: Option<CodexTurnMetadata>,
+    instance_id: Option<&str>,
+) -> Result<Response, AppError> {
+    let provider = resolve_selected_provider_for_instance(&state, instance_id).await?;
     let mut request_json: Value = serde_json::from_str(&raw_body)
         .map_err(|err| AppError::bad_request(format!("invalid request JSON: {err}")))?;
     let request_stream = responses_request_stream(&request_json);
     let requested_model = responses_request_model(&request_json)
         .unwrap_or_default()
         .to_string();
-    let mut turn = turn_context_from_request(&request_json, turn_metadata.as_ref());
-    let routing = choose_model_for_request(&state, &provider, &turn, &request_json).await?;
+    let mut turn = turn_context_from_request(&request_json, turn_metadata.as_ref(), instance_id);
+    let routing =
+        choose_model_for_request(&state, &provider, &turn, &request_json, instance_id).await?;
     let routed_provider = resolve_routing_provider(&state, &provider, &routing).await?;
-    let selected_reasoning_effort = state.routes.get().await.selected_reasoning_effort;
+    let selected_reasoning_effort = route_for_instance(&state, instance_id)
+        .await?
+        .selected_reasoning_effort;
     let request_overridden = apply_gateway_overrides_to_raw_request(
         &routing,
         selected_reasoning_effort.as_deref(),
@@ -567,14 +705,52 @@ where
 pub(super) async fn resolve_selected_provider(
     state: &AppState,
 ) -> Result<ResolvedProvider, AppError> {
-    let route = state.routes.get().await;
+    resolve_selected_provider_for_instance(state, None).await
+}
+
+async fn resolve_selected_provider_for_instance(
+    state: &AppState,
+    instance_id: Option<&str>,
+) -> Result<ResolvedProvider, AppError> {
+    let route = route_for_instance(state, instance_id).await?;
     if let Some(provider_id) = route.provider_id {
         return resolve_provider_by_id(state, &provider_id).await;
     }
+    let endpoint = instance_id
+        .map(|id| format!("PUT /instances/{id}/config"))
+        .unwrap_or_else(|| "PUT /selected-provider".to_string());
+    Err(AppError::bad_request(format!(
+        "no provider selected; call {endpoint} first"
+    )))
+}
 
-    Err(AppError::bad_request(
-        "no provider selected; call PUT /selected-provider first",
-    ))
+async fn route_for_instance(
+    state: &AppState,
+    instance_id: Option<&str>,
+) -> Result<SelectedRoute, AppError> {
+    match instance_id {
+        Some(instance_id) => state
+            .routes
+            .get_for_instance(instance_id)
+            .map_err(AppError::internal),
+        None => Ok(state.routes.get().await),
+    }
+}
+
+fn automatic_routing_for_instance(
+    state: &AppState,
+    instance_id: Option<&str>,
+) -> Result<AutoRoutingSettings, AppError> {
+    match instance_id {
+        Some(instance_id) => state
+            .settings
+            .instance_auto_routing_settings(instance_id)
+            .map_err(AppError::internal),
+        None => state
+            .settings
+            .auto_routing_settings()
+            .map_err(AppError::internal),
+    }
 }
 
 fn route_payload(route: SelectedRoute) -> Value {
@@ -642,6 +818,7 @@ async fn choose_model_for_request(
     provider: &ResolvedProvider,
     turn: &TurnContext,
     request: &Value,
+    instance_id: Option<&str>,
 ) -> Result<RoutingDecision, AppError> {
     if let Some(existing) = state.turn_logs.get(&turn.id).ok().flatten() {
         return Ok(RoutingDecision {
@@ -658,7 +835,7 @@ async fn choose_model_for_request(
         });
     }
 
-    if let Some(model) = state.routes.get().await.selected_model {
+    if let Some(model) = route_for_instance(state, instance_id).await?.selected_model {
         let provider_id = provider
             .record
             .as_ref()
@@ -670,10 +847,7 @@ async fn choose_model_for_request(
         }));
     }
 
-    let settings = state
-        .settings
-        .auto_routing_settings()
-        .map_err(AppError::internal)?;
+    let settings = automatic_routing_for_instance(state, instance_id)?;
     if !settings.enabled {
         return Ok(RoutingDecision::disabled());
     }
@@ -762,6 +936,7 @@ fn codex_turn_metadata(headers: &HeaderMap) -> Option<CodexTurnMetadata> {
 fn turn_context_from_request(
     request: &Value,
     turn_metadata: Option<&CodexTurnMetadata>,
+    instance_id: Option<&str>,
 ) -> TurnContext {
     let raw_turn_id = turn_metadata
         .and_then(|metadata| metadata.turn_id.as_deref())
@@ -778,7 +953,10 @@ fn turn_context_from_request(
         })
         .filter(|value| !value.trim().is_empty());
     let id = raw_turn_id
-        .map(opaque_turn_id)
+        .map(|turn_id| match instance_id {
+            Some(instance_id) => opaque_turn_id(&format!("{instance_id}:{turn_id}")),
+            None => opaque_turn_id(turn_id),
+        })
         .unwrap_or_else(|| format!("turn_{}", Uuid::new_v4().simple()));
     let reasoning_effort = reasoning_effort_from_request(request);
 
@@ -1261,6 +1439,21 @@ async fn clear_openai_model_caches(state: &AppState) -> Result<(), AppError> {
         }
     }
     Ok(())
+}
+
+fn normalize_instance_id(value: &str) -> Result<String, AppError> {
+    let value = value.trim();
+    if value.is_empty()
+        || value.len() > 64
+        || !value
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '-'))
+    {
+        return Err(AppError::bad_request(
+            "instance id must be 1-64 ASCII letters, numbers, `_`, or `-`",
+        ));
+    }
+    Ok(value.to_string())
 }
 
 fn normalize_selected_provider_id(provider_id: Option<String>) -> Result<String, AppError> {
@@ -1746,6 +1939,7 @@ mod tests {
                 }]
             }),
             Some(&metadata),
+            None,
         );
 
         assert_eq!(

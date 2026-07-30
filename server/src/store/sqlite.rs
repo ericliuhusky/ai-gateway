@@ -141,6 +141,77 @@ impl SqliteStore {
         Ok(())
     }
 
+    pub fn list_instance_ids(&self) -> Result<Vec<String>, String> {
+        let conn = self.connect()?;
+        let mut statement = conn
+            .prepare("SELECT instance_id FROM gateway_instance_state ORDER BY instance_id COLLATE NOCASE")
+            .map_err(|err| format!("prepare instance list query failed: {err}"))?;
+        let rows = statement
+            .query_map([], |row| row.get(0))
+            .map_err(|err| format!("query instance list failed: {err}"))?;
+        rows.collect::<Result<Vec<String>, _>>()
+            .map_err(|err| format!("read instance list failed: {err}"))
+    }
+
+    pub fn load_instance_route(&self, instance_id: &str) -> Result<SelectedRoute, String> {
+        let conn = self.connect()?;
+        conn.query_row(
+            "SELECT selected_provider_id, selected_model, selected_reasoning_effort, route_updated_at
+             FROM gateway_instance_state WHERE instance_id = ?1",
+            params![instance_id],
+            |row| {
+                Ok(SelectedRoute {
+                    provider_id: row.get(0)?,
+                    selected_model: row.get(1)?,
+                    selected_reasoning_effort: row.get(2)?,
+                    updated_at: row.get(3)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|err| format!("load instance route failed: {err}"))
+        .map(|route| route.unwrap_or_default())
+    }
+
+    pub fn upsert_instance_route(
+        &self,
+        instance_id: &str,
+        route: &SelectedRoute,
+    ) -> Result<(), String> {
+        let conn = self.connect()?;
+        conn.execute(
+            "INSERT INTO gateway_instance_state (
+                instance_id, selected_provider_id, selected_model, selected_reasoning_effort, route_updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(instance_id) DO UPDATE SET
+                selected_provider_id = excluded.selected_provider_id,
+                selected_model = excluded.selected_model,
+                selected_reasoning_effort = excluded.selected_reasoning_effort,
+                route_updated_at = excluded.route_updated_at",
+            params![
+                instance_id,
+                route.provider_id,
+                route.selected_model,
+                route.selected_reasoning_effort,
+                route.updated_at
+            ],
+        )
+        .map_err(|err| format!("upsert instance route failed: {err}"))?;
+        Ok(())
+    }
+
+    pub fn clear_instance_routes_for_provider(&self, provider_id: &str) -> Result<(), String> {
+        let conn = self.connect()?;
+        conn.execute(
+            "UPDATE gateway_instance_state
+             SET selected_provider_id = NULL, selected_model = NULL, selected_reasoning_effort = NULL
+             WHERE selected_provider_id = ?1",
+            params![provider_id],
+        )
+        .map_err(|err| format!("clear instance routes for provider failed: {err}"))?;
+        Ok(())
+    }
+
     pub fn load_route(&self) -> Result<SelectedRoute, String> {
         let conn = self.connect()?;
         conn.query_row(
@@ -297,6 +368,89 @@ impl SqliteStore {
             params![value],
         )
         .map_err(|err| format!("upsert Codex client version override failed: {err}"))?;
+        Ok(())
+    }
+
+    pub fn load_instance_auto_routing_settings(
+        &self,
+        instance_id: &str,
+    ) -> Result<AutoRoutingSettings, String> {
+        let conn = self.connect()?;
+        conn.query_row(
+            "SELECT routing_classifier_target, routing_light_target, routing_standard_target,
+                    routing_pro_target, routing_max_target, routing_enabled,
+                    routing_low_confidence_threshold
+             FROM gateway_instance_state WHERE instance_id = ?1",
+            params![instance_id],
+            |row| {
+                Ok(AutoRoutingSettings {
+                    enabled: row.get::<_, i64>(5)? != 0,
+                    classifier: routing_target_from_storage(row.get(0)?)
+                        .map_err(rusqlite::Error::ToSqlConversionFailure)?,
+                    light: routing_target_from_storage(row.get(1)?)
+                        .map_err(rusqlite::Error::ToSqlConversionFailure)?,
+                    standard: routing_target_from_storage(row.get(2)?)
+                        .map_err(rusqlite::Error::ToSqlConversionFailure)?,
+                    pro: routing_target_from_storage(row.get(3)?)
+                        .map_err(rusqlite::Error::ToSqlConversionFailure)?,
+                    max: routing_target_from_storage(row.get(4)?)
+                        .map_err(rusqlite::Error::ToSqlConversionFailure)?,
+                    low_confidence_threshold: row.get(6)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|err| format!("load instance automatic routing settings failed: {err}"))
+        .map(|settings| settings.unwrap_or_default())
+    }
+
+    pub fn set_instance_auto_routing_settings(
+        &self,
+        instance_id: &str,
+        settings: &AutoRoutingSettings,
+    ) -> Result<(), String> {
+        let conn = self.connect()?;
+        conn.execute(
+            "INSERT INTO gateway_instance_state (
+                instance_id, routing_enabled, routing_classifier_target, routing_light_target,
+                routing_standard_target, routing_pro_target, routing_max_target,
+                routing_low_confidence_threshold
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(instance_id) DO UPDATE SET
+                routing_enabled = excluded.routing_enabled,
+                routing_classifier_target = excluded.routing_classifier_target,
+                routing_light_target = excluded.routing_light_target,
+                routing_standard_target = excluded.routing_standard_target,
+                routing_pro_target = excluded.routing_pro_target,
+                routing_max_target = excluded.routing_max_target,
+                routing_low_confidence_threshold = excluded.routing_low_confidence_threshold",
+            params![
+                instance_id,
+                i64::from(settings.enabled),
+                routing_target_to_storage(settings.classifier.as_ref())?,
+                routing_target_to_storage(settings.light.as_ref())?,
+                routing_target_to_storage(settings.standard.as_ref())?,
+                routing_target_to_storage(settings.pro.as_ref())?,
+                routing_target_to_storage(settings.max.as_ref())?,
+                settings.low_confidence_threshold,
+            ],
+        )
+        .map_err(|err| format!("upsert instance automatic routing settings failed: {err}"))?;
+        Ok(())
+    }
+
+    pub fn clear_instance_auto_routing_provider(&self, provider_id: &str) -> Result<(), String> {
+        let conn = self.connect()?;
+        conn.execute(
+            "UPDATE gateway_instance_state SET routing_enabled = 0
+             WHERE routing_classifier_target LIKE '%' || ?1 || '%'
+                OR routing_light_target LIKE '%' || ?1 || '%'
+                OR routing_standard_target LIKE '%' || ?1 || '%'
+                OR routing_pro_target LIKE '%' || ?1 || '%'
+                OR routing_max_target LIKE '%' || ?1 || '%'",
+            params![provider_id],
+        )
+        .map_err(|err| format!("clear instance automatic routing provider failed: {err}"))?;
         Ok(())
     }
 
@@ -496,6 +650,22 @@ impl SqliteStore {
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 selected_provider_id TEXT,
                 codex_client_version_override TEXT,
+                routing_enabled INTEGER NOT NULL DEFAULT 0,
+                routing_classifier_target TEXT,
+                routing_light_target TEXT,
+                routing_standard_target TEXT,
+                routing_pro_target TEXT,
+                routing_max_target TEXT,
+                routing_low_confidence_threshold REAL NOT NULL DEFAULT 0.7,
+                route_updated_at INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY (selected_provider_id) REFERENCES providers(id) ON DELETE SET NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS gateway_instance_state (
+                instance_id TEXT PRIMARY KEY,
+                selected_provider_id TEXT,
+                selected_model TEXT,
+                selected_reasoning_effort TEXT,
                 routing_enabled INTEGER NOT NULL DEFAULT 0,
                 routing_classifier_target TEXT,
                 routing_light_target TEXT,

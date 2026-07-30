@@ -5,6 +5,7 @@ import type {
   GatewayCompatibilityProfile,
   GatewayModel,
   GatewayProvider,
+  InstanceRoutingConfig,
   ProviderQuotaSummary,
   ReasoningEffort,
   SelectedProvider,
@@ -70,6 +71,25 @@ export const gatewayApi = {
     return request<AutoRoutingSettings>("/settings/automatic-routing", {
       method: "PUT",
       body: JSON.stringify(settings),
+    });
+  },
+
+  async instances() {
+    const payload = await request<{ instances: string[] }>("/instances");
+    return payload.instances;
+  },
+
+  instanceConfig(instanceId: string) {
+    return request<InstanceRoutingConfig>(`/instances/${encodeURIComponent(instanceId)}/config`);
+  },
+
+  setInstanceConfig(
+    instanceId: string,
+    config: Omit<InstanceRoutingConfig, "instance_id" | "updated_at">,
+  ) {
+    return request<InstanceRoutingConfig>(`/instances/${encodeURIComponent(instanceId)}/config`, {
+      method: "PUT",
+      body: JSON.stringify(config),
     });
   },
 

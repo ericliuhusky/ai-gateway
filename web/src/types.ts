@@ -41,6 +41,15 @@ export interface CodexClientVersionSetting {
   is_overridden: boolean;
 }
 
+export interface InstanceRoutingConfig {
+  instance_id: string;
+  provider_id?: string;
+  selected_model?: string;
+  selected_reasoning_effort?: ReasoningEffort;
+  updated_at: number;
+  automatic_routing: AutoRoutingSettings;
+}
+
 export interface AutoRoutingSettings {
   enabled: boolean;
   classifier?: RoutingModelTarget;

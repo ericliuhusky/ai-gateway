@@ -27,6 +27,27 @@ impl SettingsStore {
         self.sqlite.set_codex_client_version_override(None)
     }
 
+    pub fn instance_auto_routing_settings(
+        &self,
+        instance_id: &str,
+    ) -> Result<AutoRoutingSettings, String> {
+        self.sqlite.load_instance_auto_routing_settings(instance_id)
+    }
+
+    pub fn set_instance_auto_routing_settings(
+        &self,
+        instance_id: &str,
+        settings: &AutoRoutingSettings,
+    ) -> Result<(), String> {
+        self.sqlite
+            .set_instance_auto_routing_settings(instance_id, settings)
+    }
+
+    pub fn clear_instance_auto_routing_provider(&self, provider_id: &str) -> Result<(), String> {
+        self.sqlite
+            .clear_instance_auto_routing_provider(provider_id)
+    }
+
     pub fn auto_routing_settings(&self) -> Result<AutoRoutingSettings, String> {
         self.sqlite.load_auto_routing_settings()
     }

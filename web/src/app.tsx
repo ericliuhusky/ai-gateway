@@ -36,9 +36,10 @@ import type {
   TurnRouteLog,
   GatewayCompatibilityProfile,
   RoutingModelTarget,
+  InstanceRoutingConfig,
 } from "./types";
 
-type Dialog = "api" | "account" | "settings" | "setup" | null;
+type Dialog = "api" | "account" | "instances" | "settings" | "setup" | null;
 type QuotaMap = Record<string, ProviderQuotaSummary | undefined>;
 type ErrorMap = Record<string, string | undefined>;
 
@@ -277,6 +278,15 @@ export function App() {
             <Button
               variant="outline"
               size="sm"
+              aria-label="管理 Codex 实例"
+              onClick={() => setDialog("instances")}
+            >
+              <Server className="size-3.5" />
+              <span className="hidden sm:inline">Codex 实例</span>
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
               aria-label="Codex 接入"
               onClick={() => setDialog("setup")}
             >
@@ -429,6 +439,13 @@ export function App() {
               await loadModels(true);
             }
           }}
+          onError={setError}
+        />
+      ) : null}
+      {dialog === "instances" ? (
+        <CodexInstancesDialog
+          providers={providers}
+          onClose={() => setDialog(null)}
           onError={setError}
         />
       ) : null}
@@ -1011,6 +1028,255 @@ function AccountDialog({
   );
 }
 
+function CodexInstancesDialog({
+  providers,
+  onClose,
+  onError,
+}: {
+  providers: GatewayProvider[];
+  onClose: () => void;
+  onError: (message: string) => void;
+}) {
+  const [instanceIds, setInstanceIds] = React.useState<string[]>([]);
+  const [instanceId, setInstanceId] = React.useState("");
+  const [providerId, setProviderId] = React.useState("");
+  const [selectedModel, setSelectedModel] = React.useState("");
+  const [reasoningEffort, setReasoningEffort] = React.useState<ReasoningEffort | "">("");
+  const [automaticRouting, setAutomaticRouting] = React.useState<AutoRoutingSettings>({
+    enabled: false,
+    low_confidence_threshold: 0.7,
+  });
+  const [modelsByProvider, setModelsByProvider] = React.useState<Record<string, GatewayModel[]>>({});
+  const [loading, setLoading] = React.useState(true);
+  const [loadingModels, setLoadingModels] = React.useState(true);
+  const [saving, setSaving] = React.useState(false);
+
+  const refreshInstances = React.useCallback(async () => {
+    const items = await gatewayApi.instances();
+    setInstanceIds(items);
+  }, []);
+
+  React.useEffect(() => {
+    void refreshInstances()
+      .catch((loadError) => onError(errorMessage(loadError)))
+      .finally(() => setLoading(false));
+  }, [onError, refreshInstances]);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    if (!providers.length) {
+      setModelsByProvider({});
+      setLoadingModels(false);
+      return () => { cancelled = true; };
+    }
+    setLoadingModels(true);
+    void Promise.all(providers.map(async (provider) => [provider.id, await gatewayApi.models(provider.id)] as const))
+      .then((entries) => {
+        if (cancelled) return;
+        setModelsByProvider(Object.fromEntries(entries.map(([id, models]) => [
+          id,
+          [...models].sort((a, b) => a.id.localeCompare(b.id)),
+        ])));
+      })
+      .catch((loadError) => {
+        if (!cancelled) onError(`加载供应商模型失败：${errorMessage(loadError)}`);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingModels(false);
+      });
+    return () => { cancelled = true; };
+  }, [providers, onError]);
+
+  function resetDraft() {
+    setInstanceId("");
+    setProviderId("");
+    setSelectedModel("");
+    setReasoningEffort("");
+    setAutomaticRouting({ enabled: false, low_confidence_threshold: 0.7 });
+  }
+
+  async function loadInstance(id: string) {
+    setLoading(true);
+    try {
+      const config = await gatewayApi.instanceConfig(id);
+      setInstanceId(config.instance_id);
+      setProviderId(config.provider_id ?? "");
+      setSelectedModel(config.selected_model ?? "");
+      setReasoningEffort(config.selected_reasoning_effort ?? "");
+      setAutomaticRouting(config.automatic_routing);
+    } catch (loadError) {
+      onError(errorMessage(loadError));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const targetComplete = [
+    automaticRouting.classifier,
+    automaticRouting.light,
+    automaticRouting.standard,
+    automaticRouting.pro,
+    automaticRouting.max,
+  ].every((target) => Boolean(target?.provider_id && target.model));
+  const validInstanceId = /^[A-Za-z0-9_-]{1,64}$/.test(instanceId);
+  const canSave = Boolean(providerId && validInstanceId && !saving && !loadingModels && (!automaticRouting.enabled || targetComplete));
+  const gatewayUrl = instanceId
+    ? `${window.location.origin}/instances/${encodeURIComponent(instanceId)}/openai/v1`
+    : `${window.location.origin}/instances/<instance-id>/openai/v1`;
+  const instanceCommand = instanceId
+    ? `curl -fsSL ${shellQuote(`${window.location.origin}/codex/instances.sh`)} | sh -s -- create ${shellQuote(instanceId)} ${shellQuote(gatewayUrl)}`
+    : "填写实例名称后生成启动命令";
+
+  async function save() {
+    if (!canSave) return;
+    setSaving(true);
+    try {
+      const config: Omit<InstanceRoutingConfig, "instance_id" | "updated_at"> = {
+        provider_id: providerId,
+        selected_model: selectedModel || undefined,
+        selected_reasoning_effort: reasoningEffort || undefined,
+        automatic_routing: automaticRouting,
+      };
+      const saved = await gatewayApi.setInstanceConfig(instanceId, config);
+      setInstanceId(saved.instance_id);
+      setAutomaticRouting(saved.automatic_routing);
+      await refreshInstances();
+    } catch (saveError) {
+      onError(errorMessage(saveError));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function updateAutomatic<K extends keyof AutoRoutingSettings>(key: K, value: AutoRoutingSettings[K]) {
+    setAutomaticRouting((current) => ({ ...current, [key]: value }));
+  }
+
+  return (
+    <DialogFrame
+      title="Codex 实例"
+      description="每个实例使用不同的 Gateway URL path，并保存一套独立的供应商、固定模型或自动路由配置。"
+      onClose={onClose}
+    >
+      <div className="grid gap-6 lg:grid-cols-[190px_minmax(0,1fr)]">
+        <aside className="rounded-2xl border border-white/65 bg-white/45 p-3 dark:border-white/8 dark:bg-white/[0.035]">
+          <div className="mb-2 flex items-center justify-between px-1">
+            <span className="eyebrow">已有实例</span>
+            <Button variant="outline" size="icon" title="新建实例" onClick={resetDraft}>
+              <Plus className="size-4" />
+            </Button>
+          </div>
+          {loading ? (
+            <div className="flex h-20 items-center justify-center"><LoaderCircle className="size-5 animate-spin text-slate-400" /></div>
+          ) : instanceIds.length ? (
+            <div className="space-y-1">
+              {instanceIds.map((id) => (
+                <button
+                  key={id}
+                  type="button"
+                  onClick={() => void loadInstance(id)}
+                  className={cn(
+                    "w-full rounded-xl px-3 py-2 text-left font-mono text-xs font-bold transition",
+                    id === instanceId ? "bg-blue-500/10 text-blue-700 dark:text-blue-300" : "hover:bg-slate-500/8",
+                  )}
+                >
+                  {id}
+                </button>
+              ))}
+            </div>
+          ) : (
+            <p className="px-1 py-4 text-[11px] leading-5 text-slate-400">还没有实例。点击 + 创建第一个。</p>
+          )}
+        </aside>
+
+        <div className="min-w-0 space-y-5">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <FormField label="实例名称">
+              <input className="field w-full font-mono text-sm" value={instanceId} maxLength={64} disabled={saving} placeholder="例如 codex-a" onChange={(event) => setInstanceId(event.target.value)} />
+            </FormField>
+            <FormField label="Gateway Base URL">
+              <input className="field w-full font-mono text-xs" readOnly value={gatewayUrl} />
+            </FormField>
+          </div>
+          {instanceId && !validInstanceId ? <p className="-mt-3 text-[11px] text-red-500">实例名称只能包含字母、数字、_ 或 -，最多 64 个字符。</p> : null}
+
+          <div className="grid gap-4 sm:grid-cols-3">
+            <FormField label="默认供应商">
+              <select className="field w-full text-xs" value={providerId} disabled={saving} onChange={(event) => { setProviderId(event.target.value); setSelectedModel(""); }}>
+                <option value="">选择供应商</option>
+                {providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.account_email ? `${provider.name} (${provider.account_email})` : provider.name}</option>)}
+              </select>
+            </FormField>
+            <FormField label="固定模型（可选）">
+              <select className="field w-full font-mono text-xs" value={selectedModel} disabled={saving || loadingModels || !providerId} onChange={(event) => setSelectedModel(event.target.value)}>
+                <option value="">跟随请求模型</option>
+                {(modelsByProvider[providerId] ?? []).map((model) => <option key={model.id} value={model.id}>{model.id}</option>)}
+              </select>
+            </FormField>
+            <FormField label="推理强度（可选）">
+              <select className="field w-full text-xs" value={reasoningEffort} disabled={saving || !providerId} onChange={(event) => setReasoningEffort(event.target.value as ReasoningEffort | "")}>
+                <option value="">跟随请求</option>
+                <option value="low">低（low）</option>
+                <option value="medium">中（medium）</option>
+                <option value="high">高（high）</option>
+                <option value="xhigh">极高（xhigh）</option>
+              </select>
+            </FormField>
+          </div>
+
+          <section className="border-t border-slate-200/70 pt-5 dark:border-white/10">
+            <div className="flex items-start gap-4">
+              <div className="min-w-0 flex-1">
+                <div className="text-sm font-bold">自动模型路由</div>
+                <p className="mt-1 text-[11px] leading-5 text-slate-400">关闭时，此实例使用上方的固定模型（或原请求模型）；开启时，按下方档位自动选择模型。</p>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={automaticRouting.enabled}
+                disabled={saving || loadingModels}
+                className={cn("mt-0.5 flex h-6 w-11 shrink-0 items-center rounded-full p-0.5 transition", automaticRouting.enabled ? "bg-blue-500" : "bg-slate-200 dark:bg-white/15", (saving || loadingModels) && "cursor-not-allowed opacity-50")}
+                onClick={() => updateAutomatic("enabled", !automaticRouting.enabled)}
+              >
+                <span className={cn("size-5 rounded-full bg-white shadow-sm transition", automaticRouting.enabled && "translate-x-5")} />
+              </button>
+            </div>
+            {automaticRouting.enabled ? (
+              <div className="mt-5 space-y-4">
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <RouteTargetSelect label="路由分类模型" value={automaticRouting.classifier} providers={providers} modelsByProvider={modelsByProvider} disabled={saving || loadingModels} onChange={(value) => updateAutomatic("classifier", value)} />
+                  <RouteTargetSelect label="轻量模型（light）" value={automaticRouting.light} providers={providers} modelsByProvider={modelsByProvider} disabled={saving || loadingModels} onChange={(value) => updateAutomatic("light", value)} />
+                  <RouteTargetSelect label="标准模型（standard）" value={automaticRouting.standard} providers={providers} modelsByProvider={modelsByProvider} disabled={saving || loadingModels} onChange={(value) => updateAutomatic("standard", value)} />
+                  <RouteTargetSelect label="专业模型（pro）" value={automaticRouting.pro} providers={providers} modelsByProvider={modelsByProvider} disabled={saving || loadingModels} onChange={(value) => updateAutomatic("pro", value)} />
+                  <RouteTargetSelect label="极致模型（max，兜底）" value={automaticRouting.max} providers={providers} modelsByProvider={modelsByProvider} disabled={saving || loadingModels} onChange={(value) => updateAutomatic("max", value)} />
+                </div>
+                <FormField label="低置信度阈值">
+                  <input className="field w-36 font-mono text-sm" type="number" min="0" max="1" step="0.05" value={automaticRouting.low_confidence_threshold} disabled={saving} onChange={(event) => updateAutomatic("low_confidence_threshold", Number(event.target.value))} />
+                </FormField>
+              </div>
+            ) : null}
+          </section>
+
+          <FormField label="创建并启动 Codex 窗口">
+            <div className="relative">
+              <pre className="overflow-x-auto rounded-2xl bg-slate-950 p-4 pr-12 text-[11px] leading-5 text-slate-200">{instanceCommand}</pre>
+              {instanceId ? <button className="absolute right-3 top-3 flex size-8 items-center justify-center rounded-lg bg-white/10 text-white hover:bg-white/15" type="button" aria-label="复制实例命令" onClick={() => void copyText(instanceCommand)}><Copy className="size-4" /></button> : null}
+            </div>
+          </FormField>
+
+          <div className="flex flex-wrap justify-end gap-2">
+            <Button type="button" variant="outline" onClick={onClose}>取消</Button>
+            <Button type="button" disabled={!canSave} onClick={() => void save()}>
+              {saving ? <LoaderCircle className="size-4 animate-spin" /> : <Check className="size-4" />}
+              {saving ? "保存中" : "保存实例配置"}
+            </Button>
+          </div>
+        </div>
+      </div>
+    </DialogFrame>
+  );
+}
+
 function SetupDialog({ onClose }: { onClose: () => void }) {
   const [copied, setCopied] = React.useState<"setup" | "restore" | "instance" | null>(null);
   const gatewayUrl = `${window.location.origin}/openai/v1`;
@@ -1019,7 +1285,8 @@ function SetupDialog({ onClose }: { onClose: () => void }) {
   const instancesScriptUrl = `${window.location.origin}/codex/instances.sh`;
   const setupCommand = `curl -fsSL ${shellQuote(setupScriptUrl)} | sh -s -- ${shellQuote(gatewayUrl)}`;
   const restoreCommand = `curl -fsSL ${shellQuote(restoreScriptUrl)} | sh`;
-  const instanceCommand = `curl -fsSL ${shellQuote(instancesScriptUrl)} | sh -s -- create account-a ${shellQuote(gatewayUrl)}`;
+  const instanceGatewayUrl = `${window.location.origin}/instances/account-a/openai/v1`;
+  const instanceCommand = `curl -fsSL ${shellQuote(instancesScriptUrl)} | sh -s -- create account-a ${shellQuote(instanceGatewayUrl)}`;
 
   function copyCommand(kind: "setup" | "restore" | "instance", command: string) {
     void copyText(command);
@@ -1035,7 +1302,7 @@ function SetupDialog({ onClose }: { onClose: () => void }) {
     >
       <div className="space-y-5">
         <div className="rounded-2xl border border-blue-500/15 bg-blue-500/5 p-4 text-xs leading-5 text-blue-700 dark:text-blue-300">
-          在本机终端执行接入命令。脚本会记录原模型供应商、修改 <code>~/.codex/config.toml</code> 并为旧任务创建历史别名，不会安装程序或启动后台服务。
+          在本机终端执行接入命令。脚本会记录原模型供应商、修改 <code>~/.codex/config.toml</code> 并为旧任务创建历史别名，不会安装程序或启动后台服务。多实例命令会把实例名写入 Gateway URL path，使每个窗口拥有独立路由配置。
         </div>
         <FormField label="Gateway Base URL">
           <div className="flex gap-2">

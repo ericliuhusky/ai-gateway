@@ -92,6 +92,26 @@ pub struct SelectedRoute {
     pub updated_at: i64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct InstanceRoutingConfig {
+    pub instance_id: String,
+    #[serde(flatten)]
+    pub route: SelectedRoute,
+    pub automatic_routing: AutoRoutingSettings,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpdateInstanceRoutingConfigRequest {
+    #[serde(default)]
+    pub provider_id: Option<String>,
+    #[serde(default)]
+    pub selected_model: Option<String>,
+    #[serde(default)]
+    pub selected_reasoning_effort: Option<String>,
+    #[serde(default)]
+    pub automatic_routing: Option<AutoRoutingSettings>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct UpdateSelectedProviderRequest {
     #[serde(default)]

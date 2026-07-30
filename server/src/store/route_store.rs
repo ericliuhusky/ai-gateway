@@ -29,6 +29,35 @@ impl RouteStore {
         self.route.lock().await.clone()
     }
 
+    pub fn list_instance_ids(&self) -> Result<Vec<String>, String> {
+        self.sqlite.list_instance_ids()
+    }
+
+    pub fn get_for_instance(&self, instance_id: &str) -> Result<SelectedRoute, String> {
+        self.sqlite.load_instance_route(instance_id)
+    }
+
+    pub fn set_for_instance(
+        &self,
+        instance_id: &str,
+        provider_id: Option<String>,
+        selected_model: Option<String>,
+        selected_reasoning_effort: Option<String>,
+    ) -> Result<SelectedRoute, String> {
+        let route = SelectedRoute {
+            provider_id,
+            selected_model,
+            selected_reasoning_effort,
+            updated_at: now_unix() as i64,
+        };
+        self.sqlite.upsert_instance_route(instance_id, &route)?;
+        Ok(route)
+    }
+
+    pub fn clear_instance_provider(&self, provider_id: &str) -> Result<(), String> {
+        self.sqlite.clear_instance_routes_for_provider(provider_id)
+    }
+
     pub async fn set_provider(&self, provider_id: Option<String>) -> Result<SelectedRoute, String> {
         let mut route = self.route.lock().await.clone();
         route.selected_model = match provider_id.as_deref() {
@@ -86,6 +115,44 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
     use tokio::sync::Mutex;
+
+    #[test]
+    fn keeps_routing_state_isolated_per_instance() {
+        let sqlite = test_sqlite_store("instance-routing");
+        sqlite
+            .upsert_provider(&api_provider("provider_a"))
+            .expect("save provider a");
+        sqlite
+            .upsert_provider(&api_provider("provider_b"))
+            .expect("save provider b");
+        let store = RouteStore {
+            sqlite,
+            route: Arc::new(Mutex::new(SelectedRoute::default())),
+        };
+
+        store
+            .set_for_instance(
+                "fixed-model",
+                Some("provider_a".to_string()),
+                Some("model-a".to_string()),
+                Some("high".to_string()),
+            )
+            .expect("save fixed instance");
+        store
+            .set_for_instance("auto-router", Some("provider_b".to_string()), None, None)
+            .expect("save automatic instance");
+
+        let fixed = store
+            .get_for_instance("fixed-model")
+            .expect("load fixed instance");
+        let automatic = store
+            .get_for_instance("auto-router")
+            .expect("load automatic instance");
+        assert_eq!(fixed.provider_id.as_deref(), Some("provider_a"));
+        assert_eq!(fixed.selected_model.as_deref(), Some("model-a"));
+        assert_eq!(automatic.provider_id.as_deref(), Some("provider_b"));
+        assert_eq!(automatic.selected_model, None);
+    }
 
     #[tokio::test]
     async fn remembers_selected_model_per_provider() {

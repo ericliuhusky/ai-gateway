@@ -30,7 +30,8 @@ AI Gateway 现在由远程 Server 和 Web 管理端组成：
 ## 架构
 
 ```text
-Codex -> https://gateway.example.com/openai/v1 -> server -> upstream provider
+Codex (default) -> https://gateway.example.com/openai/v1 -> server -> default routing profile
+Codex (account-a) -> https://gateway.example.com/instances/account-a/openai/v1 -> server -> account-a routing profile
 
 Browser -> Web 管理端 -> 生成一次性 setup.sh / restore.sh 命令
                            -> 修改或恢复 ~/.codex/config.toml
@@ -127,13 +128,46 @@ curl -fsSL 'https://gateway.example.com/codex/restore.sh' | sh
 
 ```bash
 curl -fsSL 'https://gateway.example.com/codex/instances.sh' |
-  sh -s -- create account-a 'https://gateway.example.com/openai/v1'
+  sh -s -- create account-a 'https://gateway.example.com/instances/account-a/openai/v1'
 
 curl -fsSL 'https://gateway.example.com/codex/instances.sh' |
-  sh -s -- create account-b 'https://gateway.example.com/openai/v1'
+  sh -s -- create account-b 'https://gateway.example.com/instances/account-b/openai/v1'
 ```
 
 实例保存在 `~/.ai-gateway/codex-instances/<name>/`。每个实例有独立的 `CODEX_HOME`、`config.toml`、`auth.json`、会话记录和 Electron 用户数据目录，因此可分别在窗口中登录不同的 Codex 账号。创建时不会复制默认实例的 `auth.json`。`skills`、`rules` 和 `AGENTS.md` 会从默认 `~/.codex` 共享，便于复用本地工作流。
+
+### 按 URL path 隔离网关路由
+
+`/openai/v1` 保持原有默认路由。每个 `/instances/<instance-id>/openai/v1` path 都有独立的已选供应商、固定模型、推理强度和自动路由配置；供应商凭据仍在同一个网关中共享。`instance-id` 只能使用字母、数字、`_` 和 `-`。 在 Web 管理端顶部点击“Codex 实例”即可新建、编辑实例配置并复制对应的 macOS 启动命令。
+
+先在管理端创建好供应商，然后分别写入实例配置。例如 `account-a` 固定使用一个模型，`account-b` 启用自动路由：
+
+```bash
+curl -X PUT 'https://gateway.example.com/instances/account-a/config' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "provider_id": "provider-a-id",
+    "selected_model": "model-a",
+    "selected_reasoning_effort": "high"
+  }'
+
+curl -X PUT 'https://gateway.example.com/instances/account-b/config' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "provider_id": "provider-b-id",
+    "automatic_routing": {
+      "enabled": true,
+      "classifier": { "provider_id": "router-provider-id", "model": "router-model" },
+      "light": { "provider_id": "provider-b-id", "model": "small-model" },
+      "standard": { "provider_id": "provider-b-id", "model": "standard-model" },
+      "pro": { "provider_id": "provider-b-id", "model": "pro-model" },
+      "max": { "provider_id": "provider-b-id", "model": "max-model" },
+      "low_confidence_threshold": 0.7
+    }
+  }'
+```
+
+用 `GET /instances/<instance-id>/config` 查看某个实例的独立配置。实例路径同时提供 `/models` 和 `/responses`，因此 Codex 不会回落到默认实例。不同实例的同一 Codex turn ID 会被隔离记录，避免续轮请求串到别的实例。
 
 查看或再次启动实例：
 
