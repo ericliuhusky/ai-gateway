@@ -20,20 +20,15 @@ impl Config {
             .parse()
             .map_err(|err| format!("invalid AI_GATEWAY_BIND_ADDR: {err}"))?;
 
+        let home = env::var("HOME")
+            .map(PathBuf::from)
+            .map_err(|_| "set HOME".to_string())?;
         let data_dir = match env::var("AI_GATEWAY_DATA_DIR") {
             Ok(path) if !path.trim().is_empty() => PathBuf::from(path),
-            _ => {
-                let home = env::var("HOME")
-                    .map(PathBuf::from)
-                    .map_err(|_| "set AI_GATEWAY_DATA_DIR or HOME".to_string())?;
-                home.join(".ai-gateway")
-            }
+            _ => home.join(".ai-gateway"),
         };
 
-        let web_dir = match env::var("AI_GATEWAY_WEB_DIR") {
-            Ok(path) if !path.trim().is_empty() => PathBuf::from(path),
-            _ => data_dir.join("web"),
-        };
+        let web_dir = home.join(".ai-gateway/web");
         let encryption_key = env::var(ENCRYPTION_KEY_ENV).map_err(|_| {
             format!("{ENCRYPTION_KEY_ENV} is required; generate one with `openssl rand -base64 32`")
         })?;

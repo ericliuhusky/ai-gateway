@@ -8,7 +8,6 @@
     "build:css": "bunx @tailwindcss/cli -i ./src/styles.css -o ./dist/assets/styles.css --minify",
     "build:html": "bun ./scripts/write-index.ts",
     "build": "bun run clean && bun run build:js && bun run build:css && bun run build:html",
-    "install:server": "bun run build && mkdir -p ${AI_GATEWAY_WEB_DIR:-${HOME}/.ai-gateway/web} && cp -R ./dist/. ${AI_GATEWAY_WEB_DIR:-${HOME}/.ai-gateway/web}/",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

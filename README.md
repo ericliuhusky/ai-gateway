@@ -149,12 +149,11 @@ curl -fsSL 'https://gateway.example.com/codex/instances.sh' | sh -s -- start acc
 ```bash
 cd web
 bun install
-bun run install:server
 cd ..
 cargo run -p ai-gateway
 ```
 
-默认构建并安装到：
+`cargo run` 会构建 Web 管理端，并安装到：
 
 ```text
 $HOME/.ai-gateway/web
@@ -164,12 +163,6 @@ $HOME/.ai-gateway/web
 
 ```text
 http://127.0.0.1:4242/
-```
-
-如果静态文件部署在其他目录，可设置：
-
-```text
-AI_GATEWAY_WEB_DIR=/path/to/web
 ```
 
 Web 页面与它所在的远程 Server 同源通信，不需要单独配置 Server URL。页面中的“Codex 接入”会根据当前 Server 地址生成一次性接入和恢复命令。
