@@ -10,9 +10,10 @@ use crate::{
     models::{
         AccountRecord, ApiProviderRecord, ApiProviderSummary, AutoRoutingSettings,
         CodexClientVersionSetting, CreateApiProviderRequest, InstanceRoutingConfig, ModelListItem,
-        ModelListResponse, PROVIDER_OPENAI_PROXY, ProviderAuthMode, ProviderQuotaCredits,
-        ProviderQuotaResponse, ProviderQuotaSnapshot, ProviderQuotaSummary, ProviderQuotaWindow,
-        QuotaSource, QuotaSupportStatus, RoutingModelTarget, SelectedRoute, TurnRouteLogUpdate,
+        ModelListResponse, OPENAI_ACCOUNT_PROVIDER_NAME, ProviderAuthMode,
+        ProviderCompatibilityProfile, ProviderQuotaCredits, ProviderQuotaResponse,
+        ProviderQuotaSnapshot, ProviderQuotaSummary, ProviderQuotaWindow, QuotaSource,
+        QuotaSupportStatus, RoutingModelTarget, SelectedRoute, TurnRouteLogUpdate,
         UpdateAutoRoutingSettingsRequest, UpdateCodexClientVersionRequest,
         UpdateInstanceRoutingConfigRequest, UpdateSelectedModelRequest,
         UpdateSelectedProviderRequest, UpdateSelectedReasoningEffortRequest,
@@ -242,7 +243,7 @@ pub async fn import_openai_token(
         .map_err(AppError::bad_request)?;
     state
         .providers
-        .add_account_provider(PROVIDER_OPENAI_PROXY, &account.id)
+        .add_account_provider(OPENAI_ACCOUNT_PROVIDER_NAME, &account.id)
         .await
         .map_err(AppError::bad_request)?;
 
@@ -313,7 +314,7 @@ pub async fn poll_openai_device_login(
                     .map_err(AppError::bad_request)?;
                 state
                     .providers
-                    .add_account_provider(PROVIDER_OPENAI_PROXY, &account.id)
+                    .add_account_provider(OPENAI_ACCOUNT_PROVIDER_NAME, &account.id)
                     .await
                     .map_err(AppError::bad_request)?;
                 Ok::<_, AppError>(DeviceLoginCompletion {
@@ -1525,7 +1526,9 @@ async fn fetch_provider_models(
 ) -> Result<ModelListResponse, AppError> {
     if provider.auth_mode == ProviderAuthMode::Account {
         let account = resolve_account_for_provider(state, provider).await?;
-        if provider.name == PROVIDER_OPENAI_PROXY {
+        if provider.record.as_ref().is_some_and(|record| {
+            record.compatibility_profile == ProviderCompatibilityProfile::OpenAiCodex
+        }) {
             let client_version = effective_codex_client_version(state)?;
             let private_models = PrivateOpenAiRequestBuilder {
                 base_url: OPENAI_CODEX_BASE_URL,
@@ -1704,7 +1707,7 @@ async fn validate_auto_routing_targets(
 
 async fn clear_openai_model_caches(state: &AppState) -> Result<(), AppError> {
     for provider in state.providers.list().await {
-        if provider.name == PROVIDER_OPENAI_PROXY {
+        if provider.compatibility_profile == ProviderCompatibilityProfile::OpenAiCodex {
             state
                 .models
                 .delete(&provider.id)

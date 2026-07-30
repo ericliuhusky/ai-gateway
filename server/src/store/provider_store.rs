@@ -1,7 +1,8 @@
 use crate::{
     config::Config,
     models::{
-        ApiProviderRecord, ApiProviderSummary, CreateApiProviderRequest, ProviderAuthMode,
+        ApiProviderRecord, ApiProviderSummary, CreateApiProviderRequest,
+        OPENAI_ACCOUNT_PROVIDER_NAME, PROVIDER_OPENAI_PROXY, ProviderAuthMode,
         ProviderCompatibilityProfile, ProviderUpstreamProtocol,
     },
     store::sqlite::SqliteStore,
@@ -27,7 +28,15 @@ impl ProviderStore {
     }
 
     pub async fn load(&self) -> Result<(), String> {
-        let loaded = self.sqlite.load_providers()?;
+        let mut loaded = self.sqlite.load_providers()?;
+        for provider in &mut loaded {
+            if provider.auth_mode == ProviderAuthMode::Account
+                && provider.name == PROVIDER_OPENAI_PROXY
+            {
+                provider.name = OPENAI_ACCOUNT_PROVIDER_NAME.to_string();
+                self.persist_provider(provider)?;
+            }
+        }
         *self.providers.lock().await = loaded;
         Ok(())
     }
@@ -162,7 +171,7 @@ mod tests {
     use super::ProviderStore;
     use crate::{
         models::{
-            AccountRecord, AccountType, CreateApiProviderRequest, PROVIDER_OPENAI_PROXY,
+            AccountRecord, AccountType, CreateApiProviderRequest, OPENAI_ACCOUNT_PROVIDER_NAME,
             ProviderCompatibilityProfile, ProviderUpstreamProtocol,
         },
         store::sqlite::SqliteStore,
@@ -197,17 +206,17 @@ mod tests {
         };
 
         let first = store
-            .add_account_provider(PROVIDER_OPENAI_PROXY, "account_1")
+            .add_account_provider(OPENAI_ACCOUNT_PROVIDER_NAME, "account_1")
             .await
             .expect("bind first account");
         let second = store
-            .add_account_provider(PROVIDER_OPENAI_PROXY, "account_2")
+            .add_account_provider(OPENAI_ACCOUNT_PROVIDER_NAME, "account_2")
             .await
             .expect("bind second account");
 
         assert_ne!(first.id, second.id);
-        assert_eq!(first.name, PROVIDER_OPENAI_PROXY);
-        assert_eq!(second.name, PROVIDER_OPENAI_PROXY);
+        assert_eq!(first.name, OPENAI_ACCOUNT_PROVIDER_NAME);
+        assert_eq!(second.name, OPENAI_ACCOUNT_PROVIDER_NAME);
         assert_eq!(first.account_id.as_deref(), Some("account_1"));
         assert_eq!(second.account_id.as_deref(), Some("account_2"));
         assert_eq!(
@@ -224,7 +233,7 @@ mod tests {
         assert_eq!(
             providers
                 .iter()
-                .filter(|provider| provider.name == PROVIDER_OPENAI_PROXY)
+                .filter(|provider| provider.name == OPENAI_ACCOUNT_PROVIDER_NAME)
                 .count(),
             2
         );

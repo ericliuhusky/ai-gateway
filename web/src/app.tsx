@@ -322,35 +322,55 @@ export function App() {
           <LoadingState />
         ) : (
           <>
-            <InstanceSection
-              showHeader={false}
-              instances={[{
-                instance_id: "default",
-                provider_id: selected.provider_id,
-                selected_model: selected.selected_model,
-                selected_reasoning_effort: selected.selected_reasoning_effort,
-                updated_at: selected.updated_at,
-                automatic_routing: defaultAutomaticRouting,
-              }]}
-              providers={providers}
-              onConfigure={(instanceId) => {
-                if (instanceId === "default") {
-                  setDialog("settings");
-                }
-              }}
-              onChanged={refresh}
-              onError={setError}
-            />
+            <section>
+              <div className="mb-3 flex flex-wrap items-center gap-3 px-1">
+                <h2 className="text-xs font-bold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">
+                  AI 网关
+                </h2>
+                <div className="ml-auto flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setInstanceToEdit(null);
+                      setDialog("instances");
+                    }}
+                  >
+                    <Plus className="size-3.5" />
+                    新建实例
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => setDialog("provider")}>
+                    <Plus className="size-3.5" />
+                    添加供应商
+                  </Button>
+                </div>
+              </div>
+              <InstanceSection
+                showHeader={false}
+                instances={[{
+                  instance_id: "default",
+                  provider_id: selected.provider_id,
+                  selected_model: selected.selected_model,
+                  selected_reasoning_effort: selected.selected_reasoning_effort,
+                  updated_at: selected.updated_at,
+                  automatic_routing: defaultAutomaticRouting,
+                }]}
+                providers={providers}
+                onConfigure={(instanceId) => {
+                  if (instanceId === "default") {
+                    setDialog("settings");
+                  }
+                }}
+                onChanged={refresh}
+                onError={setError}
+              />
+            </section>
 
             <div className="mt-5">
               <InstanceSection
                 title="实例"
                 instances={instances}
                 providers={providers}
-                onAdd={() => {
-                  setInstanceToEdit(null);
-                  setDialog("instances");
-                }}
                 onConfigure={(instanceId) => {
                   setInstanceToEdit(instanceId);
                   setDialog("instances");
@@ -375,7 +395,6 @@ export function App() {
                   onSelect={selectProvider}
                   onDelete={deleteProvider}
                   onRefreshQuota={refreshQuota}
-                  onAdd={() => setDialog("provider")}
                 />
                 <TurnLogSection turns={turnLogs} />
               </div>
@@ -400,7 +419,10 @@ export function App() {
           providers={providers}
           onClose={() => setDialog(null)}
           onChanged={async () => {
-            if (selectedProvider?.name === "openai-proxy") {
+            if (
+              selectedProvider?.auth_mode === "account"
+              && selectedProvider.compatibility_profile === "openai_codex"
+            ) {
               await loadModels(true);
             }
           }}
@@ -445,7 +467,6 @@ function InstanceSection({
   showHeader = true,
   instances,
   providers,
-  onAdd,
   onConfigure,
   onChanged,
   onError,
@@ -454,7 +475,6 @@ function InstanceSection({
   showHeader?: boolean;
   instances: InstanceRoutingConfig[];
   providers: GatewayProvider[];
-  onAdd?: () => void;
   onConfigure: (instanceId: string) => void;
   onChanged: () => Promise<void>;
   onError: (message: string) => void;
@@ -582,13 +602,7 @@ function InstanceSection({
       {showHeader ? (
         <div className="mb-3 flex items-center gap-3 px-1">
           {title ? <h2 className="text-xs font-bold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">{title}</h2> : null}
-          {onAdd ? <span className="rounded-full bg-white/60 px-2 py-0.5 text-[10px] font-bold text-slate-400 dark:bg-white/5">{allInstances.length}</span> : null}
-          {onAdd ? (
-            <Button className="ml-auto" variant="outline" size="sm" onClick={onAdd}>
-              <Plus className="size-3.5" />
-              新建实例
-            </Button>
-          ) : null}
+          <span className="rounded-full bg-white/60 px-2 py-0.5 text-[10px] font-bold text-slate-400 dark:bg-white/5">{allInstances.length}</span>
         </div>
       ) : null}
       <div className="space-y-3">
@@ -745,7 +759,6 @@ function ProviderSection(props: {
   onSelect: (provider: GatewayProvider) => void;
   onDelete: (provider: GatewayProvider) => void;
   onRefreshQuota: (provider: GatewayProvider) => void;
-  onAdd: () => void;
 }) {
   if (!props.providers.length) return null;
   return (
@@ -757,12 +770,6 @@ function ProviderSection(props: {
         <span className="rounded-full bg-white/60 px-2 py-0.5 text-[10px] font-bold text-slate-400 dark:bg-white/5">
           {props.providers.length}
         </span>
-        <div className="ml-auto">
-          <Button variant="outline" size="sm" onClick={props.onAdd}>
-            <Plus className="size-4" />
-            添加供应商
-          </Button>
-        </div>
       </div>
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
         {props.providers.map((provider) => (
@@ -1288,7 +1295,7 @@ function ApiProviderForm({
         </Button>
       </div>
       <FormField label="名称">
-        <input className="field" value={name} onChange={(event) => setName(event.target.value)} placeholder="openai-proxy" autoFocus />
+        <input className="field" value={name} onChange={(event) => setName(event.target.value)} placeholder="例如 my-openai" autoFocus />
       </FormField>
       <FormField label="Base URL">
         <input

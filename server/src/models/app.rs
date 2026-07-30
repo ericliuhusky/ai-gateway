@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const PROVIDER_OPENAI_PROXY: &str = "openai-proxy";
+pub const OPENAI_ACCOUNT_PROVIDER_NAME: &str = "GPT账户";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
