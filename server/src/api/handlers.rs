@@ -787,15 +787,29 @@ pub async fn get_instance_routing_config(
     AxumPath(instance_id): AxumPath<String>,
 ) -> Result<Json<InstanceRoutingConfig>, AppError> {
     let instance_id = normalize_instance_id(&instance_id)?;
+    let (route, automatic_routing) = if instance_id == "default" {
+        (
+            state.routes.get().await,
+            state
+                .settings
+                .auto_routing_settings()
+                .map_err(AppError::internal)?,
+        )
+    } else {
+        (
+            state
+                .routes
+                .get_for_instance(&instance_id)
+                .map_err(AppError::internal)?,
+            state
+                .settings
+                .instance_auto_routing_settings(&instance_id)
+                .map_err(AppError::internal)?,
+        )
+    };
     Ok(Json(InstanceRoutingConfig {
-        route: state
-            .routes
-            .get_for_instance(&instance_id)
-            .map_err(AppError::internal)?,
-        automatic_routing: state
-            .settings
-            .instance_auto_routing_settings(&instance_id)
-            .map_err(AppError::internal)?,
+        route,
+        automatic_routing,
         instance_id,
     }))
 }
@@ -834,26 +848,60 @@ pub async fn set_instance_routing_config(
     let automatic_routing = match request.automatic_routing {
         Some(settings) => {
             validate_auto_routing_targets(&state, &settings).await?;
-            state
-                .settings
-                .set_instance_auto_routing_settings(&instance_id, &settings)
-                .map_err(AppError::internal)?;
+            if instance_id == "default" {
+                state
+                    .settings
+                    .set_auto_routing_settings(&settings)
+                    .map_err(AppError::internal)?;
+            } else {
+                state
+                    .settings
+                    .set_instance_auto_routing_settings(&instance_id, &settings)
+                    .map_err(AppError::internal)?;
+            }
             settings
         }
-        None => state
-            .settings
-            .instance_auto_routing_settings(&instance_id)
-            .map_err(AppError::internal)?,
+        None => {
+            if instance_id == "default" {
+                state
+                    .settings
+                    .auto_routing_settings()
+                    .map_err(AppError::internal)?
+            } else {
+                state
+                    .settings
+                    .instance_auto_routing_settings(&instance_id)
+                    .map_err(AppError::internal)?
+            }
+        }
     };
-    let route = state
-        .routes
-        .set_for_instance(
-            &instance_id,
-            provider_id,
-            selected_model,
-            selected_reasoning_effort,
-        )
-        .map_err(AppError::internal)?;
+    let route = if instance_id == "default" {
+        state
+            .routes
+            .set_provider(provider_id)
+            .await
+            .map_err(AppError::internal)?;
+        state
+            .routes
+            .set_model(selected_model)
+            .await
+            .map_err(AppError::internal)?;
+        state
+            .routes
+            .set_reasoning_effort(selected_reasoning_effort)
+            .await
+            .map_err(AppError::internal)?
+    } else {
+        state
+            .routes
+            .set_for_instance(
+                &instance_id,
+                provider_id,
+                selected_model,
+                selected_reasoning_effort,
+            )
+            .map_err(AppError::internal)?
+    };
     Ok(Json(InstanceRoutingConfig {
         instance_id,
         route,

@@ -319,18 +319,6 @@ export function App() {
             <Button
               variant="outline"
               size="sm"
-              aria-label="管理实例"
-              onClick={() => {
-                setInstanceToEdit(null);
-                setDialog("instances");
-              }}
-            >
-              <Server className="size-3.5" />
-              <span className="hidden sm:inline">实例</span>
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
               aria-label="Codex 接入"
               onClick={() => setDialog("setup")}
             >
@@ -380,29 +368,32 @@ export function App() {
                   automatic_routing: defaultAutomaticRouting,
                 }]}
                 providers={providers}
-                onConfigure={(instanceId) => {
-                  if (instanceId === "default") {
-                    setDialog("settings");
-                  }
-                }}
+              onConfigure={(instanceId) => {
+                if (instanceId === "default") {
+                  setInstanceToEdit(instanceId);
+                  setDialog("instances");
+                }
+              }}
                 onChanged={refresh}
                 onError={setError}
               />
             </section>
 
-            <div className="mt-5">
-              <InstanceSection
-                title="实例"
-                instances={instances}
-                providers={providers}
-                onConfigure={(instanceId) => {
-                  setInstanceToEdit(instanceId);
-                  setDialog("instances");
-                }}
-                onChanged={refresh}
-                onError={setError}
-              />
-            </div>
+            {instances.length > 0 ? (
+              <div className="mt-5">
+                <InstanceSection
+                  title="实例"
+                  instances={instances}
+                  providers={providers}
+                  onConfigure={(instanceId) => {
+                    setInstanceToEdit(instanceId);
+                    setDialog("instances");
+                  }}
+                  onChanged={refresh}
+                  onError={setError}
+                />
+              </div>
+            ) : null}
 
             {providers.length === 0 ? (
               <div className="mt-8"><EmptyState onAdd={() => setDialog("provider")} /></div>
@@ -440,7 +431,6 @@ export function App() {
       ) : null}
       {dialog === "settings" ? (
         <SettingsDialog
-          providers={providers}
           onClose={() => setDialog(null)}
           onChanged={async () => {
             if (
@@ -1634,20 +1624,12 @@ function CodexInstancesDialog({
     }
   }
 
-  const targetComplete = [
-    automaticRouting.classifier,
-    automaticRouting.light,
-    automaticRouting.standard,
-    automaticRouting.pro,
-    automaticRouting.max,
-  ].every((target) => Boolean(target?.provider_id && target.model));
   const validInstanceId = /^[A-Za-z0-9_-]{1,64}$/.test(instanceId);
   const instanceNameTaken = isCreating && instanceIds.includes(instanceId);
   const canSave = Boolean(
     validInstanceId
       && !instanceNameTaken
-      && !saving
-      && (!automaticRouting.enabled || targetComplete),
+      && !saving,
   );
   async function save() {
     if (!canSave) return;
@@ -1682,8 +1664,8 @@ function CodexInstancesDialog({
 
   return (
     <DialogFrame
-      title={isCreating ? "新建实例" : "自动模型路由"}
-      description={isCreating ? "只需填写实例名称，其他配置可直接在实例卡片中调整。" : `为实例“${instanceId}”配置自动路由目标。`}
+      title={isCreating ? "新建实例" : "路由配置"}
+      description={isCreating ? "只需填写实例名称，其他配置可直接在实例卡片中调整。" : `为实例“${instanceId}”配置自动路由使用的模型。`}
       onClose={onClose}
     >
       <div className="min-w-0 space-y-5">
@@ -1704,25 +1686,10 @@ function CodexInstancesDialog({
           </>
         ) : (
           <>
-
-          <section>
-            <div className="flex items-start gap-4">
-              <div className="min-w-0 flex-1">
-                <div className="text-sm font-bold">自动模型路由</div>
-                <p className="mt-1 text-[11px] leading-5 text-slate-400">关闭时，此实例使用实例卡片中的默认供应商与模型（或原请求模型）；开启时，按下方档位自动选择模型。</p>
-              </div>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={automaticRouting.enabled}
-                disabled={saving || loadingModels}
-                className={cn("mt-0.5 flex h-6 w-11 shrink-0 items-center rounded-full p-0.5 transition", automaticRouting.enabled ? "bg-blue-500" : "bg-slate-200 dark:bg-white/15", (saving || loadingModels) && "cursor-not-allowed opacity-50")}
-                onClick={() => updateAutomatic("enabled", !automaticRouting.enabled)}
-              >
-                <span className={cn("size-5 rounded-full bg-white shadow-sm transition", automaticRouting.enabled && "translate-x-5")} />
-              </button>
-            </div>
-            {automaticRouting.enabled ? (
+            <section>
+              <p className="text-[11px] leading-5 text-slate-400">
+                自动路由的启用状态由实例卡片控制；此处仅配置各路由档位使用的模型。
+              </p>
               <div className="mt-5 space-y-4">
                 <div className="grid gap-4 sm:grid-cols-2">
                   <RouteTargetSelect label="路由分类模型" value={automaticRouting.classifier} providers={providers} modelsByProvider={modelsByProvider} disabled={saving || loadingModels} onChange={(value) => updateAutomatic("classifier", value)} />
@@ -1735,8 +1702,7 @@ function CodexInstancesDialog({
                   <input className="field w-36 font-mono text-sm" type="number" min="0" max="1" step="0.05" value={automaticRouting.low_confidence_threshold} disabled={saving} onChange={(event) => updateAutomatic("low_confidence_threshold", Number(event.target.value))} />
                 </FormField>
               </div>
-            ) : null}
-          </section>
+            </section>
 
           <div className="flex flex-wrap justify-end gap-2">
             <Button type="button" variant="outline" onClick={onClose}>取消</Button>
@@ -1846,12 +1812,10 @@ function SetupDialog({ onClose }: { onClose: () => void }) {
 }
 
 function SettingsDialog({
-  providers,
   onClose,
   onChanged,
   onError,
 }: {
-  providers: GatewayProvider[];
   onClose: () => void;
   onChanged: () => Promise<void>;
   onError: (message: string) => void;
@@ -1911,7 +1875,7 @@ function SettingsDialog({
           <LoaderCircle className="size-6 animate-spin text-slate-400" />
         </div>
       ) : (
-        <div className="space-y-8">
+        <div>
           <form onSubmit={save}>
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="rounded-2xl border border-white/65 bg-white/45 p-4 dark:border-white/8 dark:bg-white/[0.035]">
@@ -1963,167 +1927,12 @@ function SettingsDialog({
               </Button>
             </div>
           </form>
-          <AutomaticRoutingPanel providers={providers} onError={onError} />
           <div className="flex justify-end">
             <Button type="button" variant="outline" onClick={onClose}>完成</Button>
           </div>
         </div>
       )}
     </DialogFrame>
-  );
-}
-
-function AutomaticRoutingPanel({
-  providers,
-  onError,
-}: {
-  providers: GatewayProvider[];
-  onError: (message: string) => void;
-}) {
-  const [settings, setSettings] = React.useState<AutoRoutingSettings | null>(null);
-  const [modelsByProvider, setModelsByProvider] = React.useState<Record<string, GatewayModel[]>>({});
-  const [loadingModels, setLoadingModels] = React.useState(true);
-  const [saving, setSaving] = React.useState(false);
-
-  React.useEffect(() => {
-    void gatewayApi
-      .automaticRouting()
-      .then(setSettings)
-      .catch((loadError) => onError(errorMessage(loadError)));
-  }, [onError]);
-
-  React.useEffect(() => {
-    let cancelled = false;
-    if (!providers.length) {
-      setModelsByProvider({});
-      setLoadingModels(false);
-      return () => { cancelled = true; };
-    }
-
-    setLoadingModels(true);
-    void Promise.all(
-      providers.map(async (provider) => [
-        provider.id,
-        await gatewayApi.models(provider.id),
-      ] as const),
-    )
-      .then((entries) => {
-        if (cancelled) return;
-        setModelsByProvider(Object.fromEntries(entries.map(([id, models]) => [
-          id,
-          [...models].sort((a, b) => a.id.localeCompare(b.id)),
-        ])));
-      })
-      .catch((loadError) => {
-        if (!cancelled) onError(`加载供应商模型失败：${errorMessage(loadError)}`);
-      })
-      .finally(() => {
-        if (!cancelled) setLoadingModels(false);
-      });
-
-    return () => { cancelled = true; };
-  }, [providers, onError]);
-
-  if (!settings) {
-    return (
-      <section className="border-t border-slate-200/70 pt-7 dark:border-white/10">
-        <div className="flex h-20 items-center justify-center">
-          <LoaderCircle className="size-5 animate-spin text-slate-400" />
-        </div>
-      </section>
-    );
-  }
-
-  const configured = [
-    settings.classifier,
-    settings.light,
-    settings.standard,
-    settings.pro,
-    settings.max,
-  ].every((target) => Boolean(target?.provider_id && target.model));
-  const canEnable = providers.length > 0 && configured;
-
-  async function save() {
-    const nextSettings = settings;
-    if (!nextSettings || (nextSettings.enabled && !canEnable)) return;
-    setSaving(true);
-    try {
-      setSettings(await gatewayApi.setAutomaticRouting(nextSettings));
-    } catch (saveError) {
-      onError(errorMessage(saveError));
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  function update<K extends keyof AutoRoutingSettings>(key: K, value: AutoRoutingSettings[K]) {
-    setSettings((current) => (current ? { ...current, [key]: value } : current));
-  }
-
-  return (
-    <section className="border-t border-slate-200/70 pt-7 dark:border-white/10">
-      <div className="flex items-start gap-4">
-        <div className="min-w-0 flex-1">
-          <div className="text-sm font-bold">自动模型路由</div>
-          <p className="mt-1 text-[11px] leading-5 text-slate-400">
-            每个路由档位可独立选择供应商及其模型。分类请求和原始请求都会发送到对应的供应商；工具、图片、低置信度和分类失败会直接使用极致档模型。
-          </p>
-        </div>
-        <button
-          type="button"
-          role="switch"
-          aria-checked={settings.enabled}
-          disabled={saving || loadingModels || (!settings.enabled && !canEnable)}
-          className={cn(
-            "mt-0.5 flex h-6 w-11 shrink-0 items-center rounded-full p-0.5 transition",
-            settings.enabled ? "bg-blue-500" : "bg-slate-200 dark:bg-white/15",
-            (saving || loadingModels || (!settings.enabled && !canEnable)) && "cursor-not-allowed opacity-50",
-          )}
-          onClick={() => update("enabled", !settings.enabled)}
-        >
-          <span className={cn("size-5 rounded-full bg-white shadow-sm transition", settings.enabled && "translate-x-5")} />
-        </button>
-      </div>
-
-      {!providers.length ? (
-        <div className="mt-4 rounded-xl bg-amber-500/10 px-3 py-2 text-[11px] leading-5 text-amber-700 dark:text-amber-300">
-          请先添加至少一个供应商，再配置自动路由。
-        </div>
-      ) : (
-        <div className="mt-5 grid gap-4 sm:grid-cols-2">
-          <RouteTargetSelect label="路由分类模型" value={settings.classifier} providers={providers} modelsByProvider={modelsByProvider} disabled={saving || loadingModels} onChange={(value) => update("classifier", value)} />
-          <RouteTargetSelect label="轻量模型（light）" value={settings.light} providers={providers} modelsByProvider={modelsByProvider} disabled={saving || loadingModels} onChange={(value) => update("light", value)} />
-          <RouteTargetSelect label="标准模型（standard）" value={settings.standard} providers={providers} modelsByProvider={modelsByProvider} disabled={saving || loadingModels} onChange={(value) => update("standard", value)} />
-          <RouteTargetSelect label="专业模型（pro）" value={settings.pro} providers={providers} modelsByProvider={modelsByProvider} disabled={saving || loadingModels} onChange={(value) => update("pro", value)} />
-          <RouteTargetSelect label="极致模型（max，兜底）" value={settings.max} providers={providers} modelsByProvider={modelsByProvider} disabled={saving || loadingModels} onChange={(value) => update("max", value)} />
-        </div>
-      )}
-
-      <div className="mt-4">
-        <FormField label="低置信度阈值">
-          <input
-            className="field font-mono text-sm"
-            type="number"
-            min="0"
-            max="1"
-            step="0.05"
-            value={settings.low_confidence_threshold}
-            disabled={saving}
-            onChange={(event) => update("low_confidence_threshold", Number(event.target.value))}
-          />
-        </FormField>
-        <p className="mt-2 text-[11px] leading-5 text-slate-400">
-          分类结果低于此阈值时，为避免返工会升级到极致模型。建议从 0.70 开始。
-        </p>
-      </div>
-
-      <div className="mt-5 flex justify-end">
-        <Button type="button" disabled={saving || loadingModels || (settings.enabled && !canEnable)} onClick={() => void save()}>
-          {saving ? <LoaderCircle className="size-4 animate-spin" /> : <Check className="size-4" />}
-          {saving ? "保存中" : "保存路由配置"}
-        </Button>
-      </div>
-    </section>
   );
 }
 
