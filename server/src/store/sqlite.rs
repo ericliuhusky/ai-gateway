@@ -669,6 +669,7 @@ impl SqliteStore {
             );
             CREATE TABLE IF NOT EXISTS gateway_access_tokens (
                 token_hash TEXT PRIMARY KEY,
+                token_ciphertext TEXT NOT NULL,
                 user_id INTEGER NOT NULL REFERENCES gateway_users(id) ON DELETE CASCADE,
                 created_at INTEGER NOT NULL DEFAULT (unixepoch())
             );
@@ -693,6 +694,36 @@ impl SqliteStore {
             [],
         )
         .map_err(|error| format!("backfill initial gateway admin failed: {error}"))?;
+        match conn.execute(
+            "ALTER TABLE gateway_access_tokens ADD COLUMN token_ciphertext TEXT",
+            [],
+        ) {
+            Ok(_) => {}
+            Err(rusqlite::Error::SqliteFailure(_, Some(message)))
+                if message.contains("duplicate column name") => {}
+            Err(error) => {
+                return Err(format!(
+                    "add gateway access token ciphertext column failed: {error}"
+                ));
+            }
+        }
+        conn.execute(
+            "DELETE FROM gateway_access_tokens
+             WHERE token_ciphertext IS NULL
+                OR rowid NOT IN (
+                    SELECT MAX(rowid) FROM gateway_access_tokens GROUP BY user_id
+                )",
+            [],
+        )
+        .map_err(|error| format!("migrate gateway access tokens failed: {error}"))?;
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_gateway_access_tokens_user_id_unique
+             ON gateway_access_tokens(user_id)",
+            [],
+        )
+        .map_err(|error| {
+            format!("create unique gateway access token owner index failed: {error}")
+        })?;
         Ok(())
     }
 

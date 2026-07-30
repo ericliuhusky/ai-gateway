@@ -8,6 +8,8 @@ import {
   Cloud,
   Code2,
   Copy,
+  Eye,
+  EyeOff,
   Gauge,
   KeyRound,
   LoaderCircle,
@@ -141,7 +143,7 @@ function AuthenticatedApp() {
 }
 
 export function GatewayDashboard() {
-  const { user, logout } = useAuth();
+  const { user, logout, authMode } = useAuth();
   const currentUser = user!;
   const [providers, setProviders] = React.useState<GatewayProvider[]>([]);
   const [instances, setInstances] = React.useState<InstanceRoutingConfig[]>([]);
@@ -331,7 +333,7 @@ export function GatewayDashboard() {
             <div className="hidden max-w-44 truncate text-right text-xs font-semibold text-slate-500 sm:block" title={currentUser.name}>
               {currentUser.name}
             </div>
-            <Button
+            {authMode === "required" ? <Button
               variant="outline"
               size="sm"
               aria-label="退出登录"
@@ -340,7 +342,7 @@ export function GatewayDashboard() {
             >
               <LogOut className="size-3.5" />
               <span className="hidden sm:inline">退出</span>
-            </Button>
+            </Button> : null}
             <Button
               variant="outline"
               size="sm"
@@ -1864,7 +1866,9 @@ function CodexScriptsDialog({
   onClose: () => void;
 }) {
   const [copied, setCopied] = React.useState<"setup" | "cleanup" | null>(null);
-  const [accessToken, setAccessToken] = React.useState("");
+  const [accessToken, setAccessToken] = React.useState<string | null>(null);
+  const [tokenError, setTokenError] = React.useState<string | null>(null);
+  const { authMode } = useAuth();
   const isDefault = instanceId === "default";
   const setupScriptUrl = `${window.location.origin}/codex/setup.sh`;
   const cleanupScriptUrl = `${window.location.origin}/codex/restore.sh`;
@@ -1872,9 +1876,24 @@ function CodexScriptsDialog({
   const gatewayUrl = isDefault
     ? `${window.location.origin}/openai/v1`
     : `${window.location.origin}/instances/${encodeURIComponent(instanceId)}/openai/v1`;
+
+  React.useEffect(() => {
+    if (authMode === "disabled") {
+      setAccessToken("");
+      return;
+    }
+    void authApi
+      .gatewayAccessToken()
+      .then((value) => setAccessToken(value.access_token))
+      .catch((error) => setTokenError(errorMessage(error)));
+  }, [authMode]);
+
   const setupCommand = isDefault
-    ? `curl -fsSL ${shellQuote(setupScriptUrl)} | sh -s -- ${shellQuote(gatewayUrl)}${accessToken.trim() ? ` ${shellQuote(accessToken.trim())}` : ""}`
-    : `curl -fsSL ${shellQuote(instancesScriptUrl)} | sh -s -- create ${shellQuote(instanceId)} ${shellQuote(gatewayUrl)}${accessToken.trim() ? ` ${shellQuote(accessToken.trim())}` : ""}`;
+    ? `curl -fsSL ${shellQuote(setupScriptUrl)} | sh -s -- ${shellQuote(gatewayUrl)}${accessToken ? ` ${shellQuote(accessToken)}` : ""}`
+    : `curl -fsSL ${shellQuote(instancesScriptUrl)} | sh -s -- create ${shellQuote(instanceId)} ${shellQuote(gatewayUrl)}${accessToken ? ` ${shellQuote(accessToken)}` : ""}`;
+  const displaySetupCommand = accessToken
+    ? setupCommand.replace(accessToken, "********")
+    : setupCommand;
   const cleanupCommand = isDefault
     ? `curl -fsSL ${shellQuote(cleanupScriptUrl)} | sh`
     : `curl -fsSL ${shellQuote(instancesScriptUrl)} | sh -s -- delete ${shellQuote(instanceId)}`;
@@ -1897,24 +1916,26 @@ function CodexScriptsDialog({
             ? <>设置脚本会修改 <code>~/.codex/config.toml</code> 并同步历史别名；清理脚本会还原原模型供应商，并移除 AI Gateway 写入的 TOML 配置。</>
             : <>新建脚本会创建独立的 <code>CODEX_HOME</code> 和 Electron 数据目录，请在新窗口中单独登录账号。清理脚本会删除该实例文件夹及其中的登录信息、会话和 Electron 数据。</>}
         </div>
+        {tokenError ? (
+          <div className="rounded-2xl border border-red-500/20 bg-red-500/5 p-4 text-xs text-red-700 dark:text-red-300">
+            {tokenError}
+          </div>
+        ) : null}
+        {authMode === "required" && accessToken === null ? (
+          <div className="flex min-h-20 items-center justify-center">
+            <LoaderCircle className="size-5 animate-spin text-slate-400" />
+          </div>
+        ) : (
         <FormField label={isDefault ? "设置默认 Codex" : "新建 Codex 实例（macOS）"}>
-          <label className="mb-3 block">
-            <span className="mb-1.5 block text-xs font-semibold text-slate-600 dark:text-slate-300">Gateway API Key（账户模式必填）</span>
-            <input
-              className="field w-full font-mono text-xs"
-              type="password"
-              value={accessToken}
-              placeholder="agw_..."
-              onChange={(event) => setAccessToken(event.target.value)}
-            />
-          </label>
           <CommandBlock
             command={setupCommand}
+            displayCommand={displaySetupCommand}
             copied={copied === "setup"}
             copyLabel={isDefault ? "复制默认 Codex 设置命令" : "复制新建 Codex 实例命令"}
             onCopy={() => copyCommand("setup", setupCommand)}
           />
         </FormField>
+        )}
         <FormField label={isDefault ? "清理默认 Codex 设置" : "清理 / 删除 Codex 实例"}>
           <CommandBlock
             command={cleanupCommand}
@@ -1933,18 +1954,20 @@ function CodexScriptsDialog({
 
 function CommandBlock({
   command,
+  displayCommand,
   copied,
   copyLabel,
   onCopy,
 }: {
   command: string;
+  displayCommand?: string;
   copied: boolean;
   copyLabel: string;
   onCopy: () => void;
 }) {
   return (
     <div className="relative">
-      <pre className="overflow-x-auto rounded-2xl bg-slate-950 p-4 pr-12 text-[11px] leading-5 text-slate-200">{command}</pre>
+      <pre className="overflow-x-auto rounded-2xl bg-slate-950 p-4 pr-12 text-[11px] leading-5 text-slate-200">{displayCommand ?? command}</pre>
       <button
         className="absolute right-3 top-3 flex size-8 items-center justify-center rounded-lg bg-white/10 text-white hover:bg-white/15"
         type="button"
@@ -2092,12 +2115,21 @@ function AccessTokenDialog({
   const [token, setToken] = React.useState<string | null>(null);
   const [creating, setCreating] = React.useState(false);
   const [copied, setCopied] = React.useState(false);
+  const [visible, setVisible] = React.useState(false);
 
-  async function createToken() {
+  React.useEffect(() => {
+    void authApi.gatewayAccessToken()
+      .then((value) => setToken(value.access_token))
+      .catch((error) => onError(errorMessage(error)));
+  }, [onError]);
+
+  async function regenerateToken() {
     setCreating(true);
     try {
-      const value = await authApi.createAccessToken();
+      const value = await authApi.regenerateAccessToken();
       setToken(value.access_token);
+      setVisible(false);
+      setCopied(false);
     } catch (error) {
       onError(errorMessage(error));
     } finally {
@@ -2108,17 +2140,30 @@ function AccessTokenDialog({
   return (
     <DialogFrame
       title="网关 API Key"
-      description="用于账户模式下的 /openai/v1 请求。该 Key 只会显示这一次，请立即复制并安全保存。"
+      description="用于账户模式下的 /openai/v1 请求。系统仅保存当前用户的一把 Key，并以加密形式存储。"
       onClose={onClose}
     >
       <div className="rounded-2xl border border-amber-500/20 bg-amber-500/5 p-4 text-xs leading-5 text-amber-800 dark:text-amber-200">
-        每次生成都会新增一个有效 Key；旧 Key 不会自动失效。
+        重新生成会立即使旧 Key 失效。请同步更新已经写入 Codex 配置的 Key。
       </div>
       {token ? (
         <div className="mt-5">
-          <FormField label="新建 API Key">
+          <FormField label="当前 API Key">
             <div className="flex gap-2">
-              <input className="field min-w-0 flex-1 font-mono text-xs" readOnly value={token} />
+              <input
+                className="field min-w-0 flex-1 font-mono text-xs"
+                readOnly
+                value={visible ? token : "********"}
+              />
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                aria-label={visible ? "隐藏 API Key" : "显示 API Key"}
+                onClick={() => setVisible((value) => !value)}
+              >
+                {visible ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+              </Button>
               <Button
                 type="button"
                 variant="outline"
@@ -2137,9 +2182,9 @@ function AccessTokenDialog({
       ) : null}
       <div className="mt-7 flex justify-end gap-2">
         <Button type="button" variant="outline" onClick={onClose}>完成</Button>
-        <Button type="button" disabled={creating} onClick={() => void createToken()}>
+        <Button type="button" disabled={creating || !token} onClick={() => void regenerateToken()}>
           {creating ? <LoaderCircle className="size-4 animate-spin" /> : <KeyRound className="size-4" />}
-          {creating ? "生成中" : token ? "再生成一个" : "生成 API Key"}
+          {creating ? "生成中" : "重新生成"}
         </Button>
       </div>
     </DialogFrame>

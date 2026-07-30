@@ -1,4 +1,4 @@
-use crate::{config::Config, store::sqlite::SqliteStore};
+use crate::{config::Config, crypto::FieldEncryptor, store::sqlite::SqliteStore};
 use rusqlite::{OptionalExtension, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
@@ -48,12 +48,14 @@ pub struct FeishuUserProfile {
 #[derive(Clone, Debug)]
 pub struct UserStore {
     sqlite: SqliteStore,
+    encryption: FieldEncryptor,
 }
 
 impl UserStore {
     pub fn new(config: Arc<Config>) -> Result<Self, String> {
         Ok(Self {
-            sqlite: SqliteStore::new(config)?,
+            sqlite: SqliteStore::new(config.clone())?,
+            encryption: config.encryption(),
         })
     }
 
@@ -204,13 +206,34 @@ impl UserStore {
         Ok(())
     }
 
-    pub fn create_gateway_access_token(&self, user_id: i64, token: &str) -> Result<(), String> {
+    pub fn load_gateway_access_token(&self, user_id: i64) -> Result<Option<String>, String> {
+        let conn = self.sqlite.connect_for_auth()?;
+        let ciphertext = conn
+            .query_row(
+                "SELECT token_ciphertext FROM gateway_access_tokens WHERE user_id = ?1",
+                params![user_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()
+            .map_err(|error| format!("load gateway access token failed: {error}"))?
+            .flatten();
+        ciphertext
+            .map(|value| self.encryption.decrypt(&value))
+            .transpose()
+    }
+
+    pub fn replace_gateway_access_token(&self, user_id: i64, token: &str) -> Result<(), String> {
         let conn = self.sqlite.connect_for_auth()?;
         conn.execute(
-            "INSERT INTO gateway_access_tokens (token_hash, user_id) VALUES (?1, ?2)",
-            params![token_hash(token), user_id],
+            "INSERT INTO gateway_access_tokens (token_hash, token_ciphertext, user_id)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(user_id) DO UPDATE SET
+                token_hash = excluded.token_hash,
+                token_ciphertext = excluded.token_ciphertext,
+                created_at = unixepoch()",
+            params![token_hash(token), self.encryption.encrypt(token)?, user_id],
         )
-        .map_err(|error| format!("create gateway access token failed: {error}"))?;
+        .map_err(|error| format!("replace gateway access token failed: {error}"))?;
         Ok(())
     }
 

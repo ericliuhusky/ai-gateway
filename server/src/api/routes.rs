@@ -86,7 +86,7 @@ pub fn build_router(state: AppState, web_dir: PathBuf) -> Router {
     let token_routes = Router::new()
         .route(
             "/auth/access-tokens",
-            post(auth::create_gateway_access_token),
+            get(auth::gateway_access_token).post(auth::regenerate_gateway_access_token),
         )
         .route_layer(middleware::from_fn_with_state(
             state.auth.clone(),

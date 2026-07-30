@@ -199,9 +199,16 @@ impl AuthService {
         Ok(())
     }
 
-    pub fn create_gateway_access_token(&self, user_id: i64) -> Result<String, String> {
+    pub fn gateway_access_token(&self, user_id: i64) -> Result<String, String> {
+        if let Some(token) = self.users.load_gateway_access_token(user_id)? {
+            return Ok(token);
+        }
+        self.regenerate_gateway_access_token(user_id)
+    }
+
+    pub fn regenerate_gateway_access_token(&self, user_id: i64) -> Result<String, String> {
         let token = format!("agw_{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
-        self.users.create_gateway_access_token(user_id, &token)?;
+        self.users.replace_gateway_access_token(user_id, &token)?;
         Ok(token)
     }
 
@@ -413,7 +420,7 @@ pub async fn logout(
     Ok(response)
 }
 
-pub async fn create_gateway_access_token(
+pub async fn gateway_access_token(
     State(auth): State<AuthService>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, AuthError> {
@@ -422,7 +429,21 @@ pub async fn create_gateway_access_token(
         .map_err(AuthError::internal)?
         .ok_or_else(AuthError::unauthorized)?;
     let token = auth
-        .create_gateway_access_token(user.id)
+        .gateway_access_token(user.id)
+        .map_err(AuthError::internal)?;
+    Ok(Json(serde_json::json!({ "access_token": token })))
+}
+
+pub async fn regenerate_gateway_access_token(
+    State(auth): State<AuthService>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, AuthError> {
+    let user = auth
+        .user_from_headers(&headers)
+        .map_err(AuthError::internal)?
+        .ok_or_else(AuthError::unauthorized)?;
+    let token = auth
+        .regenerate_gateway_access_token(user.id)
         .map_err(AuthError::internal)?;
     Ok(Json(serde_json::json!({ "access_token": token })))
 }
