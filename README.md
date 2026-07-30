@@ -140,7 +140,7 @@ curl -fsSL 'https://gateway.example.com/codex/instances.sh' |
 
 `/openai/v1` 保持原有默认路由。每个 `/instances/<instance-id>/openai/v1` path 都有独立的已选供应商、固定模型、推理强度和自动路由配置；供应商凭据仍在同一个网关中共享。`instance-id` 只能使用字母、数字、`_` 和 `-`。 在 Web 管理端顶部点击“实例”即可新建、编辑实例配置并复制对应的 macOS 启动命令。
 
-先在管理端创建好供应商，然后分别写入实例配置。例如 `account-a` 固定使用一个模型，`account-b` 启用自动路由：
+实例可先只创建名称，之后再配置默认供应商、固定模型或自动路由。固定模型需要默认供应商；启用自动路由时，可只配置各档位的路由目标而不设置默认供应商。例如 `account-a` 固定使用一个模型，`account-b` 启用自动路由：
 
 ```bash
 curl -X PUT 'https://gateway.example.com/instances/account-a/config' \

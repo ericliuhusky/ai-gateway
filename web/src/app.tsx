@@ -511,7 +511,6 @@ function InstanceSection({
     patch: Partial<Omit<InstanceRoutingConfig, "instance_id" | "updated_at" | "automatic_routing">> & { automatic_routing?: AutoRoutingSettings },
   ) {
     const providerId = "provider_id" in patch ? patch.provider_id : instance.provider_id;
-    if (!providerId) return Promise.reject(new Error("请先选择供应商"));
     return gatewayApi.setInstanceConfig(instance.instance_id, {
       provider_id: providerId,
       selected_model: "selected_model" in patch ? patch.selected_model : instance.selected_model,
@@ -523,12 +522,16 @@ function InstanceSection({
   }
 
   function updateProvider(instance: InstanceRoutingConfig, providerId: string) {
-    if (!providerId) return;
     void run(instance.instance_id, async () => {
       if (instance.instance_id === "default") {
+        if (!providerId) return;
         await gatewayApi.selectProvider(providerId);
       } else {
-        await updateNamedInstance(instance, { provider_id: providerId, selected_model: undefined, selected_reasoning_effort: undefined });
+        await updateNamedInstance(instance, {
+          provider_id: providerId || undefined,
+          selected_model: undefined,
+          selected_reasoning_effort: undefined,
+        });
       }
     });
   }
@@ -1517,6 +1520,7 @@ function CodexInstancesDialog({
 }) {
   const [instanceIds, setInstanceIds] = React.useState<string[]>([]);
   const [instanceId, setInstanceId] = React.useState("");
+  const [isCreating, setIsCreating] = React.useState(!initialInstanceId);
   const [providerId, setProviderId] = React.useState("");
   const [selectedModel, setSelectedModel] = React.useState("");
   const [reasoningEffort, setReasoningEffort] = React.useState<ReasoningEffort | "">("");
@@ -1525,7 +1529,6 @@ function CodexInstancesDialog({
     low_confidence_threshold: 0.7,
   });
   const [modelsByProvider, setModelsByProvider] = React.useState<Record<string, GatewayModel[]>>({});
-  const [loading, setLoading] = React.useState(true);
   const [loadingModels, setLoadingModels] = React.useState(true);
   const [saving, setSaving] = React.useState(false);
 
@@ -1536,8 +1539,7 @@ function CodexInstancesDialog({
 
   React.useEffect(() => {
     void refreshInstances()
-      .catch((loadError) => onError(errorMessage(loadError)))
-      .finally(() => setLoading(false));
+      .catch((loadError) => onError(errorMessage(loadError)));
   }, [onError, refreshInstances]);
 
   React.useEffect(() => {
@@ -1571,16 +1573,7 @@ function CodexInstancesDialog({
     return () => { cancelled = true; };
   }, [providers, onError]);
 
-  function resetDraft() {
-    setInstanceId("");
-    setProviderId("");
-    setSelectedModel("");
-    setReasoningEffort("");
-    setAutomaticRouting({ enabled: false, low_confidence_threshold: 0.7 });
-  }
-
   async function loadInstance(id: string) {
-    setLoading(true);
     try {
       const config = await gatewayApi.instanceConfig(id);
       setInstanceId(config.instance_id);
@@ -1588,10 +1581,9 @@ function CodexInstancesDialog({
       setSelectedModel(config.selected_model ?? "");
       setReasoningEffort(config.selected_reasoning_effort ?? "");
       setAutomaticRouting(config.automatic_routing);
+      setIsCreating(false);
     } catch (loadError) {
       onError(errorMessage(loadError));
-    } finally {
-      setLoading(false);
     }
   }
 
@@ -1603,20 +1595,20 @@ function CodexInstancesDialog({
     automaticRouting.max,
   ].every((target) => Boolean(target?.provider_id && target.model));
   const validInstanceId = /^[A-Za-z0-9_-]{1,64}$/.test(instanceId);
-  const canSave = Boolean(providerId && validInstanceId && !saving && !loadingModels && (!automaticRouting.enabled || targetComplete));
-  const gatewayUrl = instanceId
-    ? `${window.location.origin}/instances/${encodeURIComponent(instanceId)}/openai/v1`
-    : `${window.location.origin}/instances/<instance-id>/openai/v1`;
-  const instanceCommand = instanceId
-    ? `curl -fsSL ${shellQuote(`${window.location.origin}/codex/instances.sh`)} | sh -s -- create ${shellQuote(instanceId)} ${shellQuote(gatewayUrl)}`
-    : "填写实例名称后生成启动命令";
-
+  const instanceNameTaken = isCreating && instanceIds.includes(instanceId);
+  const canSave = Boolean(
+    validInstanceId
+      && !instanceNameTaken
+      && !saving
+      && (!automaticRouting.enabled || targetComplete),
+  );
   async function save() {
     if (!canSave) return;
+    const creatingInstance = isCreating;
     setSaving(true);
     try {
       const config: Omit<InstanceRoutingConfig, "instance_id" | "updated_at"> = {
-        provider_id: providerId,
+        provider_id: providerId || undefined,
         selected_model: selectedModel || undefined,
         selected_reasoning_effort: reasoningEffort || undefined,
         automatic_routing: automaticRouting,
@@ -1625,6 +1617,11 @@ function CodexInstancesDialog({
       setInstanceId(saved.instance_id);
       setAutomaticRouting(saved.automatic_routing);
       await Promise.all([refreshInstances(), onChanged()]);
+      if (creatingInstance) {
+        onClose();
+        return;
+      }
+      setIsCreating(false);
     } catch (saveError) {
       onError(errorMessage(saveError));
     } finally {
@@ -1638,81 +1635,34 @@ function CodexInstancesDialog({
 
   return (
     <DialogFrame
-      title="实例"
-      description="每个实例使用不同的 Gateway URL path，并保存一套独立的供应商、固定模型或自动路由配置。"
+      title={isCreating ? "新建实例" : "自动模型路由"}
+      description={isCreating ? "只需填写实例名称，其他配置可直接在实例卡片中调整。" : `为实例“${instanceId}”配置自动路由目标。`}
       onClose={onClose}
     >
-      <div className="grid gap-6 lg:grid-cols-[190px_minmax(0,1fr)]">
-        <aside className="rounded-2xl border border-white/65 bg-white/45 p-3 dark:border-white/8 dark:bg-white/[0.035]">
-          <div className="mb-2 flex items-center justify-between px-1">
-            <span className="eyebrow">已有实例</span>
-            <Button variant="outline" size="icon" title="新建实例" onClick={resetDraft}>
-              <Plus className="size-4" />
-            </Button>
-          </div>
-          {loading ? (
-            <div className="flex h-20 items-center justify-center"><LoaderCircle className="size-5 animate-spin text-slate-400" /></div>
-          ) : instanceIds.length ? (
-            <div className="space-y-1">
-              {instanceIds.map((id) => (
-                <button
-                  key={id}
-                  type="button"
-                  onClick={() => void loadInstance(id)}
-                  className={cn(
-                    "w-full rounded-xl px-3 py-2 text-left font-mono text-xs font-bold transition",
-                    id === instanceId ? "bg-blue-500/10 text-blue-700 dark:text-blue-300" : "hover:bg-slate-500/8",
-                  )}
-                >
-                  {id}
-                </button>
-              ))}
-            </div>
-          ) : (
-            <p className="px-1 py-4 text-[11px] leading-5 text-slate-400">还没有实例。点击 + 创建第一个。</p>
-          )}
-        </aside>
-
-        <div className="min-w-0 space-y-5">
-          <div className="grid gap-4 sm:grid-cols-2">
+      <div className="min-w-0 space-y-5">
+        {isCreating ? (
+          <>
             <FormField label="实例名称">
               <input className="field w-full font-mono text-sm" value={instanceId} maxLength={64} disabled={saving} placeholder="例如 codex-a" onChange={(event) => setInstanceId(event.target.value)} />
             </FormField>
-            <FormField label="Gateway Base URL">
-              <input className="field w-full font-mono text-xs" readOnly value={gatewayUrl} />
-            </FormField>
-          </div>
-          {instanceId && !validInstanceId ? <p className="-mt-3 text-[11px] text-red-500">实例名称只能包含字母、数字、_ 或 -，最多 64 个字符。</p> : null}
+            {instanceId && !validInstanceId ? <p className="-mt-3 text-[11px] text-red-500">实例名称只能包含字母、数字、_ 或 -，最多 64 个字符。</p> : null}
+            {instanceNameTaken ? <p className="-mt-3 text-[11px] text-red-500">该实例名称已存在，请换一个名称。</p> : null}
+            <div className="flex flex-wrap justify-end gap-2">
+              <Button type="button" variant="outline" onClick={onClose}>取消</Button>
+              <Button type="button" disabled={!canSave} onClick={() => void save()}>
+                {saving ? <LoaderCircle className="size-4 animate-spin" /> : <Check className="size-4" />}
+                {saving ? "创建中" : "创建实例"}
+              </Button>
+            </div>
+          </>
+        ) : (
+          <>
 
-          <div className="grid gap-4 sm:grid-cols-3">
-            <FormField label="默认供应商">
-              <select className="field w-full text-xs" value={providerId} disabled={saving || automaticRouting.enabled} onChange={(event) => { setProviderId(event.target.value); setSelectedModel(""); }}>
-                <option value="">选择供应商</option>
-                {providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.account_email ? `${provider.name} (${provider.account_email})` : provider.name}</option>)}
-              </select>
-            </FormField>
-            <FormField label="固定模型（可选）">
-              <select className="field w-full font-mono text-xs" value={selectedModel} disabled={saving || automaticRouting.enabled || loadingModels || !providerId} onChange={(event) => setSelectedModel(event.target.value)}>
-                <option value="">跟随请求模型</option>
-                {(modelsByProvider[providerId] ?? []).map((model) => <option key={model.id} value={model.id}>{model.id}</option>)}
-              </select>
-            </FormField>
-            <FormField label="推理强度（可选）">
-              <select className="field w-full text-xs" value={reasoningEffort} disabled={saving || automaticRouting.enabled || !providerId} onChange={(event) => setReasoningEffort(event.target.value as ReasoningEffort | "")}>
-                <option value="">跟随请求</option>
-                <option value="low">低（low）</option>
-                <option value="medium">中（medium）</option>
-                <option value="high">高（high）</option>
-                <option value="xhigh">极高（xhigh）</option>
-              </select>
-            </FormField>
-          </div>
-
-          <section className="border-t border-slate-200/70 pt-5 dark:border-white/10">
+          <section>
             <div className="flex items-start gap-4">
               <div className="min-w-0 flex-1">
                 <div className="text-sm font-bold">自动模型路由</div>
-                <p className="mt-1 text-[11px] leading-5 text-slate-400">关闭时，此实例使用上方的固定模型（或原请求模型）；开启时，按下方档位自动选择模型。</p>
+                <p className="mt-1 text-[11px] leading-5 text-slate-400">关闭时，此实例使用实例卡片中的默认供应商与模型（或原请求模型）；开启时，按下方档位自动选择模型。</p>
               </div>
               <button
                 type="button"
@@ -1741,21 +1691,15 @@ function CodexInstancesDialog({
             ) : null}
           </section>
 
-          <FormField label="创建并启动 Codex 窗口">
-            <div className="relative">
-              <pre className="overflow-x-auto rounded-2xl bg-slate-950 p-4 pr-12 text-[11px] leading-5 text-slate-200">{instanceCommand}</pre>
-              {instanceId ? <button className="absolute right-3 top-3 flex size-8 items-center justify-center rounded-lg bg-white/10 text-white hover:bg-white/15" type="button" aria-label="复制实例命令" onClick={() => void copyText(instanceCommand)}><Copy className="size-4" /></button> : null}
-            </div>
-          </FormField>
-
           <div className="flex flex-wrap justify-end gap-2">
             <Button type="button" variant="outline" onClick={onClose}>取消</Button>
             <Button type="button" disabled={!canSave} onClick={() => void save()}>
               {saving ? <LoaderCircle className="size-4 animate-spin" /> : <Check className="size-4" />}
-              {saving ? "保存中" : "保存实例配置"}
+              {saving ? "保存中" : "保存路由配置"}
             </Button>
           </div>
-        </div>
+          </>
+          )}
       </div>
     </DialogFrame>
   );

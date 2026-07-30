@@ -730,13 +730,19 @@ pub async fn set_instance_routing_config(
     Json(request): Json<UpdateInstanceRoutingConfigRequest>,
 ) -> Result<Json<InstanceRoutingConfig>, AppError> {
     let instance_id = normalize_instance_id(&instance_id)?;
-    let provider_id = normalize_selected_provider_id(request.provider_id)?;
-    let provider = resolve_provider_by_id(&state, &provider_id).await?;
+    let provider_id = normalize_optional_provider_id(request.provider_id);
+    let provider = match provider_id.as_deref() {
+        Some(provider_id) => Some(resolve_provider_by_id(&state, provider_id).await?),
+        None => None,
+    };
     let selected_model = request
         .selected_model
         .map(normalize_selected_model)
         .transpose()?;
     if let Some(model) = selected_model.as_deref() {
+        let provider = provider.as_ref().ok_or_else(|| {
+            AppError::bad_request("a provider is required when a fixed model is selected")
+        })?;
         let models = load_provider_models(&state, &provider, false).await?;
         if !models.data.iter().any(|item| item.id == model) {
             return Err(AppError::bad_request(format!(
@@ -767,7 +773,7 @@ pub async fn set_instance_routing_config(
         .routes
         .set_for_instance(
             &instance_id,
-            Some(provider_id),
+            provider_id,
             selected_model,
             selected_reasoning_effort,
         )
@@ -823,7 +829,12 @@ async fn responses_inner_for_instance(
     turn_metadata: Option<CodexTurnMetadata>,
     instance_id: Option<&str>,
 ) -> Result<Response, AppError> {
-    let provider = resolve_selected_provider_for_instance(&state, instance_id).await?;
+    let route = route_for_instance(&state, instance_id).await?;
+    let automatic_routing = automatic_routing_for_instance(&state, instance_id)?;
+    let provider = match route.provider_id.as_deref() {
+        Some(provider_id) => Some(resolve_provider_by_id(&state, provider_id).await?),
+        None => None,
+    };
     let mut request_json: Value = serde_json::from_str(&raw_body)
         .map_err(|err| AppError::bad_request(format!("invalid request JSON: {err}")))?;
     let request_stream = responses_request_stream(&request_json);
@@ -831,12 +842,18 @@ async fn responses_inner_for_instance(
         .unwrap_or_default()
         .to_string();
     let mut turn = turn_context_from_request(&request_json, turn_metadata.as_ref(), instance_id);
-    let routing =
-        choose_model_for_request(&state, &provider, &turn, &request_json, instance_id).await?;
-    let routed_provider = resolve_routing_provider(&state, &provider, &routing).await?;
-    let selected_reasoning_effort = route_for_instance(&state, instance_id)
-        .await?
-        .selected_reasoning_effort;
+    let routing = choose_model_for_request(
+        &state,
+        provider.as_ref(),
+        &turn,
+        &request_json,
+        &route,
+        &automatic_routing,
+    )
+    .await?;
+    let routed_provider =
+        resolve_routing_provider(&state, provider.as_ref(), &routing, instance_id).await?;
+    let selected_reasoning_effort = route.selected_reasoning_effort;
     let request_overridden = apply_gateway_overrides_to_raw_request(
         &routing,
         selected_reasoning_effort.as_deref(),
@@ -964,12 +981,14 @@ async fn resolve_selected_provider_for_instance(
     if let Some(provider_id) = route.provider_id {
         return resolve_provider_by_id(state, &provider_id).await;
     }
+    Err(no_provider_selected_error(instance_id))
+}
+
+fn no_provider_selected_error(instance_id: Option<&str>) -> AppError {
     let endpoint = instance_id
         .map(|id| format!("PUT /instances/{id}/config"))
         .unwrap_or_else(|| "PUT /selected-provider".to_string());
-    Err(AppError::bad_request(format!(
-        "no provider selected; call {endpoint} first"
-    )))
+    AppError::bad_request(format!("no provider selected; call {endpoint} first"))
 }
 
 async fn route_for_instance(
@@ -1052,21 +1071,25 @@ fn apply_gateway_overrides_to_raw_request(
 
 async fn resolve_routing_provider(
     state: &AppState,
-    selected_provider: &ResolvedProvider,
+    selected_provider: Option<&ResolvedProvider>,
     routing: &RoutingDecision,
+    instance_id: Option<&str>,
 ) -> Result<ResolvedProvider, AppError> {
     let Some(target) = routing.target.as_ref() else {
-        return Ok(selected_provider.clone());
+        return selected_provider
+            .cloned()
+            .ok_or_else(|| no_provider_selected_error(instance_id));
     };
     resolve_provider_by_id(state, &target.provider_id).await
 }
 
 async fn choose_model_for_request(
     state: &AppState,
-    provider: &ResolvedProvider,
+    provider: Option<&ResolvedProvider>,
     turn: &TurnContext,
     request: &Value,
-    instance_id: Option<&str>,
+    route: &SelectedRoute,
+    settings: &AutoRoutingSettings,
 ) -> Result<RoutingDecision, AppError> {
     if let Some(existing) = state.turn_logs.get(&turn.id).ok().flatten() {
         return Ok(RoutingDecision {
@@ -1083,19 +1106,21 @@ async fn choose_model_for_request(
         });
     }
 
-    if let Some(model) = route_for_instance(state, instance_id).await?.selected_model {
+    if let Some(model) = route.selected_model.as_deref() {
         let provider_id = provider
+            .ok_or_else(|| {
+                AppError::bad_request("a provider is required when a fixed model is selected")
+            })?
             .record
             .as_ref()
             .map(|record| record.id.clone())
             .ok_or_else(|| AppError::internal("selected provider record missing"))?;
         return Ok(RoutingDecision::selected_model(RoutingModelTarget {
             provider_id,
-            model,
+            model: model.to_string(),
         }));
     }
 
-    let settings = automatic_routing_for_instance(state, instance_id)?;
     if !settings.enabled {
         return Ok(RoutingDecision::disabled());
     }
@@ -1715,6 +1740,13 @@ fn normalize_selected_provider_id(provider_id: Option<String>) -> Result<String,
         ));
     }
     Ok(trimmed.to_string())
+}
+
+fn normalize_optional_provider_id(provider_id: Option<String>) -> Option<String> {
+    provider_id.and_then(|provider_id| {
+        let trimmed = provider_id.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_string())
+    })
 }
 
 fn normalize_selected_model(model: String) -> Result<String, AppError> {
