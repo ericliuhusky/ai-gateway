@@ -13,7 +13,14 @@ use std::{fs, path::PathBuf, sync::Arc};
 #[derive(Clone, Debug)]
 pub struct SqliteStore {
     db_path: PathBuf,
-    encryption: FieldEncryptor,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct DatabaseSecuritySettings {
+    pub encryption_key: String,
+    pub feishu_app_id: String,
+    pub feishu_app_secret: String,
+    pub auth_required: bool,
 }
 
 impl SqliteStore {
@@ -23,9 +30,10 @@ impl SqliteStore {
 
         let store = Self {
             db_path: config.sqlite_path(),
-            encryption: config.encryption(),
         };
         store.init()?;
+        #[cfg(test)]
+        store.set_database_encryption_key("MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")?;
         Ok(store)
     }
 
@@ -36,19 +44,22 @@ impl SqliteStore {
                 .map_err(|err| format!("create test data dir failed: {err}"))?;
         }
 
-        let store = Self {
-            db_path,
-            encryption: FieldEncryptor::from_base64_key(
-                "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=",
-            )
-            .expect("hard-coded test key is valid"),
-        };
+        let store = Self { db_path };
         store.init()?;
+        store.set_database_encryption_key("MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")?;
         Ok(store)
     }
 
     pub fn load_accounts(&self) -> Result<Vec<AccountRecord>, String> {
         let conn = self.connect()?;
+        let has_accounts: bool = conn
+            .query_row("SELECT EXISTS(SELECT 1 FROM accounts)", [], |row| {
+                row.get(0)
+            })
+            .map_err(|err| format!("check accounts failed: {err}"))?;
+        if !has_accounts {
+            return Ok(Vec::new());
+        }
         let mut stmt = conn
             .prepare(
                 "SELECT id, account_type, email, access_token, refresh_token, expiry_timestamp, client_id, upstream_account_id, owner_user_id
@@ -56,7 +67,12 @@ impl SqliteStore {
                  ORDER BY rowid ASC",
             )
             .map_err(|err| format!("prepare accounts query failed: {err}"))?;
-        let encryption = self.encryption.clone();
+        let Some(encryption) = self.optional_encryption()? else {
+            // A gateway must remain bootable for first-run setup. Existing
+            // credential rows stay untouched and are deliberately unavailable
+            // until an administrator configures the database encryption key.
+            return Ok(Vec::new());
+        };
         let rows = stmt
             .query_map([], move |row| {
                 Ok(AccountRecord {
@@ -84,7 +100,7 @@ impl SqliteStore {
 
     pub fn upsert_account(&self, account: &AccountRecord) -> Result<(), String> {
         let conn = self.connect()?;
-        upsert_account_record(&conn, &self.encryption, account)
+        upsert_account_record(&conn, &self.encryption()?, account)
     }
 
     pub fn delete_account(&self, account_id: &str) -> Result<(), String> {
@@ -96,6 +112,14 @@ impl SqliteStore {
 
     pub fn load_providers(&self) -> Result<Vec<ApiProviderRecord>, String> {
         let conn = self.connect()?;
+        let has_providers: bool = conn
+            .query_row("SELECT EXISTS(SELECT 1 FROM providers)", [], |row| {
+                row.get(0)
+            })
+            .map_err(|err| format!("check providers failed: {err}"))?;
+        if !has_providers {
+            return Ok(Vec::new());
+        }
         let mut stmt = conn
             .prepare(
                 "SELECT id, name, auth_mode, COALESCE(base_url, ''), COALESCE(api_key, ''), account_id,
@@ -104,7 +128,11 @@ impl SqliteStore {
                  ORDER BY rowid ASC",
             )
             .map_err(|err| format!("prepare providers query failed: {err}"))?;
-        let encryption = self.encryption.clone();
+        let Some(encryption) = self.optional_encryption()? else {
+            // See load_accounts: do not make a missing setup key fatal at
+            // startup, and never expose credential-backed providers without it.
+            return Ok(Vec::new());
+        };
         let rows = stmt
             .query_map([], move |row| {
                 Ok(ApiProviderRecord {
@@ -141,7 +169,7 @@ impl SqliteStore {
 
     pub fn upsert_provider(&self, provider: &ApiProviderRecord) -> Result<(), String> {
         let conn = self.connect()?;
-        upsert_provider_record(&conn, &self.encryption, provider)
+        upsert_provider_record(&conn, &self.encryption()?, provider)
     }
 
     pub fn delete_provider(&self, provider_id: &str) -> Result<(), String> {
@@ -731,6 +759,101 @@ impl SqliteStore {
         self.connect()
     }
 
+    pub(crate) fn database_security_settings(&self) -> Result<DatabaseSecuritySettings, String> {
+        let conn = self.connect()?;
+        conn.query_row(
+            "SELECT COALESCE(database_encryption_key, ''), COALESCE(feishu_app_id, ''),
+                    COALESCE(feishu_app_secret, ''), auth_required
+             FROM gateway_state WHERE id = 1",
+            [],
+            |row| {
+                Ok(DatabaseSecuritySettings {
+                    encryption_key: row.get(0)?,
+                    feishu_app_id: row.get(1)?,
+                    feishu_app_secret: row.get(2)?,
+                    auth_required: row.get::<_, i64>(3)? != 0,
+                })
+            },
+        )
+        .map_err(|err| format!("load database security settings failed: {err}"))
+    }
+
+    pub(crate) fn set_database_encryption_key(&self, key: &str) -> Result<(), String> {
+        FieldEncryptor::from_base64_key(key)?;
+        let conn = self.connect()?;
+        let current: String = conn
+            .query_row(
+                "SELECT COALESCE(database_encryption_key, '') FROM gateway_state WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|err| format!("read database encryption key failed: {err}"))?;
+        if !current.is_empty() && current != key.trim() {
+            return Err(
+                "数据库加密密钥已经设置；为避免现有凭据无法解密，不支持直接更换密钥".to_string(),
+            );
+        }
+        conn.execute(
+            "UPDATE gateway_state SET database_encryption_key = ?1 WHERE id = 1",
+            params![key.trim()],
+        )
+        .map_err(|err| format!("save database encryption key failed: {err}"))?;
+        Ok(())
+    }
+
+    pub(crate) fn update_database_security_settings(
+        &self,
+        encryption_key: Option<&str>,
+        feishu_app_id: &str,
+        feishu_app_secret: Option<&str>,
+        auth_required: bool,
+    ) -> Result<(), String> {
+        if let Some(key) = encryption_key.filter(|key| !key.trim().is_empty()) {
+            self.set_database_encryption_key(key)?;
+        }
+        let settings = self.database_security_settings()?;
+        let encryptor = if feishu_app_secret.is_some_and(|value| !value.trim().is_empty()) {
+            Some(self.encryption()?)
+        } else {
+            None
+        };
+        if auth_required
+            && (settings.encryption_key.is_empty()
+                || feishu_app_id.trim().is_empty()
+                || (settings.feishu_app_secret.is_empty()
+                    && feishu_app_secret.is_none_or(|value| value.trim().is_empty())))
+        {
+            return Err(
+                "启用账户登录前，必须先设置数据库加密密钥、飞书 App ID 和 App Secret".to_string(),
+            );
+        }
+        let conn = self.connect()?;
+        let app_secret = match feishu_app_secret.filter(|value| !value.trim().is_empty()) {
+            Some(value) => encryptor.expect("encryptor exists").encrypt(value)?,
+            None => settings.feishu_app_secret,
+        };
+        conn.execute(
+            "UPDATE gateway_state
+             SET feishu_app_id = ?1, feishu_app_secret = ?2, auth_required = ?3
+             WHERE id = 1",
+            params![feishu_app_id.trim(), app_secret, i64::from(auth_required)],
+        )
+        .map_err(|err| format!("save database security settings failed: {err}"))?;
+        Ok(())
+    }
+
+    pub(crate) fn encryption(&self) -> Result<FieldEncryptor, String> {
+        self.optional_encryption()?
+            .ok_or_else(|| "尚未设置数据库加密密钥；请先在管理员设置中完成配置".to_string())
+    }
+
+    fn optional_encryption(&self) -> Result<Option<FieldEncryptor>, String> {
+        let key = self.database_security_settings()?.encryption_key;
+        (!key.is_empty())
+            .then(|| FieldEncryptor::from_base64_key(&key))
+            .transpose()
+    }
+
     fn init(&self) -> Result<(), String> {
         let conn = self.connect()?;
         conn.execute_batch(
@@ -785,6 +908,10 @@ impl SqliteStore {
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 selected_provider_id TEXT,
                 codex_client_version_override TEXT,
+                database_encryption_key TEXT NOT NULL DEFAULT '',
+                feishu_app_id TEXT NOT NULL DEFAULT '',
+                feishu_app_secret TEXT NOT NULL DEFAULT '',
+                auth_required INTEGER NOT NULL DEFAULT 0,
                 routing_enabled INTEGER NOT NULL DEFAULT 0,
                 routing_classifier_target TEXT,
                 routing_light_target TEXT,
@@ -846,6 +973,28 @@ impl SqliteStore {
             "accounts",
             "owner_user_id INTEGER REFERENCES gateway_users(id) ON DELETE CASCADE",
         )?;
+        add_column_if_missing(
+            &conn,
+            "gateway_state",
+            "database_encryption_key TEXT NOT NULL DEFAULT ''",
+        )?;
+        add_column_if_missing(
+            &conn,
+            "gateway_state",
+            "feishu_app_id TEXT NOT NULL DEFAULT ''",
+        )?;
+        add_column_if_missing(
+            &conn,
+            "gateway_state",
+            "feishu_app_secret TEXT NOT NULL DEFAULT ''",
+        )?;
+        add_column_if_missing(
+            &conn,
+            "gateway_state",
+            "auth_required INTEGER NOT NULL DEFAULT 0",
+        )?;
+        conn.execute("INSERT OR IGNORE INTO gateway_state (id) VALUES (1)", [])
+            .map_err(|err| format!("initialize gateway state failed: {err}"))?;
         add_column_if_missing(
             &conn,
             "providers",

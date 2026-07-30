@@ -43,6 +43,7 @@ import type {
   RoutingModelTarget,
   InstanceRoutingConfig,
   OpenAiDeviceLoginStart,
+  SecuritySettings,
 } from "./types";
 
 type Dialog = "provider" | "instances" | "scripts" | null;
@@ -457,6 +458,10 @@ export function GatewayDashboard() {
       {dialog === "provider" ? (
         <ProviderDialog
           onClose={() => setDialog(null)}
+          onOpenSecuritySettings={() => {
+            setDialog(null);
+            setActivePage("admin");
+          }}
           onCreated={async () => {
             setDialog(null);
             await refresh();
@@ -1356,15 +1361,31 @@ function DialogFrame({
 
 function ProviderDialog({
   onClose,
+  onOpenSecuritySettings,
   onCreated,
   onError,
 }: {
   onClose: () => void;
+  onOpenSecuritySettings: () => void;
   onCreated: () => Promise<void>;
   onError: (message: string) => void;
 }) {
   const [providerType, setProviderType] = React.useState<"api" | "account">("account");
   const [apiTabVisited, setApiTabVisited] = React.useState(false);
+  const [security, setSecurity] = React.useState<SecuritySettings | null>(null);
+
+  React.useEffect(() => {
+    void gatewayApi.securitySettings().then(setSecurity).catch(() => {
+      // Non-admin users cannot read security settings. A missing key cannot occur
+      // while account mode is enabled, so keep the form available for them.
+      setSecurity({
+        encryption_key_configured: true,
+        feishu_app_id: "",
+        feishu_app_secret_configured: true,
+        auth_required: true,
+      });
+    });
+  }, []);
 
   return (
     <DialogFrame
@@ -1372,6 +1393,18 @@ function ProviderDialog({
       description="选择使用 API Key 接入 OpenAI 兼容接口，或添加 ChatGPT 账户。"
       onClose={onClose}
     >
+      {security && !security.encryption_key_configured ? (
+        <div className="mb-5 rounded-2xl border border-amber-500/25 bg-amber-500/10 p-4 text-sm leading-6 text-amber-800 dark:text-amber-200">
+          <div className="font-bold">尚未设置数据库加密密钥</div>
+          <p className="mt-1 text-xs">
+            为避免 API Key 和账户 Token 以明文保存，当前不能添加供应商。请先完成安全设置。
+          </p>
+          <Button className="mt-3" size="sm" variant="outline" onClick={onOpenSecuritySettings}>
+            <Settings className="size-4" />
+            前往管理员设置
+          </Button>
+        </div>
+      ) : null}
       <div className="mb-5 flex rounded-xl bg-slate-100 p-1 text-xs font-semibold dark:bg-white/[0.06]">
         <button
           type="button"
@@ -1403,13 +1436,17 @@ function ProviderDialog({
           API Key
         </button>
       </div>
-      <div className={providerType === "account" ? undefined : "hidden"}>
-        <AccountProviderForm onClose={onClose} onCreated={onCreated} onError={onError} />
-      </div>
-      {apiTabVisited ? (
-        <div className={providerType === "api" ? undefined : "hidden"}>
-          <ApiProviderForm onClose={onClose} onCreated={onCreated} onError={onError} />
-        </div>
+      {security?.encryption_key_configured ? (
+        <>
+          <div className={providerType === "account" ? undefined : "hidden"}>
+            <AccountProviderForm onClose={onClose} onCreated={onCreated} onError={onError} />
+          </div>
+          {apiTabVisited ? (
+            <div className={providerType === "api" ? undefined : "hidden"}>
+              <ApiProviderForm onClose={onClose} onCreated={onCreated} onError={onError} />
+            </div>
+          ) : null}
+        </>
       ) : null}
     </DialogFrame>
   );
@@ -2055,7 +2092,12 @@ function AdminSettingsPage({
   onError: (message: string) => void;
 }) {
   const [setting, setSetting] = React.useState<CodexClientVersionSetting | null>(null);
+  const [security, setSecurity] = React.useState<SecuritySettings | null>(null);
   const [version, setVersion] = React.useState("");
+  const [encryptionKey, setEncryptionKey] = React.useState("");
+  const [feishuAppId, setFeishuAppId] = React.useState("");
+  const [feishuAppSecret, setFeishuAppSecret] = React.useState("");
+  const [authRequired, setAuthRequired] = React.useState(false);
   const [submitting, setSubmitting] = React.useState(false);
 
   React.useEffect(() => {
@@ -2064,6 +2106,14 @@ function AdminSettingsPage({
       .then((value) => {
         setSetting(value);
         setVersion(value.override_version ?? "");
+      })
+      .catch((loadError) => onError(errorMessage(loadError)));
+    void gatewayApi
+      .securitySettings()
+      .then((value) => {
+        setSecurity(value);
+        setFeishuAppId(value.feishu_app_id);
+        setAuthRequired(value.auth_required);
       })
       .catch((loadError) => onError(errorMessage(loadError)));
   }, [onError]);
@@ -2077,6 +2127,30 @@ function AdminSettingsPage({
       setSetting(value);
       setVersion(value.override_version ?? "");
       await onChanged();
+    } catch (saveError) {
+      onError(errorMessage(saveError));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function saveSecurity(event: React.FormEvent) {
+    event.preventDefault();
+    setSubmitting(true);
+    try {
+      const value = await gatewayApi.setSecuritySettings({
+        encryption_key: encryptionKey.trim() || undefined,
+        feishu_app_id: feishuAppId.trim(),
+        feishu_app_secret: feishuAppSecret.trim() || undefined,
+        auth_required: authRequired,
+      });
+      setSecurity(value);
+      setEncryptionKey("");
+      setFeishuAppSecret("");
+      setFeishuAppId(value.feishu_app_id);
+      setAuthRequired(value.auth_required);
+      await onChanged();
+      window.location.reload();
     } catch (saveError) {
       onError(errorMessage(saveError));
     } finally {
@@ -2102,8 +2176,74 @@ function AdminSettingsPage({
     <SettingsPageFrame
       title="管理员设置"
       description="集中管理网关配置。后续管理员设置会继续添加到此标签页。"
-      tabs={["Codex 版本"]}
+      tabs={["安全与登录", "Codex 版本"]}
     >
+      <section className="mb-10">
+        <div className="mb-4">
+          <h2 className="text-base font-bold">安全与账户登录</h2>
+          <p className="mt-1 text-xs leading-5 text-slate-400">
+            配置保存在 SQLite。数据库加密密钥一经设置不能直接更换，以免已有凭据无法解密。
+          </p>
+        </div>
+        {!security ? (
+          <div className="flex min-h-24 items-center justify-center">
+            <LoaderCircle className="size-5 animate-spin text-slate-400" />
+          </div>
+        ) : (
+          <form onSubmit={saveSecurity} className="space-y-4">
+            <div className="grid gap-4 sm:grid-cols-2">
+              <FormField label={`数据库加密密钥${security.encryption_key_configured ? "（已设置）" : ""}`}>
+                <input
+                  className="field w-full font-mono text-sm"
+                  type="password"
+                  value={encryptionKey}
+                  placeholder={security.encryption_key_configured ? "已设置，不能更换" : "Base64 编码的 32 字节密钥"}
+                  disabled={submitting || security.encryption_key_configured}
+                  onChange={(event) => setEncryptionKey(event.target.value)}
+                />
+              </FormField>
+              <FormField label="飞书 App ID">
+                <input
+                  className="field w-full font-mono text-sm"
+                  value={feishuAppId}
+                  placeholder="cli_..."
+                  disabled={submitting}
+                  onChange={(event) => setFeishuAppId(event.target.value)}
+                />
+              </FormField>
+            </div>
+            <FormField label={`飞书 App Secret${security.feishu_app_secret_configured ? "（已设置；留空不变）" : ""}`}>
+              <input
+                className="field w-full font-mono text-sm"
+                type="password"
+                value={feishuAppSecret}
+                placeholder={security.feishu_app_secret_configured ? "留空以保持当前值" : "App Secret"}
+                disabled={submitting}
+                onChange={(event) => setFeishuAppSecret(event.target.value)}
+              />
+            </FormField>
+            <label className="flex items-center justify-between gap-4 rounded-2xl border border-white/65 bg-white/45 p-4 dark:border-white/8 dark:bg-white/[0.035]">
+              <span>
+                <span className="block text-sm font-semibold">账户登录模式</span>
+                <span className="mt-1 block text-xs text-slate-400">开启后管理端需通过飞书登录，网关请求需使用用户 API Key。</span>
+              </span>
+              <input
+                type="checkbox"
+                className="size-4"
+                checked={authRequired}
+                disabled={submitting}
+                onChange={(event) => setAuthRequired(event.target.checked)}
+              />
+            </label>
+            <div className="flex justify-end">
+              <Button type="submit" disabled={submitting}>
+                {submitting ? <LoaderCircle className="size-4 animate-spin" /> : <Check className="size-4" />}
+                {submitting ? "保存中" : "保存安全设置"}
+              </Button>
+            </div>
+          </form>
+        )}
+      </section>
       <section>
         <div className="mb-4">
           <h2 className="text-base font-bold">Codex 版本</h2>

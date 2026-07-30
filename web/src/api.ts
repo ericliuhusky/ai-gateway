@@ -8,6 +8,7 @@ import type {
   InstanceRoutingConfig,
   ProviderQuotaSummary,
   ReasoningEffort,
+  SecuritySettings,
   SelectedProvider,
   TurnRouteLog,
   OpenAiDeviceLoginStart,
@@ -63,6 +64,20 @@ export const gatewayApi = {
   clearCodexClientVersion() {
     return request<CodexClientVersionSetting>("/settings/codex-client-version", {
       method: "DELETE",
+    });
+  },
+
+  securitySettings: () => request<SecuritySettings>("/settings/security"),
+
+  setSecuritySettings(settings: {
+    encryption_key?: string;
+    feishu_app_id: string;
+    feishu_app_secret?: string;
+    auth_required: boolean;
+  }) {
+    return request<SecuritySettings>("/settings/security", {
+      method: "PUT",
+      body: JSON.stringify(settings),
     });
   },
 

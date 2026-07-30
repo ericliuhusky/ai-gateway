@@ -118,9 +118,8 @@ impl ProviderStore {
             compatibility_profile,
             owner_user_id,
         };
-        providers.push(provider.clone());
-
         self.persist_provider(&provider)?;
+        providers.push(provider.clone());
         Ok(provider)
     }
 
@@ -189,9 +188,8 @@ impl ProviderStore {
             compatibility_profile: ProviderCompatibilityProfile::OpenAiCodex,
             owner_user_id,
         };
-        providers.push(provider.clone());
-
         self.persist_provider(&provider)?;
+        providers.push(provider.clone());
         Ok(provider)
     }
 

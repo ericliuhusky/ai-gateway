@@ -24,7 +24,7 @@ export function LoginPage() {
           </Button>
         ) : (
           <div className="mt-7 rounded-xl bg-amber-500/10 px-4 py-3 text-left text-sm leading-6 text-amber-700 dark:text-amber-300">
-            飞书登录尚未配置。请为服务设置 <code>FEISHU_APP_ID</code> 与 <code>FEISHU_APP_SECRET</code>，并在飞书应用中登记回调地址。
+            飞书登录尚未配置。请先由管理员在“管理员设置”中设置飞书 App ID 与 App Secret，并在飞书应用中登记回调地址。
           </div>
         )}
       </section>

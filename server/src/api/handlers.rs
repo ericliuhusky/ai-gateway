@@ -14,10 +14,11 @@ use crate::{
         ModelListResponse, OPENAI_ACCOUNT_PROVIDER_NAME, ProviderAuthMode,
         ProviderCompatibilityProfile, ProviderQuotaCredits, ProviderQuotaResponse,
         ProviderQuotaSnapshot, ProviderQuotaSummary, ProviderQuotaWindow, QuotaSource,
-        QuotaSupportStatus, RoutingModelTarget, SelectedRoute, TurnRouteLogUpdate,
-        UpdateAutoRoutingSettingsRequest, UpdateCodexClientVersionRequest,
-        UpdateInstanceRoutingConfigRequest, UpdateSelectedModelRequest,
-        UpdateSelectedProviderRequest, UpdateSelectedReasoningEffortRequest,
+        QuotaSupportStatus, RoutingModelTarget, SecuritySettings, SelectedRoute,
+        TurnRouteLogUpdate, UpdateAutoRoutingSettingsRequest, UpdateCodexClientVersionRequest,
+        UpdateInstanceRoutingConfigRequest, UpdateSecuritySettingsRequest,
+        UpdateSelectedModelRequest, UpdateSelectedProviderRequest,
+        UpdateSelectedReasoningEffortRequest,
     },
     openai_device_login::{
         DeviceLoginCompletion, DeviceLoginPoll, DeviceLoginStart, OpenAiDeviceLoginService,
@@ -113,6 +114,37 @@ pub async fn clear_codex_client_version(
         .map_err(AppError::internal)?;
     clear_openai_model_caches(&state).await?;
     Ok(Json(codex_client_version_setting(&state)?))
+}
+
+pub async fn get_security_settings(
+    State(state): State<AppState>,
+    Extension(scope): Extension<RequestScope>,
+) -> Result<Json<SecuritySettings>, AppError> {
+    require_admin(&scope)?;
+    security_settings(&state)
+}
+
+pub async fn set_security_settings(
+    State(state): State<AppState>,
+    Extension(scope): Extension<RequestScope>,
+    Json(request): Json<UpdateSecuritySettingsRequest>,
+) -> Result<Json<SecuritySettings>, AppError> {
+    require_admin(&scope)?;
+    let settings = state
+        .settings
+        .update_security_settings(
+            request.encryption_key.as_deref(),
+            &request.feishu_app_id,
+            request.feishu_app_secret.as_deref(),
+            request.auth_required,
+        )
+        .map_err(AppError::bad_request)?;
+    Ok(Json(SecuritySettings {
+        encryption_key_configured: settings.encryption_key_configured,
+        feishu_app_id: settings.feishu_app_id,
+        feishu_app_secret_configured: settings.feishu_app_secret_configured,
+        auth_required: settings.auth_required,
+    }))
 }
 
 pub async fn get_auto_routing_settings(
@@ -1950,6 +1982,19 @@ fn codex_client_version_setting(state: &AppState) -> Result<CodexClientVersionSe
         override_version,
         effective_version,
     })
+}
+
+fn security_settings(state: &AppState) -> Result<Json<SecuritySettings>, AppError> {
+    let settings = state
+        .settings
+        .security_settings()
+        .map_err(AppError::internal)?;
+    Ok(Json(SecuritySettings {
+        encryption_key_configured: settings.encryption_key_configured,
+        feishu_app_id: settings.feishu_app_id,
+        feishu_app_secret_configured: settings.feishu_app_secret_configured,
+        auth_required: settings.auth_required,
+    }))
 }
 
 fn normalize_codex_client_version(version: String) -> Result<String, AppError> {

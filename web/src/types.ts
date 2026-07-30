@@ -42,6 +42,13 @@ export interface CodexClientVersionSetting {
   is_overridden: boolean;
 }
 
+export interface SecuritySettings {
+  encryption_key_configured: boolean;
+  feishu_app_id: string;
+  feishu_app_secret_configured: boolean;
+  auth_required: boolean;
+}
+
 export interface InstanceRoutingConfig {
   instance_id: string;
   provider_id?: string;

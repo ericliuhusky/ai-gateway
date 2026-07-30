@@ -17,8 +17,8 @@ use url::Url;
 use uuid::Uuid;
 
 use crate::{
-    config::{AuthMode, Config},
-    store::{UserRole, UserStore},
+    config::Config,
+    store::{SettingsStore, UserRole, UserStore},
 };
 
 const FEISHU_AUTHORIZE_URL: &str = "https://accounts.feishu.cn/open-apis/authen/v1/authorize";
@@ -31,10 +31,8 @@ const OAUTH_STATE_TTL_SECS: i64 = 10 * 60;
 #[derive(Clone)]
 pub struct AuthService {
     users: UserStore,
-    auth_mode: AuthMode,
+    settings: SettingsStore,
     http: Client,
-    app_id: String,
-    app_secret: String,
     states: Arc<Mutex<HashMap<String, PendingLogin>>>,
 }
 
@@ -87,10 +85,8 @@ impl AuthService {
     pub fn new(config: Arc<Config>) -> Result<Self, String> {
         Ok(Self {
             users: UserStore::new(config.clone())?,
-            auth_mode: config.auth_mode(),
+            settings: SettingsStore::new(config)?,
             http: Client::new(),
-            app_id: config.feishu_app_id(),
-            app_secret: config.feishu_app_secret(),
             states: Arc::new(Mutex::new(HashMap::new())),
         })
     }
@@ -100,25 +96,34 @@ impl AuthService {
     }
 
     pub fn feishu_configured(&self) -> bool {
-        !self.app_id.is_empty() && !self.app_secret.is_empty()
+        self.settings
+            .security_settings()
+            .map(|settings| {
+                !settings.feishu_app_id.is_empty() && settings.feishu_app_secret_configured
+            })
+            .unwrap_or(false)
     }
 
     pub fn required(&self) -> bool {
-        self.auth_mode == AuthMode::Required
+        self.settings
+            .security_settings()
+            .map(|settings| settings.auth_required)
+            .unwrap_or(false)
     }
 
     pub fn begin_feishu_login(&self, headers: &HeaderMap) -> Result<String, String> {
         if !self.feishu_configured() {
-            return Err("缺少 FEISHU_APP_ID 或 FEISHU_APP_SECRET，无法使用飞书登录".to_string());
+            return Err("缺少飞书 App ID 或 App Secret，无法使用飞书登录".to_string());
         }
         let root_url = request_root_url(headers)?;
         let redirect_uri = format!("{root_url}/auth/feishu/callback");
         let state = Uuid::new_v4().to_string();
         self.save_state(&state, &redirect_uri, &root_url)?;
 
+        let (app_id, _) = self.settings.feishu_credentials()?;
         let mut url = Url::parse(FEISHU_AUTHORIZE_URL).map_err(|error| error.to_string())?;
         url.query_pairs_mut()
-            .append_pair("client_id", &self.app_id)
+            .append_pair("client_id", &app_id)
             .append_pair("redirect_uri", &redirect_uri)
             .append_pair("response_type", "code")
             .append_pair("state", &state);
@@ -281,12 +286,13 @@ impl AuthService {
     }
 
     async fn exchange_code(&self, code: &str, redirect_uri: &str) -> Result<String, String> {
+        let (app_id, app_secret) = self.settings.feishu_credentials()?;
         let response = self
             .http
             .post(FEISHU_TOKEN_URL)
             .json(&serde_json::json!({
-                "grant_type": "authorization_code", "client_id": self.app_id,
-                "client_secret": self.app_secret, "code": code, "redirect_uri": redirect_uri,
+                "grant_type": "authorization_code", "client_id": app_id,
+                "client_secret": app_secret, "code": code, "redirect_uri": redirect_uri,
             }))
             .send()
             .await

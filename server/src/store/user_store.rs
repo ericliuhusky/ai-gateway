@@ -1,4 +1,4 @@
-use crate::{config::Config, crypto::FieldEncryptor, store::sqlite::SqliteStore};
+use crate::{config::Config, store::sqlite::SqliteStore};
 use rusqlite::{OptionalExtension, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
@@ -48,14 +48,12 @@ pub struct FeishuUserProfile {
 #[derive(Clone, Debug)]
 pub struct UserStore {
     sqlite: SqliteStore,
-    encryption: FieldEncryptor,
 }
 
 impl UserStore {
     pub fn new(config: Arc<Config>) -> Result<Self, String> {
         Ok(Self {
-            sqlite: SqliteStore::new(config.clone())?,
-            encryption: config.encryption(),
+            sqlite: SqliteStore::new(config)?,
         })
     }
 
@@ -218,7 +216,7 @@ impl UserStore {
             .map_err(|error| format!("load gateway access token failed: {error}"))?
             .flatten();
         ciphertext
-            .map(|value| self.encryption.decrypt(&value))
+            .map(|value| self.sqlite.encryption()?.decrypt(&value))
             .transpose()
     }
 
@@ -231,7 +229,11 @@ impl UserStore {
                 token_hash = excluded.token_hash,
                 token_ciphertext = excluded.token_ciphertext,
                 created_at = unixepoch()",
-            params![token_hash(token), self.encryption.encrypt(token)?, user_id],
+            params![
+                token_hash(token),
+                self.sqlite.encryption()?.encrypt(token)?,
+                user_id
+            ],
         )
         .map_err(|error| format!("replace gateway access token failed: {error}"))?;
         Ok(())

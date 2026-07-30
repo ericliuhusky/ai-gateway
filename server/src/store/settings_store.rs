@@ -8,6 +8,14 @@ pub struct SettingsStore {
     sqlite: SqliteStore,
 }
 
+#[derive(Clone, Debug)]
+pub struct SecuritySettings {
+    pub encryption_key_configured: bool,
+    pub feishu_app_id: String,
+    pub feishu_app_secret_configured: bool,
+    pub auth_required: bool,
+}
+
 impl SettingsStore {
     pub fn new(config: Arc<Config>) -> Result<Self, String> {
         Ok(Self {
@@ -25,6 +33,45 @@ impl SettingsStore {
 
     pub fn clear_codex_client_version(&self) -> Result<(), String> {
         self.sqlite.set_codex_client_version_override(None)
+    }
+
+    pub fn security_settings(&self) -> Result<SecuritySettings, String> {
+        let value = self.sqlite.database_security_settings()?;
+        Ok(SecuritySettings {
+            encryption_key_configured: !value.encryption_key.is_empty(),
+            feishu_app_id: value.feishu_app_id,
+            feishu_app_secret_configured: !value.feishu_app_secret.is_empty(),
+            auth_required: value.auth_required,
+        })
+    }
+
+    pub fn feishu_credentials(&self) -> Result<(String, String), String> {
+        let value = self.sqlite.database_security_settings()?;
+        if value.feishu_app_secret.is_empty() {
+            return Ok((value.feishu_app_id, String::new()));
+        }
+        Ok((
+            value.feishu_app_id,
+            self.sqlite
+                .encryption()?
+                .decrypt(&value.feishu_app_secret)?,
+        ))
+    }
+
+    pub fn update_security_settings(
+        &self,
+        encryption_key: Option<&str>,
+        feishu_app_id: &str,
+        feishu_app_secret: Option<&str>,
+        auth_required: bool,
+    ) -> Result<SecuritySettings, String> {
+        self.sqlite.update_database_security_settings(
+            encryption_key,
+            feishu_app_id,
+            feishu_app_secret,
+            auth_required,
+        )?;
+        self.security_settings()
     }
 
     pub fn instance_auto_routing_settings(

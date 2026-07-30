@@ -62,9 +62,8 @@ impl AccountStore {
             upstream_account_id: imported.account_id,
             owner_user_id,
         };
-        records.push(account.clone());
-
         self.persist_account(&account)?;
+        records.push(account.clone());
         Ok(account)
     }
 
@@ -130,13 +129,14 @@ impl AccountStore {
     }
 
     async fn update_account(&self, account: AccountRecord) -> Result<(), String> {
+        self.persist_account(&account)?;
         let mut records = self.records.lock().await;
         if let Some(existing) = records.iter_mut().find(|item| item.id == account.id) {
             *existing = account.clone();
         } else {
             records.push(account.clone());
         }
-        self.persist_account(&account)
+        Ok(())
     }
 
     fn persist_account(&self, account: &AccountRecord) -> Result<(), String> {

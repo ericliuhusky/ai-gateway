@@ -145,6 +145,25 @@ pub struct UpdateCodexClientVersionRequest {
     pub version: String,
 }
 
+#[derive(Debug, Serialize)]
+pub struct SecuritySettings {
+    pub encryption_key_configured: bool,
+    pub feishu_app_id: String,
+    pub feishu_app_secret_configured: bool,
+    pub auth_required: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateSecuritySettingsRequest {
+    #[serde(default)]
+    pub encryption_key: Option<String>,
+    #[serde(default)]
+    pub feishu_app_id: String,
+    #[serde(default)]
+    pub feishu_app_secret: Option<String>,
+    pub auth_required: bool,
+}
+
 pub const ROUTING_LOW_CONFIDENCE_THRESHOLD: f64 = 0.7;
 
 fn default_low_confidence_threshold() -> f64 {

@@ -28,12 +28,9 @@ impl FieldEncryptor {
         let key = URL_SAFE_NO_PAD
             .decode(encoded_key.trim())
             .or_else(|_| base64::engine::general_purpose::STANDARD.decode(encoded_key.trim()))
-            .map_err(|_| "AI_GATEWAY_ENCRYPTION_KEY must be base64-encoded".to_string())?;
+            .map_err(|_| "数据库加密密钥必须为 Base64 编码".to_string())?;
         if key.len() != KEY_LENGTH {
-            return Err(
-                "AI_GATEWAY_ENCRYPTION_KEY must decode to exactly 32 bytes for AES-256-GCM"
-                    .to_string(),
-            );
+            return Err("数据库加密密钥解码后必须恰好为 32 字节（AES-256-GCM）".to_string());
         }
 
         Ok(Self {
@@ -84,7 +81,7 @@ impl FieldEncryptor {
             .cipher
             .decrypt(&nonce, ciphertext.as_ref())
             .map_err(|_| {
-                "failed to decrypt database credential; verify AI_GATEWAY_ENCRYPTION_KEY"
+                "failed to decrypt database credential; verify the database encryption key"
                     .to_string()
             })?;
 

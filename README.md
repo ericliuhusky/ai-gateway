@@ -60,12 +60,7 @@ cargo run -p ai-gateway
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `AI_GATEWAY_BIND_ADDR` | `0.0.0.0:4242` | HTTP 监听地址 |
-| `AI_GATEWAY_DATA_DIR` | `$HOME/.ai-gateway` | SQLite 数据目录 |
-| `AI_GATEWAY_AUTH_MODE` | `disabled` | 认证模式：`disabled` 为单人无账户模式，`required` 为飞书登录模式 |
-| `AI_GATEWAY_ENCRYPTION_KEY` | 无（必填） | 用于加密数据库凭据的 Base64 编码 32 字节密钥 |
-| `FEISHU_APP_ID` | 无 | 飞书 OAuth 应用 App ID（必填） |
-| `FEISHU_APP_SECRET` | 无 | 飞书 OAuth 应用 App Secret（必填） |
+| 无 | — | 网关不再读取业务配置环境变量；固定监听 `0.0.0.0:4242`，数据目录固定为 `$HOME/.ai-gateway`。 |
 
 Server 不再读取或修改服务器用户的 `~/.codex`。
 
@@ -81,20 +76,15 @@ Codex 模型接口的客户端版本默认使用代码内置值 `0.146.0`。可�
 - `accounts.refresh_token`
 - `providers.api_key`
 
-密钥不能放进数据库或 Git 仓库。为服务进程和迁移脚本设置同一个密钥，例如：
+首次启动时可先访问管理端的“管理员设置 → 安全与账户登录”，设置 Base64 编码且解码后为 32 字节的数据库加密密钥，例如：
 
 ```bash
-export AI_GATEWAY_ENCRYPTION_KEY="$(openssl rand -base64 32)"
+openssl rand -base64 32
 ```
 
-现有数据库需要在**停止网关服务后**迁移一次。下面的脚本会先使用 SQLite 的 `.backup` 创建备份，再在单个事务中加密上述列；已加密的值会被校验但不会重复加密：
+未设置密钥时，网关可以运行并允许管理员完成初始配置，但会拒绝保存 Provider API Key、OpenAI 账户 Token 和用户网关 API Key 等需加密的内容。密钥设置后不能直接更换，避免现有凭据无法解密。
 
-```bash
-AI_GATEWAY_ENCRYPTION_KEY='同一个Base64密钥' \
-  ./server/scripts/encrypt-existing-db.sh "$HOME/.ai-gateway/db.sqlite"
-```
-
-迁移成功后再以相同的 `AI_GATEWAY_ENCRYPTION_KEY` 启动服务。丢失或更换该密钥将无法恢复已有凭据，因此请将密钥保存在独立的密钥管理系统或受限的部署环境变量中。
+> 注意：按当前设计，加密密钥本身保存在 SQLite，因此数据库文件的访问控制仍然至关重要；请限制 `$HOME/.ai-gateway/db.sqlite` 的文件权限并定期备份。
 
 ## Codex 接入脚本
 
@@ -291,17 +281,12 @@ curl -X POST http://127.0.0.1:4242/openai/v1/responses \
 
 ## 管理控制台账户与登录
 
-认证通过 `AI_GATEWAY_AUTH_MODE` 配置：
+认证通过管理端“管理员设置 → 安全与账户登录”中的“账户登录模式”开关配置：
 
 - `disabled`（默认）：不启用账户系统，管理端和网关接口保持当前的无鉴权单人部署行为。
-- `required`：管理端必须使用飞书 OAuth 登录。首个成功登录的用户自动成为 `admin`，后续用户为 `user`。飞书身份、角色和会话保存在 `$AI_GATEWAY_DATA_DIR/db.sqlite` 的 `gateway_users`、`gateway_feishu_identities`、`gateway_sessions` 表中。
+- `required`：管理端必须使用飞书 OAuth 登录。首个成功登录的用户自动成为 `admin`，后续用户为 `user`。飞书身份、角色和会话保存在 `$HOME/.ai-gateway/db.sqlite` 的 `gateway_users`、`gateway_feishu_identities`、`gateway_sessions` 表中。
 
-```bash
-AI_GATEWAY_AUTH_MODE=required \
-FEISHU_APP_ID=... \
-FEISHU_APP_SECRET=... \
-cargo run -p ai-gateway
-```
+开启前必须设置数据库加密密钥、飞书 App ID 和飞书 App Secret。开关保存后立即生效；管理员可在账户登录模式下再次进入该页面关闭它。
 
 在 `required` 模式下，网关请求还必须使用用户自己的 API Key：
 
@@ -310,13 +295,6 @@ Authorization: Bearer agw_...
 ```
 
 登录管理端后，点击顶部的“API Key”生成并复制。该 Key 仅在生成时显示一次；Provider、OpenAI 账户、默认实例及命名实例均按该 Key 对应的用户隔离。
-
-启动服务前需要配置飞书应用凭据：
-
-```bash
-export FEISHU_APP_ID='cli_...'
-export FEISHU_APP_SECRET='...'
-```
 
 在飞书应用的 OAuth 重定向 URL 白名单中登记：
 
