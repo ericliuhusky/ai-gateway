@@ -32,6 +32,11 @@ export interface GatewayModel {
   id: string;
 }
 
+export interface RoutingModelTarget {
+  provider_id: string;
+  model: string;
+}
+
 export interface CodexClientVersionSetting {
   default_version: string;
   override_version?: string;
@@ -41,11 +46,11 @@ export interface CodexClientVersionSetting {
 
 export interface AutoRoutingSettings {
   enabled: boolean;
-  classifier_model?: string;
-  light_model?: string;
-  standard_model?: string;
-  pro_model?: string;
-  max_model?: string;
+  classifier?: RoutingModelTarget;
+  light?: RoutingModelTarget;
+  standard?: RoutingModelTarget;
+  pro?: RoutingModelTarget;
+  max?: RoutingModelTarget;
   low_confidence_threshold: number;
 }
 

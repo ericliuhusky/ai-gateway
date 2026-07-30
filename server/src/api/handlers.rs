@@ -13,8 +13,9 @@ use crate::{
         ModelListItem, ModelListResponse, PROVIDER_OPENAI_PROXY, ProviderAuthMode,
         ProviderQuotaCredits, ProviderQuotaResponse, ProviderQuotaSnapshot, ProviderQuotaSummary,
         ProviderQuotaWindow, ProviderUpstreamProtocol, QuotaSource, QuotaSupportStatus,
-        ResponseStreamFrame, SelectedRoute, TurnRouteLogUpdate, UpdateAutoRoutingSettingsRequest,
-        UpdateCodexClientVersionRequest, UpdateSelectedModelRequest, UpdateSelectedProviderRequest,
+        ResponseStreamFrame, RoutingModelTarget, SelectedRoute, TurnRouteLogUpdate,
+        UpdateAutoRoutingSettingsRequest, UpdateCodexClientVersionRequest,
+        UpdateSelectedModelRequest, UpdateSelectedProviderRequest,
     },
     openai_tokens::OpenAiTokenService,
     routing::{
@@ -63,6 +64,8 @@ pub struct AppState {
 pub struct ListModelsQuery {
     #[serde(default)]
     pub force: bool,
+    #[serde(default)]
+    pub provider_id: Option<String>,
 }
 
 pub async fn healthz() -> &'static str {
@@ -115,6 +118,7 @@ pub async fn set_auto_routing_settings(
     Json(request): Json<UpdateAutoRoutingSettingsRequest>,
 ) -> Result<Json<AutoRoutingSettings>, AppError> {
     let settings = normalize_auto_routing_settings(request)?;
+    validate_auto_routing_targets(&state, &settings).await?;
     state
         .settings
         .set_auto_routing_settings(&settings)
@@ -257,7 +261,12 @@ pub async fn list_models(
     State(state): State<AppState>,
     Query(query): Query<ListModelsQuery>,
 ) -> Result<Json<ModelListResponse>, AppError> {
-    let provider = resolve_selected_provider(&state).await?;
+    let provider = match query.provider_id.as_deref().map(str::trim) {
+        Some(provider_id) if !provider_id.is_empty() => {
+            resolve_provider_by_id(&state, provider_id).await?
+        }
+        _ => resolve_selected_provider(&state).await?,
+    };
     let mut response = load_provider_models(&state, &provider, query.force).await?;
     ensure_codex_model_infos(&mut response);
 
@@ -294,6 +303,15 @@ pub async fn delete_provider(
     State(state): State<AppState>,
     AxumPath(provider_id): AxumPath<String>,
 ) -> Result<Json<Value>, AppError> {
+    state
+        .providers
+        .find_by_id(&provider_id)
+        .await
+        .ok_or_else(|| AppError::bad_request(format!("unknown provider_id: {provider_id}")))?;
+    state
+        .settings
+        .clear_auto_routing_provider(&provider_id)
+        .map_err(AppError::internal)?;
     let deleted = state
         .providers
         .delete(&provider_id)
@@ -398,7 +416,8 @@ pub(super) async fn responses_inner(
         .to_string();
     let turn = turn_context_from_request(&request_json, turn_metadata.as_ref());
     let routing = choose_model_for_request(&state, &provider, &turn, &request_json).await?;
-    record_turn_route(&state, &provider, &turn, &routing, &requested_model);
+    let routed_provider = resolve_routing_provider(&state, &provider, &routing).await?;
+    record_turn_route(&state, &routed_provider, &turn, &routing, &requested_model);
     let model_overridden = apply_routing_model_to_raw_request(&routing, &mut request_json);
     let request_body = if model_overridden {
         request_json.to_string()
@@ -411,10 +430,10 @@ pub(super) async fn responses_inner(
 
     let prepared = prepare_responses_upstream(
         ResponsesAdapterProvider {
-            name: provider.name.clone(),
-            auth_mode: provider.auth_mode.clone(),
-            record: provider.record.clone(),
-            uses_openai_account: provider_uses_openai_account(&provider),
+            name: routed_provider.name.clone(),
+            auth_mode: routed_provider.auth_mode.clone(),
+            record: routed_provider.record.clone(),
+            uses_openai_account: provider_uses_openai_account(&routed_provider),
         },
         request_json,
         request_body,
@@ -425,7 +444,7 @@ pub(super) async fn responses_inner(
 
     let response = match prepared {
         PreparedResponsesUpstream::OpenAiAccountResponsesPassthrough(prepared) => {
-            let account = resolve_account_for_provider(&state, &provider).await?;
+            let account = resolve_account_for_provider(&state, &routed_provider).await?;
             let private_responses = PrivateOpenAiRequestBuilder {
                 base_url: OPENAI_CODEX_BASE_URL,
                 access_token: account.access_token(),
@@ -660,14 +679,25 @@ fn responses_request_stream(request: &Value) -> bool {
 }
 
 fn apply_routing_model_to_raw_request(routing: &RoutingDecision, request: &mut Value) -> bool {
-    let Some(model) = routing.model.as_ref() else {
+    let Some(target) = routing.target.as_ref() else {
         return false;
     };
     let Some(object) = request.as_object_mut() else {
         return false;
     };
-    object.insert("model".to_string(), Value::String(model.clone()));
+    object.insert("model".to_string(), Value::String(target.model.clone()));
     true
+}
+
+async fn resolve_routing_provider(
+    state: &AppState,
+    selected_provider: &ResolvedProvider,
+    routing: &RoutingDecision,
+) -> Result<ResolvedProvider, AppError> {
+    let Some(target) = routing.target.as_ref() else {
+        return Ok(selected_provider.clone());
+    };
+    resolve_provider_by_id(state, &target.provider_id).await
 }
 
 async fn choose_model_for_request(
@@ -678,7 +708,10 @@ async fn choose_model_for_request(
 ) -> Result<RoutingDecision, AppError> {
     if let Some(existing) = state.turn_logs.get(&turn.id).ok().flatten() {
         return Ok(RoutingDecision {
-            model: Some(existing.model),
+            target: Some(RoutingModelTarget {
+                provider_id: existing.provider_id,
+                model: existing.model,
+            }),
             mode: "turn_sticky",
             reason: "same_turn_model_reuse",
             detail: None,
@@ -689,7 +722,15 @@ async fn choose_model_for_request(
     }
 
     if let Some(model) = state.routes.get().await.selected_model {
-        return Ok(RoutingDecision::selected_model(model));
+        let provider_id = provider
+            .record
+            .as_ref()
+            .map(|record| record.id.clone())
+            .ok_or_else(|| AppError::internal("selected provider record missing"))?;
+        return Ok(RoutingDecision::selected_model(RoutingModelTarget {
+            provider_id,
+            model,
+        }));
     }
 
     let settings = state
@@ -710,16 +751,25 @@ async fn choose_model_for_request(
         return Ok(RoutingDecision::bypass_max(&settings, reason));
     }
 
-    let Some(classifier_model) = settings.classifier_model.as_deref() else {
+    let Some(classifier) = settings.classifier.as_ref() else {
         return Ok(RoutingDecision::classifier_failure(
             &settings,
             "classifier_model_not_configured",
         ));
     };
+    let classifier_provider = match resolve_provider_by_id(state, &classifier.provider_id).await {
+        Ok(provider) => provider,
+        Err(error) => {
+            let mut decision =
+                RoutingDecision::classifier_failure(&settings, "classifier_provider_not_found");
+            decision.detail = Some(error.message);
+            return Ok(decision);
+        }
+    };
     let response = match invoke_routing_classifier(
         state,
-        provider,
-        classifier_model,
+        &classifier_provider,
+        &classifier.model,
         classifier_prompt(&routing_request),
     )
     .await
@@ -828,8 +878,9 @@ fn record_turn_route(
         return;
     };
     let model = routing
-        .model
-        .as_deref()
+        .target
+        .as_ref()
+        .map(|target| target.model.as_str())
         .or((!requested_model.is_empty()).then_some(requested_model))
         .and_then(safe_model_name)
         .unwrap_or_else(|| "unknown".to_string());
@@ -1223,36 +1274,59 @@ fn normalize_auto_routing_settings(
 
     let settings = AutoRoutingSettings {
         enabled: request.enabled,
-        classifier_model: normalize_optional_model(request.classifier_model),
-        light_model: normalize_optional_model(request.light_model),
-        standard_model: normalize_optional_model(request.standard_model),
-        pro_model: normalize_optional_model(request.pro_model),
-        max_model: normalize_optional_model(request.max_model),
+        classifier: normalize_optional_target(request.classifier),
+        light: normalize_optional_target(request.light),
+        standard: normalize_optional_target(request.standard),
+        pro: normalize_optional_target(request.pro),
+        max: normalize_optional_target(request.max),
         low_confidence_threshold: request.low_confidence_threshold,
     };
     if settings.enabled
         && [
-            settings.classifier_model.as_ref(),
-            settings.light_model.as_ref(),
-            settings.standard_model.as_ref(),
-            settings.pro_model.as_ref(),
-            settings.max_model.as_ref(),
+            settings.classifier.as_ref(),
+            settings.light.as_ref(),
+            settings.standard.as_ref(),
+            settings.pro.as_ref(),
+            settings.max.as_ref(),
         ]
         .iter()
-        .any(|model| model.is_none())
+        .any(|target| target.is_none())
     {
         return Err(AppError::bad_request(
-            "classifier_model, light_model, standard_model, pro_model, and max_model are required when automatic routing is enabled",
+            "classifier, light, standard, pro, and max are required when automatic routing is enabled",
         ));
     }
     Ok(settings)
 }
 
-fn normalize_optional_model(model: Option<String>) -> Option<String> {
-    model.and_then(|model| {
-        let trimmed = model.trim();
-        (!trimmed.is_empty()).then(|| trimmed.to_string())
+fn normalize_optional_target(target: Option<RoutingModelTarget>) -> Option<RoutingModelTarget> {
+    target.and_then(|target| {
+        let provider_id = target.provider_id.trim();
+        let model = target.model.trim();
+        (!provider_id.is_empty() && !model.is_empty()).then(|| RoutingModelTarget {
+            provider_id: provider_id.to_string(),
+            model: model.to_string(),
+        })
     })
+}
+
+async fn validate_auto_routing_targets(
+    state: &AppState,
+    settings: &AutoRoutingSettings,
+) -> Result<(), AppError> {
+    for target in [
+        settings.classifier.as_ref(),
+        settings.light.as_ref(),
+        settings.standard.as_ref(),
+        settings.pro.as_ref(),
+        settings.max.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        resolve_provider_by_id(state, &target.provider_id).await?;
+    }
+    Ok(())
 }
 
 async fn clear_openai_model_caches(state: &AppState) -> Result<(), AppError> {

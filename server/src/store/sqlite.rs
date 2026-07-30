@@ -4,7 +4,8 @@ use crate::{
     models::{
         AccountRecord, AccountType, ApiProviderBillingMode, ApiProviderRecord, AutoRoutingSettings,
         CachedProviderModels, ProviderAuthMode, ProviderCompatibilityProfile,
-        ProviderUpstreamProtocol, SelectedRoute, TurnRouteLog, TurnRouteLogUpdate,
+        ProviderUpstreamProtocol, RoutingModelTarget, SelectedRoute, TurnRouteLog,
+        TurnRouteLogUpdate,
     },
 };
 use rusqlite::{Connection, OptionalExtension, params};
@@ -282,20 +283,54 @@ impl SqliteStore {
     pub fn load_auto_routing_settings(&self) -> Result<AutoRoutingSettings, String> {
         let conn = self.connect()?;
         conn.query_row(
-            "SELECT routing_enabled, routing_classifier_model, routing_light_model,
+            "SELECT selected_provider_id,
+                    routing_classifier_target, routing_light_target, routing_standard_target,
+                    routing_pro_target, routing_max_target,
+                    routing_enabled, routing_classifier_model, routing_light_model,
                     routing_standard_model, routing_pro_model, routing_max_model,
                     routing_low_confidence_threshold
              FROM gateway_state WHERE id = 1",
             [],
             |row| {
+                let selected_provider_id: Option<String> = row.get(0)?;
+                let classifier = routing_target_from_storage(
+                    row.get(1)?,
+                    row.get(7)?,
+                    selected_provider_id.as_deref(),
+                )
+                .map_err(rusqlite::Error::ToSqlConversionFailure)?;
+                let light = routing_target_from_storage(
+                    row.get(2)?,
+                    row.get(8)?,
+                    selected_provider_id.as_deref(),
+                )
+                .map_err(rusqlite::Error::ToSqlConversionFailure)?;
+                let standard = routing_target_from_storage(
+                    row.get(3)?,
+                    row.get(9)?,
+                    selected_provider_id.as_deref(),
+                )
+                .map_err(rusqlite::Error::ToSqlConversionFailure)?;
+                let pro = routing_target_from_storage(
+                    row.get(4)?,
+                    row.get(10)?,
+                    selected_provider_id.as_deref(),
+                )
+                .map_err(rusqlite::Error::ToSqlConversionFailure)?;
+                let max = routing_target_from_storage(
+                    row.get(5)?,
+                    row.get(11)?,
+                    selected_provider_id.as_deref(),
+                )
+                .map_err(rusqlite::Error::ToSqlConversionFailure)?;
                 Ok(AutoRoutingSettings {
-                    enabled: row.get::<_, i64>(0)? != 0,
-                    classifier_model: row.get(1)?,
-                    light_model: row.get(2)?,
-                    standard_model: row.get(3)?,
-                    pro_model: row.get(4)?,
-                    max_model: row.get(5)?,
-                    low_confidence_threshold: row.get(6)?,
+                    enabled: row.get::<_, i64>(6)? != 0,
+                    classifier,
+                    light,
+                    standard,
+                    pro,
+                    max,
+                    low_confidence_threshold: row.get(12)?,
                 })
             },
         )
@@ -308,31 +343,29 @@ impl SqliteStore {
         let conn = self.connect()?;
         conn.execute(
             "INSERT INTO gateway_state (
-                id, routing_enabled, routing_classifier_model,
+                id, routing_enabled, routing_classifier_target, routing_light_target,
+                routing_standard_target, routing_pro_target, routing_max_target,
+                routing_classifier_model,
                 routing_cheap_model, routing_standard_model, routing_strong_model,
                 routing_light_model, routing_pro_model, routing_max_model,
                 routing_low_confidence_threshold,
                 route_updated_at
-             ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0)
+             ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?7, 0)
              ON CONFLICT(id) DO UPDATE SET
                 routing_enabled = excluded.routing_enabled,
-                routing_classifier_model = excluded.routing_classifier_model,
-                routing_cheap_model = excluded.routing_cheap_model,
-                routing_standard_model = excluded.routing_standard_model,
-                routing_strong_model = excluded.routing_strong_model,
-                routing_light_model = excluded.routing_light_model,
-                routing_pro_model = excluded.routing_pro_model,
-                routing_max_model = excluded.routing_max_model,
+                routing_classifier_target = excluded.routing_classifier_target,
+                routing_light_target = excluded.routing_light_target,
+                routing_standard_target = excluded.routing_standard_target,
+                routing_pro_target = excluded.routing_pro_target,
+                routing_max_target = excluded.routing_max_target,
                 routing_low_confidence_threshold = excluded.routing_low_confidence_threshold",
             params![
                 i64::from(settings.enabled),
-                settings.classifier_model,
-                settings.light_model,
-                settings.standard_model,
-                settings.max_model,
-                settings.light_model,
-                settings.pro_model,
-                settings.max_model,
+                routing_target_to_storage(settings.classifier.as_ref())?,
+                routing_target_to_storage(settings.light.as_ref())?,
+                routing_target_to_storage(settings.standard.as_ref())?,
+                routing_target_to_storage(settings.pro.as_ref())?,
+                routing_target_to_storage(settings.max.as_ref())?,
                 settings.low_confidence_threshold,
             ],
         )
@@ -477,6 +510,7 @@ impl SqliteStore {
                 codex_client_version_override TEXT,
                 routing_enabled INTEGER NOT NULL DEFAULT 0,
                 routing_classifier_model TEXT,
+                routing_classifier_target TEXT,
                 -- Retained solely to migrate pre-four-tier configurations.
                 routing_cheap_model TEXT,
                 routing_standard_model TEXT,
@@ -484,6 +518,10 @@ impl SqliteStore {
                 routing_light_model TEXT,
                 routing_pro_model TEXT,
                 routing_max_model TEXT,
+                routing_light_target TEXT,
+                routing_standard_target TEXT,
+                routing_pro_target TEXT,
+                routing_max_target TEXT,
                 routing_low_confidence_threshold REAL NOT NULL DEFAULT 0.7,
                 route_updated_at INTEGER NOT NULL DEFAULT 0,
                 FOREIGN KEY (selected_provider_id) REFERENCES providers(id) ON DELETE SET NULL
@@ -520,12 +558,17 @@ impl SqliteStore {
         .map_err(|err| format!("initialize sqlite schema failed: {err}"))?;
         ensure_gateway_state_column(&conn, "routing_enabled", "INTEGER NOT NULL DEFAULT 0")?;
         ensure_gateway_state_column(&conn, "routing_classifier_model", "TEXT")?;
+        ensure_gateway_state_column(&conn, "routing_classifier_target", "TEXT")?;
         ensure_gateway_state_column(&conn, "routing_cheap_model", "TEXT")?;
         ensure_gateway_state_column(&conn, "routing_standard_model", "TEXT")?;
         ensure_gateway_state_column(&conn, "routing_strong_model", "TEXT")?;
         ensure_gateway_state_column(&conn, "routing_light_model", "TEXT")?;
         ensure_gateway_state_column(&conn, "routing_pro_model", "TEXT")?;
         ensure_gateway_state_column(&conn, "routing_max_model", "TEXT")?;
+        ensure_gateway_state_column(&conn, "routing_light_target", "TEXT")?;
+        ensure_gateway_state_column(&conn, "routing_standard_target", "TEXT")?;
+        ensure_gateway_state_column(&conn, "routing_pro_target", "TEXT")?;
+        ensure_gateway_state_column(&conn, "routing_max_target", "TEXT")?;
         ensure_gateway_state_column(
             &conn,
             "routing_low_confidence_threshold",
@@ -593,6 +636,34 @@ fn turn_route_log_from_row(row: &rusqlite::Row<'_>) -> Result<TurnRouteLog, rusq
         request_count: row.get(13)?,
         tool_round_count: row.get(14)?,
     })
+}
+
+fn routing_target_from_storage(
+    stored_target: Option<String>,
+    legacy_model: Option<String>,
+    selected_provider_id: Option<&str>,
+) -> Result<Option<RoutingModelTarget>, Box<dyn std::error::Error + Send + Sync>> {
+    if let Some(stored_target) = stored_target {
+        return serde_json::from_str(&stored_target)
+            .map(Some)
+            .map_err(|err| format!("decode routing target failed: {err}").into());
+    }
+
+    Ok(legacy_model.and_then(|model| {
+        selected_provider_id.map(|provider_id| RoutingModelTarget {
+            provider_id: provider_id.to_string(),
+            model,
+        })
+    }))
+}
+
+fn routing_target_to_storage(
+    target: Option<&RoutingModelTarget>,
+) -> Result<Option<String>, String> {
+    target
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(|err| format!("encode routing target failed: {err}"))
 }
 
 fn ensure_gateway_state_column(
@@ -874,22 +945,52 @@ mod tests {
                 route_updated_at INTEGER NOT NULL DEFAULT 0
              );
              INSERT INTO gateway_state (
-                id, routing_enabled, routing_classifier_model, routing_cheap_model,
+                id, selected_provider_id, routing_enabled, routing_classifier_model, routing_cheap_model,
                 routing_standard_model, routing_strong_model, routing_low_confidence_threshold
-             ) VALUES (1, 1, 'classifier', 'light-legacy', 'standard-legacy', 'strong-legacy', 0.8);",
+             ) VALUES (1, 'provider-legacy', 1, 'classifier', 'light-legacy', 'standard-legacy', 'strong-legacy', 0.8);",
         )
         .expect("seed legacy routing settings");
         drop(conn);
 
         let store = SqliteStore::for_test(db_path.clone()).expect("migrate legacy database");
-        let settings = store.load_auto_routing_settings().expect("load migrated settings");
+        let settings = store
+            .load_auto_routing_settings()
+            .expect("load migrated settings");
 
         assert!(settings.enabled);
-        assert_eq!(settings.classifier_model.as_deref(), Some("classifier"));
-        assert_eq!(settings.light_model.as_deref(), Some("light-legacy"));
-        assert_eq!(settings.standard_model.as_deref(), Some("standard-legacy"));
-        assert_eq!(settings.pro_model.as_deref(), Some("strong-legacy"));
-        assert_eq!(settings.max_model.as_deref(), Some("strong-legacy"));
+        assert_eq!(
+            settings
+                .classifier
+                .as_ref()
+                .map(|target| target.model.as_str()),
+            Some("classifier")
+        );
+        assert_eq!(
+            settings.light.as_ref().map(|target| target.model.as_str()),
+            Some("light-legacy")
+        );
+        assert_eq!(
+            settings
+                .standard
+                .as_ref()
+                .map(|target| target.model.as_str()),
+            Some("standard-legacy")
+        );
+        assert_eq!(
+            settings.pro.as_ref().map(|target| target.model.as_str()),
+            Some("strong-legacy")
+        );
+        assert_eq!(
+            settings.max.as_ref().map(|target| target.model.as_str()),
+            Some("strong-legacy")
+        );
+        assert_eq!(
+            settings
+                .max
+                .as_ref()
+                .map(|target| target.provider_id.as_str()),
+            Some("provider-legacy")
+        );
         assert_eq!(settings.low_confidence_threshold, 0.8);
 
         let _ = fs::remove_file(db_path);

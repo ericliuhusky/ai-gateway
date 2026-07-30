@@ -34,12 +34,40 @@ impl SettingsStore {
     pub fn set_auto_routing_settings(&self, settings: &AutoRoutingSettings) -> Result<(), String> {
         self.sqlite.set_auto_routing_settings(settings)
     }
+
+    pub fn clear_auto_routing_provider(&self, provider_id: &str) -> Result<(), String> {
+        let mut settings = self.auto_routing_settings()?;
+        let mut changed = false;
+        for target in [
+            &mut settings.classifier,
+            &mut settings.light,
+            &mut settings.standard,
+            &mut settings.pro,
+            &mut settings.max,
+        ] {
+            if target
+                .as_ref()
+                .is_some_and(|target| target.provider_id == provider_id)
+            {
+                *target = None;
+                changed = true;
+            }
+        }
+        if changed {
+            settings.enabled = false;
+            self.set_auto_routing_settings(&settings)?;
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::SettingsStore;
-    use crate::{models::AutoRoutingSettings, store::sqlite::SqliteStore};
+    use crate::{
+        models::{AutoRoutingSettings, RoutingModelTarget},
+        store::sqlite::SqliteStore,
+    };
     use std::{
         path::PathBuf,
         time::{SystemTime, UNIX_EPOCH},
@@ -68,11 +96,11 @@ mod tests {
         let store = SettingsStore { sqlite };
         let settings = AutoRoutingSettings {
             enabled: true,
-            classifier_model: Some("small".to_string()),
-            light_model: Some("small".to_string()),
-            standard_model: Some("medium".to_string()),
-            pro_model: Some("large".to_string()),
-            max_model: Some("xlarge".to_string()),
+            classifier: Some(target("provider_a", "small")),
+            light: Some(target("provider_a", "small")),
+            standard: Some(target("provider_b", "medium")),
+            pro: Some(target("provider_b", "large")),
+            max: Some(target("provider_c", "xlarge")),
             low_confidence_threshold: 0.8,
         };
 
@@ -86,5 +114,12 @@ mod tests {
             .unwrap_or_default()
             .as_nanos();
         std::env::temp_dir().join(format!("ai_gateway_{prefix}_{unique}.sqlite"))
+    }
+
+    fn target(provider_id: &str, model: &str) -> RoutingModelTarget {
+        RoutingModelTarget {
+            provider_id: provider_id.to_string(),
+            model: model.to_string(),
+        }
     }
 }

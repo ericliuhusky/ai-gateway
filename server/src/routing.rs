@@ -1,4 +1,4 @@
-use crate::models::AutoRoutingSettings;
+use crate::models::{AutoRoutingSettings, RoutingModelTarget};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -25,7 +25,7 @@ impl RoutingTier {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RoutingDecision {
-    pub model: Option<String>,
+    pub target: Option<RoutingModelTarget>,
     pub mode: &'static str,
     pub reason: &'static str,
     pub detail: Option<String>,
@@ -37,7 +37,7 @@ pub struct RoutingDecision {
 impl RoutingDecision {
     pub fn disabled() -> Self {
         Self {
-            model: None,
+            target: None,
             mode: "disabled",
             reason: "automatic_routing_disabled",
             detail: None,
@@ -47,9 +47,9 @@ impl RoutingDecision {
         }
     }
 
-    pub fn selected_model(model: String) -> Self {
+    pub fn selected_model(target: RoutingModelTarget) -> Self {
         Self {
-            model: Some(model),
+            target: Some(target),
             mode: "selected_model",
             reason: "selected_model_override",
             detail: None,
@@ -61,7 +61,7 @@ impl RoutingDecision {
 
     pub fn bypass_max(settings: &AutoRoutingSettings, reason: &'static str) -> Self {
         Self {
-            model: settings.max_model.clone(),
+            target: settings.max.clone(),
             mode: "safety_bypass",
             reason,
             detail: None,
@@ -73,7 +73,7 @@ impl RoutingDecision {
 
     pub fn classifier_failure(settings: &AutoRoutingSettings, reason: &'static str) -> Self {
         Self {
-            model: settings.max_model.clone(),
+            target: settings.max.clone(),
             mode: "classifier_fallback",
             reason,
             detail: None,
@@ -169,9 +169,9 @@ pub fn decision_from_classifier_output(
     } else {
         reported_tier
     };
-    let model = model_for_tier(settings, tier)?;
+    let target = target_for_tier(settings, tier)?.clone();
     Some(RoutingDecision {
-        model: Some(model.to_string()),
+        target: Some(target),
         mode: if tier == reported_tier {
             "classifier"
         } else {
@@ -189,12 +189,15 @@ pub fn decision_from_classifier_output(
     })
 }
 
-pub fn model_for_tier(settings: &AutoRoutingSettings, tier: RoutingTier) -> Option<&str> {
+pub fn target_for_tier(
+    settings: &AutoRoutingSettings,
+    tier: RoutingTier,
+) -> Option<&RoutingModelTarget> {
     match tier {
-        RoutingTier::Light => settings.light_model.as_deref(),
-        RoutingTier::Standard => settings.standard_model.as_deref(),
-        RoutingTier::Pro => settings.pro_model.as_deref(),
-        RoutingTier::Max => settings.max_model.as_deref(),
+        RoutingTier::Light => settings.light.as_ref(),
+        RoutingTier::Standard => settings.standard.as_ref(),
+        RoutingTier::Pro => settings.pro.as_ref(),
+        RoutingTier::Max => settings.max.as_ref(),
     }
 }
 
@@ -341,18 +344,25 @@ mod tests {
         RoutingTier, classifier_prompt, decision_from_classifier_output, summarize_request,
         user_input_preview,
     };
-    use crate::models::AutoRoutingSettings;
+    use crate::models::{AutoRoutingSettings, RoutingModelTarget};
     use serde_json::json;
 
     fn settings() -> AutoRoutingSettings {
         AutoRoutingSettings {
             enabled: true,
-            classifier_model: Some("classifier".to_string()),
-            light_model: Some("light".to_string()),
-            standard_model: Some("standard".to_string()),
-            pro_model: Some("pro".to_string()),
-            max_model: Some("max".to_string()),
+            classifier: Some(target("classifier")),
+            light: Some(target("light")),
+            standard: Some(target("standard")),
+            pro: Some(target("pro")),
+            max: Some(target("max")),
             low_confidence_threshold: 0.7,
+        }
+    }
+
+    fn target(model: &str) -> RoutingModelTarget {
+        RoutingModelTarget {
+            provider_id: "provider".to_string(),
+            model: model.to_string(),
         }
     }
 
@@ -409,7 +419,10 @@ mod tests {
         assert_eq!(decision.mode, "low_confidence_fallback");
         assert_eq!(decision.reason, "classifier_confidence_below_threshold");
         assert_eq!(decision.tier, Some(RoutingTier::Max));
-        assert_eq!(decision.model.as_deref(), Some("max"));
+        assert_eq!(
+            decision.target.as_ref().map(|target| target.model.as_str()),
+            Some("max")
+        );
     }
 
     #[test]
@@ -420,6 +433,9 @@ mod tests {
         )
         .expect("valid decision");
 
-        assert_eq!(decision.model.as_deref(), Some("pro"));
+        assert_eq!(
+            decision.target.as_ref().map(|target| target.model.as_str()),
+            Some("pro")
+        );
     }
 }

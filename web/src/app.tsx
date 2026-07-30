@@ -36,6 +36,7 @@ import type {
   TurnRouteLog,
   GatewayCompatibilityProfile,
   GatewayUpstreamProtocol,
+  RoutingModelTarget,
 } from "./types";
 
 type Dialog = "api" | "account" | "settings" | "setup" | null;
@@ -137,7 +138,7 @@ export function App() {
   const loadModels = React.useCallback(async (force = false) => {
     setLoadingModels(true);
     try {
-      const data = await gatewayApi.models(force);
+      const data = await gatewayApi.models(undefined, force);
       setModels([...data].sort((a, b) => a.id.localeCompare(b.id)));
     } catch (modelError) {
       setModels([]);
@@ -399,7 +400,7 @@ export function App() {
       ) : null}
       {dialog === "settings" ? (
         <SettingsDialog
-          models={models}
+          providers={providers}
           onClose={() => setDialog(null)}
           onChanged={async () => {
             if (selectedProvider?.name === "openai-proxy") {
@@ -561,6 +562,7 @@ function routingReasonLabel(reason: string) {
     visual_input_requires_max_model: "图片输入保守使用极致档模型",
     tool_continuation_without_turn_binding: "工具后续请求未关联到原 Turn",
     classifier_model_not_configured: "路由分类模型未配置",
+    classifier_provider_not_found: "路由分类供应商不存在",
     classifier_request_failed: "路由分类模型请求失败",
     classifier_output_text_missing: "路由分类模型没有返回文本",
     classifier_output_invalid: "分类结果无法解析",
@@ -1127,12 +1129,12 @@ function SetupDialog({ onClose }: { onClose: () => void }) {
 }
 
 function SettingsDialog({
-  models,
+  providers,
   onClose,
   onChanged,
   onError,
 }: {
-  models: GatewayModel[];
+  providers: GatewayProvider[];
   onClose: () => void;
   onChanged: () => Promise<void>;
   onError: (message: string) => void;
@@ -1244,7 +1246,7 @@ function SettingsDialog({
               </Button>
             </div>
           </form>
-          <AutomaticRoutingPanel models={models} onError={onError} />
+          <AutomaticRoutingPanel providers={providers} onError={onError} />
           <div className="flex justify-end">
             <Button type="button" variant="outline" onClick={onClose}>完成</Button>
           </div>
@@ -1255,13 +1257,15 @@ function SettingsDialog({
 }
 
 function AutomaticRoutingPanel({
-  models,
+  providers,
   onError,
 }: {
-  models: GatewayModel[];
+  providers: GatewayProvider[];
   onError: (message: string) => void;
 }) {
   const [settings, setSettings] = React.useState<AutoRoutingSettings | null>(null);
+  const [modelsByProvider, setModelsByProvider] = React.useState<Record<string, GatewayModel[]>>({});
+  const [loadingModels, setLoadingModels] = React.useState(true);
   const [saving, setSaving] = React.useState(false);
 
   React.useEffect(() => {
@@ -1270,6 +1274,38 @@ function AutomaticRoutingPanel({
       .then(setSettings)
       .catch((loadError) => onError(errorMessage(loadError)));
   }, [onError]);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    if (!providers.length) {
+      setModelsByProvider({});
+      setLoadingModels(false);
+      return () => { cancelled = true; };
+    }
+
+    setLoadingModels(true);
+    void Promise.all(
+      providers.map(async (provider) => [
+        provider.id,
+        await gatewayApi.models(provider.id),
+      ] as const),
+    )
+      .then((entries) => {
+        if (cancelled) return;
+        setModelsByProvider(Object.fromEntries(entries.map(([id, models]) => [
+          id,
+          [...models].sort((a, b) => a.id.localeCompare(b.id)),
+        ])));
+      })
+      .catch((loadError) => {
+        if (!cancelled) onError(`加载供应商模型失败：${errorMessage(loadError)}`);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingModels(false);
+      });
+
+    return () => { cancelled = true; };
+  }, [providers, onError]);
 
   if (!settings) {
     return (
@@ -1282,18 +1318,17 @@ function AutomaticRoutingPanel({
   }
 
   const configured = [
-    settings.classifier_model,
-    settings.light_model,
-    settings.standard_model,
-    settings.pro_model,
-    settings.max_model,
-  ].every(Boolean);
-  const canEnable = models.length > 0 && configured;
+    settings.classifier,
+    settings.light,
+    settings.standard,
+    settings.pro,
+    settings.max,
+  ].every((target) => Boolean(target?.provider_id && target.model));
+  const canEnable = providers.length > 0 && configured;
 
   async function save() {
     const nextSettings = settings;
-    if (!nextSettings) return;
-    if (nextSettings.enabled && !canEnable) return;
+    if (!nextSettings || (nextSettings.enabled && !canEnable)) return;
     setSaving(true);
     try {
       setSettings(await gatewayApi.setAutomaticRouting(nextSettings));
@@ -1314,18 +1349,18 @@ function AutomaticRoutingPanel({
         <div className="min-w-0 flex-1">
           <div className="text-sm font-bold">自动模型路由</div>
           <p className="mt-1 text-[11px] leading-5 text-slate-400">
-            路由分类模型只输出 light、standard、pro 或 max 档位；原请求随后发送给对应档位模型。工具、图片、低置信度和分类失败会直接使用极致档模型。
+            每个路由档位可独立选择供应商及其模型。分类请求和原始请求都会发送到对应的供应商；工具、图片、低置信度和分类失败会直接使用极致档模型。
           </p>
         </div>
         <button
           type="button"
           role="switch"
           aria-checked={settings.enabled}
-          disabled={saving || (!settings.enabled && !canEnable)}
+          disabled={saving || loadingModels || (!settings.enabled && !canEnable)}
           className={cn(
             "mt-0.5 flex h-6 w-11 shrink-0 items-center rounded-full p-0.5 transition",
             settings.enabled ? "bg-blue-500" : "bg-slate-200 dark:bg-white/15",
-            (saving || (!settings.enabled && !canEnable)) && "cursor-not-allowed opacity-50",
+            (saving || loadingModels || (!settings.enabled && !canEnable)) && "cursor-not-allowed opacity-50",
           )}
           onClick={() => update("enabled", !settings.enabled)}
         >
@@ -1333,17 +1368,17 @@ function AutomaticRoutingPanel({
         </button>
       </div>
 
-      {!models.length ? (
+      {!providers.length ? (
         <div className="mt-4 rounded-xl bg-amber-500/10 px-3 py-2 text-[11px] leading-5 text-amber-700 dark:text-amber-300">
-          先在主页选择供应商并刷新模型列表，再配置自动路由。
+          请先添加至少一个供应商，再配置自动路由。
         </div>
       ) : (
         <div className="mt-5 grid gap-4 sm:grid-cols-2">
-          <ModelRouteSelect label="路由分类模型" value={settings.classifier_model} models={models} disabled={saving} onChange={(value) => update("classifier_model", value)} />
-          <ModelRouteSelect label="轻量模型（light）" value={settings.light_model} models={models} disabled={saving} onChange={(value) => update("light_model", value)} />
-          <ModelRouteSelect label="标准模型（standard）" value={settings.standard_model} models={models} disabled={saving} onChange={(value) => update("standard_model", value)} />
-          <ModelRouteSelect label="专业模型（pro）" value={settings.pro_model} models={models} disabled={saving} onChange={(value) => update("pro_model", value)} />
-          <ModelRouteSelect label="极致模型（max，兜底）" value={settings.max_model} models={models} disabled={saving} onChange={(value) => update("max_model", value)} />
+          <RouteTargetSelect label="路由分类模型" value={settings.classifier} providers={providers} modelsByProvider={modelsByProvider} disabled={saving || loadingModels} onChange={(value) => update("classifier", value)} />
+          <RouteTargetSelect label="轻量模型（light）" value={settings.light} providers={providers} modelsByProvider={modelsByProvider} disabled={saving || loadingModels} onChange={(value) => update("light", value)} />
+          <RouteTargetSelect label="标准模型（standard）" value={settings.standard} providers={providers} modelsByProvider={modelsByProvider} disabled={saving || loadingModels} onChange={(value) => update("standard", value)} />
+          <RouteTargetSelect label="专业模型（pro）" value={settings.pro} providers={providers} modelsByProvider={modelsByProvider} disabled={saving || loadingModels} onChange={(value) => update("pro", value)} />
+          <RouteTargetSelect label="极致模型（max，兜底）" value={settings.max} providers={providers} modelsByProvider={modelsByProvider} disabled={saving || loadingModels} onChange={(value) => update("max", value)} />
         </div>
       )}
 
@@ -1366,7 +1401,7 @@ function AutomaticRoutingPanel({
       </div>
 
       <div className="mt-5 flex justify-end">
-        <Button type="button" disabled={saving || (settings.enabled && !canEnable)} onClick={() => void save()}>
+        <Button type="button" disabled={saving || loadingModels || (settings.enabled && !canEnable)} onClick={() => void save()}>
           {saving ? <LoaderCircle className="size-4 animate-spin" /> : <Check className="size-4" />}
           {saving ? "保存中" : "保存路由配置"}
         </Button>
@@ -1375,32 +1410,58 @@ function AutomaticRoutingPanel({
   );
 }
 
-function ModelRouteSelect({
+function RouteTargetSelect({
   label,
   value,
-  models,
+  providers,
+  modelsByProvider,
   disabled,
   onChange,
 }: {
   label: string;
-  value?: string;
-  models: GatewayModel[];
+  value?: RoutingModelTarget;
+  providers: GatewayProvider[];
+  modelsByProvider: Record<string, GatewayModel[]>;
   disabled: boolean;
-  onChange: (value: string | undefined) => void;
+  onChange: (value: RoutingModelTarget | undefined) => void;
 }) {
+  const models = value?.provider_id ? modelsByProvider[value.provider_id] ?? [] : [];
+  const providerLabel = (provider: GatewayProvider) =>
+    provider.account_email ? `${provider.name} (${provider.account_email})` : provider.name;
+
   return (
     <FormField label={label}>
-      <select
-        className="field font-mono text-xs"
-        value={value ?? ""}
-        disabled={disabled}
-        onChange={(event) => onChange(event.target.value || undefined)}
-      >
-        <option value="">选择模型</option>
-        {models.map((model) => (
-          <option key={model.id} value={model.id}>{model.id}</option>
-        ))}
-      </select>
+      <div className="grid gap-2">
+        <select
+          className="field text-xs"
+          value={value?.provider_id ?? ""}
+          disabled={disabled}
+          onChange={(event) => {
+            const providerId = event.target.value;
+            onChange(providerId ? { provider_id: providerId, model: "" } : undefined);
+          }}
+        >
+          <option value="">选择供应商</option>
+          {providers.map((provider) => (
+            <option key={provider.id} value={provider.id}>{providerLabel(provider)}</option>
+          ))}
+        </select>
+        <select
+          className="field font-mono text-xs"
+          value={value?.model ?? ""}
+          disabled={disabled || !value?.provider_id}
+          onChange={(event) => {
+            if (!value?.provider_id) return;
+            const model = event.target.value;
+            onChange(model ? { provider_id: value.provider_id, model } : { provider_id: value.provider_id, model: "" });
+          }}
+        >
+          <option value="">选择模型</option>
+          {models.map((model) => (
+            <option key={model.id} value={model.id}>{model.id}</option>
+          ))}
+        </select>
+      </div>
     </FormField>
   );
 }

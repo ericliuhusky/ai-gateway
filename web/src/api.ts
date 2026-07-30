@@ -97,9 +97,12 @@ export const gatewayApi = {
     return payload.selected_provider;
   },
 
-  async models(force = false) {
+  async models(providerId?: string, force = false) {
+    const query = new URLSearchParams();
+    if (providerId) query.set("provider_id", providerId);
+    if (force) query.set("force", "true");
     const payload = await request<{ data: GatewayModel[] }>(
-      `/openai/v1/models${force ? "?force=true" : ""}`,
+      `/openai/v1/models${query.size ? `?${query.toString()}` : ""}`,
     );
     return payload.data;
   },

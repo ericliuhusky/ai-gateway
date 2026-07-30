@@ -160,19 +160,25 @@ fn default_low_confidence_threshold() -> f64 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RoutingModelTarget {
+    pub provider_id: String,
+    pub model: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AutoRoutingSettings {
     #[serde(default)]
     pub enabled: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub classifier_model: Option<String>,
+    pub classifier: Option<RoutingModelTarget>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub light_model: Option<String>,
+    pub light: Option<RoutingModelTarget>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub standard_model: Option<String>,
+    pub standard: Option<RoutingModelTarget>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub pro_model: Option<String>,
+    pub pro: Option<RoutingModelTarget>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_model: Option<String>,
+    pub max: Option<RoutingModelTarget>,
     #[serde(default = "default_low_confidence_threshold")]
     pub low_confidence_threshold: f64,
 }
@@ -181,11 +187,11 @@ impl Default for AutoRoutingSettings {
     fn default() -> Self {
         Self {
             enabled: false,
-            classifier_model: None,
-            light_model: None,
-            standard_model: None,
-            pro_model: None,
-            max_model: None,
+            classifier: None,
+            light: None,
+            standard: None,
+            pro: None,
+            max: None,
             low_confidence_threshold: default_low_confidence_threshold(),
         }
     }
@@ -196,15 +202,15 @@ pub struct UpdateAutoRoutingSettingsRequest {
     #[serde(default)]
     pub enabled: bool,
     #[serde(default)]
-    pub classifier_model: Option<String>,
-    #[serde(default, alias = "cheap_model")]
-    pub light_model: Option<String>,
+    pub classifier: Option<RoutingModelTarget>,
     #[serde(default)]
-    pub standard_model: Option<String>,
+    pub light: Option<RoutingModelTarget>,
     #[serde(default)]
-    pub pro_model: Option<String>,
-    #[serde(default, alias = "strong_model")]
-    pub max_model: Option<String>,
+    pub standard: Option<RoutingModelTarget>,
+    #[serde(default)]
+    pub pro: Option<RoutingModelTarget>,
+    #[serde(default)]
+    pub max: Option<RoutingModelTarget>,
     #[serde(default = "default_low_confidence_threshold")]
     pub low_confidence_threshold: f64,
 }
