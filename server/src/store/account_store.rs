@@ -80,6 +80,17 @@ impl AccountStore {
             .cloned()
     }
 
+    pub async fn delete(&self, account_id: &str) -> Result<AccountRecord, String> {
+        let mut records = self.records.lock().await;
+        let index = records
+            .iter()
+            .position(|account| account.id == account_id)
+            .ok_or_else(|| format!("账户不存在: {account_id}"))?;
+
+        self.sqlite.delete_account(account_id)?;
+        Ok(records.remove(index))
+    }
+
     async fn update_account(&self, account: AccountRecord) -> Result<(), String> {
         let mut records = self.records.lock().await;
         if let Some(existing) = records.iter_mut().find(|item| item.id == account.id) {

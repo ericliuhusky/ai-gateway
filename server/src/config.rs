@@ -61,4 +61,17 @@ impl Config {
     pub fn encryption(&self) -> FieldEncryptor {
         self.encryption.clone()
     }
+
+    #[cfg(test)]
+    pub fn for_test(data_dir: PathBuf) -> Self {
+        Self {
+            bind_addr: "127.0.0.1:0".parse().expect("test bind address is valid"),
+            web_dir: data_dir.join("web"),
+            data_dir,
+            encryption: FieldEncryptor::from_base64_key(
+                "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=",
+            )
+            .expect("hard-coded test key is valid"),
+        }
+    }
 }

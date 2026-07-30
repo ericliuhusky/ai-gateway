@@ -116,12 +116,26 @@ impl ProviderStore {
             .cloned()
     }
 
+    pub async fn has_account_provider(&self, account_id: &str) -> bool {
+        self.providers
+            .lock()
+            .await
+            .iter()
+            .any(|provider| provider.account_id.as_deref() == Some(account_id))
+    }
+
     pub async fn add_account_provider(
         &self,
         name: &str,
         account_id: &str,
     ) -> Result<ApiProviderRecord, String> {
         let mut providers = self.providers.lock().await;
+        if providers
+            .iter()
+            .any(|provider| provider.account_id.as_deref() == Some(account_id))
+        {
+            return Err(format!("账户已经绑定供应商: {account_id}"));
+        }
         let provider = ApiProviderRecord {
             id: Uuid::new_v4().to_string(),
             name: name.to_string(),

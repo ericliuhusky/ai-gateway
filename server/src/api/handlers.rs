@@ -529,7 +529,7 @@ pub async fn delete_provider(
     State(state): State<AppState>,
     AxumPath(provider_id): AxumPath<String>,
 ) -> Result<Json<Value>, AppError> {
-    state
+    let provider = state
         .providers
         .find_by_id(&provider_id)
         .await
@@ -551,6 +551,17 @@ pub async fn delete_provider(
         .delete(&provider_id)
         .await
         .map_err(AppError::bad_request)?;
+
+    if provider.auth_mode == ProviderAuthMode::Account
+        && let Some(account_id) = provider.account_id.as_deref()
+        && !state.providers.has_account_provider(account_id).await
+    {
+        state
+            .accounts
+            .delete(account_id)
+            .await
+            .map_err(AppError::internal)?;
+    }
 
     let route = state.routes.get().await;
     if route.provider_id.as_deref() == Some(provider_id.as_str()) {
@@ -2193,15 +2204,93 @@ impl IntoResponse for AppError {
 mod tests {
     use super::CodexAuthFile;
     use super::{
-        ResolvedProvider, apply_gateway_overrides_to_raw_request, classifier_response_preview,
-        classifier_text_from_sse, codex_turn_metadata, opaque_turn_id, openai_models_response,
-        private_classifier_request_body, provider_uses_openai_account, quota_from_openai_usage,
-        turn_context_from_request,
+        AppState, ResolvedProvider, apply_gateway_overrides_to_raw_request,
+        classifier_response_preview, classifier_text_from_sse, codex_turn_metadata,
+        delete_provider, opaque_turn_id, openai_models_response, private_classifier_request_body,
+        provider_uses_openai_account, quota_from_openai_usage, turn_context_from_request,
     };
-    use crate::models::{
-        ApiProviderRecord, ProviderAuthMode, ProviderCompatibilityProfile, ProviderUpstreamProtocol,
+    use crate::{
+        config::Config,
+        models::{
+            ApiProviderRecord, ProviderAuthMode, ProviderCompatibilityProfile,
+            ProviderUpstreamProtocol,
+        },
+        openai_device_login::OpenAiDeviceLoginService,
+        openai_tokens::{ImportedOpenAIAuth, OpenAiTokenService},
+        store::{AccountStore, ModelStore, ProviderStore, RouteStore, SettingsStore, TurnLogStore},
+        upstream::UpstreamClient,
     };
+    use axum::extract::{Path as AxumPath, State};
+    use reqwest::Client;
     use serde_json::json;
+    use std::{
+        fs,
+        path::PathBuf,
+        sync::Arc,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    #[tokio::test]
+    async fn deleting_account_provider_deletes_linked_account() {
+        let data_dir = unique_test_data_dir("delete-account-provider");
+        let config = Arc::new(Config::for_test(data_dir.clone()));
+        let accounts = AccountStore::new(config.clone()).expect("create account store");
+        accounts.load().await.expect("load accounts");
+        let providers = ProviderStore::new(config.clone()).expect("create provider store");
+        providers.load().await.expect("load providers");
+        let routes = RouteStore::new(config.clone()).expect("create route store");
+        routes.load().await.expect("load routes");
+        let account = accounts
+            .add_openai_account(ImportedOpenAIAuth {
+                email: "account@example.com".to_string(),
+                access_token: "access".to_string(),
+                refresh_token: "refresh".to_string(),
+                expiry_timestamp: 0,
+                client_id: "client".to_string(),
+                account_id: Some("upstream-account".to_string()),
+                scopes: Vec::new(),
+            })
+            .await
+            .expect("save account");
+        let provider = providers
+            .add_account_provider("OpenAI Account", &account.id)
+            .await
+            .expect("save account provider");
+        let state = AppState {
+            _client: Client::new(),
+            _config: config.clone(),
+            openai_tokens: OpenAiTokenService::new(),
+            openai_device_login: OpenAiDeviceLoginService::new(),
+            accounts: accounts.clone(),
+            providers: providers.clone(),
+            routes,
+            models: ModelStore::new(config.clone()).expect("create model store"),
+            settings: SettingsStore::new(config.clone()).expect("create settings store"),
+            turn_logs: TurnLogStore::new(config.clone()).expect("create turn-log store"),
+            upstream: UpstreamClient::new(),
+        };
+
+        let _ = delete_provider(State(state), AxumPath(provider.id.clone()))
+            .await
+            .expect("delete account provider");
+
+        assert!(providers.find_by_id(&provider.id).await.is_none());
+        assert!(accounts.find_by_id(&account.id).await.is_none());
+
+        let reloaded_accounts = AccountStore::new(config).expect("reopen account store");
+        reloaded_accounts.load().await.expect("reload accounts");
+        assert!(reloaded_accounts.find_by_id(&account.id).await.is_none());
+
+        let _ = fs::remove_dir_all(data_dir);
+    }
+
+    fn unique_test_data_dir(prefix: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        std::env::temp_dir().join(format!("ai_gateway_{prefix}_{unique}"))
+    }
 
     #[test]
     fn uses_codex_turn_metadata_header_to_bind_tool_rounds() {

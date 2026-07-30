@@ -85,6 +85,13 @@ impl SqliteStore {
         upsert_account_record(&conn, &self.encryption, account)
     }
 
+    pub fn delete_account(&self, account_id: &str) -> Result<(), String> {
+        let conn = self.connect()?;
+        conn.execute("DELETE FROM accounts WHERE id = ?1", params![account_id])
+            .map_err(|err| format!("delete account failed: {err}"))?;
+        Ok(())
+    }
+
     pub fn load_providers(&self) -> Result<Vec<ApiProviderRecord>, String> {
         let conn = self.connect()?;
         let mut stmt = conn
