@@ -75,7 +75,7 @@ export const gatewayApi = {
   },
 
   async instances() {
-    const payload = await request<{ instances: string[] }>("/instances");
+    const payload = await request<{ instances: InstanceRoutingConfig[] }>("/instances");
     return payload.instances;
   },
 

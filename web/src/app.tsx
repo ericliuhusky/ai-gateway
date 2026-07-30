@@ -92,6 +92,12 @@ function shellQuote(text: string) {
 
 export function App() {
   const [providers, setProviders] = React.useState<GatewayProvider[]>([]);
+  const [instances, setInstances] = React.useState<InstanceRoutingConfig[]>([]);
+  const [defaultAutomaticRouting, setDefaultAutomaticRouting] = React.useState<AutoRoutingSettings>({
+    enabled: false,
+    low_confidence_threshold: 0.7,
+  });
+  const [instanceToEdit, setInstanceToEdit] = React.useState<string | null>(null);
   const [selected, setSelected] = React.useState<SelectedProvider>({ updated_at: 0 });
   const [models, setModels] = React.useState<GatewayModel[]>([]);
   const [turnLogs, setTurnLogs] = React.useState<TurnRouteLog[]>([]);
@@ -149,15 +155,19 @@ export function App() {
   const refresh = React.useCallback(async () => {
     setLoading(true);
     try {
-      const [health, providerList, route, turns] = await Promise.all([
+      const [health, providerList, route, turns, instanceList, automaticRouting] = await Promise.all([
         gatewayApi.health(),
         gatewayApi.providers(),
         gatewayApi.selectedProvider(),
         gatewayApi.routingTurns(),
+        gatewayApi.instances(),
+        gatewayApi.automaticRouting(),
       ]);
       setServerOnline(health.trim() === "ok");
       const sorted = [...providerList].sort((a, b) => a.name.localeCompare(b.name));
       setProviders(sorted);
+      setInstances(instanceList);
+      setDefaultAutomaticRouting(automaticRouting);
       setSelected(route);
       setTurnLogs(turns);
       setError(null);
@@ -279,7 +289,10 @@ export function App() {
               variant="outline"
               size="sm"
               aria-label="管理 Codex 实例"
-              onClick={() => setDialog("instances")}
+              onClick={() => {
+                setInstanceToEdit(null);
+                setDialog("instances");
+              }}
             >
               <Server className="size-3.5" />
               <span className="hidden sm:inline">Codex 实例</span>
@@ -298,114 +311,70 @@ export function App() {
       </header>
 
       <main className="mx-auto max-w-[1480px] px-5 py-6 sm:px-8 sm:py-8">
-        <section className="glass-panel mb-8 flex flex-col gap-5 rounded-[22px] p-4 lg:flex-row lg:items-center">
-          <div className="flex min-w-0 flex-1 items-center gap-3">
-            <div className="flex size-10 shrink-0 items-center justify-center rounded-2xl bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
-              <Server className="size-[18px]" />
-            </div>
-            <div className="min-w-0">
-              <div className="eyebrow">远程 Server</div>
-              <div className="truncate text-[13px] font-semibold">{window.location.origin}</div>
-            </div>
-          </div>
-
-          <div className="hidden h-8 w-px bg-slate-200/70 lg:block dark:bg-white/10" />
-
-          <div className="flex min-w-0 flex-1 items-center gap-3">
-            <span className="eyebrow shrink-0">供应商</span>
-            <span
-              className={cn(
-                "truncate rounded-full px-3 py-1.5 text-xs font-bold",
-                selectedProvider
-                  ? "bg-blue-500/10 text-blue-600 dark:text-blue-400"
-                  : "bg-slate-500/10 text-slate-500",
-              )}
-            >
-              {selectedProvider?.name ?? "未选择"}
-            </span>
-            <div className="ml-auto flex gap-2">
-              <Button variant="outline" size="icon" title="添加 API Key 供应商" onClick={() => setDialog("api")}>
-                <KeyRound className="size-4" />
-              </Button>
-              <Button variant="outline" size="icon" title="导入账户 Token" onClick={() => setDialog("account")}>
-                <UserRound className="size-4" />
-              </Button>
-            </div>
-          </div>
-
-          <div className="hidden h-8 w-px bg-slate-200/70 lg:block dark:bg-white/10" />
-
-          <div className="flex min-w-0 flex-1 items-center gap-3">
-            <span className="eyebrow shrink-0">模型</span>
-            <div className="relative min-w-0 flex-1">
-              <select
-                className="field h-9 w-full appearance-none pr-9 text-xs font-semibold"
-                value={selected.selected_model ?? ""}
-                disabled={!selected.provider_id || loadingModels}
-                onChange={(event) => void selectModel(event.target.value)}
-              >
-                <option value="">跟随请求模型</option>
-                {models.map((model) => (
-                  <option key={model.id} value={model.id}>
-                    {model.id}
-                  </option>
-                ))}
-              </select>
-              <ChevronDown className="pointer-events-none absolute right-3 top-1/2 size-3.5 -translate-y-1/2 text-slate-400" />
-            </div>
-            <Button
-              variant="outline"
-              size="icon"
-              title="刷新模型"
-              disabled={!selected.provider_id || loadingModels}
-              onClick={() => void loadModels(true)}
-            >
-              <RefreshCw className={cn("size-4", loadingModels && "animate-spin")} />
-            </Button>
-          </div>
-
-          <div className="hidden h-8 w-px bg-slate-200/70 lg:block dark:bg-white/10" />
-
-          <div className="flex min-w-0 flex-1 items-center gap-3">
-            <span className="eyebrow shrink-0">推理强度</span>
-            <div className="relative min-w-0 flex-1">
-              <select
-                className="field h-9 w-full appearance-none pr-9 text-xs font-semibold"
-                value={selected.selected_reasoning_effort ?? ""}
-                disabled={!selected.provider_id}
-                onChange={(event) => void selectReasoningEffort(event.target.value)}
-              >
-                <option value="">跟随请求</option>
-                <option value="low">低（low）</option>
-                <option value="medium">中（medium）</option>
-                <option value="high">高（high）</option>
-                <option value="xhigh">极高（xhigh）</option>
-              </select>
-              <ChevronDown className="pointer-events-none absolute right-3 top-1/2 size-3.5 -translate-y-1/2 text-slate-400" />
-            </div>
-          </div>
-        </section>
-
         {loading ? (
           <LoadingState />
-        ) : providers.length === 0 ? (
-          <EmptyState onAddApi={() => setDialog("api")} onAddAccount={() => setDialog("account")} />
         ) : (
-          <div className="space-y-9">
-            <ProviderSection
-              title="供应商"
+          <>
+            <InstanceSection
+              title="默认实例"
+              instances={[{
+                instance_id: "default",
+                provider_id: selected.provider_id,
+                selected_model: selected.selected_model,
+                selected_reasoning_effort: selected.selected_reasoning_effort,
+                updated_at: selected.updated_at,
+                automatic_routing: defaultAutomaticRouting,
+              }]}
               providers={providers}
-              selectedId={selected.provider_id}
-              quotas={quotas}
-              quotaErrors={quotaErrors}
-              loadingQuotas={loadingQuotas}
-              deleting={deleting}
-              onSelect={selectProvider}
-              onDelete={deleteProvider}
-              onRefreshQuota={refreshQuota}
+              onConfigure={(instanceId) => {
+                if (instanceId === "default") {
+                  setDialog("settings");
+                }
+              }}
+              onChanged={refresh}
+              onError={setError}
             />
-            <TurnLogSection turns={turnLogs} />
-          </div>
+
+            <div className="mt-5">
+              <InstanceSection
+                title="Codex 实例"
+                instances={instances}
+                providers={providers}
+                onAdd={() => {
+                  setInstanceToEdit(null);
+                  setDialog("instances");
+                }}
+                onConfigure={(instanceId) => {
+                  setInstanceToEdit(instanceId);
+                  setDialog("instances");
+                }}
+                onChanged={refresh}
+                onError={setError}
+              />
+            </div>
+
+            {providers.length === 0 ? (
+              <div className="mt-8"><EmptyState onAddApi={() => setDialog("api")} onAddAccount={() => setDialog("account")} /></div>
+            ) : (
+              <div className="mt-8 space-y-9">
+                <ProviderSection
+                  title="供应商"
+                  providers={providers}
+                  selectedId={selected.provider_id}
+                  quotas={quotas}
+                  quotaErrors={quotaErrors}
+                  loadingQuotas={loadingQuotas}
+                  deleting={deleting}
+                  onSelect={selectProvider}
+                  onDelete={deleteProvider}
+                  onRefreshQuota={refreshQuota}
+                  onAddApi={() => setDialog("api")}
+                  onAddAccount={() => setDialog("account")}
+                />
+                <TurnLogSection turns={turnLogs} />
+              </div>
+            )}
+          </>
         )}
       </main>
 
@@ -445,7 +414,12 @@ export function App() {
       {dialog === "instances" ? (
         <CodexInstancesDialog
           providers={providers}
-          onClose={() => setDialog(null)}
+          initialInstanceId={instanceToEdit ?? undefined}
+          onClose={() => {
+            setInstanceToEdit(null);
+            setDialog(null);
+          }}
+          onChanged={refresh}
           onError={setError}
         />
       ) : null}
@@ -470,6 +444,277 @@ function StatusPill({ online }: { online: boolean }) {
   );
 }
 
+function InstanceSection({
+  title,
+  instances,
+  providers,
+  onAdd,
+  onConfigure,
+  onChanged,
+  onError,
+}: {
+  title: string;
+  instances: InstanceRoutingConfig[];
+  providers: GatewayProvider[];
+  onAdd?: () => void;
+  onConfigure: (instanceId: string) => void;
+  onChanged: () => Promise<void>;
+  onError: (message: string) => void;
+}) {
+  const allInstances = instances;
+  const [modelsByProvider, setModelsByProvider] = React.useState<Record<string, GatewayModel[]>>({});
+  const [loadingModels, setLoadingModels] = React.useState(true);
+  const [savingIds, setSavingIds] = React.useState<Set<string>>(new Set());
+
+  React.useEffect(() => {
+    let cancelled = false;
+    if (!providers.length) {
+      setModelsByProvider({});
+      setLoadingModels(false);
+      return () => { cancelled = true; };
+    }
+    setLoadingModels(true);
+    void Promise.all(providers.map(async (provider) => [provider.id, await gatewayApi.models(provider.id)] as const))
+      .then((entries) => {
+        if (!cancelled) {
+          setModelsByProvider(Object.fromEntries(entries.map(([id, models]) => [
+            id,
+            [...models].sort((a, b) => a.id.localeCompare(b.id)),
+          ])));
+        }
+      })
+      .catch((loadError) => {
+        if (!cancelled) onError(`加载实例模型失败：${errorMessage(loadError)}`);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingModels(false);
+      });
+    return () => { cancelled = true; };
+  }, [providers, onError]);
+
+  async function run(instanceId: string, action: () => Promise<unknown>) {
+    setSavingIds((current) => new Set(current).add(instanceId));
+    try {
+      await action();
+      await onChanged();
+    } catch (saveError) {
+      onError(errorMessage(saveError));
+    } finally {
+      setSavingIds((current) => {
+        const next = new Set(current);
+        next.delete(instanceId);
+        return next;
+      });
+    }
+  }
+
+  function updateNamedInstance(
+    instance: InstanceRoutingConfig,
+    patch: Partial<Omit<InstanceRoutingConfig, "instance_id" | "updated_at" | "automatic_routing">> & { automatic_routing?: AutoRoutingSettings },
+  ) {
+    const providerId = "provider_id" in patch ? patch.provider_id : instance.provider_id;
+    if (!providerId) return Promise.reject(new Error("请先选择供应商"));
+    return gatewayApi.setInstanceConfig(instance.instance_id, {
+      provider_id: providerId,
+      selected_model: "selected_model" in patch ? patch.selected_model : instance.selected_model,
+      selected_reasoning_effort: "selected_reasoning_effort" in patch
+        ? patch.selected_reasoning_effort
+        : instance.selected_reasoning_effort,
+      automatic_routing: patch.automatic_routing ?? instance.automatic_routing,
+    });
+  }
+
+  function updateProvider(instance: InstanceRoutingConfig, providerId: string) {
+    if (!providerId) return;
+    void run(instance.instance_id, async () => {
+      if (instance.instance_id === "default") {
+        await gatewayApi.selectProvider(providerId);
+      } else {
+        await updateNamedInstance(instance, { provider_id: providerId, selected_model: undefined, selected_reasoning_effort: undefined });
+      }
+    });
+  }
+
+  function updateModel(instance: InstanceRoutingConfig, model: string) {
+    void run(instance.instance_id, async () => {
+      if (instance.instance_id === "default") {
+        if (model) await gatewayApi.selectModel(model);
+        else await gatewayApi.clearSelectedModel();
+      } else {
+        await updateNamedInstance(instance, { selected_model: model || undefined });
+      }
+    });
+  }
+
+  function updateReasoning(instance: InstanceRoutingConfig, effort: ReasoningEffort | "") {
+    void run(instance.instance_id, async () => {
+      if (instance.instance_id === "default") {
+        if (effort) await gatewayApi.selectReasoningEffort(effort);
+        else await gatewayApi.clearSelectedReasoningEffort();
+      } else {
+        await updateNamedInstance(instance, { selected_reasoning_effort: effort || undefined });
+      }
+    });
+  }
+
+  function toggleAutomaticRouting(instance: InstanceRoutingConfig) {
+    const next = { ...instance.automatic_routing, enabled: !instance.automatic_routing.enabled };
+    void run(instance.instance_id, async () => {
+      if (instance.instance_id === "default") {
+        await gatewayApi.setAutomaticRouting(next);
+      } else {
+        await updateNamedInstance(instance, { automatic_routing: next });
+      }
+    });
+  }
+
+  return (
+    <section>
+      <div className="mb-3 flex items-center gap-3 px-1">
+        <h2 className="text-xs font-bold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">{title}</h2>
+        {onAdd ? <span className="rounded-full bg-white/60 px-2 py-0.5 text-[10px] font-bold text-slate-400 dark:bg-white/5">{allInstances.length}</span> : null}
+        {onAdd ? (
+          <Button className="ml-auto" variant="outline" size="sm" onClick={onAdd}>
+            <Plus className="size-3.5" />
+            新建实例
+          </Button>
+        ) : null}
+      </div>
+      <div className="space-y-3">
+        {allInstances.map((instance) => (
+          <InstanceCard
+            key={instance.instance_id}
+            instance={instance}
+            providers={providers}
+            models={modelsByProvider[instance.provider_id ?? ""] ?? []}
+            loadingModels={loadingModels}
+            saving={savingIds.has(instance.instance_id)}
+            onProviderChange={(providerId) => updateProvider(instance, providerId)}
+            onModelChange={(model) => updateModel(instance, model)}
+            onReasoningChange={(effort) => updateReasoning(instance, effort)}
+            onToggleAutomatic={() => toggleAutomaticRouting(instance)}
+            onConfigureAutomatic={() => onConfigure(instance.instance_id)}
+          />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function InstanceCard({
+  instance,
+  providers,
+  models,
+  loadingModels,
+  saving,
+  onProviderChange,
+  onModelChange,
+  onReasoningChange,
+  onToggleAutomatic,
+  onConfigureAutomatic,
+}: {
+  instance: InstanceRoutingConfig;
+  providers: GatewayProvider[];
+  models: GatewayModel[];
+  loadingModels: boolean;
+  saving: boolean;
+  onProviderChange: (providerId: string) => void;
+  onModelChange: (model: string) => void;
+  onReasoningChange: (effort: ReasoningEffort | "") => void;
+  onToggleAutomatic: () => void;
+  onConfigureAutomatic: () => void;
+}) {
+  const isDefault = instance.instance_id === "default";
+  const automaticReady = [
+    instance.automatic_routing.classifier,
+    instance.automatic_routing.light,
+    instance.automatic_routing.standard,
+    instance.automatic_routing.pro,
+    instance.automatic_routing.max,
+  ].every((target) => Boolean(target?.provider_id && target.model));
+  const controlsDisabled = saving || instance.automatic_routing.enabled;
+
+  return (
+    <article className="glass-panel flex flex-col gap-4 rounded-[22px] p-4 lg:flex-row lg:items-center lg:gap-5">
+      <div className="min-w-0 flex-1">
+        <h3 className="truncate text-lg font-bold tracking-[-0.025em]">{isDefault ? "默认实例" : instance.instance_id}</h3>
+        <div className="mt-1.5 truncate font-mono text-[11px] text-slate-400" title={isDefault ? "/openai/v1" : `/instances/${instance.instance_id}/openai/v1`}>
+          {isDefault ? "/openai/v1" : `/instances/${instance.instance_id}/openai/v1`}
+        </div>
+      </div>
+
+      <div className="hidden h-8 w-px bg-slate-200/70 lg:block dark:bg-white/10" />
+
+      <div className="flex min-w-0 flex-1 items-center gap-3">
+        <span className="eyebrow shrink-0">供应商</span>
+        <div className="relative min-w-0 flex-1">
+          <select className="field h-9 w-full appearance-none pr-9 text-xs font-semibold" value={instance.provider_id ?? ""} disabled={controlsDisabled} onChange={(event) => onProviderChange(event.target.value)}>
+            <option value="">选择供应商</option>
+            {providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.account_email ? `${provider.name} (${provider.account_email})` : provider.name}</option>)}
+          </select>
+          <ChevronDown className="pointer-events-none absolute right-3 top-1/2 size-3.5 -translate-y-1/2 text-slate-400" />
+        </div>
+      </div>
+
+      <div className="hidden h-8 w-px bg-slate-200/70 lg:block dark:bg-white/10" />
+
+      <div className="flex min-w-0 flex-1 items-center gap-3">
+        <span className="eyebrow shrink-0">模型</span>
+        <div className="relative min-w-0 flex-1">
+          <select className="field h-9 w-full appearance-none pr-9 font-mono text-xs font-semibold" value={instance.selected_model ?? ""} disabled={controlsDisabled || loadingModels || !instance.provider_id} onChange={(event) => onModelChange(event.target.value)}>
+            <option value="">跟随请求模型</option>
+            {models.map((model) => <option key={model.id} value={model.id}>{model.id}</option>)}
+          </select>
+          <ChevronDown className="pointer-events-none absolute right-3 top-1/2 size-3.5 -translate-y-1/2 text-slate-400" />
+        </div>
+      </div>
+
+      <div className="hidden h-8 w-px bg-slate-200/70 lg:block dark:bg-white/10" />
+
+      <div className="flex min-w-0 flex-1 items-center gap-3">
+        <span className="eyebrow shrink-0">推理强度</span>
+        <div className="relative min-w-0 flex-1">
+          <select className="field h-9 w-full appearance-none pr-9 text-xs font-semibold" value={instance.selected_reasoning_effort ?? ""} disabled={controlsDisabled || !instance.provider_id} onChange={(event) => onReasoningChange(event.target.value as ReasoningEffort | "")}>
+            <option value="">跟随请求</option>
+            <option value="low">低（low）</option>
+            <option value="medium">中（medium）</option>
+            <option value="high">高（high）</option>
+            <option value="xhigh">极高（xhigh）</option>
+          </select>
+          <ChevronDown className="pointer-events-none absolute right-3 top-1/2 size-3.5 -translate-y-1/2 text-slate-400" />
+        </div>
+      </div>
+
+      <div className="hidden h-8 w-px bg-slate-200/70 lg:block dark:bg-white/10" />
+
+      <div className="flex shrink-0 items-center justify-between gap-3 lg:justify-end">
+        <button
+          type="button"
+          role="switch"
+          aria-label="启用自动模型路由"
+          aria-checked={instance.automatic_routing.enabled}
+          disabled={saving || (!instance.automatic_routing.enabled && !automaticReady)}
+          title={!instance.automatic_routing.enabled && !automaticReady ? "请先配置完整的自动路由" : "自动模型路由"}
+          className={cn(
+            "flex h-8 items-center gap-2 rounded-xl px-2 transition",
+            instance.automatic_routing.enabled ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-300" : "bg-slate-500/8 text-slate-500",
+            (saving || (!instance.automatic_routing.enabled && !automaticReady)) && "cursor-not-allowed opacity-50",
+          )}
+          onClick={onToggleAutomatic}
+        >
+          <span className={cn("relative block h-5 w-9 rounded-full p-0.5 transition", instance.automatic_routing.enabled ? "bg-emerald-500" : "bg-slate-300 dark:bg-white/15")}>
+            <span className={cn("block size-4 rounded-full bg-white shadow-sm transition", instance.automatic_routing.enabled && "translate-x-4")} />
+          </span>
+          <span className="text-xs font-bold">自动路由</span>
+        </button>
+        <Button type="button" variant="outline" size="sm" onClick={onConfigureAutomatic}>
+          路由配置
+        </Button>
+      </div>
+    </article>
+  );
+}
+
 function ProviderSection(props: {
   title: string;
   providers: GatewayProvider[];
@@ -481,6 +726,8 @@ function ProviderSection(props: {
   onSelect: (provider: GatewayProvider) => void;
   onDelete: (provider: GatewayProvider) => void;
   onRefreshQuota: (provider: GatewayProvider) => void;
+  onAddApi: () => void;
+  onAddAccount: () => void;
 }) {
   if (!props.providers.length) return null;
   return (
@@ -492,6 +739,14 @@ function ProviderSection(props: {
         <span className="rounded-full bg-white/60 px-2 py-0.5 text-[10px] font-bold text-slate-400 dark:bg-white/5">
           {props.providers.length}
         </span>
+        <div className="ml-auto flex items-center gap-2">
+          <Button variant="outline" size="icon" title="添加 API Key 供应商" onClick={props.onAddApi}>
+            <KeyRound className="size-4" />
+          </Button>
+          <Button variant="outline" size="icon" title="导入账户 Token" onClick={props.onAddAccount}>
+            <UserRound className="size-4" />
+          </Button>
+        </div>
       </div>
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
         {props.providers.map((provider) => (
@@ -1030,11 +1285,15 @@ function AccountDialog({
 
 function CodexInstancesDialog({
   providers,
+  initialInstanceId,
   onClose,
+  onChanged,
   onError,
 }: {
   providers: GatewayProvider[];
+  initialInstanceId?: string;
   onClose: () => void;
+  onChanged: () => Promise<void>;
   onError: (message: string) => void;
 }) {
   const [instanceIds, setInstanceIds] = React.useState<string[]>([]);
@@ -1053,7 +1312,7 @@ function CodexInstancesDialog({
 
   const refreshInstances = React.useCallback(async () => {
     const items = await gatewayApi.instances();
-    setInstanceIds(items);
+    setInstanceIds(items.map((item) => item.instance_id));
   }, []);
 
   React.useEffect(() => {
@@ -1061,6 +1320,12 @@ function CodexInstancesDialog({
       .catch((loadError) => onError(errorMessage(loadError)))
       .finally(() => setLoading(false));
   }, [onError, refreshInstances]);
+
+  React.useEffect(() => {
+    if (initialInstanceId) {
+      void loadInstance(initialInstanceId);
+    }
+  }, [initialInstanceId]);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -1140,7 +1405,7 @@ function CodexInstancesDialog({
       const saved = await gatewayApi.setInstanceConfig(instanceId, config);
       setInstanceId(saved.instance_id);
       setAutomaticRouting(saved.automatic_routing);
-      await refreshInstances();
+      await Promise.all([refreshInstances(), onChanged()]);
     } catch (saveError) {
       onError(errorMessage(saveError));
     } finally {
@@ -1202,19 +1467,19 @@ function CodexInstancesDialog({
 
           <div className="grid gap-4 sm:grid-cols-3">
             <FormField label="默认供应商">
-              <select className="field w-full text-xs" value={providerId} disabled={saving} onChange={(event) => { setProviderId(event.target.value); setSelectedModel(""); }}>
+              <select className="field w-full text-xs" value={providerId} disabled={saving || automaticRouting.enabled} onChange={(event) => { setProviderId(event.target.value); setSelectedModel(""); }}>
                 <option value="">选择供应商</option>
                 {providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.account_email ? `${provider.name} (${provider.account_email})` : provider.name}</option>)}
               </select>
             </FormField>
             <FormField label="固定模型（可选）">
-              <select className="field w-full font-mono text-xs" value={selectedModel} disabled={saving || loadingModels || !providerId} onChange={(event) => setSelectedModel(event.target.value)}>
+              <select className="field w-full font-mono text-xs" value={selectedModel} disabled={saving || automaticRouting.enabled || loadingModels || !providerId} onChange={(event) => setSelectedModel(event.target.value)}>
                 <option value="">跟随请求模型</option>
                 {(modelsByProvider[providerId] ?? []).map((model) => <option key={model.id} value={model.id}>{model.id}</option>)}
               </select>
             </FormField>
             <FormField label="推理强度（可选）">
-              <select className="field w-full text-xs" value={reasoningEffort} disabled={saving || !providerId} onChange={(event) => setReasoningEffort(event.target.value as ReasoningEffort | "")}>
+              <select className="field w-full text-xs" value={reasoningEffort} disabled={saving || automaticRouting.enabled || !providerId} onChange={(event) => setReasoningEffort(event.target.value as ReasoningEffort | "")}>
                 <option value="">跟随请求</option>
                 <option value="low">低（low）</option>
                 <option value="medium">中（medium）</option>

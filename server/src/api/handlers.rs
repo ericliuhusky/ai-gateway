@@ -454,7 +454,22 @@ pub async fn list_instance_routing_configs(
     let instances = state
         .routes
         .list_instance_ids()
-        .map_err(AppError::internal)?;
+        .map_err(AppError::internal)?
+        .into_iter()
+        .map(|instance_id| {
+            Ok(InstanceRoutingConfig {
+                route: state
+                    .routes
+                    .get_for_instance(&instance_id)
+                    .map_err(AppError::internal)?,
+                automatic_routing: state
+                    .settings
+                    .instance_auto_routing_settings(&instance_id)
+                    .map_err(AppError::internal)?,
+                instance_id,
+            })
+        })
+        .collect::<Result<Vec<_>, AppError>>()?;
     Ok(Json(json!({ "instances": instances })))
 }
 
