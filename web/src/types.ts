@@ -1,8 +1,6 @@
 export type GatewayAuthMode = "api_key" | "account";
 export type GatewayBillingMode = "metered" | "subscription";
-export type GatewayUpstreamProtocol =
-  | "openai_responses"
-  | "openai_chat_completions";
+export type GatewayUpstreamProtocol = "openai_responses";
 export type GatewayCompatibilityProfile =
   | "official_openai"
   | "generic_openai"
@@ -18,8 +16,6 @@ export interface GatewayProvider {
   billing_mode: GatewayBillingMode;
   upstream_protocol: GatewayUpstreamProtocol;
   compatibility_profile: GatewayCompatibilityProfile;
-  /** Deprecated compatibility field returned by older/newer mixed deployments. */
-  uses_chat_completions: boolean;
 }
 
 export interface SelectedProvider {

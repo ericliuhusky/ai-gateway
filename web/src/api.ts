@@ -6,7 +6,6 @@ import type {
   GatewayCompatibilityProfile,
   GatewayModel,
   GatewayProvider,
-  GatewayUpstreamProtocol,
   ProviderQuotaSummary,
   ReasoningEffort,
   SelectedProvider,
@@ -147,7 +146,6 @@ export const gatewayApi = {
     base_url: string;
     api_key: string;
     billing_mode: GatewayBillingMode;
-    upstream_protocol: GatewayUpstreamProtocol;
     compatibility_profile: GatewayCompatibilityProfile;
   }) {
     return request("/providers", { method: "POST", body: JSON.stringify(input) });

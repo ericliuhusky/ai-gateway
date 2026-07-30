@@ -13,10 +13,6 @@ fn has_api_prefix(base_url: &str) -> bool {
     base_url.ends_with("/v1") || base_url.contains("/api") || base_url.contains("/backend-api")
 }
 
-pub fn chat_completions_api_url(base_url: &str) -> String {
-    base_api_url(base_url, "chat/completions")
-}
-
 pub fn responses_api_url(base_url: &str) -> String {
     base_api_url(base_url, "responses")
 }

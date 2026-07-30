@@ -46,7 +46,6 @@ impl ProviderStore {
                 account_email: None,
                 upstream_protocol: provider.upstream_protocol.clone(),
                 compatibility_profile: provider.compatibility_profile.clone(),
-                uses_chat_completions: provider.uses_chat_completions(),
                 billing_mode: provider.billing_mode.clone(),
             })
             .collect()
@@ -69,14 +68,6 @@ impl ProviderStore {
         if base_url.is_empty() {
             return Err("base_url cannot be empty".to_string());
         }
-        let legacy_upstream_protocol = if request.uses_chat_completions {
-            ProviderUpstreamProtocol::OpenAiChatCompletions
-        } else {
-            ProviderUpstreamProtocol::OpenAiResponses
-        };
-        let upstream_protocol = request
-            .upstream_protocol
-            .unwrap_or(legacy_upstream_protocol);
         let compatibility_profile = request
             .compatibility_profile
             .unwrap_or_else(|| compatibility_profile_for_base_url(&base_url));
@@ -99,7 +90,7 @@ impl ProviderStore {
             base_url,
             api_key,
             account_id: None,
-            upstream_protocol,
+            upstream_protocol: ProviderUpstreamProtocol::OpenAiResponses,
             compatibility_profile,
             billing_mode: request
                 .billing_mode
@@ -247,7 +238,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn legacy_create_input_is_resolved_to_explicit_protocol_and_profile() {
+    async fn creates_api_key_provider_with_responses_protocol() {
         let sqlite = test_sqlite_store("legacy-create-provider");
         let store = ProviderStore {
             sqlite,
@@ -259,9 +250,7 @@ mod tests {
                 name: "official".to_string(),
                 base_url: Some("https://api.openai.com/v1".to_string()),
                 api_key: Some("sk-test".to_string()),
-                upstream_protocol: None,
                 compatibility_profile: None,
-                uses_chat_completions: true,
                 billing_mode: None,
             })
             .await
@@ -269,7 +258,7 @@ mod tests {
 
         assert_eq!(
             provider.upstream_protocol,
-            ProviderUpstreamProtocol::OpenAiChatCompletions
+            ProviderUpstreamProtocol::OpenAiResponses
         );
         assert_eq!(
             provider.compatibility_profile,

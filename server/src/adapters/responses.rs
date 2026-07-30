@@ -1,16 +1,11 @@
 mod request_policy;
 
-use crate::models::{
-    ApiProviderRecord, ProviderAuthMode, ProviderUpstreamProtocol, ResponseCreateParams,
-    responses_to_chat_completions,
-};
+use crate::models::{ApiProviderRecord, ProviderAuthMode};
 use request_policy::apply_responses_request_policy;
-use serde_json::Value;
 
 #[derive(Debug)]
 pub enum ResponsesAdapterError {
     BadRequest(String),
-    Internal(String),
 }
 
 #[derive(Clone, Debug)]
@@ -24,7 +19,6 @@ pub struct ResponsesAdapterProvider {
 #[derive(Debug)]
 pub enum PreparedResponsesUpstream {
     OpenAiAccountResponsesPassthrough(PreparedResponsesPassthrough),
-    ApiChatCompletions(PreparedApiChatCompletions),
     ApiResponsesPassthrough(PreparedApiResponsesPassthrough),
 }
 
@@ -35,31 +29,15 @@ pub struct PreparedResponsesPassthrough {
 }
 
 #[derive(Debug)]
-pub struct PreparedApiChatCompletions {
-    pub provider_name: String,
-    pub provider: ApiProviderRecord,
-    pub model: String,
-    pub request_body: Value,
-}
-
-#[derive(Debug)]
 pub struct PreparedApiResponsesPassthrough {
     pub provider: ApiProviderRecord,
     pub request_stream: bool,
     pub request_body: String,
 }
 
-#[derive(Clone, Debug)]
-struct NativeTarget {
-    upstream_model: String,
-    uses_chat_completions: bool,
-}
-
 pub fn prepare_responses_upstream(
     provider: ResponsesAdapterProvider,
-    request_json: Value,
     request_body: String,
-    requested_model: String,
     request_stream: bool,
 ) -> Result<PreparedResponsesUpstream, ResponsesAdapterError> {
     if provider.auth_mode == ProviderAuthMode::Account && provider.uses_openai_account {
@@ -84,32 +62,6 @@ pub fn prepare_responses_upstream(
         ResponsesAdapterError::BadRequest(format!("unknown provider: {}", provider.name))
     })?;
 
-    let native_target = resolve_native_target(&native_provider, &requested_model);
-    if native_target.uses_chat_completions {
-        let request: ResponseCreateParams =
-            serde_json::from_value(request_json).map_err(|err| {
-                ResponsesAdapterError::BadRequest(format!("invalid request JSON: {err}"))
-            })?;
-        if !request.stream {
-            return Err(ResponsesAdapterError::BadRequest(
-                "responses 接口请求必须使用流式 (\"stream\": true)".to_string(),
-            ));
-        }
-        let chat_request = responses_to_chat_completions(&request, &native_target.upstream_model)
-            .map_err(ResponsesAdapterError::BadRequest)?;
-        let request_body = serde_json::to_value(chat_request)
-            .map_err(|err| ResponsesAdapterError::Internal(err.to_string()))?;
-
-        return Ok(PreparedResponsesUpstream::ApiChatCompletions(
-            PreparedApiChatCompletions {
-                provider_name: provider.name,
-                provider: native_provider.clone(),
-                model: request.model,
-                request_body,
-            },
-        ));
-    }
-
     let transformed =
         apply_responses_request_policy(&native_provider.compatibility_profile, request_body)
             .map_err(ResponsesAdapterError::BadRequest)?;
@@ -120,20 +72,6 @@ pub fn prepare_responses_upstream(
             request_body: transformed,
         },
     ))
-}
-
-fn resolve_native_target(provider: &ApiProviderRecord, requested_model: &str) -> NativeTarget {
-    if provider.upstream_protocol == ProviderUpstreamProtocol::OpenAiChatCompletions {
-        return NativeTarget {
-            upstream_model: requested_model.to_string(),
-            uses_chat_completions: true,
-        };
-    }
-
-    NativeTarget {
-        upstream_model: requested_model.to_string(),
-        uses_chat_completions: false,
-    }
 }
 
 #[cfg(test)]
@@ -147,7 +85,6 @@ mod tests {
 
     fn api_provider(
         base_url: &str,
-        upstream_protocol: ProviderUpstreamProtocol,
         compatibility_profile: ProviderCompatibilityProfile,
     ) -> ApiProviderRecord {
         ApiProviderRecord {
@@ -157,7 +94,7 @@ mod tests {
             base_url: base_url.to_string(),
             api_key: "sk-test".to_string(),
             account_id: None,
-            upstream_protocol,
+            upstream_protocol: ProviderUpstreamProtocol::OpenAiResponses,
             compatibility_profile,
             billing_mode: ApiProviderBillingMode::Metered,
         }
@@ -182,7 +119,6 @@ mod tests {
     fn api_provider_uses_responses_by_default_even_for_compatible_provider_name() {
         let provider = api_provider(
             "https://example.com/v1",
-            ProviderUpstreamProtocol::OpenAiResponses,
             ProviderCompatibilityProfile::GenericOpenAi,
         );
         let prepared = prepare_responses_upstream(
@@ -192,9 +128,7 @@ mod tests {
                 record: Some(provider),
                 uses_openai_account: false,
             },
-            response_body("gpt-5.4"),
             response_body("gpt-5.4").to_string(),
-            "gpt-5.4".to_string(),
             true,
         )
         .unwrap();
@@ -205,37 +139,9 @@ mod tests {
     }
 
     #[test]
-    fn api_provider_uses_chat_completions_only_when_enabled() {
-        let provider = api_provider(
-            "https://example.com/v1",
-            ProviderUpstreamProtocol::OpenAiChatCompletions,
-            ProviderCompatibilityProfile::GenericOpenAi,
-        );
-        let prepared = prepare_responses_upstream(
-            ResponsesAdapterProvider {
-                name: provider.name.clone(),
-                auth_mode: provider.auth_mode.clone(),
-                record: Some(provider),
-                uses_openai_account: false,
-            },
-            response_body("qwen3-32b"),
-            response_body("qwen3-32b").to_string(),
-            "qwen3-32b".to_string(),
-            true,
-        )
-        .unwrap();
-
-        let PreparedResponsesUpstream::ApiChatCompletions(prepared) = prepared else {
-            panic!("expected chat completions");
-        };
-        assert_eq!(prepared.model, "qwen3-32b");
-    }
-
-    #[test]
     fn filters_known_incompatible_response_tools_for_non_openai_provider() {
         let provider = api_provider(
             "https://example.com/v1",
-            ProviderUpstreamProtocol::OpenAiResponses,
             ProviderCompatibilityProfile::GenericOpenAi,
         );
         let body = json!({
@@ -283,9 +189,7 @@ mod tests {
                 record: Some(provider),
                 uses_openai_account: false,
             },
-            body.clone(),
             body.to_string(),
-            "external/gpt-5.5".to_string(),
             false,
         )
         .unwrap();
@@ -305,7 +209,6 @@ mod tests {
     fn keeps_response_tools_for_official_openai_api_key_provider() {
         let provider = api_provider(
             "https://api.openai.com/v1",
-            ProviderUpstreamProtocol::OpenAiResponses,
             ProviderCompatibilityProfile::OfficialOpenAi,
         );
         let body = json!({
@@ -328,9 +231,7 @@ mod tests {
                 record: Some(provider),
                 uses_openai_account: false,
             },
-            body.clone(),
             body.to_string(),
-            "gpt-5.4".to_string(),
             false,
         )
         .unwrap();

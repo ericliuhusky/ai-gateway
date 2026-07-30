@@ -36,7 +36,6 @@ import type {
   SelectedProvider,
   TurnRouteLog,
   GatewayCompatibilityProfile,
-  GatewayUpstreamProtocol,
   RoutingModelTarget,
 } from "./types";
 
@@ -672,9 +671,7 @@ function ProviderCard({
               {provider.billing_mode === "subscription" ? "订阅" : "按量"}
             </Badge>
             <Badge tone="slate">
-              {provider.upstream_protocol === "openai_chat_completions"
-                ? "Chat Completions"
-                : "Responses"}
+              Responses
             </Badge>
             <Badge tone="slate">
               {provider.compatibility_profile === "official_openai"
@@ -916,8 +913,6 @@ function ApiProviderDialog({
   const [baseUrl, setBaseUrl] = React.useState("");
   const [apiKey, setApiKey] = React.useState("");
   const [billing, setBilling] = React.useState<GatewayBillingMode>("metered");
-  const [upstreamProtocol, setUpstreamProtocol] =
-    React.useState<GatewayUpstreamProtocol>("openai_responses");
   const [compatibilityProfile, setCompatibilityProfile] =
     React.useState<GatewayCompatibilityProfile>("generic_openai");
   const [submitting, setSubmitting] = React.useState(false);
@@ -933,7 +928,6 @@ function ApiProviderDialog({
         base_url: baseUrl.trim(),
         api_key: apiKey.trim(),
         billing_mode: billing,
-        upstream_protocol: upstreamProtocol,
         compatibility_profile: compatibilityProfile,
       });
       await onCreated();
@@ -964,37 +958,23 @@ function ApiProviderDialog({
         <FormField label="API Key">
           <input className="field font-mono text-xs" type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder="sk-..." />
         </FormField>
-        <div className="grid gap-4 sm:grid-cols-2">
-          <FormField label="计费">
-            <div className="grid grid-cols-2 rounded-xl bg-slate-100 p-1 dark:bg-white/5">
-              {(["metered", "subscription"] as GatewayBillingMode[]).map((mode) => (
-                <button
-                  key={mode}
-                  type="button"
-                  className={cn(
-                    "rounded-lg px-3 py-2 text-xs font-bold transition",
-                    billing === mode ? "bg-white shadow-sm dark:bg-white/10" : "text-slate-400",
-                  )}
-                  onClick={() => setBilling(mode)}
-                >
-                  {mode === "metered" ? "按量" : "订阅"}
-                </button>
-              ))}
-            </div>
-          </FormField>
-          <FormField label="上游协议">
-            <select
-              className="field text-xs"
-              value={upstreamProtocol}
-              onChange={(event) =>
-                setUpstreamProtocol(event.target.value as GatewayUpstreamProtocol)
-              }
-            >
-              <option value="openai_responses">OpenAI Responses</option>
-              <option value="openai_chat_completions">OpenAI Chat Completions</option>
-            </select>
-          </FormField>
-        </div>
+        <FormField label="计费">
+          <div className="grid grid-cols-2 rounded-xl bg-slate-100 p-1 dark:bg-white/5">
+            {(["metered", "subscription"] as GatewayBillingMode[]).map((mode) => (
+              <button
+                key={mode}
+                type="button"
+                className={cn(
+                  "rounded-lg px-3 py-2 text-xs font-bold transition",
+                  billing === mode ? "bg-white shadow-sm dark:bg-white/10" : "text-slate-400",
+                )}
+                onClick={() => setBilling(mode)}
+              >
+                {mode === "metered" ? "按量" : "订阅"}
+              </button>
+            ))}
+          </div>
+        </FormField>
         <FormField label="兼容 Profile">
           <select
             className="field text-xs"

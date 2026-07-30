@@ -9,11 +9,10 @@ use crate::{
     },
     models::{
         AccountRecord, ApiProviderRecord, ApiProviderSummary, AutoRoutingSettings,
-        ChatCompletionsResponsesStream, CodexClientVersionSetting, CreateApiProviderRequest,
-        ModelListItem, ModelListResponse, PROVIDER_OPENAI_PROXY, ProviderAuthMode,
-        ProviderQuotaCredits, ProviderQuotaResponse, ProviderQuotaSnapshot, ProviderQuotaSummary,
-        ProviderQuotaWindow, ProviderUpstreamProtocol, QuotaSource, QuotaSupportStatus,
-        ResponseStreamFrame, RoutingModelTarget, SelectedRoute, TurnRouteLogUpdate,
+        CodexClientVersionSetting, CreateApiProviderRequest, ModelListItem, ModelListResponse,
+        PROVIDER_OPENAI_PROXY, ProviderAuthMode, ProviderQuotaCredits, ProviderQuotaResponse,
+        ProviderQuotaSnapshot, ProviderQuotaSummary, ProviderQuotaWindow, QuotaSource,
+        QuotaSupportStatus, RoutingModelTarget, SelectedRoute, TurnRouteLogUpdate,
         UpdateAutoRoutingSettingsRequest, UpdateCodexClientVersionRequest,
         UpdateSelectedModelRequest, UpdateSelectedProviderRequest,
         UpdateSelectedReasoningEffortRequest,
@@ -35,7 +34,7 @@ use async_stream::stream;
 use axum::{
     body::{Body, Bytes},
     extract::{Path as AxumPath, Query, State},
-    http::{HeaderMap, HeaderName, HeaderValue, StatusCode},
+    http::{HeaderMap, HeaderName, StatusCode},
     response::{IntoResponse, Json, Response},
 };
 use futures_util::StreamExt;
@@ -294,7 +293,6 @@ pub async fn add_provider(
             "account_id": provider.account_id,
             "upstream_protocol": provider.upstream_protocol,
             "compatibility_profile": provider.compatibility_profile,
-            "uses_chat_completions": provider.uses_chat_completions(),
             "billing_mode": provider.billing_mode,
         }
     })))
@@ -466,9 +464,6 @@ pub(super) async fn responses_inner(
     } else {
         raw_body
     };
-    let requested_model = responses_request_model(&request_json)
-        .unwrap_or_default()
-        .to_string();
 
     let prepared = prepare_responses_upstream(
         ResponsesAdapterProvider {
@@ -477,9 +472,7 @@ pub(super) async fn responses_inner(
             record: routed_provider.record.clone(),
             uses_openai_account: provider_uses_openai_account(&routed_provider),
         },
-        request_json,
         request_body,
-        requested_model,
         request_stream,
     )
     .map_err(adapter_error_to_app_error)?;
@@ -500,122 +493,6 @@ pub(super) async fn responses_inner(
                 prepared.request_body,
             )
             .await?
-        }
-        PreparedResponsesUpstream::ApiChatCompletions(prepared) => {
-            let public_chat = PublicOpenAiRequestBuilder {
-                base_url: prepared.provider.base_url.as_str(),
-                api_key: prepared.provider.api_key.as_str(),
-            };
-            let upstream = state
-                .upstream
-                .openai_send(
-                    &public_chat,
-                    OpenAiEndpoint::ChatCompletions {
-                        body: prepared.request_body,
-                    },
-                )
-                .await
-                .map_err(AppError::upstream_message)?;
-
-            let response_provider_name = prepared.provider_name;
-            let model = prepared.model;
-            let output = stream! {
-                let mut stream = upstream.bytes_stream();
-                let mut chat_sse_buffer = String::new();
-                let mut response_stream =
-                    ChatCompletionsResponsesStream::new(model, now_unix());
-
-                while let Some(result) = stream.next().await {
-                    match result {
-                        Ok(chunk) => {
-                            let chunk_text = String::from_utf8_lossy(&chunk);
-                            let payloads = drain_sse_payloads(&mut chat_sse_buffer, &chunk_text);
-                            for payload in payloads {
-                                match response_stream.push_chat_payload(&payload) {
-                                    Ok(frames) => {
-                                        for frame in frames {
-                                            let event = match encode_response_frame(frame) {
-                                                Ok(event) => event,
-                                                Err(err) => {
-                                                    yield Err(err);
-                                                    return;
-                                                }
-                                            };
-                                            yield Ok::<Bytes, std::io::Error>(Bytes::from(event));
-                                        }
-                                    }
-                                    Err(_) => {
-                                        yield Err(std::io::Error::other("failed to parse chat completions stream"));
-                                        return;
-                                    }
-                                }
-                            }
-                        }
-                        Err(err) => {
-                            yield Err(std::io::Error::other(err));
-                            return;
-                        }
-                    }
-                }
-
-                if !chat_sse_buffer.trim().is_empty() {
-                    let payloads = drain_sse_payloads(&mut chat_sse_buffer, "\n\n");
-                    for payload in payloads {
-                        match response_stream.push_chat_payload(&payload) {
-                            Ok(frames) => {
-                                for frame in frames {
-                                    let event = match encode_response_frame(frame) {
-                                        Ok(event) => event,
-                                        Err(err) => {
-                                            yield Err(err);
-                                            return;
-                                        }
-                                    };
-                                    yield Ok::<Bytes, std::io::Error>(Bytes::from(event));
-                                }
-                            }
-                            Err(_) => {
-                                yield Err(std::io::Error::other("failed to parse chat completions stream"));
-                                return;
-                            }
-                        }
-                    }
-                }
-
-                match response_stream.finish() {
-                    Ok(frames) => {
-                        for frame in frames {
-                            let event = match encode_response_frame(frame) {
-                                Ok(event) => event,
-                                Err(err) => {
-                                    yield Err(err);
-                                    return;
-                                }
-                            };
-                            yield Ok::<Bytes, std::io::Error>(Bytes::from(event));
-                        }
-                    }
-                    Err(_) => {
-                        yield Err(std::io::Error::other("failed to finish chat completions stream"));
-                    }
-                }
-            };
-
-            Response::builder()
-                .status(StatusCode::OK)
-                .header(
-                    "content-type",
-                    HeaderValue::from_static("text/event-stream"),
-                )
-                .header("cache-control", HeaderValue::from_static("no-cache"))
-                .header("connection", HeaderValue::from_static("keep-alive"))
-                .header(
-                    "x-provider",
-                    HeaderValue::from_str(&response_provider_name)
-                        .map_err(|err| AppError::internal(err.to_string()))?,
-                )
-                .body(Body::from_stream(output))
-                .map_err(|err| AppError::internal(err.to_string()))?
         }
         PreparedResponsesUpstream::ApiResponsesPassthrough(prepared) => {
             let public_responses = PublicOpenAiRequestBuilder {
@@ -1033,24 +910,6 @@ async fn invoke_routing_classifier(
         base_url: record.base_url.as_str(),
         api_key: record.api_key.as_str(),
     };
-
-    if record.upstream_protocol == ProviderUpstreamProtocol::OpenAiChatCompletions {
-        let body = json!({
-            "model": classifier_model,
-            "temperature": 0,
-            "messages": [
-                {"role": "system", "content": classifier_instructions()},
-                {"role": "user", "content": prompt}
-            ]
-        });
-        return state
-            .upstream
-            .openai_send(&public, OpenAiEndpoint::ChatCompletions { body })
-            .await?
-            .json()
-            .await
-            .map_err(|err| format!("parse routing classifier response failed: {err}"));
-    }
 
     let body = json!({
         "model": classifier_model,
@@ -1664,7 +1523,6 @@ async fn provider_summary_for_resolved(
         account_email: None,
         upstream_protocol: record.upstream_protocol.clone(),
         compatibility_profile: record.compatibility_profile.clone(),
-        uses_chat_completions: record.uses_chat_completions(),
         billing_mode: record.billing_mode.clone(),
     };
     hydrate_provider_summary(state, &mut summary).await;
@@ -1800,12 +1658,6 @@ fn sse_payload_from_frame(frame: &str) -> Option<String> {
     (!data_lines.is_empty()).then(|| data_lines.join("\n"))
 }
 
-fn encode_response_frame(frame: ResponseStreamFrame) -> Result<String, std::io::Error> {
-    frame
-        .encode_sse()
-        .map_err(|err| std::io::Error::other(err.to_string()))
-}
-
 #[derive(Debug)]
 pub struct AppError {
     pub(super) status: StatusCode,
@@ -1845,7 +1697,6 @@ impl AppError {
 fn adapter_error_to_app_error(error: ResponsesAdapterError) -> AppError {
     match error {
         ResponsesAdapterError::BadRequest(message) => AppError::bad_request(message),
-        ResponsesAdapterError::Internal(message) => AppError::internal(message),
     }
 }
 
@@ -1868,15 +1719,14 @@ impl IntoResponse for AppError {
 mod tests {
     use super::CodexAuthFile;
     use super::{
-        ChatCompletionsResponsesStream, ResolvedProvider, apply_gateway_overrides_to_raw_request,
-        classifier_response_preview, classifier_text_from_sse, codex_turn_metadata,
-        drain_sse_payloads, opaque_turn_id, openai_models_response,
+        ResolvedProvider, apply_gateway_overrides_to_raw_request, classifier_response_preview,
+        classifier_text_from_sse, codex_turn_metadata, opaque_turn_id, openai_models_response,
         private_classifier_request_body, provider_uses_openai_account, quota_from_openai_usage,
         turn_context_from_request,
     };
     use crate::models::{
         ApiProviderBillingMode, ApiProviderRecord, ProviderAuthMode, ProviderCompatibilityProfile,
-        ProviderUpstreamProtocol, ResponseStreamFrame,
+        ProviderUpstreamProtocol,
     };
     use serde_json::json;
 
@@ -1977,13 +1827,6 @@ mod tests {
         let tokens = auth.tokens.expect("tokens should be present");
         assert_eq!(tokens.id_token.as_deref(), Some("id-token"));
         assert_eq!(tokens.account_id.as_deref(), Some("account-id"));
-    }
-
-    fn encode_frames(frames: Vec<ResponseStreamFrame>) -> String {
-        frames
-            .into_iter()
-            .map(|frame| frame.encode_sse().expect("frame should encode"))
-            .collect::<String>()
     }
 
     #[test]
@@ -2092,30 +1935,6 @@ mod tests {
     }
 
     #[test]
-    fn streams_split_chat_completion_sse_as_responses_delta() {
-        let mut buffer = String::new();
-        let frame = concat!(
-            "data: {\"id\":\"chatcmpl_1\",\"created\":1700000000,\"model\":\"chat-model\",",
-            "\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"hi\"},",
-            "\"finish_reason\":null}]}\n\n"
-        );
-        let split_at = frame.find("\"content\"").expect("split marker exists");
-
-        assert!(drain_sse_payloads(&mut buffer, &frame[..split_at]).is_empty());
-        let payloads = drain_sse_payloads(&mut buffer, &frame[split_at..]);
-        assert_eq!(payloads.len(), 1);
-
-        let mut stream = ChatCompletionsResponsesStream::new("requested-model".to_string(), 1);
-        let events = stream
-            .push_chat_payload(&payloads[0])
-            .expect("payload should convert");
-        let joined = encode_frames(events);
-
-        assert!(joined.contains("\"type\":\"response.output_text.delta\""));
-        assert!(joined.contains("\"delta\":\"hi\""));
-    }
-
-    #[test]
     fn collects_classifier_text_from_responses_sse() {
         let body = concat!(
             "event: response.output_text.delta\n",
@@ -2162,26 +1981,6 @@ mod tests {
         assert_eq!(body["input"][0]["role"], "user");
         assert_eq!(body["input"][0]["content"][0]["type"], "input_text");
         assert_eq!(body["input"][0]["content"][0]["text"], "classify");
-    }
-
-    #[test]
-    fn finishes_chat_completion_sse_with_completed_response() {
-        let mut stream = ChatCompletionsResponsesStream::new("requested-model".to_string(), 1);
-        stream
-            .push_chat_payload(concat!(
-                "{\"id\":\"chatcmpl_1\",\"created\":1700000000,\"model\":\"chat-model\",",
-                "\"choices\":[{\"index\":0,\"delta\":{\"content\":\"done\"}}],",
-                "\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2,\"total_tokens\":5}}"
-            ))
-            .expect("payload should convert");
-
-        let events = stream.finish().expect("stream should finish");
-        let joined = encode_frames(events);
-
-        assert!(joined.contains("\"type\":\"response.completed\""));
-        assert!(joined.contains("\"text\":\"done\""));
-        assert!(joined.contains("\"input_tokens\":3"));
-        assert!(joined.ends_with("data: [DONE]\n\n"));
     }
 
     #[test]

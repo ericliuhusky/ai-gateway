@@ -174,14 +174,10 @@ AI_GATEWAY_WEB_DIR=/path/to/web
 
 Web 页面与它所在的远程 Server 同源通信，不需要单独配置 Server URL。页面中的“Codex 接入”会根据当前 Server 地址生成一次性接入和恢复命令。
 
-API Key 供应商使用显式的上游协议和兼容 Profile：
+API Key 供应商上游统一使用 OpenAI Responses 接口，并可选择兼容 Profile：
 
-- `openai_responses`：上游原生支持 Responses。
-- `openai_chat_completions`：网关负责 Responses 与 Chat Completions 的双向转换。
 - `official_openai`：保持 Responses 请求 Body 原样。
 - `generic_openai`：应用通用兼容清理规则。
-
-适配架构和后续拆分计划见 `docs/adapter-architecture.md`。
 
 ## Token 导入
 

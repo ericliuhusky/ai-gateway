@@ -480,7 +480,7 @@ impl SqliteStore {
                 api_key TEXT,
                 account_id TEXT,
                 upstream_protocol TEXT NOT NULL CHECK (
-                    upstream_protocol IN ('openai_responses', 'openai_chat_completions')
+                    upstream_protocol = 'openai_responses'
                 ),
                 compatibility_profile TEXT NOT NULL CHECK (
                     compatibility_profile IN ('official_openai', 'generic_openai', 'openai_codex')
@@ -703,7 +703,6 @@ fn provider_auth_mode_from_str(
 fn upstream_protocol_to_str(value: &ProviderUpstreamProtocol) -> &'static str {
     match value {
         ProviderUpstreamProtocol::OpenAiResponses => "openai_responses",
-        ProviderUpstreamProtocol::OpenAiChatCompletions => "openai_chat_completions",
     }
 }
 
@@ -712,7 +711,6 @@ fn upstream_protocol_from_str(
 ) -> Result<ProviderUpstreamProtocol, Box<dyn std::error::Error + Send + Sync>> {
     match value {
         "openai_responses" => Ok(ProviderUpstreamProtocol::OpenAiResponses),
-        "openai_chat_completions" => Ok(ProviderUpstreamProtocol::OpenAiChatCompletions),
         other => Err(format!("unknown upstream_protocol: {other}").into()),
     }
 }
