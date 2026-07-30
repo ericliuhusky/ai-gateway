@@ -2,7 +2,6 @@ import type {
   CodexAuthPayload,
   AutoRoutingSettings,
   CodexClientVersionSetting,
-  GatewayBillingMode,
   GatewayCompatibilityProfile,
   GatewayModel,
   GatewayProvider,
@@ -145,7 +144,6 @@ export const gatewayApi = {
     name: string;
     base_url: string;
     api_key: string;
-    billing_mode: GatewayBillingMode;
     compatibility_profile: GatewayCompatibilityProfile;
   }) {
     return request("/providers", { method: "POST", body: JSON.stringify(input) });

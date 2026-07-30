@@ -293,7 +293,6 @@ pub async fn add_provider(
             "account_id": provider.account_id,
             "upstream_protocol": provider.upstream_protocol,
             "compatibility_profile": provider.compatibility_profile,
-            "billing_mode": provider.billing_mode,
         }
     })))
 }
@@ -1523,7 +1522,6 @@ async fn provider_summary_for_resolved(
         account_email: None,
         upstream_protocol: record.upstream_protocol.clone(),
         compatibility_profile: record.compatibility_profile.clone(),
-        billing_mode: record.billing_mode.clone(),
     };
     hydrate_provider_summary(state, &mut summary).await;
     Ok(summary)
@@ -1725,8 +1723,7 @@ mod tests {
         turn_context_from_request,
     };
     use crate::models::{
-        ApiProviderBillingMode, ApiProviderRecord, ProviderAuthMode, ProviderCompatibilityProfile,
-        ProviderUpstreamProtocol,
+        ApiProviderRecord, ProviderAuthMode, ProviderCompatibilityProfile, ProviderUpstreamProtocol,
     };
     use serde_json::json;
 
@@ -1998,7 +1995,6 @@ mod tests {
                 account_id: Some("account-123".to_string()),
                 upstream_protocol: ProviderUpstreamProtocol::OpenAiResponses,
                 compatibility_profile: ProviderCompatibilityProfile::OpenAiCodex,
-                billing_mode: ApiProviderBillingMode::Subscription,
             }),
         };
 

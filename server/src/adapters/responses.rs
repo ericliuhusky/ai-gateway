@@ -78,8 +78,7 @@ pub fn prepare_responses_upstream(
 mod tests {
     use super::{PreparedResponsesUpstream, ResponsesAdapterProvider, prepare_responses_upstream};
     use crate::models::{
-        ApiProviderBillingMode, ApiProviderRecord, ProviderAuthMode, ProviderCompatibilityProfile,
-        ProviderUpstreamProtocol,
+        ApiProviderRecord, ProviderAuthMode, ProviderCompatibilityProfile, ProviderUpstreamProtocol,
     };
     use serde_json::json;
 
@@ -96,7 +95,6 @@ mod tests {
             account_id: None,
             upstream_protocol: ProviderUpstreamProtocol::OpenAiResponses,
             compatibility_profile,
-            billing_mode: ApiProviderBillingMode::Metered,
         }
     }
 

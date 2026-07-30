@@ -1,8 +1,8 @@
 use crate::{
     config::Config,
     models::{
-        ApiProviderBillingMode, ApiProviderRecord, ApiProviderSummary, CreateApiProviderRequest,
-        ProviderAuthMode, ProviderCompatibilityProfile, ProviderUpstreamProtocol,
+        ApiProviderRecord, ApiProviderSummary, CreateApiProviderRequest, ProviderAuthMode,
+        ProviderCompatibilityProfile, ProviderUpstreamProtocol,
     },
     store::sqlite::SqliteStore,
 };
@@ -46,7 +46,6 @@ impl ProviderStore {
                 account_email: None,
                 upstream_protocol: provider.upstream_protocol.clone(),
                 compatibility_profile: provider.compatibility_profile.clone(),
-                billing_mode: provider.billing_mode.clone(),
             })
             .collect()
     }
@@ -92,9 +91,6 @@ impl ProviderStore {
             account_id: None,
             upstream_protocol: ProviderUpstreamProtocol::OpenAiResponses,
             compatibility_profile,
-            billing_mode: request
-                .billing_mode
-                .unwrap_or(ApiProviderBillingMode::Metered),
         };
         providers.push(provider.clone());
 
@@ -126,7 +122,6 @@ impl ProviderStore {
             account_id: Some(account_id.to_string()),
             upstream_protocol: ProviderUpstreamProtocol::OpenAiResponses,
             compatibility_profile: ProviderCompatibilityProfile::OpenAiCodex,
-            billing_mode: ApiProviderBillingMode::Subscription,
         };
         providers.push(provider.clone());
 
@@ -167,8 +162,8 @@ mod tests {
     use super::ProviderStore;
     use crate::{
         models::{
-            AccountRecord, AccountType, ApiProviderBillingMode, CreateApiProviderRequest,
-            PROVIDER_OPENAI_PROXY, ProviderCompatibilityProfile, ProviderUpstreamProtocol,
+            AccountRecord, AccountType, CreateApiProviderRequest, PROVIDER_OPENAI_PROXY,
+            ProviderCompatibilityProfile, ProviderUpstreamProtocol,
         },
         store::sqlite::SqliteStore,
     };
@@ -215,8 +210,6 @@ mod tests {
         assert_eq!(second.name, PROVIDER_OPENAI_PROXY);
         assert_eq!(first.account_id.as_deref(), Some("account_1"));
         assert_eq!(second.account_id.as_deref(), Some("account_2"));
-        assert_eq!(first.billing_mode, ApiProviderBillingMode::Subscription);
-        assert_eq!(second.billing_mode, ApiProviderBillingMode::Subscription);
         assert_eq!(
             first.compatibility_profile,
             ProviderCompatibilityProfile::OpenAiCodex
@@ -251,7 +244,6 @@ mod tests {
                 base_url: Some("https://api.openai.com/v1".to_string()),
                 api_key: Some("sk-test".to_string()),
                 compatibility_profile: None,
-                billing_mode: None,
             })
             .await
             .expect("create legacy provider");

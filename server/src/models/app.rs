@@ -3,19 +3,6 @@ use serde_json::Value;
 
 pub const PROVIDER_OPENAI_PROXY: &str = "openai-proxy";
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum ApiProviderBillingMode {
-    Metered,
-    Subscription,
-}
-
-impl Default for ApiProviderBillingMode {
-    fn default() -> Self {
-        Self::Metered
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderAuthMode {
@@ -59,8 +46,6 @@ pub struct CreateApiProviderRequest {
     pub api_key: Option<String>,
     #[serde(default)]
     pub compatibility_profile: Option<ProviderCompatibilityProfile>,
-    #[serde(default)]
-    pub billing_mode: Option<ApiProviderBillingMode>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,8 +64,6 @@ pub struct ApiProviderRecord {
     pub upstream_protocol: ProviderUpstreamProtocol,
     #[serde(default)]
     pub compatibility_profile: ProviderCompatibilityProfile,
-    #[serde(default)]
-    pub billing_mode: ApiProviderBillingMode,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -95,7 +78,6 @@ pub struct ApiProviderSummary {
     pub account_email: Option<String>,
     pub upstream_protocol: ProviderUpstreamProtocol,
     pub compatibility_profile: ProviderCompatibilityProfile,
-    pub billing_mode: ApiProviderBillingMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]

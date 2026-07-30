@@ -2,10 +2,9 @@ use crate::{
     config::Config,
     crypto::FieldEncryptor,
     models::{
-        AccountRecord, AccountType, ApiProviderBillingMode, ApiProviderRecord, AutoRoutingSettings,
-        CachedProviderModels, ProviderAuthMode, ProviderCompatibilityProfile,
-        ProviderUpstreamProtocol, RoutingModelTarget, SelectedRoute, TurnRouteLog,
-        TurnRouteLogUpdate,
+        AccountRecord, AccountType, ApiProviderRecord, AutoRoutingSettings, CachedProviderModels,
+        ProviderAuthMode, ProviderCompatibilityProfile, ProviderUpstreamProtocol,
+        RoutingModelTarget, SelectedRoute, TurnRouteLog, TurnRouteLogUpdate,
     },
 };
 use rusqlite::{Connection, OptionalExtension, params};
@@ -91,7 +90,7 @@ impl SqliteStore {
         let mut stmt = conn
             .prepare(
                 "SELECT id, name, auth_mode, COALESCE(base_url, ''), COALESCE(api_key, ''), account_id,
-                        upstream_protocol, compatibility_profile, billing_mode
+                        upstream_protocol, compatibility_profile
                  FROM providers
                  ORDER BY rowid ASC",
             )
@@ -122,8 +121,6 @@ impl SqliteStore {
                         &row.get::<_, String>(7)?,
                     )
                     .map_err(rusqlite::Error::ToSqlConversionFailure)?,
-                    billing_mode: billing_mode_from_str(&row.get::<_, String>(8)?)
-                        .map_err(rusqlite::Error::ToSqlConversionFailure)?,
                 })
             })
             .map_err(|err| format!("query providers failed: {err}"))?;
@@ -485,7 +482,6 @@ impl SqliteStore {
                 compatibility_profile TEXT NOT NULL CHECK (
                     compatibility_profile IN ('official_openai', 'generic_openai', 'openai_codex')
                 ),
-                billing_mode TEXT NOT NULL CHECK (billing_mode IN ('metered', 'subscription')),
                 preferred_model TEXT,
                 preferred_reasoning_effort TEXT,
                 CHECK (
@@ -641,8 +637,8 @@ fn upsert_provider_record(
     conn.execute(
         "INSERT INTO providers (
             id, name, auth_mode, base_url, api_key, account_id,
-            upstream_protocol, compatibility_profile, billing_mode
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            upstream_protocol, compatibility_profile
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
          ON CONFLICT(id) DO UPDATE SET
             name = excluded.name,
             auth_mode = excluded.auth_mode,
@@ -650,8 +646,7 @@ fn upsert_provider_record(
             api_key = excluded.api_key,
             account_id = excluded.account_id,
             upstream_protocol = excluded.upstream_protocol,
-            compatibility_profile = excluded.compatibility_profile,
-            billing_mode = excluded.billing_mode",
+            compatibility_profile = excluded.compatibility_profile",
         params![
             provider.id,
             provider.name,
@@ -660,8 +655,7 @@ fn upsert_provider_record(
             api_key,
             provider.account_id.as_deref(),
             upstream_protocol_to_str(&provider.upstream_protocol),
-            compatibility_profile_to_str(&provider.compatibility_profile),
-            billing_mode_to_str(&provider.billing_mode)
+            compatibility_profile_to_str(&provider.compatibility_profile)
         ],
     )
     .map_err(|err| format!("upsert provider failed: {err}"))?;
@@ -734,23 +728,6 @@ fn compatibility_profile_from_str(
     }
 }
 
-fn billing_mode_to_str(value: &ApiProviderBillingMode) -> &'static str {
-    match value {
-        ApiProviderBillingMode::Metered => "metered",
-        ApiProviderBillingMode::Subscription => "subscription",
-    }
-}
-
-fn billing_mode_from_str(
-    value: &str,
-) -> Result<ApiProviderBillingMode, Box<dyn std::error::Error + Send + Sync>> {
-    match value {
-        "metered" => Ok(ApiProviderBillingMode::Metered),
-        "subscription" => Ok(ApiProviderBillingMode::Subscription),
-        other => Err(format!("unknown billing_mode: {other}").into()),
-    }
-}
-
 fn decrypt_conversion_error(error: String) -> rusqlite::Error {
     rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::other(error)))
 }
@@ -759,9 +736,8 @@ fn decrypt_conversion_error(error: String) -> rusqlite::Error {
 mod tests {
     use super::SqliteStore;
     use crate::models::{
-        AccountRecord, AccountType, ApiProviderBillingMode, ApiProviderRecord,
-        CachedProviderModels, ProviderAuthMode, ProviderCompatibilityProfile,
-        ProviderUpstreamProtocol, SelectedRoute,
+        AccountRecord, AccountType, ApiProviderRecord, CachedProviderModels, ProviderAuthMode,
+        ProviderCompatibilityProfile, ProviderUpstreamProtocol, SelectedRoute,
     };
     use rusqlite::Connection;
     use std::{
@@ -834,7 +810,6 @@ mod tests {
             account_id: Some(account.id.clone()),
             upstream_protocol: ProviderUpstreamProtocol::OpenAiResponses,
             compatibility_profile: ProviderCompatibilityProfile::OpenAiCodex,
-            billing_mode: ApiProviderBillingMode::Subscription,
         };
         store.upsert_provider(&provider).expect("save provider");
 
@@ -914,7 +889,6 @@ mod tests {
             account_id: None,
             upstream_protocol: ProviderUpstreamProtocol::OpenAiResponses,
             compatibility_profile: ProviderCompatibilityProfile::GenericOpenAi,
-            billing_mode: ApiProviderBillingMode::Metered,
         }
     }
 

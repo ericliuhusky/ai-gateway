@@ -75,8 +75,8 @@ mod tests {
     use super::RouteStore;
     use crate::{
         models::{
-            ApiProviderBillingMode, ApiProviderRecord, ProviderAuthMode,
-            ProviderCompatibilityProfile, ProviderUpstreamProtocol, SelectedRoute,
+            ApiProviderRecord, ProviderAuthMode, ProviderCompatibilityProfile,
+            ProviderUpstreamProtocol, SelectedRoute,
         },
         store::sqlite::SqliteStore,
     };
@@ -159,7 +159,6 @@ mod tests {
             account_id: None,
             upstream_protocol: ProviderUpstreamProtocol::OpenAiResponses,
             compatibility_profile: ProviderCompatibilityProfile::GenericOpenAi,
-            billing_mode: ApiProviderBillingMode::Metered,
         }
     }
 
