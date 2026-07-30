@@ -16,6 +16,7 @@ use crate::{
         ResponseStreamFrame, RoutingModelTarget, SelectedRoute, TurnRouteLogUpdate,
         UpdateAutoRoutingSettingsRequest, UpdateCodexClientVersionRequest,
         UpdateSelectedModelRequest, UpdateSelectedProviderRequest,
+        UpdateSelectedReasoningEffortRequest,
     },
     openai_tokens::OpenAiTokenService,
     routing::{
@@ -391,6 +392,41 @@ pub async fn clear_selected_model(State(state): State<AppState>) -> Result<Json<
     Ok(Json(json!({ "selected_model": route_payload(route) })))
 }
 
+pub async fn get_selected_reasoning_effort(State(state): State<AppState>) -> Json<Value> {
+    Json(json!({
+        "selected_reasoning_effort": route_payload(state.routes.get().await)
+    }))
+}
+
+pub async fn set_selected_reasoning_effort(
+    State(state): State<AppState>,
+    Json(request): Json<UpdateSelectedReasoningEffortRequest>,
+) -> Result<Json<Value>, AppError> {
+    resolve_selected_provider(&state).await?;
+    let effort = normalize_selected_reasoning_effort(request.effort)?;
+    let route = state
+        .routes
+        .set_reasoning_effort(Some(effort))
+        .await
+        .map_err(AppError::bad_request)?;
+    Ok(Json(json!({
+        "selected_reasoning_effort": route_payload(route)
+    })))
+}
+
+pub async fn clear_selected_reasoning_effort(
+    State(state): State<AppState>,
+) -> Result<Json<Value>, AppError> {
+    let route = state
+        .routes
+        .set_reasoning_effort(None)
+        .await
+        .map_err(AppError::bad_request)?;
+    Ok(Json(json!({
+        "selected_reasoning_effort": route_payload(route)
+    })))
+}
+
 pub async fn responses(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -414,12 +450,18 @@ pub(super) async fn responses_inner(
     let requested_model = responses_request_model(&request_json)
         .unwrap_or_default()
         .to_string();
-    let turn = turn_context_from_request(&request_json, turn_metadata.as_ref());
+    let mut turn = turn_context_from_request(&request_json, turn_metadata.as_ref());
     let routing = choose_model_for_request(&state, &provider, &turn, &request_json).await?;
     let routed_provider = resolve_routing_provider(&state, &provider, &routing).await?;
+    let selected_reasoning_effort = state.routes.get().await.selected_reasoning_effort;
+    let request_overridden = apply_gateway_overrides_to_raw_request(
+        &routing,
+        selected_reasoning_effort.as_deref(),
+        &mut request_json,
+    );
+    turn.reasoning_effort = reasoning_effort_from_request(&request_json);
     record_turn_route(&state, &routed_provider, &turn, &routing, &requested_model);
-    let model_overridden = apply_routing_model_to_raw_request(&routing, &mut request_json);
-    let request_body = if model_overridden {
+    let request_body = if request_overridden {
         request_json.to_string()
     } else {
         raw_body
@@ -663,6 +705,7 @@ fn route_payload(route: SelectedRoute) -> Value {
     json!({
         "provider_id": route.provider_id,
         "selected_model": route.selected_model,
+        "selected_reasoning_effort": route.selected_reasoning_effort,
         "updated_at": route.updated_at,
     })
 }
@@ -678,15 +721,33 @@ fn responses_request_stream(request: &Value) -> bool {
         .unwrap_or(false)
 }
 
-fn apply_routing_model_to_raw_request(routing: &RoutingDecision, request: &mut Value) -> bool {
-    let Some(target) = routing.target.as_ref() else {
-        return false;
-    };
+fn apply_gateway_overrides_to_raw_request(
+    routing: &RoutingDecision,
+    selected_reasoning_effort: Option<&str>,
+    request: &mut Value,
+) -> bool {
     let Some(object) = request.as_object_mut() else {
         return false;
     };
-    object.insert("model".to_string(), Value::String(target.model.clone()));
-    true
+    let mut overridden = false;
+    if let Some(target) = routing.target.as_ref() {
+        object.insert("model".to_string(), Value::String(target.model.clone()));
+        overridden = true;
+    }
+    if let Some(effort) = selected_reasoning_effort {
+        let reasoning = object
+            .entry("reasoning".to_string())
+            .or_insert_with(|| json!({}));
+        if !reasoning.is_object() {
+            *reasoning = json!({});
+        }
+        reasoning
+            .as_object_mut()
+            .expect("reasoning object was just initialized")
+            .insert("effort".to_string(), Value::String(effort.to_string()));
+        overridden = true;
+    }
+    overridden
 }
 
 async fn resolve_routing_provider(
@@ -843,11 +904,7 @@ fn turn_context_from_request(
     let id = raw_turn_id
         .map(opaque_turn_id)
         .unwrap_or_else(|| format!("turn_{}", Uuid::new_v4().simple()));
-    let reasoning_effort = request
-        .pointer("/reasoning/effort")
-        .and_then(Value::as_str)
-        .filter(|effort| matches!(*effort, "minimal" | "low" | "medium" | "high" | "xhigh"))
-        .map(str::to_string);
+    let reasoning_effort = reasoning_effort_from_request(request);
 
     TurnContext {
         id,
@@ -855,6 +912,14 @@ fn turn_context_from_request(
         reasoning_effort,
         user_input_preview: user_input_preview(request, 160),
     }
+}
+
+fn reasoning_effort_from_request(request: &Value) -> Option<String> {
+    request
+        .pointer("/reasoning/effort")
+        .and_then(Value::as_str)
+        .filter(|effort| matches!(*effort, "minimal" | "low" | "medium" | "high" | "xhigh"))
+        .map(str::to_string)
 }
 
 fn opaque_turn_id(raw_turn_id: &str) -> String {
@@ -913,11 +978,10 @@ fn safe_model_name(model: &str) -> Option<String> {
 
 fn routing_tier_from_log(tier: Option<&str>) -> Option<crate::routing::RoutingTier> {
     match tier {
-        // Preserve turn stickiness for rows written before the four-tier migration.
-        Some("cheap") | Some("light") => Some(crate::routing::RoutingTier::Light),
+        Some("light") => Some(crate::routing::RoutingTier::Light),
         Some("standard") => Some(crate::routing::RoutingTier::Standard),
         Some("pro") => Some(crate::routing::RoutingTier::Pro),
-        Some("strong") | Some("max") => Some(crate::routing::RoutingTier::Max),
+        Some("max") => Some(crate::routing::RoutingTier::Max),
         _ => None,
     }
 }
@@ -1362,6 +1426,16 @@ fn normalize_selected_model(model: String) -> Result<String, AppError> {
     Ok(trimmed.to_string())
 }
 
+fn normalize_selected_reasoning_effort(effort: String) -> Result<String, AppError> {
+    let effort = effort.trim();
+    if matches!(effort, "low" | "medium" | "high" | "xhigh") {
+        return Ok(effort.to_string());
+    }
+    Err(AppError::bad_request(
+        "reasoning effort must be one of: low, medium, high, xhigh",
+    ))
+}
+
 fn native_models_response(_provider: &str, raw: &Value) -> Result<ModelListResponse, AppError> {
     let entries: Vec<&Value> = if let Some(data) = raw.get("data").and_then(Value::as_array) {
         data.iter().collect()
@@ -1794,10 +1868,11 @@ impl IntoResponse for AppError {
 mod tests {
     use super::CodexAuthFile;
     use super::{
-        ChatCompletionsResponsesStream, ResolvedProvider, classifier_response_preview,
-        classifier_text_from_sse, codex_turn_metadata, drain_sse_payloads, opaque_turn_id,
-        openai_models_response, private_classifier_request_body, provider_uses_openai_account,
-        quota_from_openai_usage, turn_context_from_request,
+        ChatCompletionsResponsesStream, ResolvedProvider, apply_gateway_overrides_to_raw_request,
+        classifier_response_preview, classifier_text_from_sse, codex_turn_metadata,
+        drain_sse_payloads, opaque_turn_id, openai_models_response,
+        private_classifier_request_body, provider_uses_openai_account, quota_from_openai_usage,
+        turn_context_from_request,
     };
     use crate::models::{
         ApiProviderBillingMode, ApiProviderRecord, ProviderAuthMode, ProviderCompatibilityProfile,
@@ -1840,6 +1915,31 @@ mod tests {
             "0.147.0-beta.1"
         );
         assert!(super::normalize_codex_client_version("0.147.0 ?".to_string()).is_err());
+    }
+
+    #[test]
+    fn reasoning_effort_override_preserves_other_reasoning_options() {
+        let mut request = json!({
+            "model": "gpt-5.4",
+            "reasoning": { "effort": "low", "summary": "auto" }
+        });
+
+        assert!(apply_gateway_overrides_to_raw_request(
+            &super::RoutingDecision::disabled(),
+            Some("high"),
+            &mut request,
+        ));
+        assert_eq!(request["reasoning"]["effort"], "high");
+        assert_eq!(request["reasoning"]["summary"], "auto");
+    }
+
+    #[test]
+    fn validates_selected_reasoning_effort() {
+        assert_eq!(
+            super::normalize_selected_reasoning_effort(" xhigh ".to_string()).unwrap(),
+            "xhigh"
+        );
+        assert!(super::normalize_selected_reasoning_effort("minimal".to_string()).is_err());
     }
 
     #[test]

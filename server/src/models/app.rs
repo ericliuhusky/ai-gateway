@@ -127,6 +127,8 @@ pub struct SelectedRoute {
     #[serde(default)]
     pub selected_model: Option<String>,
     #[serde(default)]
+    pub selected_reasoning_effort: Option<String>,
+    #[serde(default)]
     pub updated_at: i64,
 }
 
@@ -139,6 +141,11 @@ pub struct UpdateSelectedProviderRequest {
 #[derive(Debug, Clone, Deserialize)]
 pub struct UpdateSelectedModelRequest {
     pub model: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpdateSelectedReasoningEffortRequest {
+    pub effort: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

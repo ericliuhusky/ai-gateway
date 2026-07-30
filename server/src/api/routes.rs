@@ -1,8 +1,10 @@
 use crate::api::handlers::{
-    add_provider, clear_codex_client_version, clear_selected_model, delete_provider,
-    get_auto_routing_settings, get_codex_client_version, get_provider_quota, get_route,
-    get_selected_model, healthz, import_openai_token, list_models, list_providers, list_turn_logs,
-    responses, set_auto_routing_settings, set_codex_client_version, set_route, set_selected_model,
+    add_provider, clear_codex_client_version, clear_selected_model,
+    clear_selected_reasoning_effort, delete_provider, get_auto_routing_settings,
+    get_codex_client_version, get_provider_quota, get_route, get_selected_model,
+    get_selected_reasoning_effort, healthz, import_openai_token, list_models, list_providers,
+    list_turn_logs, responses, set_auto_routing_settings, set_codex_client_version, set_route,
+    set_selected_model, set_selected_reasoning_effort,
 };
 use crate::codex_scripts;
 use axum::{
@@ -44,6 +46,12 @@ pub fn build_router(state: AppState, web_dir: PathBuf) -> Router {
             get(get_selected_model)
                 .put(set_selected_model)
                 .delete(clear_selected_model),
+        )
+        .route(
+            "/selected-reasoning-effort",
+            get(get_selected_reasoning_effort)
+                .put(set_selected_reasoning_effort)
+                .delete(clear_selected_reasoning_effort),
         )
         .route("/openai/v1/models", get(list_models))
         .route("/openai/v1/responses", post(responses))

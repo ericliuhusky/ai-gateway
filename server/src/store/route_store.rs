@@ -35,6 +35,12 @@ impl RouteStore {
             Some(provider_id) => self.sqlite.load_provider_preferred_model(provider_id)?,
             None => None,
         };
+        route.selected_reasoning_effort = match provider_id.as_deref() {
+            Some(provider_id) => self
+                .sqlite
+                .load_provider_preferred_reasoning_effort(provider_id)?,
+            None => None,
+        };
         route.provider_id = provider_id;
         route.updated_at = now_unix() as i64;
         self.sqlite.upsert_route(&route)?;
@@ -45,6 +51,18 @@ impl RouteStore {
     pub async fn set_model(&self, selected_model: Option<String>) -> Result<SelectedRoute, String> {
         let mut route = self.route.lock().await.clone();
         route.selected_model = selected_model;
+        route.updated_at = now_unix() as i64;
+        self.sqlite.upsert_route(&route)?;
+        *self.route.lock().await = route.clone();
+        Ok(route)
+    }
+
+    pub async fn set_reasoning_effort(
+        &self,
+        selected_reasoning_effort: Option<String>,
+    ) -> Result<SelectedRoute, String> {
+        let mut route = self.route.lock().await.clone();
+        route.selected_reasoning_effort = selected_reasoning_effort;
         route.updated_at = now_unix() as i64;
         self.sqlite.upsert_route(&route)?;
         *self.route.lock().await = route.clone();
@@ -93,12 +111,18 @@ mod tests {
             .await
             .expect("select model e for provider a");
         assert_eq!(route.selected_model.as_deref(), Some("model_e"));
+        let route = store
+            .set_reasoning_effort(Some("high".to_string()))
+            .await
+            .expect("select high effort for provider a");
+        assert_eq!(route.selected_reasoning_effort.as_deref(), Some("high"));
 
         let route = store
             .set_provider(Some("provider_b".to_string()))
             .await
             .expect("select provider b");
         assert_eq!(route.selected_model, None);
+        assert_eq!(route.selected_reasoning_effort, None);
 
         let route = store
             .set_model(Some("model_f".to_string()))
@@ -111,6 +135,7 @@ mod tests {
             .await
             .expect("switch back to provider a");
         assert_eq!(route.selected_model.as_deref(), Some("model_e"));
+        assert_eq!(route.selected_reasoning_effort.as_deref(), Some("high"));
 
         let route = store
             .set_provider(Some("provider_b".to_string()))

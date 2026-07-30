@@ -8,6 +8,7 @@ import type {
   GatewayProvider,
   GatewayUpstreamProtocol,
   ProviderQuotaSummary,
+  ReasoningEffort,
   SelectedProvider,
   TurnRouteLog,
 } from "./types";
@@ -120,6 +121,25 @@ export const gatewayApi = {
       method: "DELETE",
     });
     return payload.selected_model;
+  },
+
+  async selectReasoningEffort(effort: ReasoningEffort) {
+    const payload = await request<{ selected_reasoning_effort: SelectedProvider }>(
+      "/selected-reasoning-effort",
+      {
+        method: "PUT",
+        body: JSON.stringify({ effort }),
+      },
+    );
+    return payload.selected_reasoning_effort;
+  },
+
+  async clearSelectedReasoningEffort() {
+    const payload = await request<{ selected_reasoning_effort: SelectedProvider }>(
+      "/selected-reasoning-effort",
+      { method: "DELETE" },
+    );
+    return payload.selected_reasoning_effort;
   },
 
   createProvider(input: {

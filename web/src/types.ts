@@ -25,8 +25,11 @@ export interface GatewayProvider {
 export interface SelectedProvider {
   provider_id?: string;
   selected_model?: string;
+  selected_reasoning_effort?: ReasoningEffort;
   updated_at: number;
 }
+
+export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
 
 export interface GatewayModel {
   id: string;

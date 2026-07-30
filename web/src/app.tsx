@@ -32,6 +32,7 @@ import type {
   GatewayProvider,
   ProviderQuotaSummary,
   ProviderQuotaWindow,
+  ReasoningEffort,
   SelectedProvider,
   TurnRouteLog,
   GatewayCompatibilityProfile,
@@ -190,7 +191,12 @@ export function App() {
 
   async function selectProvider(provider: GatewayProvider) {
     if (provider.id === selected.provider_id || deleting.has(provider.id)) return;
-    setSelected((current) => ({ ...current, provider_id: provider.id, selected_model: undefined }));
+    setSelected((current) => ({
+      ...current,
+      provider_id: provider.id,
+      selected_model: undefined,
+      selected_reasoning_effort: undefined,
+    }));
     setModels([]);
     try {
       const route = await gatewayApi.selectProvider(provider.id);
@@ -213,6 +219,17 @@ export function App() {
       setError(errorMessage(modelError));
     } finally {
       setLoadingModels(false);
+    }
+  }
+
+  async function selectReasoningEffort(effort: string) {
+    try {
+      const route = effort
+        ? await gatewayApi.selectReasoningEffort(effort as ReasoningEffort)
+        : await gatewayApi.clearSelectedReasoningEffort();
+      setSelected(route);
+    } catch (reasoningError) {
+      setError(errorMessage(reasoningError));
     }
   }
 
@@ -339,6 +356,27 @@ export function App() {
             >
               <RefreshCw className={cn("size-4", loadingModels && "animate-spin")} />
             </Button>
+          </div>
+
+          <div className="hidden h-8 w-px bg-slate-200/70 lg:block dark:bg-white/10" />
+
+          <div className="flex min-w-0 flex-1 items-center gap-3">
+            <span className="eyebrow shrink-0">推理强度</span>
+            <div className="relative min-w-0 flex-1">
+              <select
+                className="field h-9 w-full appearance-none pr-9 text-xs font-semibold"
+                value={selected.selected_reasoning_effort ?? ""}
+                disabled={!selected.provider_id}
+                onChange={(event) => void selectReasoningEffort(event.target.value)}
+              >
+                <option value="">跟随请求</option>
+                <option value="low">低（low）</option>
+                <option value="medium">中（medium）</option>
+                <option value="high">高（high）</option>
+                <option value="xhigh">极高（xhigh）</option>
+              </select>
+              <ChevronDown className="pointer-events-none absolute right-3 top-1/2 size-3.5 -translate-y-1/2 text-slate-400" />
+            </div>
           </div>
         </section>
 
