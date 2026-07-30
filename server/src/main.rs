@@ -1,5 +1,6 @@
 mod adapters;
 mod api;
+mod auth;
 mod codex_scripts;
 mod config;
 mod crypto;
@@ -12,6 +13,7 @@ mod support;
 mod upstream;
 
 use api::{AppState, build_router};
+use auth::AuthService;
 use config::Config;
 use openai_device_login::OpenAiDeviceLoginService;
 use openai_tokens::OpenAiTokenService;
@@ -23,6 +25,8 @@ use upstream::UpstreamClient;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = Arc::new(Config::from_env()?);
+    let auth = AuthService::new(config.clone())?;
+    auth.initialize()?;
     let accounts = AccountStore::new(config.clone())?;
     accounts.load().await?;
     let providers = ProviderStore::new(config.clone())?;
@@ -38,6 +42,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let state = AppState {
         _client: Client::new(),
         _config: config.clone(),
+        auth,
         openai_tokens,
         openai_device_login,
         accounts,

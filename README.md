@@ -63,12 +63,14 @@ cargo run -p ai-gateway
 | `AI_GATEWAY_BIND_ADDR` | `0.0.0.0:4242` | HTTP 监听地址 |
 | `AI_GATEWAY_DATA_DIR` | `$HOME/.ai-gateway` | SQLite 数据目录 |
 | `AI_GATEWAY_ENCRYPTION_KEY` | 无（必填） | 用于加密数据库凭据的 Base64 编码 32 字节密钥 |
+| `FEISHU_APP_ID` | 无 | 飞书 OAuth 应用 App ID（必填） |
+| `FEISHU_APP_SECRET` | 无 | 飞书 OAuth 应用 App Secret（必填） |
 
 Server 不再读取或修改服务器用户的 `~/.codex`。
 
 Codex 模型接口的客户端版本默认使用代码内置值 `0.146.0`。可在 Web 管理端的“网关设置”中写入数据库覆盖值；恢复默认时会删除数据库覆盖值并重新使用代码内置版本。更新或恢复版本都会自动清理 OpenAI 模型缓存。
 
-当前网关接口还没有客户端鉴权。正式暴露到公网前，应放在带 TLS 和访问控制的反向代理后，或者先完成网关 API Key/多租户改造。
+管理控制台 API 已要求登录；Codex 网关请求接口仍未提供客户端 API Key 鉴权。正式暴露到公网前，应将网关放在带 TLS 和访问控制的反向代理后，或继续完成网关 API Key/多租户改造。
 
 ## 数据库凭据加密
 
@@ -276,3 +278,24 @@ curl -X POST http://127.0.0.1:4242/openai/v1/responses \
     "input": "hello"
   }'
 ```
+
+## 管理控制台账户与登录
+
+管理端使用飞书 OAuth 与同源、HttpOnly Cookie 会话进行访问控制。每一位在飞书完成授权的用户都会自动创建或更新本地账户，并可登录管理控制台；不再存在“首个管理员”或邮箱密码注册流程。飞书身份及会话保存在 `$AI_GATEWAY_DATA_DIR/db.sqlite` 的 `gateway_feishu_identities`、`gateway_sessions` 表中。
+
+启动服务前需要配置飞书应用凭据：
+
+```bash
+export FEISHU_APP_ID='cli_...'
+export FEISHU_APP_SECRET='...'
+```
+
+在飞书应用的 OAuth 重定向 URL 白名单中登记：
+
+```text
+https://gateway.example.com/auth/feishu/callback
+```
+
+网关会根据请求的 `Host` 与 `X-Forwarded-Proto` / `X-Forwarded-Host` 生成回调地址。
+
+以下**管理 API**需要飞书登录：供应商和 OpenAI 账号导入、网关设置、路由设置、实例管理和路由日志。为兼容已部署的 Codex 客户端，请求转发接口、模型查询接口、健康检查和一次性 Codex 脚本仍保持公开；生产环境应继续在反向代理层为这些接口配置 TLS 与客户端访问控制。

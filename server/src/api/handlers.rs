@@ -3,6 +3,7 @@ use crate::{
         PreparedResponsesUpstream, ResponsesAdapterError, ResponsesAdapterProvider,
         prepare_responses_upstream,
     },
+    auth::AuthService,
     config::{Config, DEFAULT_CODEX_CLIENT_VERSION},
     models::openai::responses::{
         CodexUsageCredits, CodexUsageRateLimit, CodexUsageRateLimitWindow, CodexUsageResponse,
@@ -54,6 +55,7 @@ use uuid::Uuid;
 pub struct AppState {
     pub _client: Client,
     pub _config: Arc<Config>,
+    pub auth: AuthService,
     pub openai_tokens: OpenAiTokenService,
     pub openai_device_login: OpenAiDeviceLoginService,
     pub accounts: AccountStore,
@@ -2338,6 +2340,7 @@ mod tests {
     };
     use super::{CodexAuthFile, import_tokens_from_value};
     use crate::{
+        auth::AuthService,
         config::Config,
         models::{
             ApiProviderRecord, ProviderAuthMode, ProviderCompatibilityProfile,
@@ -2387,6 +2390,7 @@ mod tests {
         let state = AppState {
             _client: Client::new(),
             _config: config.clone(),
+            auth: AuthService::new(config.clone()).expect("create auth service"),
             openai_tokens: OpenAiTokenService::new(),
             openai_device_login: OpenAiDeviceLoginService::new(),
             accounts: accounts.clone(),

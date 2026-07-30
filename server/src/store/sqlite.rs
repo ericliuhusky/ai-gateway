@@ -613,6 +613,38 @@ impl SqliteStore {
             .map_err(|err| format!("commit turn route log transaction failed: {err}"))
     }
 
+    pub(crate) fn initialize_user_auth_schema(&self) -> Result<(), String> {
+        let conn = self.connect()?;
+        conn.execute_batch("
+            CREATE TABLE IF NOT EXISTS gateway_users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                email TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                name TEXT NOT NULL,
+                password_hash TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS gateway_sessions (
+                session_id TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES gateway_users(id) ON DELETE CASCADE,
+                expires_at INTEGER NOT NULL,
+                last_seen_at INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS gateway_feishu_identities (
+                user_id INTEGER PRIMARY KEY REFERENCES gateway_users(id) ON DELETE CASCADE,
+                tenant_key TEXT NOT NULL DEFAULT '',
+                open_id TEXT NOT NULL,
+                name TEXT NOT NULL DEFAULT '',
+                avatar_url TEXT NOT NULL DEFAULT '',
+                UNIQUE (tenant_key, open_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_gateway_sessions_user_id ON gateway_sessions(user_id);
+            CREATE INDEX IF NOT EXISTS idx_gateway_sessions_expires_at ON gateway_sessions(expires_at);
+        ").map_err(|err| format!("initialize user auth schema failed: {err}"))
+    }
+
+    pub(crate) fn connect_for_auth(&self) -> Result<Connection, String> {
+        self.connect()
+    }
+
     fn init(&self) -> Result<(), String> {
         let conn = self.connect()?;
         conn.execute_batch(

@@ -17,10 +17,13 @@ import {
   Settings2,
   Trash2,
   UserRound,
+  LogOut,
   X,
 } from "lucide-react";
 
 import { gatewayApi } from "./api";
+import { AuthProvider, useAuth } from "./auth";
+import { LoginPage } from "./login";
 import { Button } from "./components/ui/button";
 import { cn } from "./lib/utils";
 import type {
@@ -122,6 +125,24 @@ function shellQuote(text: string) {
 }
 
 export function App() {
+  return (
+    <AuthProvider>
+      <AuthenticatedApp />
+    </AuthProvider>
+  );
+}
+
+function AuthenticatedApp() {
+  const { loading, user } = useAuth();
+  if (loading) {
+    return <div className="flex min-h-screen items-center justify-center text-sm font-medium text-slate-500">正在验证登录状态…</div>;
+  }
+  return user ? <GatewayDashboard /> : <LoginPage />;
+}
+
+export function GatewayDashboard() {
+  const { user, logout } = useAuth();
+  const currentUser = user!;
   const [providers, setProviders] = React.useState<GatewayProvider[]>([]);
   const [instances, setInstances] = React.useState<InstanceRoutingConfig[]>([]);
   const [defaultAutomaticRouting, setDefaultAutomaticRouting] = React.useState<AutoRoutingSettings>({
@@ -307,6 +328,19 @@ export function App() {
           </div>
           <div className="ml-auto flex items-center gap-2">
             <StatusPill online={serverOnline} />
+            <div className="hidden max-w-44 truncate text-right text-xs font-semibold text-slate-500 sm:block" title={currentUser.name}>
+              {currentUser.name}
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              aria-label="退出登录"
+              title="退出登录"
+              onClick={() => { void logout(); }}
+            >
+              <LogOut className="size-3.5" />
+              <span className="hidden sm:inline">退出</span>
+            </Button>
             <Button
               variant="outline"
               size="sm"

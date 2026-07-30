@@ -16,6 +16,7 @@ import type {
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
+    credentials: "same-origin",
     ...init,
     headers: {
       Accept: "application/json",
@@ -213,4 +214,17 @@ export const gatewayApi = {
       { method: "DELETE" },
     );
   },
+};
+
+
+export type GatewayUser = {
+  id: number;
+  name: string;
+  avatar_url: string;
+};
+
+export const authApi = {
+  status: () => request<{ feishu_login_configured: boolean }>("/auth/status"),
+  me: () => request<{ ok: true; user: GatewayUser }>("/auth/me"),
+  logout: () => request<{ ok: true }>("/auth/logout", { method: "POST" }),
 };

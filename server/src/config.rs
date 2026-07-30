@@ -11,6 +11,8 @@ pub struct Config {
     data_dir: PathBuf,
     web_dir: PathBuf,
     encryption: FieldEncryptor,
+    feishu_app_id: String,
+    feishu_app_secret: String,
 }
 
 impl Config {
@@ -39,6 +41,8 @@ impl Config {
             data_dir,
             web_dir,
             encryption,
+            feishu_app_id: env_string("FEISHU_APP_ID"),
+            feishu_app_secret: env_string("FEISHU_APP_SECRET"),
         })
     }
 
@@ -58,6 +62,14 @@ impl Config {
         self.web_dir.clone()
     }
 
+    pub fn feishu_app_id(&self) -> String {
+        self.feishu_app_id.clone()
+    }
+
+    pub fn feishu_app_secret(&self) -> String {
+        self.feishu_app_secret.clone()
+    }
+
     pub fn encryption(&self) -> FieldEncryptor {
         self.encryption.clone()
     }
@@ -68,10 +80,20 @@ impl Config {
             bind_addr: "127.0.0.1:0".parse().expect("test bind address is valid"),
             web_dir: data_dir.join("web"),
             data_dir,
+            feishu_app_id: String::new(),
+            feishu_app_secret: String::new(),
             encryption: FieldEncryptor::from_base64_key(
                 "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=",
             )
             .expect("hard-coded test key is valid"),
         }
     }
+}
+
+fn env_string(name: &str) -> String {
+    env::var(name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_default()
 }
