@@ -21,7 +21,7 @@ import {
   X,
 } from "lucide-react";
 
-import { gatewayApi } from "./api";
+import { authApi, gatewayApi } from "./api";
 import { AuthProvider, useAuth } from "./auth";
 import { LoginPage } from "./login";
 import { Button } from "./components/ui/button";
@@ -2091,6 +2091,7 @@ function AccessTokenDialog({
 }) {
   const [token, setToken] = React.useState<string | null>(null);
   const [creating, setCreating] = React.useState(false);
+  const [copied, setCopied] = React.useState(false);
 
   async function createToken() {
     setCreating(true);
@@ -2116,7 +2117,21 @@ function AccessTokenDialog({
       {token ? (
         <div className="mt-5">
           <FormField label="新建 API Key">
-            <CopyField value={token} />
+            <div className="flex gap-2">
+              <input className="field min-w-0 flex-1 font-mono text-xs" readOnly value={token} />
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  void copyText(token);
+                  setCopied(true);
+                  window.setTimeout(() => setCopied(false), 1500);
+                }}
+              >
+                {copied ? <Check className="size-4" /> : <Copy className="size-4" />}
+                {copied ? "已复制" : "复制"}
+              </Button>
+            </div>
           </FormField>
         </div>
       ) : null}
