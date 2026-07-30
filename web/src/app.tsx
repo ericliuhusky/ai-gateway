@@ -37,6 +37,7 @@ import type {
   GatewayCompatibilityProfile,
   RoutingModelTarget,
   InstanceRoutingConfig,
+  OpenAiDeviceLoginStart,
 } from "./types";
 
 type Dialog = "api" | "account" | "instances" | "settings" | "setup" | null;
@@ -763,7 +764,7 @@ function ProviderSection(props: {
           <Button variant="outline" size="icon" title="添加 API Key 供应商" onClick={props.onAddApi}>
             <KeyRound className="size-4" />
           </Button>
-          <Button variant="outline" size="icon" title="导入账户 Token" onClick={props.onAddAccount}>
+          <Button variant="outline" size="icon" title="登录 ChatGPT 账户" onClick={props.onAddAccount}>
             <UserRound className="size-4" />
           </Button>
         </div>
@@ -941,7 +942,7 @@ function ProviderCard({
         <div className="min-w-0 flex-1">
           <h3 className="truncate text-lg font-bold tracking-[-0.025em]">
             {provider.auth_mode === "account"
-              ? (provider.account_email ?? "等待 Token 导入")
+              ? (provider.account_email ?? "等待账户登录")
               : provider.name}
           </h3>
           <div className="mt-2 flex flex-wrap gap-1.5">
@@ -1256,8 +1257,12 @@ function AccountDialog({
   onCreated: () => Promise<void>;
   onError: (message: string) => void;
 }) {
+  const [mode, setMode] = React.useState<"login" | "token">("login");
   const [json, setJson] = React.useState("");
   const [submitting, setSubmitting] = React.useState(false);
+  const [deviceLogin, setDeviceLogin] = React.useState<OpenAiDeviceLoginStart | null>(null);
+  const [loginState, setLoginState] = React.useState<"idle" | "starting" | "waiting" | "finalizing" | "failed">("idle");
+  const [loginError, setLoginError] = React.useState<string | null>(null);
   let parsed: CodexAuthPayload | null = null;
   try {
     const candidate = JSON.parse(json) as CodexAuthPayload;
@@ -1279,26 +1284,142 @@ function AccountDialog({
     }
   }
 
+  const startLogin = React.useCallback(async () => {
+    setLoginState("starting");
+    setLoginError(null);
+    try {
+      const login = await gatewayApi.startOpenAiDeviceLogin();
+      setDeviceLogin(login);
+      setLoginState("waiting");
+    } catch (startError) {
+      setLoginState("failed");
+      setLoginError(errorMessage(startError));
+    }
+  }, []);
+
+  React.useEffect(() => {
+    if (mode !== "login" || loginState !== "idle") return;
+    void startLogin();
+  }, [loginState, mode, startLogin]);
+
+  React.useEffect(() => {
+    if (!deviceLogin || (loginState !== "waiting" && loginState !== "finalizing")) return;
+    const timer = window.setInterval(() => {
+      void (async () => {
+        try {
+          const result = await gatewayApi.pollOpenAiDeviceLogin(deviceLogin.login_id);
+          if (result.status === "finalizing") {
+            setLoginState("finalizing");
+            return;
+          }
+          if (result.status === "failed") {
+            setLoginState("failed");
+            setLoginError(result.error ?? "账户登录失败");
+            return;
+          }
+          if (result.status === "completed") {
+            await onCreated();
+          }
+        } catch (pollError) {
+          setLoginState("failed");
+          setLoginError(errorMessage(pollError));
+        }
+      })();
+    }, Math.max(2_000, deviceLogin.interval_seconds * 1_000));
+    return () => window.clearInterval(timer);
+  }, [deviceLogin, loginState, onCreated]);
+
+  React.useEffect(() => () => {
+    if (deviceLogin) {
+      void gatewayApi.cancelOpenAiDeviceLogin(deviceLogin.login_id).catch(() => {});
+    }
+  }, [deviceLogin]);
+
+  React.useEffect(() => {
+    if (mode !== "token" || !deviceLogin) return;
+    void gatewayApi.cancelOpenAiDeviceLogin(deviceLogin.login_id).catch(() => {});
+    setDeviceLogin(null);
+    setLoginState("idle");
+  }, [deviceLogin, mode]);
+
   return (
-    <DialogFrame title="导入账户 Token" description="粘贴 Codex auth.json，导入后会自动生成账户供应商。" onClose={onClose}>
-      <form onSubmit={submit}>
-        <FormField label="OpenAI Codex Token">
-          <textarea
-            className="field min-h-64 resize-y font-mono text-[11px] leading-5"
-            value={json}
-            onChange={(event) => setJson(event.target.value)}
-            placeholder={'{\n  "tokens": {\n    "access_token": "...",\n    "refresh_token": "..."\n  }\n}'}
-            autoFocus
-          />
-        </FormField>
-        <div className={cn("mt-2 flex items-center gap-2 text-[11px]", !json || parsed ? "text-slate-400" : "text-red-500")}>
-          {parsed ? <Check className="size-3.5 text-emerald-500" /> : <CircleAlert className="size-3.5" />}
-          {!json || parsed
-            ? "需要 tokens.access_token 和 tokens.refresh_token。"
-            : "JSON 格式无效，或缺少必要 Token。"}
+    <DialogFrame title="添加 ChatGPT 账户" description="通过 OpenAI 官方设备授权登录；凭据会加密保存在本机。" onClose={onClose}>
+      <div className="mb-5 flex rounded-xl bg-slate-100 p-1 text-xs font-semibold dark:bg-white/[0.06]">
+        <button
+          type="button"
+          className={cn("flex-1 rounded-lg px-3 py-2 transition", mode === "login" ? "bg-white text-slate-900 shadow-sm dark:bg-slate-800 dark:text-white" : "text-slate-500")}
+          onClick={() => setMode("login")}
+        >
+          登录账户
+        </button>
+        <button
+          type="button"
+          className={cn("flex-1 rounded-lg px-3 py-2 transition", mode === "token" ? "bg-white text-slate-900 shadow-sm dark:bg-slate-800 dark:text-white" : "text-slate-500")}
+          onClick={() => setMode("token")}
+        >
+          导入 Token
+        </button>
+      </div>
+
+      {mode === "login" ? (
+        <div className="space-y-4">
+          {loginState === "failed" ? (
+            <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-600 dark:border-red-500/20 dark:bg-red-500/10 dark:text-red-300">
+              <div>{loginError ?? "无法创建账户登录。"}</div>
+              <Button className="mt-3" variant="outline" size="sm" onClick={() => {
+                setDeviceLogin(null);
+                setLoginState("idle");
+                setLoginError(null);
+              }}>
+                重试
+              </Button>
+            </div>
+          ) : loginState === "starting" || !deviceLogin ? (
+            <div className="flex min-h-36 items-center justify-center gap-2 text-sm text-slate-500">
+              <LoaderCircle className="size-4 animate-spin" /> 正在创建授权…
+            </div>
+          ) : (
+            <>
+              <p className="text-sm leading-6 text-slate-600 dark:text-slate-300">
+                在新标签页完成 OpenAI 登录，然后输入下面的设备代码。完成后此窗口会自动保存账户。
+              </p>
+              <div className="rounded-2xl border border-blue-200/70 bg-blue-50/70 p-4 dark:border-blue-400/15 dark:bg-blue-500/[0.07]">
+                <div className="text-[11px] font-bold uppercase tracking-[0.12em] text-blue-600 dark:text-blue-300">设备代码</div>
+                <div className="mt-2 flex items-center gap-3">
+                  <code className="text-xl font-bold tracking-[0.14em] text-slate-900 dark:text-white">{deviceLogin.user_code}</code>
+                  <Button variant="outline" size="sm" onClick={() => void copyText(deviceLogin.user_code)}>复制</Button>
+                </div>
+              </div>
+              <Button className="w-full" onClick={() => window.open(deviceLogin.verification_uri, "_blank", "noopener,noreferrer")}>
+                <UserRound className="size-4" /> 打开 OpenAI 登录页
+              </Button>
+              <div className="flex items-center justify-center gap-2 text-xs text-slate-400">
+                <LoaderCircle className="size-3.5 animate-spin" />
+                {loginState === "finalizing" ? "正在保存账户…" : "等待授权完成…"}
+              </div>
+            </>
+          )}
         </div>
-        <DialogActions onClose={onClose} disabled={!parsed || submitting} submitting={submitting} label="导入 Token" />
-      </form>
+      ) : (
+        <form onSubmit={submit}>
+          <FormField label="OpenAI Codex Token">
+            <textarea
+              className="field min-h-56 resize-y font-mono text-[11px] leading-5"
+              value={json}
+              onChange={(event) => setJson(event.target.value)}
+              placeholder={'{\n  "tokens": {\n    "access_token": "...",\n    "refresh_token": "..."\n  }\n}'}
+              autoFocus
+            />
+          </FormField>
+          <div className={cn("mt-2 flex items-center gap-2 text-[11px]", !json || parsed ? "text-slate-400" : "text-red-500")}>
+            {parsed ? <Check className="size-3.5 text-emerald-500" /> : <CircleAlert className="size-3.5" />}
+            {!json || parsed
+              ? "需要 tokens.access_token 和 tokens.refresh_token。"
+              : "JSON 格式无效，或缺少必要 Token。"}
+          </div>
+          <DialogActions onClose={onClose} disabled={!parsed || submitting} submitting={submitting} label="导入 Token" />
+        </form>
+      )}
     </DialogFrame>
   );
 }

@@ -10,6 +10,8 @@ import type {
   ReasoningEffort,
   SelectedProvider,
   TurnRouteLog,
+  OpenAiDeviceLoginStart,
+  OpenAiDeviceLoginStatus,
 } from "./types";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -191,5 +193,24 @@ export const gatewayApi = {
       method: "POST",
       body: JSON.stringify(payload),
     });
+  },
+
+  startOpenAiDeviceLogin() {
+    return request<OpenAiDeviceLoginStart>("/accounts/openai/login/device", {
+      method: "POST",
+    });
+  },
+
+  pollOpenAiDeviceLogin(loginId: string) {
+    return request<OpenAiDeviceLoginStatus>(
+      `/accounts/openai/login/device/${encodeURIComponent(loginId)}`,
+    );
+  },
+
+  cancelOpenAiDeviceLogin(loginId: string) {
+    return request<{ cancelled: boolean }>(
+      `/accounts/openai/login/device/${encodeURIComponent(loginId)}`,
+      { method: "DELETE" },
+    );
   },
 };

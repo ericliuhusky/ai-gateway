@@ -114,3 +114,24 @@ export interface CodexAuthPayload {
     account_id?: string;
   };
 }
+
+export interface OpenAiDeviceLoginStart {
+  login_id: string;
+  user_code: string;
+  verification_uri: string;
+  interval_seconds: number;
+  expires_in: number;
+}
+
+export interface OpenAiDeviceLoginStatus {
+  status: "pending" | "finalizing" | "completed" | "failed";
+  login_id?: string;
+  user_code?: string;
+  verification_uri?: string;
+  interval_seconds?: number;
+  expires_in?: number;
+  email?: string;
+  account_id?: string;
+  has_responses_write?: boolean;
+  error?: string;
+}

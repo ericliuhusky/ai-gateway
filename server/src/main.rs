@@ -4,6 +4,7 @@ mod codex_scripts;
 mod config;
 mod crypto;
 mod models;
+mod openai_device_login;
 mod openai_tokens;
 mod routing;
 mod store;
@@ -12,6 +13,7 @@ mod upstream;
 
 use api::{AppState, build_router};
 use config::Config;
+use openai_device_login::OpenAiDeviceLoginService;
 use openai_tokens::OpenAiTokenService;
 use reqwest::Client;
 use std::sync::Arc;
@@ -31,11 +33,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let settings = SettingsStore::new(config.clone())?;
     let turn_logs = TurnLogStore::new(config.clone())?;
     let openai_tokens = OpenAiTokenService::new();
+    let openai_device_login = OpenAiDeviceLoginService::new();
     let upstream = UpstreamClient::new();
     let state = AppState {
         _client: Client::new(),
         _config: config.clone(),
         openai_tokens,
+        openai_device_login,
         accounts,
         providers,
         routes,

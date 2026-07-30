@@ -17,6 +17,9 @@ use crate::{
         UpdateInstanceRoutingConfigRequest, UpdateSelectedModelRequest,
         UpdateSelectedProviderRequest, UpdateSelectedReasoningEffortRequest,
     },
+    openai_device_login::{
+        DeviceLoginCompletion, DeviceLoginPoll, DeviceLoginStart, OpenAiDeviceLoginService,
+    },
     openai_tokens::OpenAiTokenService,
     routing::{
         RoutingDecision, classifier_instructions, classifier_prompt,
@@ -51,6 +54,7 @@ pub struct AppState {
     pub _client: Client,
     pub _config: Arc<Config>,
     pub openai_tokens: OpenAiTokenService,
+    pub openai_device_login: OpenAiDeviceLoginService,
     pub accounts: AccountStore,
     pub providers: ProviderStore,
     pub routes: RouteStore,
@@ -172,6 +176,38 @@ pub struct ImportOpenAiFromLocalResponse {
     has_responses_write: bool,
 }
 
+#[derive(Debug, Serialize)]
+pub struct OpenAiDeviceLoginStartResponse {
+    login_id: String,
+    user_code: String,
+    verification_uri: String,
+    interval_seconds: u64,
+    expires_in: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct OpenAiDeviceLoginStatusResponse {
+    status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    login_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    user_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    verification_uri: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    interval_seconds: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    expires_in: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    email: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    account_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    has_responses_write: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
 /// Import an OpenAI account from a pasted Codex `auth.json` token payload.
 pub async fn import_openai_token(
     State(state): State<AppState>,
@@ -216,6 +252,181 @@ pub async fn import_openai_token(
         account_id: account.id,
         has_responses_write,
     }))
+}
+
+/// Starts the official OpenAI device authorization flow used by Codex.
+pub async fn start_openai_device_login(
+    State(state): State<AppState>,
+) -> Result<Json<OpenAiDeviceLoginStartResponse>, AppError> {
+    let start = state
+        .openai_device_login
+        .start()
+        .await
+        .map_err(AppError::upstream_message)?;
+    Ok(Json(device_login_start_response(start)))
+}
+
+/// Polls a device authorization session and persists the account when OpenAI approves it.
+pub async fn poll_openai_device_login(
+    State(state): State<AppState>,
+    AxumPath(login_id): AxumPath<String>,
+) -> Result<Json<OpenAiDeviceLoginStatusResponse>, AppError> {
+    let poll = state
+        .openai_device_login
+        .poll(&login_id)
+        .await
+        .map_err(AppError::bad_request)?;
+
+    match poll {
+        DeviceLoginPoll::Pending(start) => Ok(Json(device_login_pending_response(start))),
+        DeviceLoginPoll::Finalizing => Ok(Json(device_login_finalizing_response())),
+        DeviceLoginPoll::Completed(completion) => {
+            Ok(Json(device_login_completed_response(completion)))
+        }
+        DeviceLoginPoll::Failed(error) => Ok(Json(device_login_failed_response(error))),
+        DeviceLoginPoll::Ready => {
+            let authorization = match state
+                .openai_device_login
+                .begin_finalization(&login_id)
+                .await
+                .map_err(AppError::bad_request)?
+            {
+                Some(authorization) => authorization,
+                None => return Ok(Json(device_login_finalizing_response())),
+            };
+
+            let completion = async {
+                let imported = state
+                    .openai_device_login
+                    .exchange_authorization(&authorization, &state.openai_tokens)
+                    .await
+                    .map_err(AppError::upstream_message)?;
+                let has_responses_write = imported
+                    .scopes
+                    .iter()
+                    .any(|scope| scope == "api.responses.write");
+                let email = imported.email.clone();
+                let account = state
+                    .accounts
+                    .add_openai_account(imported)
+                    .await
+                    .map_err(AppError::bad_request)?;
+                state
+                    .providers
+                    .add_account_provider(PROVIDER_OPENAI_PROXY, &account.id)
+                    .await
+                    .map_err(AppError::bad_request)?;
+                Ok::<_, AppError>(DeviceLoginCompletion {
+                    email,
+                    account_id: account.id,
+                    has_responses_write,
+                })
+            }
+            .await;
+
+            match completion {
+                Ok(completion) => {
+                    state
+                        .openai_device_login
+                        .complete(&login_id, completion.clone())
+                        .await;
+                    Ok(Json(device_login_completed_response(completion)))
+                }
+                Err(error) => {
+                    let message = error.message;
+                    state
+                        .openai_device_login
+                        .fail(&login_id, message.clone())
+                        .await;
+                    Ok(Json(device_login_failed_response(message)))
+                }
+            }
+        }
+    }
+}
+
+pub async fn cancel_openai_device_login(
+    State(state): State<AppState>,
+    AxumPath(login_id): AxumPath<String>,
+) -> Result<Json<Value>, AppError> {
+    state
+        .openai_device_login
+        .cancel(&login_id)
+        .await
+        .map_err(AppError::bad_request)?;
+    Ok(Json(json!({ "cancelled": true })))
+}
+
+fn device_login_start_response(start: DeviceLoginStart) -> OpenAiDeviceLoginStartResponse {
+    OpenAiDeviceLoginStartResponse {
+        login_id: start.login_id,
+        user_code: start.user_code,
+        verification_uri: start.verification_uri,
+        interval_seconds: start.interval_seconds,
+        expires_in: start.expires_in,
+    }
+}
+
+fn device_login_pending_response(start: DeviceLoginStart) -> OpenAiDeviceLoginStatusResponse {
+    OpenAiDeviceLoginStatusResponse {
+        status: "pending".to_string(),
+        login_id: Some(start.login_id),
+        user_code: Some(start.user_code),
+        verification_uri: Some(start.verification_uri),
+        interval_seconds: Some(start.interval_seconds),
+        expires_in: Some(start.expires_in),
+        email: None,
+        account_id: None,
+        has_responses_write: None,
+        error: None,
+    }
+}
+
+fn device_login_finalizing_response() -> OpenAiDeviceLoginStatusResponse {
+    OpenAiDeviceLoginStatusResponse {
+        status: "finalizing".to_string(),
+        login_id: None,
+        user_code: None,
+        verification_uri: None,
+        interval_seconds: None,
+        expires_in: None,
+        email: None,
+        account_id: None,
+        has_responses_write: None,
+        error: None,
+    }
+}
+
+fn device_login_completed_response(
+    completion: DeviceLoginCompletion,
+) -> OpenAiDeviceLoginStatusResponse {
+    OpenAiDeviceLoginStatusResponse {
+        status: "completed".to_string(),
+        login_id: None,
+        user_code: None,
+        verification_uri: None,
+        interval_seconds: None,
+        expires_in: None,
+        email: Some(completion.email),
+        account_id: Some(completion.account_id),
+        has_responses_write: Some(completion.has_responses_write),
+        error: None,
+    }
+}
+
+fn device_login_failed_response(error: String) -> OpenAiDeviceLoginStatusResponse {
+    OpenAiDeviceLoginStatusResponse {
+        status: "failed".to_string(),
+        login_id: None,
+        user_code: None,
+        verification_uri: None,
+        interval_seconds: None,
+        expires_in: None,
+        email: None,
+        account_id: None,
+        has_responses_write: None,
+        error: Some(error),
+    }
 }
 
 pub async fn list_providers(State(state): State<AppState>) -> Json<Value> {

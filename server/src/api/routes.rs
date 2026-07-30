@@ -1,12 +1,12 @@
 use crate::api::handlers::{
-    add_provider, clear_codex_client_version, clear_selected_model,
+    add_provider, cancel_openai_device_login, clear_codex_client_version, clear_selected_model,
     clear_selected_reasoning_effort, delete_instance, delete_provider, get_auto_routing_settings,
     get_codex_client_version, get_instance_routing_config, get_provider_quota, get_route,
     get_selected_model, get_selected_reasoning_effort, healthz, import_openai_token,
     list_instance_routing_configs, list_models, list_models_for_instance, list_providers,
-    list_turn_logs, responses, responses_for_instance, set_auto_routing_settings,
-    set_codex_client_version, set_instance_routing_config, set_route, set_selected_model,
-    set_selected_reasoning_effort,
+    list_turn_logs, poll_openai_device_login, responses, responses_for_instance,
+    set_auto_routing_settings, set_codex_client_version, set_instance_routing_config, set_route,
+    set_selected_model, set_selected_reasoning_effort, start_openai_device_login,
 };
 use crate::codex_scripts;
 use axum::{
@@ -28,6 +28,14 @@ pub fn build_router(state: AppState, web_dir: PathBuf) -> Router {
         .route("/codex/restore.sh", get(codex_scripts::restore_script))
         .route("/codex/instances.sh", get(codex_scripts::instances_script))
         .route("/accounts/openai/import-token", post(import_openai_token))
+        .route(
+            "/accounts/openai/login/device",
+            post(start_openai_device_login),
+        )
+        .route(
+            "/accounts/openai/login/device/:login_id",
+            get(poll_openai_device_login).delete(cancel_openai_device_login),
+        )
         .route("/providers", get(list_providers).post(add_provider))
         .route("/providers/:provider_id", delete(delete_provider))
         .route("/providers/:provider_id/quota", get(get_provider_quota))
