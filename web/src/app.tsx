@@ -48,6 +48,30 @@ function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
 
+function hasTokenPair(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const token = value as Record<string, unknown>;
+  return (
+    typeof token.access_token === "string" &&
+    token.access_token.trim().length > 0 &&
+    typeof token.refresh_token === "string" &&
+    token.refresh_token.trim().length > 0
+  );
+}
+
+function parseCodexAuthPayload(value: unknown): CodexAuthPayload | null {
+  const entries = Array.isArray(value) ? value : [value];
+  if (entries.length === 0) return null;
+
+  const isSupported = entries.every((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return false;
+    const record = entry as Record<string, unknown>;
+    return hasTokenPair(record.tokens) || hasTokenPair(record);
+  });
+
+  return isSupported ? (value as CodexAuthPayload) : null;
+}
+
 function suggestedCompatibilityProfile(
   baseUrl: string,
 ): GatewayCompatibilityProfile {
@@ -1368,8 +1392,7 @@ function AccountProviderForm({
   const [loginError, setLoginError] = React.useState<string | null>(null);
   let parsed: CodexAuthPayload | null = null;
   try {
-    const candidate = JSON.parse(json) as CodexAuthPayload;
-    if (candidate.tokens?.access_token && candidate.tokens?.refresh_token) parsed = candidate;
+    parsed = parseCodexAuthPayload(JSON.parse(json));
   } catch {
     parsed = null;
   }
@@ -1512,15 +1535,15 @@ function AccountProviderForm({
               className="field min-h-56 resize-y font-mono text-[11px] leading-5"
               value={json}
               onChange={(event) => setJson(event.target.value)}
-              placeholder={'{\n  "tokens": {\n    "access_token": "...",\n    "refresh_token": "..."\n  }\n}'}
+              placeholder={'{\n  "tokens": {\n    "access_token": "...",\n    "refresh_token": "..."\n  }\n}\n\n或 Cockpit Tools 导出的 JSON 数组：\n[\n  {\n    "access_token": "...",\n    "refresh_token": "...",\n    "type": "codex"\n  }\n]'}
               autoFocus
             />
           </FormField>
           <div className={cn("mt-2 flex items-center gap-2 text-[11px]", !json || parsed ? "text-slate-400" : "text-red-500")}>
             {parsed ? <Check className="size-3.5 text-emerald-500" /> : <CircleAlert className="size-3.5" />}
             {!json || parsed
-              ? "需要 tokens.access_token 和 tokens.refresh_token。"
-              : "JSON 格式无效，或缺少必要 Token。"}
+              ? "支持官方 auth.json，以及 Cockpit Tools 导出的单个或多个 Codex 账号。"
+              : "JSON 格式无效，或缺少 access_token / refresh_token。"}
           </div>
           <DialogActions onClose={onClose} disabled={!parsed || submitting} submitting={submitting} label="导入 Token" />
         </form>

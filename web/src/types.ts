@@ -106,7 +106,7 @@ export interface ProviderQuotaSummary {
   message?: string;
 }
 
-export interface CodexAuthPayload {
+export interface OfficialCodexAuthPayload {
   tokens: {
     id_token?: string;
     access_token: string;
@@ -114,6 +114,20 @@ export interface CodexAuthPayload {
     account_id?: string;
   };
 }
+
+export interface CockpitToolsCodexToken {
+  id_token?: string;
+  access_token: string;
+  refresh_token: string;
+  account_id?: string;
+  type?: string;
+  [key: string]: unknown;
+}
+
+export type CodexAuthPayload =
+  | OfficialCodexAuthPayload
+  | CockpitToolsCodexToken
+  | CockpitToolsCodexToken[];
 
 export interface OpenAiDeviceLoginStart {
   login_id: string;

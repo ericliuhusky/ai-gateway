@@ -152,7 +152,7 @@ pub async fn list_turn_logs(
     Ok(Json(json!({ "turns": turns })))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct CodexAuthTokensFile {
     access_token: String,
     #[serde(default)]
@@ -169,9 +169,57 @@ pub(crate) struct CodexAuthFile {
     tokens: Option<CodexAuthTokensFile>,
 }
 
+fn import_tokens_from_value(value: Value) -> Result<Vec<CodexAuthTokensFile>, String> {
+    let entries = match value {
+        Value::Array(entries) => {
+            if entries.is_empty() {
+                return Err("导入 JSON 不包含任何账号".to_string());
+            }
+            entries
+        }
+        entry @ Value::Object(_) => vec![entry],
+        _ => {
+            return Err(
+                "导入内容必须是 Codex auth.json，或 Cockpit Tools 导出的账号对象/数组".to_string(),
+            );
+        }
+    };
+
+    entries
+        .into_iter()
+        .enumerate()
+        .map(|(index, entry)| {
+            let label = if index == 0 {
+                "导入 JSON"
+            } else {
+                "导入 JSON 账号"
+            };
+            let object = entry
+                .as_object()
+                .ok_or_else(|| format!("{label} 必须是对象"))?;
+
+            if object.contains_key("tokens") {
+                let auth_file = serde_json::from_value::<CodexAuthFile>(entry)
+                    .map_err(|error| format!("{label} 格式无效: {error}"))?;
+                return auth_file
+                    .tokens
+                    .ok_or_else(|| format!("{label} 缺少 `tokens`"));
+            }
+
+            // Cockpit Tools exports portable Codex accounts as flat objects. A single
+            // export is still wrapped in an array, and includes fields such as
+            // `type`, `email`, `last_refresh`, and `expired` in addition to tokens.
+            serde_json::from_value::<CodexAuthTokensFile>(entry).map_err(|error| {
+                format!("{label} 不是有效的 Codex 或 Cockpit Tools Token: {error}")
+            })
+        })
+        .collect()
+}
+
 #[derive(Debug, Serialize)]
 pub struct ImportOpenAiFromLocalResponse {
     imported: bool,
+    imported_count: usize,
     email: String,
     account_id: String,
     has_responses_write: bool,
@@ -209,48 +257,64 @@ pub struct OpenAiDeviceLoginStatusResponse {
     error: Option<String>,
 }
 
-/// Import an OpenAI account from a pasted Codex `auth.json` token payload.
+/// Import OpenAI accounts from a pasted Codex `auth.json` or Cockpit Tools export.
 pub async fn import_openai_token(
     State(state): State<AppState>,
-    Json(auth_file): Json<CodexAuthFile>,
+    Json(payload): Json<Value>,
 ) -> Result<Json<ImportOpenAiFromLocalResponse>, AppError> {
-    let tokens = auth_file
-        .tokens
-        .ok_or_else(|| AppError::bad_request("Codex auth JSON is missing `tokens`"))?;
-    let refresh_token = tokens.refresh_token.ok_or_else(|| {
-        AppError::bad_request("Codex auth JSON tokens is missing `refresh_token`")
-    })?;
+    let tokens = import_tokens_from_value(payload).map_err(AppError::bad_request)?;
+    let imported_count = tokens.len();
+    let mut first_imported = None;
 
-    let imported = state
-        .openai_tokens
-        .import_codex_tokens(
-            tokens.access_token,
-            refresh_token,
-            tokens.id_token,
-            tokens.account_id,
-        )
-        .map_err(AppError::bad_request)?;
-    let has_responses_write = imported
-        .scopes
-        .iter()
-        .any(|scope| scope == "api.responses.write");
-    let email = imported.email.clone();
+    for (index, tokens) in tokens.into_iter().enumerate() {
+        let refresh_token = tokens
+            .refresh_token
+            .filter(|token| !token.trim().is_empty())
+            .ok_or_else(|| {
+                AppError::bad_request(format!(
+                    "第 {} 个账号缺少 `refresh_token`，无法导入可自动刷新的 OpenAI 账号",
+                    index + 1
+                ))
+            })?;
+        let imported = state
+            .openai_tokens
+            .import_codex_tokens(
+                tokens.access_token,
+                refresh_token,
+                tokens.id_token,
+                tokens.account_id,
+            )
+            .map_err(AppError::bad_request)?;
+        let has_responses_write = imported
+            .scopes
+            .iter()
+            .any(|scope| scope == "api.responses.write");
+        let email = imported.email.clone();
 
-    let account = state
-        .accounts
-        .add_openai_account(imported)
-        .await
-        .map_err(AppError::bad_request)?;
-    state
-        .providers
-        .add_account_provider(OPENAI_ACCOUNT_PROVIDER_NAME, &account.id)
-        .await
-        .map_err(AppError::bad_request)?;
+        let account = state
+            .accounts
+            .add_openai_account(imported)
+            .await
+            .map_err(AppError::bad_request)?;
+        state
+            .providers
+            .add_account_provider(OPENAI_ACCOUNT_PROVIDER_NAME, &account.id)
+            .await
+            .map_err(AppError::bad_request)?;
+
+        if first_imported.is_none() {
+            first_imported = Some((email, account.id, has_responses_write));
+        }
+    }
+
+    let (email, account_id, has_responses_write) =
+        first_imported.ok_or_else(|| AppError::bad_request("导入 JSON 不包含任何账号"))?;
 
     Ok(Json(ImportOpenAiFromLocalResponse {
         imported: true,
+        imported_count,
         email,
-        account_id: account.id,
+        account_id,
         has_responses_write,
     }))
 }
@@ -2202,13 +2266,13 @@ impl IntoResponse for AppError {
 
 #[cfg(test)]
 mod tests {
-    use super::CodexAuthFile;
     use super::{
         AppState, ResolvedProvider, apply_gateway_overrides_to_raw_request,
         classifier_response_preview, classifier_text_from_sse, codex_turn_metadata,
         delete_provider, opaque_turn_id, openai_models_response, private_classifier_request_body,
         provider_uses_openai_account, quota_from_openai_usage, turn_context_from_request,
     };
+    use super::{CodexAuthFile, import_tokens_from_value};
     use crate::{
         config::Config,
         models::{
@@ -2357,19 +2421,24 @@ mod tests {
 
     #[test]
     fn parses_minimal_pasted_codex_auth_json() {
-        let auth: CodexAuthFile = serde_json::from_value(json!({
+        let payload = json!({
             "tokens": {
                 "access_token": "access-token",
                 "refresh_token": "refresh-token"
             }
-        }))
-        .expect("minimal Codex auth JSON should parse");
+        });
+        let auth: CodexAuthFile =
+            serde_json::from_value(payload.clone()).expect("minimal Codex auth JSON should parse");
 
         let tokens = auth.tokens.expect("tokens should be present");
         assert_eq!(tokens.access_token, "access-token");
         assert_eq!(tokens.refresh_token.as_deref(), Some("refresh-token"));
         assert!(tokens.id_token.is_none());
         assert!(tokens.account_id.is_none());
+
+        let imported = import_tokens_from_value(payload).expect("auth.json should be importable");
+        assert_eq!(imported.len(), 1);
+        assert_eq!(imported[0].access_token, "access-token");
     }
 
     #[test]
@@ -2390,6 +2459,53 @@ mod tests {
         let tokens = auth.tokens.expect("tokens should be present");
         assert_eq!(tokens.id_token.as_deref(), Some("id-token"));
         assert_eq!(tokens.account_id.as_deref(), Some("account-id"));
+    }
+
+    #[test]
+    fn accepts_cockpit_tools_portable_token_exports() {
+        let tokens = import_tokens_from_value(json!([
+            {
+                "id_token": "id-token-1",
+                "access_token": "access-token-1",
+                "refresh_token": "refresh-token-1",
+                "account_id": "account-1",
+                "last_refresh": "2026-07-30T00:00:00Z",
+                "email": "first@example.com",
+                "type": "codex",
+                "expired": "2026-07-31T00:00:00Z"
+            },
+            {
+                "id_token": "id-token-2",
+                "access_token": "access-token-2",
+                "refresh_token": "refresh-token-2",
+                "account_id": "account-2",
+                "last_refresh": "2026-07-30T00:00:00Z",
+                "email": "second@example.com",
+                "type": "codex",
+                "expired": "2026-07-31T00:00:00Z"
+            }
+        ]))
+        .expect("Cockpit Tools export should parse");
+
+        assert_eq!(tokens.len(), 2);
+        assert_eq!(tokens[0].access_token, "access-token-1");
+        assert_eq!(tokens[0].refresh_token.as_deref(), Some("refresh-token-1"));
+        assert_eq!(tokens[1].account_id.as_deref(), Some("account-2"));
+    }
+
+    #[test]
+    fn accepts_a_single_flat_cockpit_tools_token() {
+        let tokens = import_tokens_from_value(json!({
+            "id_token": "id-token",
+            "access_token": "access-token",
+            "refresh_token": "refresh-token",
+            "account_id": "account-id",
+            "type": "codex"
+        }))
+        .expect("flat Cockpit Tools token should parse");
+
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0].id_token.as_deref(), Some("id-token"));
     }
 
     #[test]
