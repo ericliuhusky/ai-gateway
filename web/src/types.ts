@@ -32,6 +32,7 @@ export interface GatewayModel {
 export interface RoutingModelTarget {
   provider_id: string;
   model: string;
+  reasoning_effort?: ReasoningEffort;
 }
 
 export interface CodexClientVersionSetting {
@@ -52,12 +53,10 @@ export interface InstanceRoutingConfig {
 
 export interface AutoRoutingSettings {
   enabled: boolean;
-  classifier?: RoutingModelTarget;
   light?: RoutingModelTarget;
   standard?: RoutingModelTarget;
   pro?: RoutingModelTarget;
   max?: RoutingModelTarget;
-  low_confidence_threshold: number;
 }
 
 export interface TurnRouteLog {
@@ -67,7 +66,7 @@ export interface TurnRouteLog {
   routing_mode: string;
   routing_reason: string;
   routing_detail?: string;
-  routing_tier?: "light" | "standard" | "pro" | "max";
+  routing_tier?: "low" | "medium" | "high" | "xhigh";
   classifier_confidence?: number;
   classifier_output?: string;
   reasoning_effort?: string;

@@ -143,22 +143,24 @@ pub struct UpdateCodexClientVersionRequest {
     pub version: String,
 }
 
+pub const ROUTING_LOW_CONFIDENCE_THRESHOLD: f64 = 0.7;
+
 fn default_low_confidence_threshold() -> f64 {
-    0.7
+    ROUTING_LOW_CONFIDENCE_THRESHOLD
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RoutingModelTarget {
     pub provider_id: String,
     pub model: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AutoRoutingSettings {
     #[serde(default)]
     pub enabled: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub classifier: Option<RoutingModelTarget>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub light: Option<RoutingModelTarget>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -175,7 +177,6 @@ impl Default for AutoRoutingSettings {
     fn default() -> Self {
         Self {
             enabled: false,
-            classifier: None,
             light: None,
             standard: None,
             pro: None,
@@ -190,8 +191,6 @@ pub struct UpdateAutoRoutingSettingsRequest {
     #[serde(default)]
     pub enabled: bool,
     #[serde(default)]
-    pub classifier: Option<RoutingModelTarget>,
-    #[serde(default)]
     pub light: Option<RoutingModelTarget>,
     #[serde(default)]
     pub standard: Option<RoutingModelTarget>,
@@ -199,8 +198,6 @@ pub struct UpdateAutoRoutingSettingsRequest {
     pub pro: Option<RoutingModelTarget>,
     #[serde(default)]
     pub max: Option<RoutingModelTarget>,
-    #[serde(default = "default_low_confidence_threshold")]
-    pub low_confidence_threshold: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

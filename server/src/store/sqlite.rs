@@ -4,7 +4,8 @@ use crate::{
     models::{
         AccountRecord, AccountType, ApiProviderRecord, AutoRoutingSettings, CachedProviderModels,
         ProviderAuthMode, ProviderCompatibilityProfile, ProviderUpstreamProtocol,
-        RoutingModelTarget, SelectedRoute, TurnRouteLog, TurnRouteLogUpdate,
+        ROUTING_LOW_CONFIDENCE_THRESHOLD, RoutingModelTarget, SelectedRoute, TurnRouteLog,
+        TurnRouteLogUpdate,
     },
 };
 use rusqlite::{Connection, OptionalExtension, params};
@@ -395,25 +396,22 @@ impl SqliteStore {
     ) -> Result<AutoRoutingSettings, String> {
         let conn = self.connect()?;
         conn.query_row(
-            "SELECT routing_classifier_target, routing_light_target, routing_standard_target,
-                    routing_pro_target, routing_max_target, routing_enabled,
-                    routing_low_confidence_threshold
+            "SELECT routing_light_target, routing_standard_target, routing_pro_target,
+                    routing_max_target, routing_enabled, routing_low_confidence_threshold
              FROM gateway_instance_state WHERE instance_id = ?1",
             params![instance_id],
             |row| {
                 Ok(AutoRoutingSettings {
-                    enabled: row.get::<_, i64>(5)? != 0,
-                    classifier: routing_target_from_storage(row.get(0)?)
+                    enabled: row.get::<_, i64>(4)? != 0,
+                    light: routing_target_from_storage(row.get(0)?)
                         .map_err(rusqlite::Error::ToSqlConversionFailure)?,
-                    light: routing_target_from_storage(row.get(1)?)
+                    standard: routing_target_from_storage(row.get(1)?)
                         .map_err(rusqlite::Error::ToSqlConversionFailure)?,
-                    standard: routing_target_from_storage(row.get(2)?)
+                    pro: routing_target_from_storage(row.get(2)?)
                         .map_err(rusqlite::Error::ToSqlConversionFailure)?,
-                    pro: routing_target_from_storage(row.get(3)?)
+                    max: routing_target_from_storage(row.get(3)?)
                         .map_err(rusqlite::Error::ToSqlConversionFailure)?,
-                    max: routing_target_from_storage(row.get(4)?)
-                        .map_err(rusqlite::Error::ToSqlConversionFailure)?,
-                    low_confidence_threshold: row.get(6)?,
+                    low_confidence_threshold: ROUTING_LOW_CONFIDENCE_THRESHOLD,
                 })
             },
         )
@@ -430,13 +428,11 @@ impl SqliteStore {
         let conn = self.connect()?;
         conn.execute(
             "INSERT INTO gateway_instance_state (
-                instance_id, routing_enabled, routing_classifier_target, routing_light_target,
-                routing_standard_target, routing_pro_target, routing_max_target,
-                routing_low_confidence_threshold
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                instance_id, routing_enabled, routing_light_target, routing_standard_target,
+                routing_pro_target, routing_max_target, routing_low_confidence_threshold
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
              ON CONFLICT(instance_id) DO UPDATE SET
                 routing_enabled = excluded.routing_enabled,
-                routing_classifier_target = excluded.routing_classifier_target,
                 routing_light_target = excluded.routing_light_target,
                 routing_standard_target = excluded.routing_standard_target,
                 routing_pro_target = excluded.routing_pro_target,
@@ -445,12 +441,11 @@ impl SqliteStore {
             params![
                 instance_id,
                 i64::from(settings.enabled),
-                routing_target_to_storage(settings.classifier.as_ref())?,
                 routing_target_to_storage(settings.light.as_ref())?,
                 routing_target_to_storage(settings.standard.as_ref())?,
                 routing_target_to_storage(settings.pro.as_ref())?,
                 routing_target_to_storage(settings.max.as_ref())?,
-                settings.low_confidence_threshold,
+                ROUTING_LOW_CONFIDENCE_THRESHOLD,
             ],
         )
         .map_err(|err| format!("upsert instance automatic routing settings failed: {err}"))?;
@@ -475,25 +470,22 @@ impl SqliteStore {
     pub fn load_auto_routing_settings(&self) -> Result<AutoRoutingSettings, String> {
         let conn = self.connect()?;
         conn.query_row(
-            "SELECT routing_classifier_target, routing_light_target, routing_standard_target,
-                    routing_pro_target, routing_max_target, routing_enabled,
-                    routing_low_confidence_threshold
+            "SELECT routing_light_target, routing_standard_target, routing_pro_target,
+                    routing_max_target, routing_enabled, routing_low_confidence_threshold
              FROM gateway_state WHERE id = 1",
             [],
             |row| {
                 Ok(AutoRoutingSettings {
-                    enabled: row.get::<_, i64>(5)? != 0,
-                    classifier: routing_target_from_storage(row.get(0)?)
+                    enabled: row.get::<_, i64>(4)? != 0,
+                    light: routing_target_from_storage(row.get(0)?)
                         .map_err(rusqlite::Error::ToSqlConversionFailure)?,
-                    light: routing_target_from_storage(row.get(1)?)
+                    standard: routing_target_from_storage(row.get(1)?)
                         .map_err(rusqlite::Error::ToSqlConversionFailure)?,
-                    standard: routing_target_from_storage(row.get(2)?)
+                    pro: routing_target_from_storage(row.get(2)?)
                         .map_err(rusqlite::Error::ToSqlConversionFailure)?,
-                    pro: routing_target_from_storage(row.get(3)?)
+                    max: routing_target_from_storage(row.get(3)?)
                         .map_err(rusqlite::Error::ToSqlConversionFailure)?,
-                    max: routing_target_from_storage(row.get(4)?)
-                        .map_err(rusqlite::Error::ToSqlConversionFailure)?,
-                    low_confidence_threshold: row.get(6)?,
+                    low_confidence_threshold: ROUTING_LOW_CONFIDENCE_THRESHOLD,
                 })
             },
         )
@@ -506,14 +498,12 @@ impl SqliteStore {
         let conn = self.connect()?;
         conn.execute(
             "INSERT INTO gateway_state (
-                id, routing_enabled, routing_classifier_target, routing_light_target,
-                routing_standard_target, routing_pro_target, routing_max_target,
-                routing_low_confidence_threshold,
+                id, routing_enabled, routing_light_target, routing_standard_target,
+                routing_pro_target, routing_max_target, routing_low_confidence_threshold,
                 route_updated_at
-             ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, 0)
+             ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, 0)
              ON CONFLICT(id) DO UPDATE SET
                 routing_enabled = excluded.routing_enabled,
-                routing_classifier_target = excluded.routing_classifier_target,
                 routing_light_target = excluded.routing_light_target,
                 routing_standard_target = excluded.routing_standard_target,
                 routing_pro_target = excluded.routing_pro_target,
@@ -521,12 +511,11 @@ impl SqliteStore {
                 routing_low_confidence_threshold = excluded.routing_low_confidence_threshold",
             params![
                 i64::from(settings.enabled),
-                routing_target_to_storage(settings.classifier.as_ref())?,
                 routing_target_to_storage(settings.light.as_ref())?,
                 routing_target_to_storage(settings.standard.as_ref())?,
                 routing_target_to_storage(settings.pro.as_ref())?,
                 routing_target_to_storage(settings.max.as_ref())?,
-                settings.low_confidence_threshold,
+                ROUTING_LOW_CONFIDENCE_THRESHOLD,
             ],
         )
         .map_err(|err| format!("upsert automatic routing settings failed: {err}"))?;

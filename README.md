@@ -9,17 +9,17 @@ AI Gateway 现在由远程 Server 和 Web 管理端组成：
 
 ## 自动模型路由
 
-网关可选地使用一个低成本路由分类模型，为每个普通文本请求选择轻量、标准、专业或极致模型。它默认关闭。新 turn 若配置了“已选模型”，会优先使用该模型；同一 turn 在后续工具回合中会粘住首回合选定的模型，不会中途切换。
+网关可选地直接使用轻量（`light`）路由目标作为分类模型，为每个普通文本请求选择低、中、高或极高模型。它默认关闭。新 turn 若配置了“已选模型”，会优先使用该模型；同一 turn 在后续工具回合中会粘住首回合选定的模型，不会中途切换。
 
 管理端顶部还可为当前供应商设置“推理强度”覆盖。选择 `low`、`medium`、`high` 或 `xhigh` 后，网关会把每个 Responses 请求中的 `reasoning.effort` 改为该值（会保留 `reasoning` 下的其他字段）；选择“跟随请求”即可取消覆盖。模型和推理强度偏好均按供应商分别保存。
 
 在 Web 管理端的“网关设置 → 自动模型路由”中配置：
 
-- 路由分类模型：仅返回 `light`、`standard`、`pro` 或 `max` 和置信度。
-- 轻量模型（`light`）、标准模型（`standard`）、专业模型（`pro`）、极致模型（`max`，兜底）：对应最终执行模型。
-- 低置信度阈值：分类置信度低于阈值时，自动升级到极致模型。
+- 轻量（`light`）目标同时承担路由分类，仅返回 `low`、`medium`、`high` 或 `xhigh` 和置信度。
+- 低级别（`low`，使用 `light` 路由目标并同时承担分类）、中级别（`medium`，使用 `standard` 路由目标）、高级别（`high`，使用 `pro` 路由目标）、极高级别（`xhigh`，使用 `max` 路由目标）：对应最终执行模型；低置信度与分类失败时回退到高级别（`high`）。
+- 低置信度阈值固定为 `0.7`：分类置信度低于该值时，自动回退到高级别（`high`）模型。
 
-图片、低置信度、分类失败、返回无效结果或配置不完整时会保守使用极致模型。工具**声明**本身仍会交给路由分类模型判断；带工具结果的后续请求则复用该 turn 的既定模型。
+图片、低置信度、分类失败、返回无效结果或配置不完整时会保守使用专业（`pro`）模型。工具**声明**本身仍会交给轻量路由目标判断；带工具结果的后续请求则复用该 turn 的既定模型。
 
 观测数据保存在同一 SQLite 数据库的 `turn_route_logs` 表中，不会写入响应头。每个 turn 一行，记录首条用户输入的最多 160 字预览、哈希后的 turn ID、模型、路由档位/原因、分类置信度、推理度、请求次数、工具回合数和时间。分类失败时保存最多 500 字的上游错误详情；分类模型返回文本时同样最多保存 500 字，便于判断 JSON 是否有效。不保存完整提示词、工具结果或最终回答。表最多保留 1000 条，按 `updated_at` 作为 LRU 淘汰最旧数据。管理端首页会显示“最近路由 Turn”。
 
@@ -157,12 +157,10 @@ curl -X PUT 'https://gateway.example.com/instances/account-b/config' \
     "provider_id": "provider-b-id",
     "automatic_routing": {
       "enabled": true,
-      "classifier": { "provider_id": "router-provider-id", "model": "router-model" },
       "light": { "provider_id": "provider-b-id", "model": "small-model" },
       "standard": { "provider_id": "provider-b-id", "model": "standard-model" },
       "pro": { "provider_id": "provider-b-id", "model": "pro-model" },
-      "max": { "provider_id": "provider-b-id", "model": "max-model" },
-      "low_confidence_threshold": 0.7
+      "max": { "provider_id": "provider-b-id", "model": "max-model" }
     }
   }'
 ```

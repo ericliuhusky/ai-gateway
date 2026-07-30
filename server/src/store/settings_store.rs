@@ -60,7 +60,6 @@ impl SettingsStore {
         let mut settings = self.auto_routing_settings()?;
         let mut changed = false;
         for target in [
-            &mut settings.classifier,
             &mut settings.light,
             &mut settings.standard,
             &mut settings.pro,
@@ -117,12 +116,11 @@ mod tests {
         let store = SettingsStore { sqlite };
         let settings = AutoRoutingSettings {
             enabled: true,
-            classifier: Some(target("provider_a", "small")),
             light: Some(target("provider_a", "small")),
             standard: Some(target("provider_b", "medium")),
             pro: Some(target("provider_b", "large")),
             max: Some(target("provider_c", "xlarge")),
-            low_confidence_threshold: 0.8,
+            low_confidence_threshold: 0.7,
         };
 
         store.set_auto_routing_settings(&settings).unwrap();
@@ -141,6 +139,7 @@ mod tests {
         RoutingModelTarget {
             provider_id: provider_id.to_string(),
             model: model.to_string(),
+            reasoning_effort: None,
         }
     }
 }

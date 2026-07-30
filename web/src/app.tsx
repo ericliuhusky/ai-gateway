@@ -126,7 +126,6 @@ export function App() {
   const [instances, setInstances] = React.useState<InstanceRoutingConfig[]>([]);
   const [defaultAutomaticRouting, setDefaultAutomaticRouting] = React.useState<AutoRoutingSettings>({
     enabled: false,
-    low_confidence_threshold: 0.7,
   });
   const [instanceToEdit, setInstanceToEdit] = React.useState<string | null>(null);
   const [selected, setSelected] = React.useState<SelectedProvider>({ updated_at: 0 });
@@ -668,7 +667,6 @@ function InstanceCard({
 }) {
   const isDefault = instance.instance_id === "default";
   const automaticReady = [
-    instance.automatic_routing.classifier,
     instance.automatic_routing.light,
     instance.automatic_routing.standard,
     instance.automatic_routing.pro,
@@ -844,7 +842,7 @@ function TurnLogSection({ turns }: { turns: TurnRouteLog[] }) {
                   <td className="px-4 py-3.5 font-mono font-semibold">{turn.model}</td>
                   <td className="px-4 py-3.5">
                     <div className="flex items-center gap-2">
-                      <Badge tone={turn.routing_tier === "max" ? "purple" : turn.routing_tier === "light" ? "green" : "blue"}>
+                      <Badge tone={turn.routing_tier === "xhigh" ? "purple" : turn.routing_tier === "low" ? "green" : "blue"}>
                         {routingTierLabel(turn.routing_tier) ?? turn.routing_mode}
                       </Badge>
                       {turn.classifier_confidence !== undefined ? (
@@ -889,10 +887,10 @@ function routingReasonLabel(reason: string) {
     automatic_routing_disabled: "自动路由未开启",
     selected_model_override: "手动选择模型覆盖",
     same_turn_model_reuse: "同一 Turn 复用既定模型",
-    visual_input_requires_strong_model: "图片输入保守使用极致档模型",
-    visual_input_requires_max_model: "图片输入保守使用极致档模型",
+    visual_input_requires_strong_model: "图片输入保守使用高级别模型",
+    visual_input_requires_max_model: "图片输入保守使用高级别模型",
     tool_continuation_without_turn_binding: "工具后续请求未关联到原 Turn",
-    classifier_model_not_configured: "路由分类模型未配置",
+    light_model_not_configured: "低级别路由模型未配置",
     classifier_provider_not_found: "路由分类供应商不存在",
     classifier_request_failed: "路由分类模型请求失败",
     classifier_output_text_missing: "路由分类模型没有返回文本",
@@ -905,10 +903,10 @@ function routingReasonLabel(reason: string) {
 
 function routingTierLabel(tier: TurnRouteLog["routing_tier"]) {
   const labels = {
-    light: "轻量",
-    standard: "标准",
-    pro: "专业",
-    max: "极致",
+    low: "低",
+    medium: "中",
+    high: "高",
+    xhigh: "极高",
   };
   return tier ? labels[tier] : undefined;
 }
@@ -1169,11 +1167,13 @@ function DialogFrame({
   description,
   children,
   onClose,
+  wide = false,
 }: {
   title: string;
   description: string;
   children: React.ReactNode;
   onClose: () => void;
+  wide?: boolean;
 }) {
   React.useEffect(() => {
     const handler = (event: KeyboardEvent) => event.key === "Escape" && onClose();
@@ -1184,7 +1184,10 @@ function DialogFrame({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/30 p-4 backdrop-blur-sm" onMouseDown={onClose}>
       <div
-        className="dialog-panel max-h-[calc(100vh-2rem)] w-full max-w-xl overflow-y-auto rounded-[26px] p-6 sm:p-7"
+        className={cn(
+          "dialog-panel max-h-[calc(100vh-2rem)] w-full overflow-y-auto rounded-[26px] p-6 sm:p-7",
+          wide ? "max-w-4xl" : "max-w-xl",
+        )}
         onMouseDown={(event) => event.stopPropagation()}
       >
         <div className="mb-6 flex items-start gap-4">
@@ -1563,7 +1566,6 @@ function CodexInstancesDialog({
   const [reasoningEffort, setReasoningEffort] = React.useState<ReasoningEffort | "">("");
   const [automaticRouting, setAutomaticRouting] = React.useState<AutoRoutingSettings>({
     enabled: false,
-    low_confidence_threshold: 0.7,
   });
   const [modelsByProvider, setModelsByProvider] = React.useState<Record<string, GatewayModel[]>>({});
   const [loadingModels, setLoadingModels] = React.useState(true);
@@ -1665,8 +1667,9 @@ function CodexInstancesDialog({
   return (
     <DialogFrame
       title={isCreating ? "新建实例" : "路由配置"}
-      description={isCreating ? "只需填写实例名称，其他配置可直接在实例卡片中调整。" : `为实例“${instanceId}”配置自动路由使用的模型。`}
+      description={isCreating ? "只需填写实例名称，其他配置可直接在实例卡片中调整。" : `为实例“${instanceId}”配置各路由级别的供应商、模型和推理强度。`}
       onClose={onClose}
+      wide={!isCreating}
     >
       <div className="min-w-0 space-y-5">
         {isCreating ? (
@@ -1688,19 +1691,20 @@ function CodexInstancesDialog({
           <>
             <section>
               <p className="text-[11px] leading-5 text-slate-400">
-                自动路由的启用状态由实例卡片控制；此处仅配置各路由档位使用的模型。
+                低级别模型同时承担路由分类；按低、中、高、极高配置供应商、模型和推理强度。留空推理强度时跟随请求；低置信度阈值固定为 0.7，并回退到高级别模型。
               </p>
               <div className="mt-5 space-y-4">
-                <div className="grid gap-4 sm:grid-cols-2">
-                  <RouteTargetSelect label="路由分类模型" value={automaticRouting.classifier} providers={providers} modelsByProvider={modelsByProvider} disabled={saving || loadingModels} onChange={(value) => updateAutomatic("classifier", value)} />
-                  <RouteTargetSelect label="轻量模型（light）" value={automaticRouting.light} providers={providers} modelsByProvider={modelsByProvider} disabled={saving || loadingModels} onChange={(value) => updateAutomatic("light", value)} />
-                  <RouteTargetSelect label="标准模型（standard）" value={automaticRouting.standard} providers={providers} modelsByProvider={modelsByProvider} disabled={saving || loadingModels} onChange={(value) => updateAutomatic("standard", value)} />
-                  <RouteTargetSelect label="专业模型（pro）" value={automaticRouting.pro} providers={providers} modelsByProvider={modelsByProvider} disabled={saving || loadingModels} onChange={(value) => updateAutomatic("pro", value)} />
-                  <RouteTargetSelect label="极致模型（max，兜底）" value={automaticRouting.max} providers={providers} modelsByProvider={modelsByProvider} disabled={saving || loadingModels} onChange={(value) => updateAutomatic("max", value)} />
+                <div className="rounded-[22px] border border-white/65 bg-white/35 p-3 sm:p-4 dark:border-white/8 dark:bg-white/[0.025]">
+                  <div className="space-y-2.5">
+                    <div className="hidden grid-cols-[5.5rem_minmax(0,1.15fr)_minmax(0,1.15fr)_8rem] gap-3 px-2 text-[10px] font-bold uppercase tracking-[0.1em] text-slate-400 lg:grid">
+                      <span>路由级别</span><span>供应商</span><span>模型</span><span>推理强度</span>
+                    </div>
+                    <RouteTargetSelect label="低（low）" value={automaticRouting.light} providers={providers} modelsByProvider={modelsByProvider} disabled={saving || loadingModels} onChange={(value) => updateAutomatic("light", value)} />
+                    <RouteTargetSelect label="中（medium）" value={automaticRouting.standard} providers={providers} modelsByProvider={modelsByProvider} disabled={saving || loadingModels} onChange={(value) => updateAutomatic("standard", value)} />
+                    <RouteTargetSelect label="高（high）" value={automaticRouting.pro} providers={providers} modelsByProvider={modelsByProvider} disabled={saving || loadingModels} onChange={(value) => updateAutomatic("pro", value)} />
+                    <RouteTargetSelect label="极高（xhigh）" value={automaticRouting.max} providers={providers} modelsByProvider={modelsByProvider} disabled={saving || loadingModels} onChange={(value) => updateAutomatic("max", value)} />
+                  </div>
                 </div>
-                <FormField label="低置信度阈值">
-                  <input className="field w-36 font-mono text-sm" type="number" min="0" max="1" step="0.05" value={automaticRouting.low_confidence_threshold} disabled={saving} onChange={(event) => updateAutomatic("low_confidence_threshold", Number(event.target.value))} />
-                </FormField>
               </div>
             </section>
 
@@ -1956,15 +1960,20 @@ function RouteTargetSelect({
     provider.account_email ? `${provider.name} (${provider.account_email})` : provider.name;
 
   return (
-    <FormField label={label}>
-      <div className="grid gap-2">
+    <div className="grid grid-cols-1 gap-2.5 rounded-[18px] bg-white/60 p-3 sm:grid-cols-2 lg:grid-cols-[5.5rem_minmax(0,1.15fr)_minmax(0,1.15fr)_8rem] lg:items-center lg:gap-3 dark:bg-white/[0.035]">
+      <span className="px-1 text-xs font-bold text-slate-600 dark:text-slate-300">{label}</span>
+      <label className="min-w-0">
+        <span className="mb-1 block px-1 text-[10px] font-bold text-slate-400 lg:hidden">供应商</span>
         <select
-          className="field text-xs"
+          className="field h-10 min-w-0 rounded-2xl px-4 py-1.5 text-xs"
+          aria-label={`${label}供应商`}
           value={value?.provider_id ?? ""}
           disabled={disabled}
           onChange={(event) => {
             const providerId = event.target.value;
-            onChange(providerId ? { provider_id: providerId, model: "" } : undefined);
+            onChange(providerId
+              ? { provider_id: providerId, model: "", reasoning_effort: value?.reasoning_effort }
+              : undefined);
           }}
         >
           <option value="">选择供应商</option>
@@ -1972,14 +1981,17 @@ function RouteTargetSelect({
             <option key={provider.id} value={provider.id}>{providerLabel(provider)}</option>
           ))}
         </select>
+      </label>
+      <label className="min-w-0">
+        <span className="mb-1 block px-1 text-[10px] font-bold text-slate-400 lg:hidden">模型</span>
         <select
-          className="field font-mono text-xs"
+          className="field h-10 min-w-0 rounded-2xl px-4 py-1.5 font-mono text-xs"
+          aria-label={`${label}模型`}
           value={value?.model ?? ""}
           disabled={disabled || !value?.provider_id}
           onChange={(event) => {
             if (!value?.provider_id) return;
-            const model = event.target.value;
-            onChange(model ? { provider_id: value.provider_id, model } : { provider_id: value.provider_id, model: "" });
+            onChange({ ...value, model: event.target.value });
           }}
         >
           <option value="">选择模型</option>
@@ -1987,8 +1999,27 @@ function RouteTargetSelect({
             <option key={model.id} value={model.id}>{model.id}</option>
           ))}
         </select>
-      </div>
-    </FormField>
+      </label>
+      <label className="min-w-0">
+        <span className="mb-1 block px-1 text-[10px] font-bold text-slate-400 lg:hidden">推理强度</span>
+        <select
+          className="field h-10 min-w-0 rounded-2xl px-4 py-1.5 text-xs"
+          aria-label={`${label}推理强度`}
+          value={value?.reasoning_effort ?? ""}
+          disabled={disabled || !value?.provider_id}
+          onChange={(event) => {
+            if (!value?.provider_id) return;
+            onChange({ ...value, reasoning_effort: (event.target.value || undefined) as ReasoningEffort | undefined });
+          }}
+        >
+          <option value="">跟随请求</option>
+          <option value="low">低（low）</option>
+          <option value="medium">中（medium）</option>
+          <option value="high">高（high）</option>
+          <option value="xhigh">极高（xhigh）</option>
+        </select>
+      </label>
+    </div>
   );
 }
 

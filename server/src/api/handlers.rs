@@ -978,11 +978,14 @@ async fn responses_inner_for_instance(
     let routed_provider =
         resolve_routing_provider(&state, provider.as_ref(), &routing, instance_id).await?;
     let selected_reasoning_effort = route.selected_reasoning_effort;
-    let request_overridden = apply_gateway_overrides_to_raw_request(
-        &routing,
-        selected_reasoning_effort.as_deref(),
-        &mut request_json,
-    );
+    let reasoning_effort = selected_reasoning_effort.as_deref().or_else(|| {
+        routing
+            .target
+            .as_ref()
+            .and_then(|target| target.reasoning_effort.as_deref())
+    });
+    let request_overridden =
+        apply_gateway_overrides_to_raw_request(&routing, reasoning_effort, &mut request_json);
     turn.reasoning_effort = reasoning_effort_from_request(&request_json);
     record_turn_route(&state, &routed_provider, &turn, &routing, &requested_model);
     let request_body = if request_overridden {
@@ -1220,6 +1223,7 @@ async fn choose_model_for_request(
             target: Some(RoutingModelTarget {
                 provider_id: existing.provider_id,
                 model: existing.model,
+                reasoning_effort: existing.reasoning_effort,
             }),
             mode: "turn_sticky",
             reason: "same_turn_model_reuse",
@@ -1242,6 +1246,7 @@ async fn choose_model_for_request(
         return Ok(RoutingDecision::selected_model(RoutingModelTarget {
             provider_id,
             model: model.to_string(),
+            reasoning_effort: None,
         }));
     }
 
@@ -1256,13 +1261,14 @@ async fn choose_model_for_request(
         } else {
             "tool_continuation_without_turn_binding"
         };
-        return Ok(RoutingDecision::bypass_max(&settings, reason));
+        return Ok(RoutingDecision::bypass_pro(&settings, reason));
     }
 
-    let Some(classifier) = settings.classifier.as_ref() else {
+    // The low-tier target doubles as the classifier to avoid a separate model setting.
+    let Some(classifier) = settings.light.as_ref() else {
         return Ok(RoutingDecision::classifier_failure(
             &settings,
-            "classifier_model_not_configured",
+            "light_model_not_configured",
         ));
     };
     let classifier_provider = match resolve_provider_by_id(state, &classifier.provider_id).await {
@@ -1278,6 +1284,7 @@ async fn choose_model_for_request(
         state,
         &classifier_provider,
         &classifier.model,
+        classifier.reasoning_effort.as_deref(),
         classifier_prompt(&routing_request),
     )
     .await
@@ -1429,10 +1436,10 @@ fn safe_model_name(model: &str) -> Option<String> {
 
 fn routing_tier_from_log(tier: Option<&str>) -> Option<crate::routing::RoutingTier> {
     match tier {
-        Some("light") => Some(crate::routing::RoutingTier::Light),
-        Some("standard") => Some(crate::routing::RoutingTier::Standard),
-        Some("pro") => Some(crate::routing::RoutingTier::Pro),
-        Some("max") => Some(crate::routing::RoutingTier::Max),
+        Some("low") => Some(crate::routing::RoutingTier::Low),
+        Some("medium") => Some(crate::routing::RoutingTier::Medium),
+        Some("high") => Some(crate::routing::RoutingTier::High),
+        Some("xhigh") => Some(crate::routing::RoutingTier::Xhigh),
         _ => None,
     }
 }
@@ -1441,6 +1448,7 @@ async fn invoke_routing_classifier(
     state: &AppState,
     provider: &ResolvedProvider,
     classifier_model: &str,
+    reasoning_effort: Option<&str>,
     prompt: String,
 ) -> Result<Value, String> {
     if provider.auth_mode == ProviderAuthMode::Account && provider_uses_openai_account(provider) {
@@ -1453,7 +1461,7 @@ async fn invoke_routing_classifier(
             account_id: account.upstream_account_id(),
             client_version: None,
         };
-        let body = private_classifier_request_body(classifier_model, prompt);
+        let body = private_classifier_request_body(classifier_model, reasoning_effort, prompt);
         let response = state
             .upstream
             .openai_send(
@@ -1491,8 +1499,12 @@ async fn invoke_routing_classifier(
         "instructions": classifier_instructions(),
         "stream": false,
         "store": false
-    })
-    .to_string();
+    });
+    let mut body = body;
+    if let Some(effort) = reasoning_effort {
+        body["reasoning"] = json!({ "effort": effort });
+    }
+    let body = body.to_string();
     state
         .upstream
         .openai_send(
@@ -1508,7 +1520,11 @@ async fn invoke_routing_classifier(
         .map_err(|err| format!("parse routing classifier response failed: {err}"))
 }
 
-fn private_classifier_request_body(classifier_model: &str, prompt: String) -> String {
+fn private_classifier_request_body(
+    classifier_model: &str,
+    reasoning_effort: Option<&str>,
+    prompt: String,
+) -> String {
     json!({
         "model": classifier_model,
         // The Codex backend's private Responses endpoint only accepts the
@@ -1526,7 +1542,7 @@ fn private_classifier_request_body(classifier_model: &str, prompt: String) -> St
         "tools": [],
         "tool_choice": "auto",
         "parallel_tool_calls": false,
-        "reasoning": {"effort": "low", "summary": "auto"},
+        "reasoning": {"effort": reasoning_effort.unwrap_or("low"), "summary": "auto"},
         "include": [],
         "stream": true,
         "store": false
@@ -1763,26 +1779,16 @@ fn normalize_codex_client_version(version: String) -> Result<String, AppError> {
 fn normalize_auto_routing_settings(
     request: UpdateAutoRoutingSettingsRequest,
 ) -> Result<AutoRoutingSettings, AppError> {
-    if !request.low_confidence_threshold.is_finite()
-        || !(0.0..=1.0).contains(&request.low_confidence_threshold)
-    {
-        return Err(AppError::bad_request(
-            "low_confidence_threshold must be between 0 and 1",
-        ));
-    }
-
     let settings = AutoRoutingSettings {
         enabled: request.enabled,
-        classifier: normalize_optional_target(request.classifier),
-        light: normalize_optional_target(request.light),
-        standard: normalize_optional_target(request.standard),
-        pro: normalize_optional_target(request.pro),
-        max: normalize_optional_target(request.max),
-        low_confidence_threshold: request.low_confidence_threshold,
+        light: normalize_optional_target(request.light)?,
+        standard: normalize_optional_target(request.standard)?,
+        pro: normalize_optional_target(request.pro)?,
+        max: normalize_optional_target(request.max)?,
+        low_confidence_threshold: crate::models::ROUTING_LOW_CONFIDENCE_THRESHOLD,
     };
     if settings.enabled
         && [
-            settings.classifier.as_ref(),
             settings.light.as_ref(),
             settings.standard.as_ref(),
             settings.pro.as_ref(),
@@ -1792,21 +1798,32 @@ fn normalize_auto_routing_settings(
         .any(|target| target.is_none())
     {
         return Err(AppError::bad_request(
-            "classifier, light, standard, pro, and max are required when automatic routing is enabled",
+            "light, standard, pro, and max are required when automatic routing is enabled",
         ));
     }
     Ok(settings)
 }
 
-fn normalize_optional_target(target: Option<RoutingModelTarget>) -> Option<RoutingModelTarget> {
-    target.and_then(|target| {
-        let provider_id = target.provider_id.trim();
-        let model = target.model.trim();
-        (!provider_id.is_empty() && !model.is_empty()).then(|| RoutingModelTarget {
-            provider_id: provider_id.to_string(),
-            model: model.to_string(),
+fn normalize_optional_target(
+    target: Option<RoutingModelTarget>,
+) -> Result<Option<RoutingModelTarget>, AppError> {
+    target
+        .map(|target| {
+            let provider_id = target.provider_id.trim();
+            let model = target.model.trim();
+            if provider_id.is_empty() || model.is_empty() {
+                return Ok(None);
+            }
+            Ok(Some(RoutingModelTarget {
+                provider_id: provider_id.to_string(),
+                model: model.to_string(),
+                reasoning_effort: target
+                    .reasoning_effort
+                    .map(normalize_selected_reasoning_effort)
+                    .transpose()?,
+            }))
         })
-    })
+        .unwrap_or(Ok(None))
 }
 
 async fn validate_auto_routing_targets(
@@ -1814,7 +1831,6 @@ async fn validate_auto_routing_targets(
     settings: &AutoRoutingSettings,
 ) -> Result<(), AppError> {
     for target in [
-        settings.classifier.as_ref(),
         settings.light.as_ref(),
         settings.standard.as_ref(),
         settings.pro.as_ref(),
@@ -2700,6 +2716,7 @@ mod tests {
     fn private_classifier_uses_canonical_input_item_list() {
         let body: serde_json::Value = serde_json::from_str(&private_classifier_request_body(
             "gpt-5.6-luna",
+            Some("medium"),
             "classify".into(),
         ))
         .expect("request should be JSON");
@@ -2708,6 +2725,7 @@ mod tests {
         assert_eq!(body["input"][0]["role"], "user");
         assert_eq!(body["input"][0]["content"][0]["type"], "input_text");
         assert_eq!(body["input"][0]["content"][0]["text"], "classify");
+        assert_eq!(body["reasoning"]["effort"], "medium");
     }
 
     #[test]
