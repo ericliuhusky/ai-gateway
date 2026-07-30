@@ -45,7 +45,7 @@ import type {
   OpenAiDeviceLoginStart,
 } from "./types";
 
-type Dialog = "provider" | "instances" | "settings" | "scripts" | "access-token" | null;
+type Dialog = "provider" | "instances" | "settings" | "scripts" | "account" | null;
 type QuotaMap = Record<string, ProviderQuotaSummary | undefined>;
 type ErrorMap = Record<string, string | undefined>;
 
@@ -317,7 +317,7 @@ export function GatewayDashboard() {
 
   return (
     <div className="min-h-screen">
-      <header className="border-b border-white/50 bg-white/55 backdrop-blur-xl dark:border-white/8 dark:bg-slate-950/55">
+      <header className="relative z-50 border-b border-white/50 bg-white/55 backdrop-blur-xl dark:border-white/8 dark:bg-slate-950/55">
         <div className="mx-auto flex h-16 max-w-[1480px] items-center gap-3 px-5 sm:px-8">
           <div className="flex size-9 items-center justify-center rounded-xl bg-slate-900 text-white shadow-lg shadow-slate-900/15 dark:bg-white dark:text-slate-950">
             <Cloud className="size-[18px]" />
@@ -330,28 +330,12 @@ export function GatewayDashboard() {
           </div>
           <div className="ml-auto flex items-center gap-2">
             <StatusPill online={serverOnline} />
-            <div className="hidden max-w-44 truncate text-right text-xs font-semibold text-slate-500 sm:block" title={currentUser.name}>
-              {currentUser.name}
-            </div>
-            {authMode === "required" ? <Button
-              variant="outline"
-              size="sm"
-              aria-label="退出登录"
-              title="退出登录"
-              onClick={() => { void logout(); }}
-            >
-              <LogOut className="size-3.5" />
-              <span className="hidden sm:inline">退出</span>
-            </Button> : null}
-            <Button
-              variant="outline"
-              size="sm"
-              aria-label="生成网关 API Key"
-              onClick={() => setDialog("access-token")}
-            >
-              <KeyRound className="size-3.5" />
-              <span className="hidden sm:inline">API Key</span>
-            </Button>
+            <AccountMenu
+              user={currentUser}
+              showLogout
+              onOpenSettings={() => setDialog("account")}
+              onLogout={() => { void logout(); }}
+            />
             {currentUser.role === "admin" ? <Button
               variant="outline"
               size="sm"
@@ -487,8 +471,13 @@ export function GatewayDashboard() {
           onError={setError}
         />
       ) : null}
-      {dialog === "access-token" ? (
-        <AccessTokenDialog onClose={() => setDialog(null)} onError={setError} />
+      {dialog === "account" ? (
+        <AccountSettingsDialog
+          user={currentUser}
+          authMode={authMode}
+          onClose={() => setDialog(null)}
+          onError={setError}
+        />
       ) : null}
       {dialog === "instances" ? (
         <CodexInstancesDialog
@@ -532,6 +521,93 @@ function StatusPill({ online }: { online: boolean }) {
     >
       <span className={cn("size-1.5 rounded-full", online ? "bg-emerald-500" : "bg-red-500")} />
       {online ? "Server 在线" : "连接失败"}
+    </div>
+  );
+}
+
+function AccountMenu({
+  user,
+  showLogout,
+  onOpenSettings,
+  onLogout,
+}: {
+  user: { id: number; name: string; avatar_url: string; role: "admin" | "user" };
+  showLogout: boolean;
+  onOpenSettings: () => void;
+  onLogout: () => void;
+}) {
+  const [open, setOpen] = React.useState(false);
+  const menuRef = React.useRef<HTMLDivElement>(null);
+
+  React.useEffect(() => {
+    function closeOnOutsideClick(event: MouseEvent) {
+      if (!menuRef.current?.contains(event.target as Node)) setOpen(false);
+    }
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("mousedown", closeOnOutsideClick);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("mousedown", closeOnOutsideClick);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, []);
+
+  const initial = user.name.trim().charAt(0).toUpperCase();
+
+  return (
+    <div className="relative" ref={menuRef}>
+      <button
+        type="button"
+        className="inline-flex h-8 items-center gap-2 rounded-xl border border-white/60 bg-white/55 px-2.5 text-xs font-semibold text-slate-700 shadow-sm transition hover:bg-white/85 dark:border-white/10 dark:bg-white/5 dark:text-slate-200 dark:hover:bg-white/10"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+      >
+        <span className="flex size-5 shrink-0 items-center justify-center overflow-hidden rounded-full bg-slate-900 text-[9px] font-bold text-white dark:bg-white dark:text-slate-950">
+          {user.avatar_url ? <img src={user.avatar_url} alt="" className="size-full object-cover" /> : initial || <UserRound className="size-3" />}
+        </span>
+        <span className="hidden max-w-32 truncate sm:inline" title={user.name}>{user.name}</span>
+        <ChevronDown className={cn("size-3.5 text-slate-400 transition-transform", open && "rotate-180")} />
+      </button>
+      {open ? (
+        <div
+          role="menu"
+          className="absolute right-0 z-50 mt-2 w-52 overflow-hidden rounded-2xl border border-slate-200 bg-white py-1.5 shadow-xl dark:border-slate-700 dark:bg-slate-900"
+        >
+          <div className="border-b border-slate-200/70 px-3.5 py-2.5 dark:border-white/10">
+            <div className="truncate text-xs font-bold text-slate-800 dark:text-slate-100">{user.name}</div>
+            <div className="mt-0.5 text-[10px] text-slate-400">{user.role === "admin" ? "管理员" : "成员"}</div>
+          </div>
+          <button
+            type="button"
+            role="menuitem"
+            className="mx-1.5 flex w-[calc(100%-0.75rem)] items-center gap-2.5 rounded-xl px-3 py-2 text-left text-xs font-medium text-slate-600 transition hover:bg-slate-900/5 dark:text-slate-300 dark:hover:bg-white/8"
+            onClick={() => {
+              setOpen(false);
+              onOpenSettings();
+            }}
+          >
+            <Settings2 className="size-3.5 text-slate-400" />
+            账户设置
+          </button>
+          {showLogout ? (
+            <button
+              type="button"
+              role="menuitem"
+              className="mx-1.5 flex w-[calc(100%-0.75rem)] items-center gap-2.5 rounded-xl px-3 py-2 text-left text-xs font-medium text-red-600 transition hover:bg-red-500/5 dark:text-red-400"
+              onClick={() => {
+                setOpen(false);
+                onLogout();
+              }}
+            >
+              <LogOut className="size-3.5" />
+              退出登录
+            </button>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -2105,10 +2181,14 @@ function SettingsDialog({
   );
 }
 
-function AccessTokenDialog({
+function AccountSettingsDialog({
+  user,
+  authMode,
   onClose,
   onError,
 }: {
+  user: { id: number; name: string; avatar_url: string; role: "admin" | "user" };
+  authMode: "disabled" | "required";
   onClose: () => void;
   onError: (message: string) => void;
 }) {
@@ -2118,10 +2198,14 @@ function AccessTokenDialog({
   const [visible, setVisible] = React.useState(false);
 
   React.useEffect(() => {
+    if (authMode !== "required") {
+      setToken(null);
+      return;
+    }
     void authApi.gatewayAccessToken()
       .then((value) => setToken(value.access_token))
       .catch((error) => onError(errorMessage(error)));
-  }, [onError]);
+  }, [authMode, onError]);
 
   async function regenerateToken() {
     setCreating(true);
@@ -2139,53 +2223,84 @@ function AccessTokenDialog({
 
   return (
     <DialogFrame
-      title="网关 API Key"
-      description="用于账户模式下的 /openai/v1 请求。系统仅保存当前用户的一把 Key，并以加密形式存储。"
+      title="账户设置"
+      description="查看当前登录账户，并管理用于访问 AI Gateway 的个人 API Key。"
       onClose={onClose}
     >
-      <div className="rounded-2xl border border-amber-500/20 bg-amber-500/5 p-4 text-xs leading-5 text-amber-800 dark:text-amber-200">
-        重新生成会立即使旧 Key 失效。请同步更新已经写入 Codex 配置的 Key。
-      </div>
-      {token ? (
-        <div className="mt-5">
-          <FormField label="当前 API Key">
-            <div className="flex gap-2">
-              <input
-                className="field min-w-0 flex-1 font-mono text-xs"
-                readOnly
-                value={visible ? token : "********"}
-              />
-              <Button
-                type="button"
-                variant="outline"
-                size="icon"
-                aria-label={visible ? "隐藏 API Key" : "显示 API Key"}
-                onClick={() => setVisible((value) => !value)}
-              >
-                {visible ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => {
-                  void copyText(token);
-                  setCopied(true);
-                  window.setTimeout(() => setCopied(false), 1500);
-                }}
-              >
-                {copied ? <Check className="size-4" /> : <Copy className="size-4" />}
-                {copied ? "已复制" : "复制"}
-              </Button>
-            </div>
-          </FormField>
+      <div className="flex items-center gap-3 rounded-2xl border border-white/65 bg-white/45 p-4 dark:border-white/8 dark:bg-white/[0.035]">
+        <span className="flex size-10 shrink-0 items-center justify-center overflow-hidden rounded-full bg-slate-900 text-sm font-bold text-white dark:bg-white dark:text-slate-950">
+          {user.avatar_url ? <img src={user.avatar_url} alt="" className="size-full object-cover" /> : user.name.trim().charAt(0).toUpperCase() || <UserRound className="size-4" />}
+        </span>
+        <div className="min-w-0">
+          <div className="truncate text-sm font-bold">{user.name}</div>
+          <div className="mt-0.5 text-[11px] text-slate-400">{user.role === "admin" ? "管理员" : "成员"}</div>
         </div>
-      ) : null}
+      </div>
+      <section className="mt-5">
+        <div className="mb-2">
+          <h3 className="text-sm font-bold">API Key</h3>
+          <p className="mt-1 text-[11px] leading-5 text-slate-400">
+            用于账户模式下的 <code>/openai/v1</code> 请求。系统仅保存当前用户的一把 Key，并以加密形式存储。
+          </p>
+        </div>
+        {authMode === "required" ? (
+          <>
+            <div className="rounded-2xl border border-amber-500/20 bg-amber-500/5 p-4 text-xs leading-5 text-amber-800 dark:text-amber-200">
+              重新生成会立即使旧 Key 失效。请同步更新已经写入 Codex 配置的 Key。
+            </div>
+            {token ? (
+              <div className="mt-4">
+                <FormField label="当前 API Key">
+                  <div className="flex gap-2">
+                    <input
+                      className="field min-w-0 flex-1 font-mono text-xs"
+                      readOnly
+                      value={visible ? token : "********"}
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="icon"
+                      aria-label={visible ? "隐藏 API Key" : "显示 API Key"}
+                      onClick={() => setVisible((value) => !value)}
+                    >
+                      {visible ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => {
+                        void copyText(token);
+                        setCopied(true);
+                        window.setTimeout(() => setCopied(false), 1500);
+                      }}
+                    >
+                      {copied ? <Check className="size-4" /> : <Copy className="size-4" />}
+                      {copied ? "已复制" : "复制"}
+                    </Button>
+                  </div>
+                </FormField>
+              </div>
+            ) : (
+              <div className="mt-4 flex min-h-16 items-center justify-center">
+                <LoaderCircle className="size-5 animate-spin text-slate-400" />
+              </div>
+            )}
+          </>
+        ) : (
+          <div className="rounded-2xl border border-blue-500/15 bg-blue-500/5 p-4 text-xs leading-5 text-blue-700 dark:text-blue-300">
+            当前服务未启用登录验证，不需要配置个人 API Key。
+          </div>
+        )}
+      </section>
       <div className="mt-7 flex justify-end gap-2">
         <Button type="button" variant="outline" onClick={onClose}>完成</Button>
-        <Button type="button" disabled={creating || !token} onClick={() => void regenerateToken()}>
-          {creating ? <LoaderCircle className="size-4 animate-spin" /> : <KeyRound className="size-4" />}
-          {creating ? "生成中" : "重新生成"}
-        </Button>
+        {authMode === "required" ? (
+          <Button type="button" disabled={creating || !token} onClick={() => void regenerateToken()}>
+            {creating ? <LoaderCircle className="size-4 animate-spin" /> : <KeyRound className="size-4" />}
+            {creating ? "生成中" : "重新生成"}
+          </Button>
+        ) : null}
       </div>
     </DialogFrame>
   );

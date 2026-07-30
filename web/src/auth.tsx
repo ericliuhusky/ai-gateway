@@ -37,8 +37,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const logout = React.useCallback(async () => {
     await authApi.logout();
+    if (authMode === "disabled") {
+      await refresh();
+      return;
+    }
     setUser(null);
-  }, []);
+  }, [authMode, refresh]);
 
   return <AuthContext.Provider value={{ loading, user, authMode, feishuLoginConfigured, refresh, logout }}>{children}</AuthContext.Provider>;
 }
