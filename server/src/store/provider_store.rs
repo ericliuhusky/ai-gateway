@@ -42,10 +42,15 @@ impl ProviderStore {
     }
 
     pub async fn list(&self) -> Vec<ApiProviderSummary> {
+        self.list_for_owner(None).await
+    }
+
+    pub async fn list_for_owner(&self, owner_user_id: Option<i64>) -> Vec<ApiProviderSummary> {
         self.providers
             .lock()
             .await
             .iter()
+            .filter(|provider| provider.owner_user_id == owner_user_id)
             .map(|provider| ApiProviderSummary {
                 id: provider.id.clone(),
                 name: provider.name.clone(),
@@ -61,6 +66,14 @@ impl ProviderStore {
 
     pub async fn upsert(
         &self,
+        request: CreateApiProviderRequest,
+    ) -> Result<ApiProviderRecord, String> {
+        self.upsert_for_owner(None, request).await
+    }
+
+    pub async fn upsert_for_owner(
+        &self,
+        owner_user_id: Option<i64>,
         request: CreateApiProviderRequest,
     ) -> Result<ApiProviderRecord, String> {
         let name = request.name.trim().to_string();
@@ -87,7 +100,10 @@ impl ProviderStore {
         }
 
         let mut providers = self.providers.lock().await;
-        if providers.iter().any(|provider| provider.name == name) {
+        if providers
+            .iter()
+            .any(|provider| provider.owner_user_id == owner_user_id && provider.name == name)
+        {
             return Err(format!("供应商名称已存在: {name}"));
         }
 
@@ -100,6 +116,7 @@ impl ProviderStore {
             account_id: None,
             upstream_protocol: ProviderUpstreamProtocol::OpenAiResponses,
             compatibility_profile,
+            owner_user_id,
         };
         providers.push(provider.clone());
 
@@ -108,20 +125,35 @@ impl ProviderStore {
     }
 
     pub async fn find_by_id(&self, id: &str) -> Option<ApiProviderRecord> {
+        self.find_by_id_for_owner(None, id).await
+    }
+
+    pub async fn find_by_id_for_owner(
+        &self,
+        owner_user_id: Option<i64>,
+        id: &str,
+    ) -> Option<ApiProviderRecord> {
         self.providers
             .lock()
             .await
             .iter()
-            .find(|provider| provider.id == id)
+            .find(|provider| provider.id == id && provider.owner_user_id == owner_user_id)
             .cloned()
     }
 
     pub async fn has_account_provider(&self, account_id: &str) -> bool {
-        self.providers
-            .lock()
-            .await
-            .iter()
-            .any(|provider| provider.account_id.as_deref() == Some(account_id))
+        self.has_account_provider_for_owner(None, account_id).await
+    }
+
+    pub async fn has_account_provider_for_owner(
+        &self,
+        owner_user_id: Option<i64>,
+        account_id: &str,
+    ) -> bool {
+        self.providers.lock().await.iter().any(|provider| {
+            provider.owner_user_id == owner_user_id
+                && provider.account_id.as_deref() == Some(account_id)
+        })
     }
 
     pub async fn add_account_provider(
@@ -129,11 +161,21 @@ impl ProviderStore {
         name: &str,
         account_id: &str,
     ) -> Result<ApiProviderRecord, String> {
+        self.add_account_provider_for_owner(None, name, account_id)
+            .await
+    }
+
+    pub async fn add_account_provider_for_owner(
+        &self,
+        owner_user_id: Option<i64>,
+        name: &str,
+        account_id: &str,
+    ) -> Result<ApiProviderRecord, String> {
         let mut providers = self.providers.lock().await;
-        if providers
-            .iter()
-            .any(|provider| provider.account_id.as_deref() == Some(account_id))
-        {
+        if providers.iter().any(|provider| {
+            provider.owner_user_id == owner_user_id
+                && provider.account_id.as_deref() == Some(account_id)
+        }) {
             return Err(format!("账户已经绑定供应商: {account_id}"));
         }
         let provider = ApiProviderRecord {
@@ -145,6 +187,7 @@ impl ProviderStore {
             account_id: Some(account_id.to_string()),
             upstream_protocol: ProviderUpstreamProtocol::OpenAiResponses,
             compatibility_profile: ProviderCompatibilityProfile::OpenAiCodex,
+            owner_user_id,
         };
         providers.push(provider.clone());
 
@@ -153,10 +196,18 @@ impl ProviderStore {
     }
 
     pub async fn delete(&self, id: &str) -> Result<ApiProviderRecord, String> {
+        self.delete_for_owner(None, id).await
+    }
+
+    pub async fn delete_for_owner(
+        &self,
+        owner_user_id: Option<i64>,
+        id: &str,
+    ) -> Result<ApiProviderRecord, String> {
         let mut providers = self.providers.lock().await;
         let index = providers
             .iter()
-            .position(|provider| provider.id == id)
+            .position(|provider| provider.id == id && provider.owner_user_id == owner_user_id)
             .ok_or_else(|| format!("unknown provider_id: {id}"))?;
         let provider = providers.remove(index);
         self.sqlite.delete_provider(id)?;
@@ -211,6 +262,7 @@ mod tests {
                     expiry_timestamp: 0,
                     client_id: None,
                     upstream_account_id: None,
+                    owner_user_id: None,
                 })
                 .expect("save account");
         }

@@ -3,7 +3,7 @@ use crate::{
         PreparedResponsesUpstream, ResponsesAdapterError, ResponsesAdapterProvider,
         prepare_responses_upstream,
     },
-    auth::AuthService,
+    auth::{AuthService, RequestScope},
     config::{Config, DEFAULT_CODEX_CLIENT_VERSION},
     models::openai::responses::{
         CodexUsageCredits, CodexUsageRateLimit, CodexUsageRateLimitWindow, CodexUsageResponse,
@@ -38,7 +38,7 @@ use crate::{
 use async_stream::stream;
 use axum::{
     body::{Body, Bytes},
-    extract::{Path as AxumPath, Query, State},
+    extract::{Extension, Path as AxumPath, Query, State},
     http::{HeaderMap, HeaderName, StatusCode},
     response::{IntoResponse, Json, Response},
 };
@@ -81,14 +81,18 @@ pub async fn healthz() -> &'static str {
 
 pub async fn get_codex_client_version(
     State(state): State<AppState>,
+    Extension(scope): Extension<RequestScope>,
 ) -> Result<Json<CodexClientVersionSetting>, AppError> {
+    require_admin(&scope)?;
     Ok(Json(codex_client_version_setting(&state)?))
 }
 
 pub async fn set_codex_client_version(
     State(state): State<AppState>,
+    Extension(scope): Extension<RequestScope>,
     Json(request): Json<UpdateCodexClientVersionRequest>,
 ) -> Result<Json<CodexClientVersionSetting>, AppError> {
+    require_admin(&scope)?;
     let version = normalize_codex_client_version(request.version)?;
     state
         .settings
@@ -100,7 +104,9 @@ pub async fn set_codex_client_version(
 
 pub async fn clear_codex_client_version(
     State(state): State<AppState>,
+    Extension(scope): Extension<RequestScope>,
 ) -> Result<Json<CodexClientVersionSetting>, AppError> {
+    require_admin(&scope)?;
     state
         .settings
         .clear_codex_client_version()
@@ -111,25 +117,32 @@ pub async fn clear_codex_client_version(
 
 pub async fn get_auto_routing_settings(
     State(state): State<AppState>,
+    Extension(scope): Extension<RequestScope>,
 ) -> Result<Json<AutoRoutingSettings>, AppError> {
-    Ok(Json(
-        state
-            .settings
-            .auto_routing_settings()
-            .map_err(AppError::internal)?,
-    ))
+    Ok(Json(automatic_routing_for_instance(
+        &state,
+        scope.owner_user_id,
+        None,
+    )?))
 }
 
 pub async fn set_auto_routing_settings(
     State(state): State<AppState>,
+    Extension(scope): Extension<RequestScope>,
     Json(request): Json<UpdateAutoRoutingSettingsRequest>,
 ) -> Result<Json<AutoRoutingSettings>, AppError> {
     let settings = normalize_auto_routing_settings(request)?;
-    validate_auto_routing_targets(&state, &settings).await?;
-    state
-        .settings
-        .set_auto_routing_settings(&settings)
-        .map_err(AppError::internal)?;
+    validate_auto_routing_targets_for_owner(&state, scope.owner_user_id, &settings).await?;
+    match stored_instance_id(scope.owner_user_id, None) {
+        Some(instance_id) => state
+            .settings
+            .set_instance_auto_routing_settings(&instance_id, &settings)
+            .map_err(AppError::internal)?,
+        None => state
+            .settings
+            .set_auto_routing_settings(&settings)
+            .map_err(AppError::internal)?,
+    }
     Ok(Json(settings))
 }
 
@@ -145,11 +158,12 @@ fn default_turn_log_limit() -> i64 {
 
 pub async fn list_turn_logs(
     State(state): State<AppState>,
+    Extension(scope): Extension<RequestScope>,
     Query(query): Query<ListTurnLogsQuery>,
 ) -> Result<Json<Value>, AppError> {
     let turns = state
         .turn_logs
-        .list(query.limit)
+        .list_for_owner(scope.owner_user_id, query.limit)
         .map_err(AppError::internal)?;
     Ok(Json(json!({ "turns": turns })))
 }
@@ -262,6 +276,7 @@ pub struct OpenAiDeviceLoginStatusResponse {
 /// Import OpenAI accounts from a pasted Codex `auth.json` or Cockpit Tools export.
 pub async fn import_openai_token(
     State(state): State<AppState>,
+    Extension(scope): Extension<RequestScope>,
     Json(payload): Json<Value>,
 ) -> Result<Json<ImportOpenAiFromLocalResponse>, AppError> {
     let tokens = import_tokens_from_value(payload).map_err(AppError::bad_request)?;
@@ -295,12 +310,16 @@ pub async fn import_openai_token(
 
         let account = state
             .accounts
-            .add_openai_account(imported)
+            .add_openai_account_for_owner(scope.owner_user_id, imported)
             .await
             .map_err(AppError::bad_request)?;
         state
             .providers
-            .add_account_provider(OPENAI_ACCOUNT_PROVIDER_NAME, &account.id)
+            .add_account_provider_for_owner(
+                scope.owner_user_id,
+                OPENAI_ACCOUNT_PROVIDER_NAME,
+                &account.id,
+            )
             .await
             .map_err(AppError::bad_request)?;
 
@@ -324,23 +343,26 @@ pub async fn import_openai_token(
 /// Starts the official OpenAI device authorization flow used by Codex.
 pub async fn start_openai_device_login(
     State(state): State<AppState>,
+    Extension(scope): Extension<RequestScope>,
 ) -> Result<Json<OpenAiDeviceLoginStartResponse>, AppError> {
     let start = state
         .openai_device_login
-        .start()
+        .start(scope.owner_user_id)
         .await
         .map_err(AppError::upstream_message)?;
+    let _ = scope;
     Ok(Json(device_login_start_response(start)))
 }
 
 /// Polls a device authorization session and persists the account when OpenAI approves it.
 pub async fn poll_openai_device_login(
     State(state): State<AppState>,
+    Extension(scope): Extension<RequestScope>,
     AxumPath(login_id): AxumPath<String>,
 ) -> Result<Json<OpenAiDeviceLoginStatusResponse>, AppError> {
     let poll = state
         .openai_device_login
-        .poll(&login_id)
+        .poll(scope.owner_user_id, &login_id)
         .await
         .map_err(AppError::bad_request)?;
 
@@ -354,7 +376,7 @@ pub async fn poll_openai_device_login(
         DeviceLoginPoll::Ready => {
             let authorization = match state
                 .openai_device_login
-                .begin_finalization(&login_id)
+                .begin_finalization(scope.owner_user_id, &login_id)
                 .await
                 .map_err(AppError::bad_request)?
             {
@@ -375,12 +397,16 @@ pub async fn poll_openai_device_login(
                 let email = imported.email.clone();
                 let account = state
                     .accounts
-                    .add_openai_account(imported)
+                    .add_openai_account_for_owner(scope.owner_user_id, imported)
                     .await
                     .map_err(AppError::bad_request)?;
                 state
                     .providers
-                    .add_account_provider(OPENAI_ACCOUNT_PROVIDER_NAME, &account.id)
+                    .add_account_provider_for_owner(
+                        scope.owner_user_id,
+                        OPENAI_ACCOUNT_PROVIDER_NAME,
+                        &account.id,
+                    )
                     .await
                     .map_err(AppError::bad_request)?;
                 Ok::<_, AppError>(DeviceLoginCompletion {
@@ -414,11 +440,12 @@ pub async fn poll_openai_device_login(
 
 pub async fn cancel_openai_device_login(
     State(state): State<AppState>,
+    Extension(scope): Extension<RequestScope>,
     AxumPath(login_id): AxumPath<String>,
 ) -> Result<Json<Value>, AppError> {
     state
         .openai_device_login
-        .cancel(&login_id)
+        .cancel(scope.owner_user_id, &login_id)
         .await
         .map_err(AppError::bad_request)?;
     Ok(Json(json!({ "cancelled": true })))
@@ -496,20 +523,27 @@ fn device_login_failed_response(error: String) -> OpenAiDeviceLoginStatusRespons
     }
 }
 
-pub async fn list_providers(State(state): State<AppState>) -> Json<Value> {
-    let providers = hydrated_provider_summaries(&state).await;
+pub async fn list_providers(
+    State(state): State<AppState>,
+    Extension(scope): Extension<RequestScope>,
+) -> Json<Value> {
+    let providers = hydrated_provider_summaries_for_owner(&state, scope.owner_user_id).await;
     Json(json!({ "providers": providers }))
 }
 
 pub async fn get_provider_quota(
     State(state): State<AppState>,
+    Extension(scope): Extension<RequestScope>,
     AxumPath(provider_id): AxumPath<String>,
 ) -> Result<Json<ProviderQuotaResponse>, AppError> {
-    let provider = resolve_provider_by_id(&state, &provider_id).await?;
-    let provider_summary = provider_summary_for_resolved(&state, &provider).await?;
+    let provider =
+        resolve_provider_by_id_for_owner(&state, scope.owner_user_id, &provider_id).await?;
+    let provider_summary =
+        provider_summary_for_resolved_for_owner(&state, scope.owner_user_id, &provider).await?;
 
     let quota = if provider.auth_mode == ProviderAuthMode::Account {
-        let account = resolve_account_for_provider(&state, &provider).await?;
+        let account =
+            resolve_account_for_provider_for_owner(&state, scope.owner_user_id, &provider).await?;
         let private_usage = PrivateOpenAiRequestBuilder {
             base_url: OPENAI_CODEX_BASE_URL,
             access_token: account.access_token(),
@@ -537,43 +571,47 @@ pub async fn get_provider_quota(
 
 pub async fn list_models(
     State(state): State<AppState>,
+    Extension(scope): Extension<RequestScope>,
     Query(query): Query<ListModelsQuery>,
 ) -> Result<Json<ModelListResponse>, AppError> {
-    list_models_for_instance_inner(&state, query, None).await
+    list_models_for_instance_inner(&state, scope.owner_user_id, query, None).await
 }
 
 pub async fn list_models_for_instance(
     State(state): State<AppState>,
+    Extension(scope): Extension<RequestScope>,
     AxumPath(instance_id): AxumPath<String>,
     Query(query): Query<ListModelsQuery>,
 ) -> Result<Json<ModelListResponse>, AppError> {
     let instance_id = normalize_instance_id(&instance_id)?;
-    list_models_for_instance_inner(&state, query, Some(&instance_id)).await
+    list_models_for_instance_inner(&state, scope.owner_user_id, query, Some(&instance_id)).await
 }
 
 async fn list_models_for_instance_inner(
     state: &AppState,
+    owner_user_id: Option<i64>,
     query: ListModelsQuery,
     instance_id: Option<&str>,
 ) -> Result<Json<ModelListResponse>, AppError> {
     let provider = match query.provider_id.as_deref().map(str::trim) {
         Some(provider_id) if !provider_id.is_empty() => {
-            resolve_provider_by_id(state, provider_id).await?
+            resolve_provider_by_id_for_owner(state, owner_user_id, provider_id).await?
         }
-        _ => resolve_selected_provider_for_instance(state, instance_id).await?,
+        _ => resolve_selected_provider_for_instance(state, owner_user_id, instance_id).await?,
     };
-    let mut response = load_provider_models(state, &provider, query.force).await?;
+    let mut response = load_provider_models(state, owner_user_id, &provider, query.force).await?;
     ensure_codex_model_infos(&mut response);
     Ok(Json(response))
 }
 
 pub async fn add_provider(
     State(state): State<AppState>,
+    Extension(scope): Extension<RequestScope>,
     Json(request): Json<CreateApiProviderRequest>,
 ) -> Result<Json<Value>, AppError> {
     let provider = state
         .providers
-        .upsert(request)
+        .upsert_for_owner(scope.owner_user_id, request)
         .await
         .map_err(AppError::bad_request)?;
 
@@ -593,11 +631,12 @@ pub async fn add_provider(
 
 pub async fn delete_provider(
     State(state): State<AppState>,
+    Extension(scope): Extension<RequestScope>,
     AxumPath(provider_id): AxumPath<String>,
 ) -> Result<Json<Value>, AppError> {
     let provider = state
         .providers
-        .find_by_id(&provider_id)
+        .find_by_id_for_owner(scope.owner_user_id, &provider_id)
         .await
         .ok_or_else(|| AppError::bad_request(format!("unknown provider_id: {provider_id}")))?;
     state
@@ -614,28 +653,35 @@ pub async fn delete_provider(
         .map_err(AppError::internal)?;
     let deleted = state
         .providers
-        .delete(&provider_id)
+        .delete_for_owner(scope.owner_user_id, &provider_id)
         .await
         .map_err(AppError::bad_request)?;
 
     if provider.auth_mode == ProviderAuthMode::Account
         && let Some(account_id) = provider.account_id.as_deref()
-        && !state.providers.has_account_provider(account_id).await
+        && !state
+            .providers
+            .has_account_provider_for_owner(scope.owner_user_id, account_id)
+            .await
     {
         state
             .accounts
-            .delete(account_id)
+            .delete_for_owner(scope.owner_user_id, account_id)
             .await
             .map_err(AppError::internal)?;
     }
 
-    let route = state.routes.get().await;
+    let route = route_for_instance(&state, scope.owner_user_id, None).await?;
     if route.provider_id.as_deref() == Some(provider_id.as_str()) {
-        state
-            .routes
-            .set_provider(None)
-            .await
-            .map_err(AppError::bad_request)?;
+        let _ = set_route_for_scope(
+            &state,
+            scope.owner_user_id,
+            None,
+            None,
+            None,
+            route.updated_at,
+        )
+        .await?;
     }
 
     Ok(Json(json!({
@@ -646,38 +692,58 @@ pub async fn delete_provider(
     })))
 }
 
-pub async fn get_route(State(state): State<AppState>) -> Json<Value> {
-    Json(json!({ "selected_provider": route_payload(state.routes.get().await) }))
+pub async fn get_route(
+    State(state): State<AppState>,
+    Extension(scope): Extension<RequestScope>,
+) -> Json<Value> {
+    let route = route_for_instance(&state, scope.owner_user_id, None)
+        .await
+        .unwrap_or_default();
+    Json(json!({ "selected_provider": route_payload(route) }))
 }
 
 pub async fn set_route(
     State(state): State<AppState>,
+    Extension(scope): Extension<RequestScope>,
     Json(request): Json<UpdateSelectedProviderRequest>,
 ) -> Result<Json<Value>, AppError> {
     let provider_id = normalize_selected_provider_id(request.provider_id)?;
-    let _provider = resolve_provider_by_id(&state, &provider_id).await?;
-
-    let route = state
-        .routes
-        .set_provider(Some(provider_id))
-        .await
-        .map_err(AppError::bad_request)?;
+    let _provider =
+        resolve_provider_by_id_for_owner(&state, scope.owner_user_id, &provider_id).await?;
+    let existing = route_for_instance(&state, scope.owner_user_id, None).await?;
+    let route = set_route_for_scope(
+        &state,
+        scope.owner_user_id,
+        Some(provider_id),
+        None,
+        None,
+        existing.updated_at,
+    )
+    .await?;
     Ok(Json(json!({
         "selected_provider": route_payload(route),
     })))
 }
 
-pub async fn get_selected_model(State(state): State<AppState>) -> Json<Value> {
-    Json(json!({ "selected_model": route_payload(state.routes.get().await) }))
+pub async fn get_selected_model(
+    State(state): State<AppState>,
+    Extension(scope): Extension<RequestScope>,
+) -> Json<Value> {
+    let route = route_for_instance(&state, scope.owner_user_id, None)
+        .await
+        .unwrap_or_default();
+    Json(json!({ "selected_model": route_payload(route) }))
 }
 
 pub async fn set_selected_model(
     State(state): State<AppState>,
+    Extension(scope): Extension<RequestScope>,
     Json(request): Json<UpdateSelectedModelRequest>,
 ) -> Result<Json<Value>, AppError> {
     let model = normalize_selected_model(request.model)?;
-    let provider = resolve_selected_provider(&state).await?;
-    let models = load_provider_models(&state, &provider, false).await?;
+    let provider =
+        resolve_selected_provider_for_instance(&state, scope.owner_user_id, None).await?;
+    let models = load_provider_models(&state, scope.owner_user_id, &provider, false).await?;
     if !models.data.iter().any(|item| item.id == model) {
         return Err(AppError::bad_request(format!(
             "model `{model}` is not available for selected provider `{}`",
@@ -685,40 +751,65 @@ pub async fn set_selected_model(
         )));
     }
 
-    let route = state
-        .routes
-        .set_model(Some(model))
-        .await
-        .map_err(AppError::bad_request)?;
+    let existing = route_for_instance(&state, scope.owner_user_id, None).await?;
+    let route = set_route_for_scope(
+        &state,
+        scope.owner_user_id,
+        existing.provider_id,
+        Some(model),
+        existing.selected_reasoning_effort,
+        existing.updated_at,
+    )
+    .await?;
     Ok(Json(json!({ "selected_model": route_payload(route) })))
 }
 
-pub async fn clear_selected_model(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
-    let route = state
-        .routes
-        .set_model(None)
-        .await
-        .map_err(AppError::bad_request)?;
+pub async fn clear_selected_model(
+    State(state): State<AppState>,
+    Extension(scope): Extension<RequestScope>,
+) -> Result<Json<Value>, AppError> {
+    let existing = route_for_instance(&state, scope.owner_user_id, None).await?;
+    let route = set_route_for_scope(
+        &state,
+        scope.owner_user_id,
+        existing.provider_id,
+        None,
+        existing.selected_reasoning_effort,
+        existing.updated_at,
+    )
+    .await?;
     Ok(Json(json!({ "selected_model": route_payload(route) })))
 }
 
-pub async fn get_selected_reasoning_effort(State(state): State<AppState>) -> Json<Value> {
+pub async fn get_selected_reasoning_effort(
+    State(state): State<AppState>,
+    Extension(scope): Extension<RequestScope>,
+) -> Json<Value> {
+    let route = route_for_instance(&state, scope.owner_user_id, None)
+        .await
+        .unwrap_or_default();
     Json(json!({
-        "selected_reasoning_effort": route_payload(state.routes.get().await)
+        "selected_reasoning_effort": route_payload(route)
     }))
 }
 
 pub async fn set_selected_reasoning_effort(
     State(state): State<AppState>,
+    Extension(scope): Extension<RequestScope>,
     Json(request): Json<UpdateSelectedReasoningEffortRequest>,
 ) -> Result<Json<Value>, AppError> {
-    resolve_selected_provider(&state).await?;
+    resolve_selected_provider_for_instance(&state, scope.owner_user_id, None).await?;
     let effort = normalize_selected_reasoning_effort(request.effort)?;
-    let route = state
-        .routes
-        .set_reasoning_effort(Some(effort))
-        .await
-        .map_err(AppError::bad_request)?;
+    let existing = route_for_instance(&state, scope.owner_user_id, None).await?;
+    let route = set_route_for_scope(
+        &state,
+        scope.owner_user_id,
+        existing.provider_id,
+        existing.selected_model,
+        Some(effort),
+        existing.updated_at,
+    )
+    .await?;
     Ok(Json(json!({
         "selected_reasoning_effort": route_payload(route)
     })))
@@ -726,12 +817,18 @@ pub async fn set_selected_reasoning_effort(
 
 pub async fn clear_selected_reasoning_effort(
     State(state): State<AppState>,
+    Extension(scope): Extension<RequestScope>,
 ) -> Result<Json<Value>, AppError> {
-    let route = state
-        .routes
-        .set_reasoning_effort(None)
-        .await
-        .map_err(AppError::bad_request)?;
+    let existing = route_for_instance(&state, scope.owner_user_id, None).await?;
+    let route = set_route_for_scope(
+        &state,
+        scope.owner_user_id,
+        existing.provider_id,
+        existing.selected_model,
+        None,
+        existing.updated_at,
+    )
+    .await?;
     Ok(Json(json!({
         "selected_reasoning_effort": route_payload(route)
     })))
@@ -739,6 +836,7 @@ pub async fn clear_selected_reasoning_effort(
 
 pub async fn delete_instance(
     State(state): State<AppState>,
+    Extension(scope): Extension<RequestScope>,
     AxumPath(instance_id): AxumPath<String>,
 ) -> Result<Json<Value>, AppError> {
     let instance_id = normalize_instance_id(&instance_id)?;
@@ -749,7 +847,10 @@ pub async fn delete_instance(
     }
     let deleted = state
         .routes
-        .delete_instance(&instance_id)
+        .delete_instance(
+            &stored_instance_id(scope.owner_user_id, Some(&instance_id))
+                .expect("explicit instance always has a storage id"),
+        )
         .map_err(AppError::internal)?;
     if !deleted {
         return Err(AppError::bad_request(format!(
@@ -761,21 +862,26 @@ pub async fn delete_instance(
 
 pub async fn list_instance_routing_configs(
     State(state): State<AppState>,
+    Extension(scope): Extension<RequestScope>,
 ) -> Result<Json<Value>, AppError> {
     let instances = state
         .routes
         .list_instance_ids()
         .map_err(AppError::internal)?
         .into_iter()
-        .map(|instance_id| {
+        .filter_map(|stored_id| {
+            external_instance_id(scope.owner_user_id, &stored_id)
+                .map(|instance_id| (stored_id, instance_id))
+        })
+        .map(|(stored_id, instance_id)| {
             Ok(InstanceRoutingConfig {
                 route: state
                     .routes
-                    .get_for_instance(&instance_id)
+                    .get_for_instance(&stored_id)
                     .map_err(AppError::internal)?,
                 automatic_routing: state
                     .settings
-                    .instance_auto_routing_settings(&instance_id)
+                    .instance_auto_routing_settings(&stored_id)
                     .map_err(AppError::internal)?,
                 instance_id,
             })
@@ -786,29 +892,13 @@ pub async fn list_instance_routing_configs(
 
 pub async fn get_instance_routing_config(
     State(state): State<AppState>,
+    Extension(scope): Extension<RequestScope>,
     AxumPath(instance_id): AxumPath<String>,
 ) -> Result<Json<InstanceRoutingConfig>, AppError> {
     let instance_id = normalize_instance_id(&instance_id)?;
-    let (route, automatic_routing) = if instance_id == "default" {
-        (
-            state.routes.get().await,
-            state
-                .settings
-                .auto_routing_settings()
-                .map_err(AppError::internal)?,
-        )
-    } else {
-        (
-            state
-                .routes
-                .get_for_instance(&instance_id)
-                .map_err(AppError::internal)?,
-            state
-                .settings
-                .instance_auto_routing_settings(&instance_id)
-                .map_err(AppError::internal)?,
-        )
-    };
+    let route = route_for_instance(&state, scope.owner_user_id, Some(&instance_id)).await?;
+    let automatic_routing =
+        automatic_routing_for_instance(&state, scope.owner_user_id, Some(&instance_id))?;
     Ok(Json(InstanceRoutingConfig {
         route,
         automatic_routing,
@@ -818,13 +908,16 @@ pub async fn get_instance_routing_config(
 
 pub async fn set_instance_routing_config(
     State(state): State<AppState>,
+    Extension(scope): Extension<RequestScope>,
     AxumPath(instance_id): AxumPath<String>,
     Json(request): Json<UpdateInstanceRoutingConfigRequest>,
 ) -> Result<Json<InstanceRoutingConfig>, AppError> {
     let instance_id = normalize_instance_id(&instance_id)?;
     let provider_id = normalize_optional_provider_id(request.provider_id);
     let provider = match provider_id.as_deref() {
-        Some(provider_id) => Some(resolve_provider_by_id(&state, provider_id).await?),
+        Some(provider_id) => {
+            Some(resolve_provider_by_id_for_owner(&state, scope.owner_user_id, provider_id).await?)
+        }
         None => None,
     };
     let selected_model = request
@@ -835,7 +928,7 @@ pub async fn set_instance_routing_config(
         let provider = provider.as_ref().ok_or_else(|| {
             AppError::bad_request("a provider is required when a fixed model is selected")
         })?;
-        let models = load_provider_models(&state, &provider, false).await?;
+        let models = load_provider_models(&state, scope.owner_user_id, &provider, false).await?;
         if !models.data.iter().any(|item| item.id == model) {
             return Err(AppError::bad_request(format!(
                 "model `{model}` is not available for provider `{}`",
@@ -849,60 +942,42 @@ pub async fn set_instance_routing_config(
         .transpose()?;
     let automatic_routing = match request.automatic_routing {
         Some(settings) => {
-            validate_auto_routing_targets(&state, &settings).await?;
-            if instance_id == "default" {
-                state
+            validate_auto_routing_targets_for_owner(&state, scope.owner_user_id, &settings).await?;
+            match stored_instance_id(scope.owner_user_id, Some(&instance_id)) {
+                Some(stored_id) => state
+                    .settings
+                    .set_instance_auto_routing_settings(&stored_id, &settings)
+                    .map_err(AppError::internal)?,
+                None => state
                     .settings
                     .set_auto_routing_settings(&settings)
-                    .map_err(AppError::internal)?;
-            } else {
-                state
-                    .settings
-                    .set_instance_auto_routing_settings(&instance_id, &settings)
-                    .map_err(AppError::internal)?;
+                    .map_err(AppError::internal)?,
             }
             settings
         }
-        None => {
-            if instance_id == "default" {
-                state
-                    .settings
-                    .auto_routing_settings()
-                    .map_err(AppError::internal)?
-            } else {
-                state
-                    .settings
-                    .instance_auto_routing_settings(&instance_id)
-                    .map_err(AppError::internal)?
-            }
-        }
+        None => automatic_routing_for_instance(&state, scope.owner_user_id, Some(&instance_id))?,
     };
-    let route = if instance_id == "default" {
-        state
-            .routes
-            .set_provider(provider_id)
-            .await
-            .map_err(AppError::internal)?;
-        state
-            .routes
-            .set_model(selected_model)
-            .await
-            .map_err(AppError::internal)?;
-        state
-            .routes
-            .set_reasoning_effort(selected_reasoning_effort)
-            .await
-            .map_err(AppError::internal)?
-    } else {
-        state
+    let route = match stored_instance_id(scope.owner_user_id, Some(&instance_id)) {
+        Some(stored_id) => state
             .routes
             .set_for_instance(
-                &instance_id,
+                &stored_id,
                 provider_id,
                 selected_model,
                 selected_reasoning_effort,
             )
-            .map_err(AppError::internal)?
+            .map_err(AppError::internal)?,
+        None => {
+            set_route_for_scope(
+                &state,
+                scope.owner_user_id,
+                provider_id,
+                selected_model,
+                selected_reasoning_effort,
+                0,
+            )
+            .await?
+        }
     };
     Ok(Json(InstanceRoutingConfig {
         instance_id,
@@ -913,17 +988,26 @@ pub async fn set_instance_routing_config(
 
 pub async fn responses(
     State(state): State<AppState>,
+    Extension(scope): Extension<RequestScope>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, AppError> {
     let raw_body = std::str::from_utf8(&body)
         .map_err(|_| AppError::bad_request("request body must be valid UTF-8"))?
         .to_owned();
-    responses_inner(state, raw_body, codex_turn_metadata(&headers)).await
+    responses_inner_for_instance(
+        state,
+        raw_body,
+        codex_turn_metadata(&headers),
+        scope.owner_user_id,
+        None,
+    )
+    .await
 }
 
 pub async fn responses_for_instance(
     State(state): State<AppState>,
+    Extension(scope): Extension<RequestScope>,
     AxumPath(instance_id): AxumPath<String>,
     headers: HeaderMap,
     body: Bytes,
@@ -936,6 +1020,7 @@ pub async fn responses_for_instance(
         state,
         raw_body,
         codex_turn_metadata(&headers),
+        scope.owner_user_id,
         Some(&instance_id),
     )
     .await
@@ -946,19 +1031,22 @@ pub(super) async fn responses_inner(
     raw_body: String,
     turn_metadata: Option<CodexTurnMetadata>,
 ) -> Result<Response, AppError> {
-    responses_inner_for_instance(state, raw_body, turn_metadata, None).await
+    responses_inner_for_instance(state, raw_body, turn_metadata, None, None).await
 }
 
 async fn responses_inner_for_instance(
     state: AppState,
     raw_body: String,
     turn_metadata: Option<CodexTurnMetadata>,
+    owner_user_id: Option<i64>,
     instance_id: Option<&str>,
 ) -> Result<Response, AppError> {
-    let route = route_for_instance(&state, instance_id).await?;
-    let automatic_routing = automatic_routing_for_instance(&state, instance_id)?;
+    let route = route_for_instance(&state, owner_user_id, instance_id).await?;
+    let automatic_routing = automatic_routing_for_instance(&state, owner_user_id, instance_id)?;
     let provider = match route.provider_id.as_deref() {
-        Some(provider_id) => Some(resolve_provider_by_id(&state, provider_id).await?),
+        Some(provider_id) => {
+            Some(resolve_provider_by_id_for_owner(&state, owner_user_id, provider_id).await?)
+        }
         None => None,
     };
     let mut request_json: Value = serde_json::from_str(&raw_body)
@@ -970,6 +1058,7 @@ async fn responses_inner_for_instance(
     let mut turn = turn_context_from_request(&request_json, turn_metadata.as_ref(), instance_id);
     let routing = choose_model_for_request(
         &state,
+        owner_user_id,
         provider.as_ref(),
         &turn,
         &request_json,
@@ -977,8 +1066,14 @@ async fn responses_inner_for_instance(
         &automatic_routing,
     )
     .await?;
-    let routed_provider =
-        resolve_routing_provider(&state, provider.as_ref(), &routing, instance_id).await?;
+    let routed_provider = resolve_routing_provider(
+        &state,
+        owner_user_id,
+        provider.as_ref(),
+        &routing,
+        instance_id,
+    )
+    .await?;
     let selected_reasoning_effort = route.selected_reasoning_effort;
     let reasoning_effort = selected_reasoning_effort.as_deref().or_else(|| {
         routing
@@ -989,7 +1084,14 @@ async fn responses_inner_for_instance(
     let request_overridden =
         apply_gateway_overrides_to_raw_request(&routing, reasoning_effort, &mut request_json);
     turn.reasoning_effort = reasoning_effort_from_request(&request_json);
-    record_turn_route(&state, &routed_provider, &turn, &routing, &requested_model);
+    record_turn_route(
+        &state,
+        owner_user_id,
+        &routed_provider,
+        &turn,
+        &routing,
+        &requested_model,
+    );
     let request_body = if request_overridden {
         request_json.to_string()
     } else {
@@ -1010,7 +1112,9 @@ async fn responses_inner_for_instance(
 
     let response = match prepared {
         PreparedResponsesUpstream::OpenAiAccountResponsesPassthrough(prepared) => {
-            let account = resolve_account_for_provider(&state, &routed_provider).await?;
+            let account =
+                resolve_account_for_provider_for_owner(&state, owner_user_id, &routed_provider)
+                    .await?;
             let private_responses = PrivateOpenAiRequestBuilder {
                 base_url: OPENAI_CODEX_BASE_URL,
                 access_token: account.access_token(),
@@ -1099,16 +1203,17 @@ where
 pub(super) async fn resolve_selected_provider(
     state: &AppState,
 ) -> Result<ResolvedProvider, AppError> {
-    resolve_selected_provider_for_instance(state, None).await
+    resolve_selected_provider_for_instance(state, None, None).await
 }
 
 async fn resolve_selected_provider_for_instance(
     state: &AppState,
+    owner_user_id: Option<i64>,
     instance_id: Option<&str>,
 ) -> Result<ResolvedProvider, AppError> {
-    let route = route_for_instance(state, instance_id).await?;
+    let route = route_for_instance(state, owner_user_id, instance_id).await?;
     if let Some(provider_id) = route.provider_id {
-        return resolve_provider_by_id(state, &provider_id).await;
+        return resolve_provider_by_id_for_owner(state, owner_user_id, &provider_id).await;
     }
     Err(no_provider_selected_error(instance_id))
 }
@@ -1122,12 +1227,13 @@ fn no_provider_selected_error(instance_id: Option<&str>) -> AppError {
 
 async fn route_for_instance(
     state: &AppState,
+    owner_user_id: Option<i64>,
     instance_id: Option<&str>,
 ) -> Result<SelectedRoute, AppError> {
-    match instance_id {
+    match stored_instance_id(owner_user_id, instance_id) {
         Some(instance_id) => state
             .routes
-            .get_for_instance(instance_id)
+            .get_for_instance(&instance_id)
             .map_err(AppError::internal),
         None => Ok(state.routes.get().await),
     }
@@ -1135,12 +1241,13 @@ async fn route_for_instance(
 
 fn automatic_routing_for_instance(
     state: &AppState,
+    owner_user_id: Option<i64>,
     instance_id: Option<&str>,
 ) -> Result<AutoRoutingSettings, AppError> {
-    match instance_id {
+    match stored_instance_id(owner_user_id, instance_id) {
         Some(instance_id) => state
             .settings
-            .instance_auto_routing_settings(instance_id)
+            .instance_auto_routing_settings(&instance_id)
             .map_err(AppError::internal),
         None => state
             .settings
@@ -1200,6 +1307,7 @@ fn apply_gateway_overrides_to_raw_request(
 
 async fn resolve_routing_provider(
     state: &AppState,
+    owner_user_id: Option<i64>,
     selected_provider: Option<&ResolvedProvider>,
     routing: &RoutingDecision,
     instance_id: Option<&str>,
@@ -1209,18 +1317,83 @@ async fn resolve_routing_provider(
             .cloned()
             .ok_or_else(|| no_provider_selected_error(instance_id));
     };
-    resolve_provider_by_id(state, &target.provider_id).await
+    resolve_provider_by_id_for_owner(state, owner_user_id, &target.provider_id).await
+}
+
+fn stored_instance_id(owner_user_id: Option<i64>, instance_id: Option<&str>) -> Option<String> {
+    match (owner_user_id, instance_id) {
+        (Some(owner_user_id), Some(instance_id)) => {
+            Some(format!("__user_{owner_user_id}__{instance_id}"))
+        }
+        (Some(owner_user_id), None) => Some(format!("__user_{owner_user_id}__default")),
+        (None, Some("default")) => None,
+        (None, Some(instance_id)) => Some(instance_id.to_string()),
+        (None, None) => None,
+    }
+}
+
+fn external_instance_id(owner_user_id: Option<i64>, stored_id: &str) -> Option<String> {
+    let Some(owner_user_id) = owner_user_id else {
+        return (stored_id != "default").then(|| stored_id.to_string());
+    };
+    let prefix = format!("__user_{owner_user_id}__");
+    stored_id
+        .strip_prefix(&prefix)
+        .filter(|instance_id| *instance_id != "default")
+        .map(ToString::to_string)
+}
+
+async fn set_route_for_scope(
+    state: &AppState,
+    owner_user_id: Option<i64>,
+    provider_id: Option<String>,
+    selected_model: Option<String>,
+    selected_reasoning_effort: Option<String>,
+    _previous_updated_at: i64,
+) -> Result<SelectedRoute, AppError> {
+    if let Some(instance_id) = stored_instance_id(owner_user_id, None) {
+        return state
+            .routes
+            .set_for_instance(
+                &instance_id,
+                provider_id,
+                selected_model,
+                selected_reasoning_effort,
+            )
+            .map_err(AppError::internal);
+    }
+    state
+        .routes
+        .set_provider(provider_id)
+        .await
+        .map_err(AppError::internal)?;
+    state
+        .routes
+        .set_model(selected_model)
+        .await
+        .map_err(AppError::internal)?;
+    state
+        .routes
+        .set_reasoning_effort(selected_reasoning_effort)
+        .await
+        .map_err(AppError::internal)
 }
 
 async fn choose_model_for_request(
     state: &AppState,
+    owner_user_id: Option<i64>,
     provider: Option<&ResolvedProvider>,
     turn: &TurnContext,
     request: &Value,
     route: &SelectedRoute,
     settings: &AutoRoutingSettings,
 ) -> Result<RoutingDecision, AppError> {
-    if let Some(existing) = state.turn_logs.get(&turn.id).ok().flatten() {
+    if let Some(existing) = state
+        .turn_logs
+        .get_for_owner(owner_user_id, &turn.id)
+        .ok()
+        .flatten()
+    {
         return Ok(RoutingDecision {
             target: Some(RoutingModelTarget {
                 provider_id: existing.provider_id,
@@ -1394,6 +1567,7 @@ fn opaque_turn_id(raw_turn_id: &str) -> String {
 
 fn record_turn_route(
     state: &AppState,
+    owner_user_id: Option<i64>,
     provider: &ResolvedProvider,
     turn: &TurnContext,
     routing: &RoutingDecision,
@@ -1409,21 +1583,24 @@ fn record_turn_route(
         .or((!requested_model.is_empty()).then_some(requested_model))
         .and_then(safe_model_name)
         .unwrap_or_else(|| "unknown".to_string());
-    let _ = state.turn_logs.record(&TurnRouteLogUpdate {
-        turn_id: turn.id.clone(),
-        provider_id,
-        model,
-        routing_mode: routing.mode.to_string(),
-        routing_reason: routing.reason.to_string(),
-        routing_detail: routing.detail.clone(),
-        routing_tier: routing.tier.map(|tier| tier.as_str().to_string()),
-        classifier_confidence: routing.confidence,
-        classifier_output: routing.classifier_output.clone(),
-        reasoning_effort: turn.reasoning_effort.clone(),
-        user_input_preview: turn.user_input_preview.clone(),
-        is_tool_round: turn.is_tool_round,
-        timestamp: now_unix() as i64,
-    });
+    let _ = state.turn_logs.record_for_owner(
+        owner_user_id,
+        &TurnRouteLogUpdate {
+            turn_id: turn.id.clone(),
+            provider_id,
+            model,
+            routing_mode: routing.mode.to_string(),
+            routing_reason: routing.reason.to_string(),
+            routing_detail: routing.detail.clone(),
+            routing_tier: routing.tier.map(|tier| tier.as_str().to_string()),
+            classifier_confidence: routing.confidence,
+            classifier_output: routing.classifier_output.clone(),
+            reasoning_effort: turn.reasoning_effort.clone(),
+            user_input_preview: turn.user_input_preview.clone(),
+            is_tool_round: turn.is_tool_round,
+            timestamp: now_unix() as i64,
+        },
+    );
 }
 
 fn safe_model_name(model: &str) -> Option<String> {
@@ -1663,10 +1840,12 @@ fn build_passthrough_response(
 
 async fn fetch_provider_models(
     state: &AppState,
+    owner_user_id: Option<i64>,
     provider: &ResolvedProvider,
 ) -> Result<ModelListResponse, AppError> {
     if provider.auth_mode == ProviderAuthMode::Account {
-        let account = resolve_account_for_provider(state, provider).await?;
+        let account =
+            resolve_account_for_provider_for_owner(state, owner_user_id, provider).await?;
         if provider.record.as_ref().is_some_and(|record| {
             record.compatibility_profile == ProviderCompatibilityProfile::OpenAiCodex
         }) {
@@ -1711,6 +1890,7 @@ async fn fetch_provider_models(
 
 async fn load_provider_models(
     state: &AppState,
+    owner_user_id: Option<i64>,
     provider: &ResolvedProvider,
     force_refresh: bool,
 ) -> Result<ModelListResponse, AppError> {
@@ -1729,7 +1909,7 @@ async fn load_provider_models(
         }
     }
 
-    let models = fetch_provider_models(state, provider).await?;
+    let models = fetch_provider_models(state, owner_user_id, provider).await?;
     state
         .models
         .save(provider_id, &models)
@@ -1743,6 +1923,17 @@ fn effective_codex_client_version(state: &AppState) -> Result<String, AppError> 
         .codex_client_version_override()
         .map_err(AppError::internal)?
         .unwrap_or_else(|| DEFAULT_CODEX_CLIENT_VERSION.to_string()))
+}
+
+fn require_admin(scope: &RequestScope) -> Result<(), AppError> {
+    if scope.is_admin {
+        Ok(())
+    } else {
+        Err(AppError {
+            status: StatusCode::FORBIDDEN,
+            message: "administrator access is required".to_string(),
+        })
+    }
 }
 
 fn codex_client_version_setting(state: &AppState) -> Result<CodexClientVersionSetting, AppError> {
@@ -1842,6 +2033,25 @@ async fn validate_auto_routing_targets(
     .flatten()
     {
         resolve_provider_by_id(state, &target.provider_id).await?;
+    }
+    Ok(())
+}
+
+async fn validate_auto_routing_targets_for_owner(
+    state: &AppState,
+    owner_user_id: Option<i64>,
+    settings: &AutoRoutingSettings,
+) -> Result<(), AppError> {
+    for target in [
+        settings.light.as_ref(),
+        settings.standard.as_ref(),
+        settings.pro.as_ref(),
+        settings.max.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        resolve_provider_by_id_for_owner(state, owner_user_id, &target.provider_id).await?;
     }
     Ok(())
 }
@@ -2074,13 +2284,29 @@ async fn resolve_provider_by_id(
         .find_by_id(provider_id)
         .await
         .ok_or_else(|| AppError::bad_request(format!("unknown provider_id: {provider_id}")))?;
+    Ok(resolved_provider_from_record(record))
+}
 
-    Ok(ResolvedProvider {
+async fn resolve_provider_by_id_for_owner(
+    state: &AppState,
+    owner_user_id: Option<i64>,
+    provider_id: &str,
+) -> Result<ResolvedProvider, AppError> {
+    let record = state
+        .providers
+        .find_by_id_for_owner(owner_user_id, provider_id)
+        .await
+        .ok_or_else(|| AppError::bad_request(format!("unknown provider_id: {provider_id}")))?;
+    Ok(resolved_provider_from_record(record))
+}
+
+fn resolved_provider_from_record(record: ApiProviderRecord) -> ResolvedProvider {
+    ResolvedProvider {
         name: record.name.clone(),
         auth_mode: record.auth_mode.clone(),
         account_id: record.account_id.clone(),
         record: Some(record),
-    })
+    }
 }
 
 pub(super) async fn resolve_account_for_provider(
@@ -2106,6 +2332,35 @@ pub(super) async fn resolve_account_for_provider(
         .map_err(AppError::bad_request)
 }
 
+async fn resolve_account_for_provider_for_owner(
+    state: &AppState,
+    owner_user_id: Option<i64>,
+    provider: &ResolvedProvider,
+) -> Result<AccountRecord, AppError> {
+    let account_id = provider
+        .account_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            AppError::bad_request(format!(
+                "account auth provider `{}` is missing account_id; bind an account first",
+                provider.name
+            ))
+        })?;
+
+    state
+        .accounts
+        .acquire_by_id_for_owner(
+            owner_user_id,
+            &state.openai_tokens,
+            &state.upstream,
+            account_id,
+        )
+        .await
+        .map_err(AppError::bad_request)
+}
+
 pub(super) fn provider_uses_openai_account(provider: &ResolvedProvider) -> bool {
     provider
         .record
@@ -2118,6 +2373,17 @@ async fn hydrated_provider_summaries(state: &AppState) -> Vec<ApiProviderSummary
     let mut providers = state.providers.list().await;
     for provider in &mut providers {
         hydrate_provider_summary(state, provider).await;
+    }
+    providers
+}
+
+async fn hydrated_provider_summaries_for_owner(
+    state: &AppState,
+    owner_user_id: Option<i64>,
+) -> Vec<ApiProviderSummary> {
+    let mut providers = state.providers.list_for_owner(owner_user_id).await;
+    for provider in &mut providers {
+        hydrate_provider_summary_for_owner(state, owner_user_id, provider).await;
     }
     providers
 }
@@ -2144,6 +2410,29 @@ async fn provider_summary_for_resolved(
     Ok(summary)
 }
 
+async fn provider_summary_for_resolved_for_owner(
+    state: &AppState,
+    owner_user_id: Option<i64>,
+    provider: &ResolvedProvider,
+) -> Result<ApiProviderSummary, AppError> {
+    let record = provider
+        .record
+        .clone()
+        .ok_or_else(|| AppError::bad_request(format!("unknown provider: {}", provider.name)))?;
+    let mut summary = ApiProviderSummary {
+        id: record.id.clone(),
+        name: record.name.clone(),
+        auth_mode: record.auth_mode.clone(),
+        base_url: record.base_url.clone(),
+        account_id: record.account_id.clone(),
+        account_email: None,
+        upstream_protocol: record.upstream_protocol.clone(),
+        compatibility_profile: record.compatibility_profile.clone(),
+    };
+    hydrate_provider_summary_for_owner(state, owner_user_id, &mut summary).await;
+    Ok(summary)
+}
+
 async fn hydrate_provider_summary(state: &AppState, provider: &mut ApiProviderSummary) {
     if provider.auth_mode == ProviderAuthMode::Account
         && let Some(account_id) = provider.account_id.as_deref()
@@ -2151,6 +2440,22 @@ async fn hydrate_provider_summary(state: &AppState, provider: &mut ApiProviderSu
         provider.account_email = state
             .accounts
             .find_by_id(account_id)
+            .await
+            .map(|account| account.email);
+    }
+}
+
+async fn hydrate_provider_summary_for_owner(
+    state: &AppState,
+    owner_user_id: Option<i64>,
+    provider: &mut ApiProviderSummary,
+) {
+    if provider.auth_mode == ProviderAuthMode::Account
+        && let Some(account_id) = provider.account_id.as_deref()
+    {
+        provider.account_email = state
+            .accounts
+            .find_by_id_for_owner(owner_user_id, account_id)
             .await
             .map(|account| account.email);
     }
@@ -2340,7 +2645,7 @@ mod tests {
     };
     use super::{CodexAuthFile, import_tokens_from_value};
     use crate::{
-        auth::AuthService,
+        auth::{AuthService, RequestScope},
         config::Config,
         models::{
             ApiProviderRecord, ProviderAuthMode, ProviderCompatibilityProfile,
@@ -2351,7 +2656,10 @@ mod tests {
         store::{AccountStore, ModelStore, ProviderStore, RouteStore, SettingsStore, TurnLogStore},
         upstream::UpstreamClient,
     };
-    use axum::extract::{Path as AxumPath, State};
+    use axum::{
+        Extension,
+        extract::{Path as AxumPath, State},
+    };
     use reqwest::Client;
     use serde_json::json;
     use std::{
@@ -2402,9 +2710,16 @@ mod tests {
             upstream: UpstreamClient::new(),
         };
 
-        let _ = delete_provider(State(state), AxumPath(provider.id.clone()))
-            .await
-            .expect("delete account provider");
+        let _ = delete_provider(
+            State(state),
+            Extension(RequestScope {
+                owner_user_id: None,
+                is_admin: true,
+            }),
+            AxumPath(provider.id.clone()),
+        )
+        .await
+        .expect("delete account provider");
 
         assert!(providers.find_by_id(&provider.id).await.is_none());
         assert!(accounts.find_by_id(&account.id).await.is_none());
@@ -2747,6 +3062,7 @@ mod tests {
                 account_id: Some("account-123".to_string()),
                 upstream_protocol: ProviderUpstreamProtocol::OpenAiResponses,
                 compatibility_profile: ProviderCompatibilityProfile::OpenAiCodex,
+                owner_user_id: None,
             }),
         };
 

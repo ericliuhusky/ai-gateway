@@ -1,10 +1,35 @@
 use crate::{config::Config, store::sqlite::SqliteStore};
 use rusqlite::{OptionalExtension, TransactionBehavior, params};
+use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
 #[derive(Clone, Debug)]
 pub struct GatewayUser {
     pub id: i64,
+    pub role: UserRole,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum UserRole {
+    Admin,
+    User,
+}
+
+impl UserRole {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Admin => "admin",
+            Self::User => "user",
+        }
+    }
+
+    fn from_str(value: &str) -> Result<Self, rusqlite::Error> {
+        match value {
+            "admin" => Ok(Self::Admin),
+            "user" => Ok(Self::User),
+            _ => Err(rusqlite::Error::InvalidQuery),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -69,16 +94,26 @@ impl UserStore {
             ).map_err(|error| format!("update Feishu identity failed: {error}"))?;
             transaction
                 .query_row(
-                    "SELECT id FROM gateway_users WHERE id = ?1",
+                    "SELECT id, role FROM gateway_users WHERE id = ?1",
                     params![user_id],
                     user_from_row,
                 )
                 .map_err(|error| format!("load Feishu user failed: {error}"))?
         } else {
             let email = format!("feishu:{}:{}", tenant_key, open_id);
+            let has_users: bool = transaction
+                .query_row("SELECT EXISTS(SELECT 1 FROM gateway_users)", [], |row| {
+                    row.get(0)
+                })
+                .map_err(|error| format!("check gateway user count failed: {error}"))?;
+            let role = if has_users {
+                UserRole::User
+            } else {
+                UserRole::Admin
+            };
             let user = transaction.query_row(
-                "INSERT INTO gateway_users (email, name, password_hash) VALUES (?1, ?2, '') RETURNING id",
-                params![email, name], user_from_row,
+                "INSERT INTO gateway_users (email, name, password_hash, role) VALUES (?1, ?2, '', ?3) RETURNING id, role",
+                params![email, name, role.as_str()], user_from_row,
             ).map_err(|error| format!("create Feishu user failed: {error}"))?;
             transaction.execute(
                 "INSERT INTO gateway_feishu_identities (user_id, tenant_key, open_id, name, avatar_url) VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -98,16 +133,19 @@ impl UserStore {
     ) -> Result<Option<FeishuUserProfile>, String> {
         let conn = self.sqlite.connect_for_auth()?;
         conn.query_row(
-            "SELECT u.id, f.name, f.avatar_url
+            "SELECT u.id, u.role, f.name, f.avatar_url
              FROM gateway_users AS u
              JOIN gateway_feishu_identities AS f ON f.user_id = u.id
              WHERE u.id = ?1",
             params![user_id],
             |row| {
                 Ok(FeishuUserProfile {
-                    user: GatewayUser { id: row.get(0)? },
-                    name: row.get(1)?,
-                    avatar_url: row.get(2)?,
+                    user: GatewayUser {
+                        id: row.get(0)?,
+                        role: UserRole::from_str(&row.get::<_, String>(1)?)?,
+                    },
+                    name: row.get(2)?,
+                    avatar_url: row.get(3)?,
                 })
             },
         )
@@ -165,8 +203,44 @@ impl UserStore {
         .map_err(|error| format!("delete gateway session failed: {error}"))?;
         Ok(())
     }
+
+    pub fn create_gateway_access_token(&self, user_id: i64, token: &str) -> Result<(), String> {
+        let conn = self.sqlite.connect_for_auth()?;
+        conn.execute(
+            "INSERT INTO gateway_access_tokens (token_hash, user_id) VALUES (?1, ?2)",
+            params![token_hash(token), user_id],
+        )
+        .map_err(|error| format!("create gateway access token failed: {error}"))?;
+        Ok(())
+    }
+
+    pub fn find_user_by_gateway_access_token(
+        &self,
+        token: &str,
+    ) -> Result<Option<GatewayUser>, String> {
+        let conn = self.sqlite.connect_for_auth()?;
+        conn.query_row(
+            "SELECT u.id, u.role
+             FROM gateway_access_tokens AS t
+             JOIN gateway_users AS u ON u.id = t.user_id
+             WHERE t.token_hash = ?1",
+            params![token_hash(token)],
+            user_from_row,
+        )
+        .optional()
+        .map_err(|error| format!("find gateway access token failed: {error}"))
+    }
 }
 
 fn user_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<GatewayUser> {
-    Ok(GatewayUser { id: row.get(0)? })
+    Ok(GatewayUser {
+        id: row.get(0)?,
+        role: UserRole::from_str(&row.get::<_, String>(1)?)?,
+    })
+}
+
+fn token_hash(token: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(token.as_bytes());
+    format!("{:x}", hasher.finalize())
 }

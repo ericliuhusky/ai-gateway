@@ -13,4 +13,4 @@ pub use provider_store::ProviderStore;
 pub use route_store::RouteStore;
 pub use settings_store::SettingsStore;
 pub use turn_log_store::TurnLogStore;
-pub use user_store::UserStore;
+pub use user_store::{UserRole, UserStore};

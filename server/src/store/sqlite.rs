@@ -51,7 +51,7 @@ impl SqliteStore {
         let conn = self.connect()?;
         let mut stmt = conn
             .prepare(
-                "SELECT id, account_type, email, access_token, refresh_token, expiry_timestamp, client_id, upstream_account_id
+                "SELECT id, account_type, email, access_token, refresh_token, expiry_timestamp, client_id, upstream_account_id, owner_user_id
                  FROM accounts
                  ORDER BY rowid ASC",
             )
@@ -73,6 +73,7 @@ impl SqliteStore {
                     expiry_timestamp: row.get(5)?,
                     client_id: row.get(6)?,
                     upstream_account_id: row.get(7)?,
+                    owner_user_id: row.get(8)?,
                 })
             })
             .map_err(|err| format!("query accounts failed: {err}"))?;
@@ -98,7 +99,7 @@ impl SqliteStore {
         let mut stmt = conn
             .prepare(
                 "SELECT id, name, auth_mode, COALESCE(base_url, ''), COALESCE(api_key, ''), account_id,
-                        upstream_protocol, compatibility_profile
+                        upstream_protocol, compatibility_profile, owner_user_id
                  FROM providers
                  ORDER BY rowid ASC",
             )
@@ -129,6 +130,7 @@ impl SqliteStore {
                         &row.get::<_, String>(7)?,
                     )
                     .map_err(rusqlite::Error::ToSqlConversionFailure)?,
+                    owner_user_id: row.get(8)?,
                 })
             })
             .map_err(|err| format!("query providers failed: {err}"))?;
@@ -557,6 +559,34 @@ impl SqliteStore {
             .map_err(|err| format!("read turn route logs failed: {err}"))
     }
 
+    pub fn list_turn_route_logs_for_prefix(
+        &self,
+        prefix: &str,
+        limit: i64,
+    ) -> Result<Vec<TurnRouteLog>, String> {
+        let conn = self.connect()?;
+        let mut statement = conn
+            .prepare(
+                "SELECT turn_id, provider_id, model, routing_mode, routing_reason, routing_detail,
+                        routing_tier, classifier_confidence, classifier_output,
+                        reasoning_effort, user_input_preview,
+                        started_at, updated_at, request_count, tool_round_count
+                 FROM turn_route_logs
+                 WHERE turn_id LIKE ?1
+                 ORDER BY updated_at DESC, rowid DESC
+                 LIMIT ?2",
+            )
+            .map_err(|err| format!("prepare scoped turn route log list failed: {err}"))?;
+        statement
+            .query_map(
+                params![format!("{prefix}%"), limit],
+                turn_route_log_from_row,
+            )
+            .map_err(|err| format!("query scoped turn route logs failed: {err}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|err| format!("read scoped turn route logs failed: {err}"))
+    }
+
     pub fn record_turn_route_log(
         &self,
         update: &TurnRouteLogUpdate,
@@ -620,7 +650,8 @@ impl SqliteStore {
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 email TEXT NOT NULL UNIQUE COLLATE NOCASE,
                 name TEXT NOT NULL,
-                password_hash TEXT NOT NULL
+                password_hash TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('admin', 'user'))
             );
             CREATE TABLE IF NOT EXISTS gateway_sessions (
                 session_id TEXT PRIMARY KEY,
@@ -636,9 +667,33 @@ impl SqliteStore {
                 avatar_url TEXT NOT NULL DEFAULT '',
                 UNIQUE (tenant_key, open_id)
             );
+            CREATE TABLE IF NOT EXISTS gateway_access_tokens (
+                token_hash TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES gateway_users(id) ON DELETE CASCADE,
+                created_at INTEGER NOT NULL DEFAULT (unixepoch())
+            );
             CREATE INDEX IF NOT EXISTS idx_gateway_sessions_user_id ON gateway_sessions(user_id);
             CREATE INDEX IF NOT EXISTS idx_gateway_sessions_expires_at ON gateway_sessions(expires_at);
-        ").map_err(|err| format!("initialize user auth schema failed: {err}"))
+            CREATE INDEX IF NOT EXISTS idx_gateway_access_tokens_user_id ON gateway_access_tokens(user_id);
+        ").map_err(|err| format!("initialize user auth schema failed: {err}"))?;
+        match conn.execute(
+            "ALTER TABLE gateway_users ADD COLUMN role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('admin', 'user'))",
+            [],
+        ) {
+            Ok(_) => {}
+            Err(rusqlite::Error::SqliteFailure(_, Some(message)))
+                if message.contains("duplicate column name") => {}
+            Err(error) => return Err(format!("add gateway user role column failed: {error}")),
+        }
+        conn.execute(
+            "UPDATE gateway_users
+             SET role = 'admin'
+             WHERE id = (SELECT id FROM gateway_users ORDER BY id ASC LIMIT 1)
+               AND NOT EXISTS (SELECT 1 FROM gateway_users WHERE role = 'admin')",
+            [],
+        )
+        .map_err(|error| format!("backfill initial gateway admin failed: {error}"))?;
+        Ok(())
     }
 
     pub(crate) fn connect_for_auth(&self) -> Result<Connection, String> {
@@ -651,6 +706,14 @@ impl SqliteStore {
             "
             PRAGMA journal_mode = WAL;
 
+            CREATE TABLE IF NOT EXISTS gateway_users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                email TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                name TEXT NOT NULL,
+                password_hash TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('admin', 'user'))
+            );
+
             CREATE TABLE IF NOT EXISTS accounts (
                 id TEXT PRIMARY KEY,
                 account_type TEXT NOT NULL,
@@ -659,7 +722,8 @@ impl SqliteStore {
                 refresh_token TEXT NOT NULL,
                 expiry_timestamp INTEGER NOT NULL,
                 client_id TEXT,
-                upstream_account_id TEXT
+                upstream_account_id TEXT,
+                owner_user_id INTEGER REFERENCES gateway_users(id) ON DELETE CASCADE
             );
 
             CREATE TABLE IF NOT EXISTS providers (
@@ -677,6 +741,7 @@ impl SqliteStore {
                 ),
                 preferred_model TEXT,
                 preferred_reasoning_effort TEXT,
+                owner_user_id INTEGER REFERENCES gateway_users(id) ON DELETE CASCADE,
                 CHECK (
                     (auth_mode = 'api_key' AND account_id IS NULL)
                     OR (auth_mode = 'account' AND account_id IS NOT NULL)
@@ -745,6 +810,21 @@ impl SqliteStore {
             ",
         )
         .map_err(|err| format!("initialize sqlite schema failed: {err}"))?;
+        add_column_if_missing(
+            &conn,
+            "accounts",
+            "owner_user_id INTEGER REFERENCES gateway_users(id) ON DELETE CASCADE",
+        )?;
+        add_column_if_missing(
+            &conn,
+            "providers",
+            "owner_user_id INTEGER REFERENCES gateway_users(id) ON DELETE CASCADE",
+        )?;
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_accounts_owner_user_id ON accounts(owner_user_id);
+             CREATE INDEX IF NOT EXISTS idx_providers_owner_user_id ON providers(owner_user_id);",
+        )
+        .map_err(|err| format!("create ownership indexes failed: {err}"))?;
         Ok(())
     }
 
@@ -758,6 +838,20 @@ impl SqliteStore {
         conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;")
             .map_err(|err| format!("configure sqlite connection failed: {err}"))?;
         Ok(conn)
+    }
+}
+
+fn add_column_if_missing(conn: &Connection, table: &str, definition: &str) -> Result<(), String> {
+    match conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {definition}"), []) {
+        Ok(_) => Ok(()),
+        Err(rusqlite::Error::SqliteFailure(_, Some(message)))
+            if message.contains("duplicate column name") =>
+        {
+            Ok(())
+        }
+        Err(error) => Err(format!(
+            "add column `{definition}` to `{table}` failed: {error}"
+        )),
     }
 }
 
@@ -806,8 +900,8 @@ fn upsert_account_record(
 ) -> Result<(), String> {
     conn.execute(
         "INSERT INTO accounts (
-            id, account_type, email, access_token, refresh_token, expiry_timestamp, client_id, upstream_account_id
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            id, account_type, email, access_token, refresh_token, expiry_timestamp, client_id, upstream_account_id, owner_user_id
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
          ON CONFLICT(id) DO UPDATE SET
             account_type = excluded.account_type,
             email = excluded.email,
@@ -815,7 +909,8 @@ fn upsert_account_record(
             refresh_token = excluded.refresh_token,
             expiry_timestamp = excluded.expiry_timestamp,
             client_id = excluded.client_id,
-            upstream_account_id = excluded.upstream_account_id",
+            upstream_account_id = excluded.upstream_account_id,
+            owner_user_id = excluded.owner_user_id",
         params![
             account.id,
             account_type_to_str(&account.account_type),
@@ -824,7 +919,8 @@ fn upsert_account_record(
             encryption.encrypt(&account.refresh_token)?,
             account.expiry_timestamp,
             account.client_id,
-            account.upstream_account_id
+            account.upstream_account_id,
+            account.owner_user_id
         ],
     )
     .map_err(|err| format!("upsert account failed: {err}"))?;
@@ -846,8 +942,8 @@ fn upsert_provider_record(
     conn.execute(
         "INSERT INTO providers (
             id, name, auth_mode, base_url, api_key, account_id,
-            upstream_protocol, compatibility_profile
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            upstream_protocol, compatibility_profile, owner_user_id
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
          ON CONFLICT(id) DO UPDATE SET
             name = excluded.name,
             auth_mode = excluded.auth_mode,
@@ -855,7 +951,8 @@ fn upsert_provider_record(
             api_key = excluded.api_key,
             account_id = excluded.account_id,
             upstream_protocol = excluded.upstream_protocol,
-            compatibility_profile = excluded.compatibility_profile",
+            compatibility_profile = excluded.compatibility_profile,
+            owner_user_id = excluded.owner_user_id",
         params![
             provider.id,
             provider.name,
@@ -864,7 +961,8 @@ fn upsert_provider_record(
             api_key,
             provider.account_id.as_deref(),
             upstream_protocol_to_str(&provider.upstream_protocol),
-            compatibility_profile_to_str(&provider.compatibility_profile)
+            compatibility_profile_to_str(&provider.compatibility_profile),
+            provider.owner_user_id
         ],
     )
     .map_err(|err| format!("upsert provider failed: {err}"))?;
@@ -1008,6 +1106,7 @@ mod tests {
             expiry_timestamp: 1,
             client_id: Some("client".to_string()),
             upstream_account_id: Some("upstream".to_string()),
+            owner_user_id: None,
         };
         store.upsert_account(&account).expect("save account");
         let provider = ApiProviderRecord {
@@ -1019,6 +1118,7 @@ mod tests {
             account_id: Some(account.id.clone()),
             upstream_protocol: ProviderUpstreamProtocol::OpenAiResponses,
             compatibility_profile: ProviderCompatibilityProfile::OpenAiCodex,
+            owner_user_id: None,
         };
         store.upsert_provider(&provider).expect("save provider");
 
@@ -1049,6 +1149,7 @@ mod tests {
             expiry_timestamp: 1,
             client_id: None,
             upstream_account_id: None,
+            owner_user_id: None,
         };
         store.upsert_account(&account).expect("save account");
         store
@@ -1098,6 +1199,7 @@ mod tests {
             account_id: None,
             upstream_protocol: ProviderUpstreamProtocol::OpenAiResponses,
             compatibility_profile: ProviderCompatibilityProfile::GenericOpenAi,
+            owner_user_id: None,
         }
     }
 

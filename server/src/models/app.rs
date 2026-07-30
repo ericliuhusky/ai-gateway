@@ -65,6 +65,8 @@ pub struct ApiProviderRecord {
     pub upstream_protocol: ProviderUpstreamProtocol,
     #[serde(default)]
     pub compatibility_profile: ProviderCompatibilityProfile,
+    #[serde(skip_serializing)]
+    pub owner_user_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -335,6 +337,8 @@ pub struct AccountRecord {
     pub client_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", alias = "account_id")]
     pub upstream_account_id: Option<String>,
+    #[serde(skip_serializing)]
+    pub owner_user_id: Option<i64>,
 }
 
 impl AccountRecord {

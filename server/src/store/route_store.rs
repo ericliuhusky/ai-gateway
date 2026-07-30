@@ -255,6 +255,7 @@ mod tests {
             account_id: None,
             upstream_protocol: ProviderUpstreamProtocol::OpenAiResponses,
             compatibility_profile: ProviderCompatibilityProfile::GenericOpenAi,
+            owner_user_id: None,
         }
     }
 

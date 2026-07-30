@@ -43,7 +43,7 @@ import type {
   OpenAiDeviceLoginStart,
 } from "./types";
 
-type Dialog = "provider" | "instances" | "settings" | "scripts" | null;
+type Dialog = "provider" | "instances" | "settings" | "scripts" | "access-token" | null;
 type QuotaMap = Record<string, ProviderQuotaSummary | undefined>;
 type ErrorMap = Record<string, string | undefined>;
 
@@ -344,12 +344,21 @@ export function GatewayDashboard() {
             <Button
               variant="outline"
               size="sm"
+              aria-label="生成网关 API Key"
+              onClick={() => setDialog("access-token")}
+            >
+              <KeyRound className="size-3.5" />
+              <span className="hidden sm:inline">API Key</span>
+            </Button>
+            {currentUser.role === "admin" ? <Button
+              variant="outline"
+              size="sm"
               aria-label="网关设置"
               onClick={() => setDialog("settings")}
             >
               <Settings2 className="size-3.5" />
               <span className="hidden sm:inline">网关设置</span>
-            </Button>
+            </Button> : null}
           </div>
         </div>
       </header>
@@ -475,6 +484,9 @@ export function GatewayDashboard() {
           }}
           onError={setError}
         />
+      ) : null}
+      {dialog === "access-token" ? (
+        <AccessTokenDialog onClose={() => setDialog(null)} onError={setError} />
       ) : null}
       {dialog === "instances" ? (
         <CodexInstancesDialog
@@ -1852,6 +1864,7 @@ function CodexScriptsDialog({
   onClose: () => void;
 }) {
   const [copied, setCopied] = React.useState<"setup" | "cleanup" | null>(null);
+  const [accessToken, setAccessToken] = React.useState("");
   const isDefault = instanceId === "default";
   const setupScriptUrl = `${window.location.origin}/codex/setup.sh`;
   const cleanupScriptUrl = `${window.location.origin}/codex/restore.sh`;
@@ -1860,8 +1873,8 @@ function CodexScriptsDialog({
     ? `${window.location.origin}/openai/v1`
     : `${window.location.origin}/instances/${encodeURIComponent(instanceId)}/openai/v1`;
   const setupCommand = isDefault
-    ? `curl -fsSL ${shellQuote(setupScriptUrl)} | sh -s -- ${shellQuote(gatewayUrl)}`
-    : `curl -fsSL ${shellQuote(instancesScriptUrl)} | sh -s -- create ${shellQuote(instanceId)} ${shellQuote(gatewayUrl)}`;
+    ? `curl -fsSL ${shellQuote(setupScriptUrl)} | sh -s -- ${shellQuote(gatewayUrl)}${accessToken.trim() ? ` ${shellQuote(accessToken.trim())}` : ""}`
+    : `curl -fsSL ${shellQuote(instancesScriptUrl)} | sh -s -- create ${shellQuote(instanceId)} ${shellQuote(gatewayUrl)}${accessToken.trim() ? ` ${shellQuote(accessToken.trim())}` : ""}`;
   const cleanupCommand = isDefault
     ? `curl -fsSL ${shellQuote(cleanupScriptUrl)} | sh`
     : `curl -fsSL ${shellQuote(instancesScriptUrl)} | sh -s -- delete ${shellQuote(instanceId)}`;
@@ -1885,6 +1898,16 @@ function CodexScriptsDialog({
             : <>新建脚本会创建独立的 <code>CODEX_HOME</code> 和 Electron 数据目录，请在新窗口中单独登录账号。清理脚本会删除该实例文件夹及其中的登录信息、会话和 Electron 数据。</>}
         </div>
         <FormField label={isDefault ? "设置默认 Codex" : "新建 Codex 实例（macOS）"}>
+          <label className="mb-3 block">
+            <span className="mb-1.5 block text-xs font-semibold text-slate-600 dark:text-slate-300">Gateway API Key（账户模式必填）</span>
+            <input
+              className="field w-full font-mono text-xs"
+              type="password"
+              value={accessToken}
+              placeholder="agw_..."
+              onChange={(event) => setAccessToken(event.target.value)}
+            />
+          </label>
           <CommandBlock
             command={setupCommand}
             copied={copied === "setup"}
@@ -2055,6 +2078,55 @@ function SettingsDialog({
           </div>
         </div>
       )}
+    </DialogFrame>
+  );
+}
+
+function AccessTokenDialog({
+  onClose,
+  onError,
+}: {
+  onClose: () => void;
+  onError: (message: string) => void;
+}) {
+  const [token, setToken] = React.useState<string | null>(null);
+  const [creating, setCreating] = React.useState(false);
+
+  async function createToken() {
+    setCreating(true);
+    try {
+      const value = await authApi.createAccessToken();
+      setToken(value.access_token);
+    } catch (error) {
+      onError(errorMessage(error));
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  return (
+    <DialogFrame
+      title="网关 API Key"
+      description="用于账户模式下的 /openai/v1 请求。该 Key 只会显示这一次，请立即复制并安全保存。"
+      onClose={onClose}
+    >
+      <div className="rounded-2xl border border-amber-500/20 bg-amber-500/5 p-4 text-xs leading-5 text-amber-800 dark:text-amber-200">
+        每次生成都会新增一个有效 Key；旧 Key 不会自动失效。
+      </div>
+      {token ? (
+        <div className="mt-5">
+          <FormField label="新建 API Key">
+            <CopyField value={token} />
+          </FormField>
+        </div>
+      ) : null}
+      <div className="mt-7 flex justify-end gap-2">
+        <Button type="button" variant="outline" onClick={onClose}>完成</Button>
+        <Button type="button" disabled={creating} onClick={() => void createToken()}>
+          {creating ? <LoaderCircle className="size-4 animate-spin" /> : <KeyRound className="size-4" />}
+          {creating ? "生成中" : token ? "再生成一个" : "生成 API Key"}
+        </Button>
+      </div>
     </DialogFrame>
   );
 }

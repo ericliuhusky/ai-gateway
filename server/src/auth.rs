@@ -16,7 +16,10 @@ use std::{
 use url::Url;
 use uuid::Uuid;
 
-use crate::{config::Config, store::UserStore};
+use crate::{
+    config::{AuthMode, Config},
+    store::{UserRole, UserStore},
+};
 
 const FEISHU_AUTHORIZE_URL: &str = "https://accounts.feishu.cn/open-apis/authen/v1/authorize";
 const FEISHU_TOKEN_URL: &str = "https://open.feishu.cn/open-apis/authen/v2/oauth/token";
@@ -28,6 +31,7 @@ const OAUTH_STATE_TTL_SECS: i64 = 10 * 60;
 #[derive(Clone)]
 pub struct AuthService {
     users: UserStore,
+    auth_mode: AuthMode,
     http: Client,
     app_id: String,
     app_secret: String,
@@ -46,10 +50,18 @@ pub struct PublicUser {
     pub id: i64,
     pub name: String,
     pub avatar_url: String,
+    pub role: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct RequestScope {
+    pub owner_user_id: Option<i64>,
+    pub is_admin: bool,
 }
 
 #[derive(Debug, Serialize)]
 pub struct AuthStatus {
+    pub mode: String,
     pub feishu_login_configured: bool,
 }
 
@@ -75,6 +87,7 @@ impl AuthService {
     pub fn new(config: Arc<Config>) -> Result<Self, String> {
         Ok(Self {
             users: UserStore::new(config.clone())?,
+            auth_mode: config.auth_mode(),
             http: Client::new(),
             app_id: config.feishu_app_id(),
             app_secret: config.feishu_app_secret(),
@@ -88,6 +101,10 @@ impl AuthService {
 
     pub fn feishu_configured(&self) -> bool {
         !self.app_id.is_empty() && !self.app_secret.is_empty()
+    }
+
+    pub fn required(&self) -> bool {
+        self.auth_mode == AuthMode::Required
     }
 
     pub fn begin_feishu_login(&self, headers: &HeaderMap) -> Result<String, String> {
@@ -143,6 +160,7 @@ impl AuthService {
                 id: user.id,
                 name: profile.name,
                 avatar_url: profile.avatar_url,
+                role: user.role.as_str().to_string(),
             },
             session_id,
             pending.return_url,
@@ -169,6 +187,7 @@ impl AuthService {
                     id: profile.user.id,
                     name: profile.name,
                     avatar_url: profile.avatar_url,
+                    role: profile.user.role.as_str().to_string(),
                 })
             })
     }
@@ -178,6 +197,34 @@ impl AuthService {
             self.users.delete_session(&session_id)?;
         }
         Ok(())
+    }
+
+    pub fn create_gateway_access_token(&self, user_id: i64) -> Result<String, String> {
+        let token = format!("agw_{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
+        self.users.create_gateway_access_token(user_id, &token)?;
+        Ok(token)
+    }
+
+    fn gateway_scope_from_headers(
+        &self,
+        headers: &HeaderMap,
+    ) -> Result<Option<RequestScope>, String> {
+        let token = headers
+            .get(header::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.strip_prefix("Bearer "))
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let Some(token) = token else {
+            return Ok(None);
+        };
+        Ok(self
+            .users
+            .find_user_by_gateway_access_token(token)?
+            .map(|user| RequestScope {
+                owner_user_id: Some(user.id),
+                is_admin: user.role == UserRole::Admin,
+            }))
     }
 
     pub fn session_cookie_header(&self, session_id: &str) -> String {
@@ -296,6 +343,11 @@ struct FeishuProfile {
 
 pub async fn auth_status(State(auth): State<AuthService>) -> Json<AuthStatus> {
     Json(AuthStatus {
+        mode: if auth.required() {
+            "required".to_string()
+        } else {
+            "disabled".to_string()
+        },
         feishu_login_configured: auth.feishu_configured(),
     })
 }
@@ -330,6 +382,17 @@ pub async fn me(
     State(auth): State<AuthService>,
     headers: HeaderMap,
 ) -> Result<Json<LoginResponse>, AuthError> {
+    if !auth.required() {
+        return Ok(Json(LoginResponse {
+            ok: true,
+            user: PublicUser {
+                id: 0,
+                name: "本地管理员".to_string(),
+                avatar_url: String::new(),
+                role: UserRole::Admin.as_str().to_string(),
+            },
+        }));
+    }
     let user = auth
         .user_from_headers(&headers)
         .map_err(AuthError::internal)?
@@ -350,14 +413,73 @@ pub async fn logout(
     Ok(response)
 }
 
+pub async fn create_gateway_access_token(
+    State(auth): State<AuthService>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, AuthError> {
+    let user = auth
+        .user_from_headers(&headers)
+        .map_err(AuthError::internal)?
+        .ok_or_else(AuthError::unauthorized)?;
+    let token = auth
+        .create_gateway_access_token(user.id)
+        .map_err(AuthError::internal)?;
+    Ok(Json(serde_json::json!({ "access_token": token })))
+}
+
 pub async fn require_auth(
     State(auth): State<AuthService>,
-    request: Request,
+    mut request: Request,
     next: Next,
 ) -> Response {
+    if !auth.required() {
+        request.extensions_mut().insert(RequestScope {
+            owner_user_id: None,
+            is_admin: true,
+        });
+        return next.run(request).await;
+    }
     match auth.user_from_headers(request.headers()) {
-        Ok(Some(_)) => next.run(request).await,
+        Ok(Some(user)) => {
+            request.extensions_mut().insert(RequestScope {
+                owner_user_id: Some(user.id),
+                is_admin: user.role == UserRole::Admin.as_str(),
+            });
+            next.run(request).await
+        }
         Ok(None) => AuthError::unauthorized().into_response(),
+        Err(error) => AuthError::internal(error).into_response(),
+    }
+}
+
+pub async fn require_gateway_auth(
+    State(auth): State<AuthService>,
+    mut request: Request,
+    next: Next,
+) -> Response {
+    if !auth.required() {
+        request.extensions_mut().insert(RequestScope {
+            owner_user_id: None,
+            is_admin: true,
+        });
+        return next.run(request).await;
+    }
+    match auth.gateway_scope_from_headers(request.headers()) {
+        Ok(Some(scope)) => {
+            request.extensions_mut().insert(scope);
+            next.run(request).await
+        }
+        Ok(None) => match auth.user_from_headers(request.headers()) {
+            Ok(Some(user)) => {
+                request.extensions_mut().insert(RequestScope {
+                    owner_user_id: Some(user.id),
+                    is_admin: user.role == UserRole::Admin.as_str(),
+                });
+                next.run(request).await
+            }
+            Ok(None) => AuthError::unauthorized().into_response(),
+            Err(error) => AuthError::internal(error).into_response(),
+        },
         Err(error) => AuthError::internal(error).into_response(),
     }
 }

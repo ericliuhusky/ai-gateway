@@ -5,6 +5,29 @@ const DEFAULT_BIND_ADDR: &str = "0.0.0.0:4242";
 pub const DEFAULT_CODEX_CLIENT_VERSION: &str = "0.146.0";
 const ENCRYPTION_KEY_ENV: &str = "AI_GATEWAY_ENCRYPTION_KEY";
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AuthMode {
+    Disabled,
+    Required,
+}
+
+impl AuthMode {
+    fn from_env() -> Result<Self, String> {
+        match env::var("AI_GATEWAY_AUTH_MODE")
+            .unwrap_or_else(|_| "disabled".to_string())
+            .trim()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "" | "disabled" => Ok(Self::Disabled),
+            "required" => Ok(Self::Required),
+            value => Err(format!(
+                "invalid AI_GATEWAY_AUTH_MODE `{value}`; expected `disabled` or `required`"
+            )),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Config {
     bind_addr: SocketAddr,
@@ -13,6 +36,7 @@ pub struct Config {
     encryption: FieldEncryptor,
     feishu_app_id: String,
     feishu_app_secret: String,
+    auth_mode: AuthMode,
 }
 
 impl Config {
@@ -43,6 +67,7 @@ impl Config {
             encryption,
             feishu_app_id: env_string("FEISHU_APP_ID"),
             feishu_app_secret: env_string("FEISHU_APP_SECRET"),
+            auth_mode: AuthMode::from_env()?,
         })
     }
 
@@ -74,6 +99,10 @@ impl Config {
         self.encryption.clone()
     }
 
+    pub fn auth_mode(&self) -> AuthMode {
+        self.auth_mode
+    }
+
     #[cfg(test)]
     pub fn for_test(data_dir: PathBuf) -> Self {
         Self {
@@ -82,6 +111,7 @@ impl Config {
             data_dir,
             feishu_app_id: String::new(),
             feishu_app_secret: String::new(),
+            auth_mode: AuthMode::Disabled,
             encryption: FieldEncryptor::from_base64_key(
                 "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=",
             )

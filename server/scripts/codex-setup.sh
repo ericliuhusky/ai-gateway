@@ -445,6 +445,7 @@ EOF
 }
 
 gateway_base_url=${1:-}
+gateway_access_token=${2:-}
 [ -n "$gateway_base_url" ] || fail "缺少 Gateway Base URL"
 
 case "$gateway_base_url" in
@@ -465,6 +466,14 @@ esac
 while [ "${gateway_base_url%/}" != "$gateway_base_url" ]; do
   gateway_base_url=${gateway_base_url%/}
 done
+
+case "$gateway_access_token" in
+  ""|agw_*) ;;
+  *) fail "Gateway API Key 格式无效" ;;
+esac
+case "$gateway_access_token" in
+  *\"*|*\\*|*"$newline"*) fail "Gateway API Key 包含不支持的字符" ;;
+esac
 
 [ -n "${HOME:-}" ] || fail "缺少 HOME 环境变量"
 
@@ -596,6 +605,10 @@ name = "ai-gateway"
 base_url = "$gateway_base_url"
 wire_api = "responses"
 EOF
+
+if [ -n "$gateway_access_token" ]; then
+  printf 'bearer_token_env_var = "%s"\n' "$gateway_access_token" >> "$temp_path"
+fi
 
 chmod 600 "$temp_path"
 mv "$temp_path" "$config_path"

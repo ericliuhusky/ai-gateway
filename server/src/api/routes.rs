@@ -83,6 +83,17 @@ pub fn build_router(state: AppState, web_dir: PathBuf) -> Router {
         .route("/auth/logout", post(auth::logout))
         .with_state(state.auth.clone());
 
+    let token_routes = Router::new()
+        .route(
+            "/auth/access-tokens",
+            post(auth::create_gateway_access_token),
+        )
+        .route_layer(middleware::from_fn_with_state(
+            state.auth.clone(),
+            require_auth,
+        ))
+        .with_state(state.auth.clone());
+
     let gateway_routes = Router::new()
         // Gateway request endpoints remain token-free for backward-compatible Codex access.
         .route("/openai/v1/models", get(list_models))
@@ -95,6 +106,10 @@ pub fn build_router(state: AppState, web_dir: PathBuf) -> Router {
             "/instances/:instance_id/openai/v1/responses",
             post(responses_for_instance),
         )
+        .route_layer(middleware::from_fn_with_state(
+            state.auth.clone(),
+            auth::require_gateway_auth,
+        ))
         .with_state(state);
 
     Router::new()
@@ -103,6 +118,7 @@ pub fn build_router(state: AppState, web_dir: PathBuf) -> Router {
         .route("/codex/restore.sh", get(codex_scripts::restore_script))
         .route("/codex/instances.sh", get(codex_scripts::instances_script))
         .merge(auth_routes)
+        .merge(token_routes)
         .merge(protected)
         .merge(gateway_routes)
         .nest_service("/assets", assets)

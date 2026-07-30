@@ -34,9 +34,19 @@ impl AccountStore {
         &self,
         imported: ImportedOpenAIAuth,
     ) -> Result<AccountRecord, String> {
+        self.add_openai_account_for_owner(None, imported).await
+    }
+
+    pub async fn add_openai_account_for_owner(
+        &self,
+        owner_user_id: Option<i64>,
+        imported: ImportedOpenAIAuth,
+    ) -> Result<AccountRecord, String> {
         let mut records = self.records.lock().await;
         if records.iter().any(|account| {
-            account.email == imported.email && account.provider() == PROVIDER_OPENAI_PROXY
+            account.owner_user_id == owner_user_id
+                && account.email == imported.email
+                && account.provider() == PROVIDER_OPENAI_PROXY
         }) {
             return Err(format!("OpenAI 账号已经存在: {}", imported.email));
         }
@@ -50,6 +60,7 @@ impl AccountStore {
             expiry_timestamp: imported.expiry_timestamp,
             client_id: Some(imported.client_id),
             upstream_account_id: imported.account_id,
+            owner_user_id,
         };
         records.push(account.clone());
 
@@ -63,8 +74,19 @@ impl AccountStore {
         upstream: &UpstreamClient,
         account_id: &str,
     ) -> Result<AccountRecord, String> {
+        self.acquire_by_id_for_owner(None, token_service, upstream, account_id)
+            .await
+    }
+
+    pub async fn acquire_by_id_for_owner(
+        &self,
+        owner_user_id: Option<i64>,
+        token_service: &OpenAiTokenService,
+        upstream: &UpstreamClient,
+        account_id: &str,
+    ) -> Result<AccountRecord, String> {
         let account = self
-            .find_by_id(account_id)
+            .find_by_id_for_owner(owner_user_id, account_id)
             .await
             .ok_or_else(|| format!("账户不存在: {account_id}"))?;
         self.prepare_account_for_use(account, token_service, upstream)
@@ -72,19 +94,35 @@ impl AccountStore {
     }
 
     pub async fn find_by_id(&self, account_id: &str) -> Option<AccountRecord> {
+        self.find_by_id_for_owner(None, account_id).await
+    }
+
+    pub async fn find_by_id_for_owner(
+        &self,
+        owner_user_id: Option<i64>,
+        account_id: &str,
+    ) -> Option<AccountRecord> {
         self.records
             .lock()
             .await
             .iter()
-            .find(|account| account.id == account_id)
+            .find(|account| account.id == account_id && account.owner_user_id == owner_user_id)
             .cloned()
     }
 
     pub async fn delete(&self, account_id: &str) -> Result<AccountRecord, String> {
+        self.delete_for_owner(None, account_id).await
+    }
+
+    pub async fn delete_for_owner(
+        &self,
+        owner_user_id: Option<i64>,
+        account_id: &str,
+    ) -> Result<AccountRecord, String> {
         let mut records = self.records.lock().await;
         let index = records
             .iter()
-            .position(|account| account.id == account_id)
+            .position(|account| account.id == account_id && account.owner_user_id == owner_user_id)
             .ok_or_else(|| format!("账户不存在: {account_id}"))?;
 
         self.sqlite.delete_account(account_id)?;

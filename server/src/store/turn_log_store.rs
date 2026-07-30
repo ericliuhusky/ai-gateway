@@ -25,14 +25,70 @@ impl TurnLogStore {
         self.sqlite.record_turn_route_log(update, TURN_LOG_LIMIT)
     }
 
+    pub fn record_for_owner(
+        &self,
+        owner_user_id: Option<i64>,
+        update: &TurnRouteLogUpdate,
+    ) -> Result<(), String> {
+        let mut update = update.clone();
+        update.turn_id = scoped_turn_id(owner_user_id, &update.turn_id);
+        self.sqlite.record_turn_route_log(&update, TURN_LOG_LIMIT)
+    }
+
     pub fn get(&self, turn_id: &str) -> Result<Option<TurnRouteLog>, String> {
         self.sqlite.load_turn_route_log(turn_id)
+    }
+
+    pub fn get_for_owner(
+        &self,
+        owner_user_id: Option<i64>,
+        turn_id: &str,
+    ) -> Result<Option<TurnRouteLog>, String> {
+        self.sqlite
+            .load_turn_route_log(&scoped_turn_id(owner_user_id, turn_id))
     }
 
     pub fn list(&self, limit: i64) -> Result<Vec<TurnRouteLog>, String> {
         self.sqlite
             .list_turn_route_logs(limit.clamp(1, TURN_LOG_LIMIT))
     }
+
+    pub fn list_for_owner(
+        &self,
+        owner_user_id: Option<i64>,
+        limit: i64,
+    ) -> Result<Vec<TurnRouteLog>, String> {
+        let limit = limit.clamp(1, TURN_LOG_LIMIT);
+        let Some(owner_user_id) = owner_user_id else {
+            return self.list(limit);
+        };
+        let prefix = turn_prefix(owner_user_id);
+        self.sqlite
+            .list_turn_route_logs_for_prefix(&prefix, limit)
+            .map(|turns| {
+                turns
+                    .into_iter()
+                    .map(|mut turn| {
+                        turn.turn_id = turn
+                            .turn_id
+                            .strip_prefix(&prefix)
+                            .unwrap_or(&turn.turn_id)
+                            .to_string();
+                        turn
+                    })
+                    .collect()
+            })
+    }
+}
+
+fn turn_prefix(owner_user_id: i64) -> String {
+    format!("__user_{owner_user_id}__")
+}
+
+fn scoped_turn_id(owner_user_id: Option<i64>, turn_id: &str) -> String {
+    owner_user_id
+        .map(|owner_user_id| format!("{}{}", turn_prefix(owner_user_id), turn_id))
+        .unwrap_or_else(|| turn_id.to_string())
 }
 
 #[cfg(test)]

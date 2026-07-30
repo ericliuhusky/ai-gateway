@@ -221,10 +221,12 @@ export type GatewayUser = {
   id: number;
   name: string;
   avatar_url: string;
+  role: "admin" | "user";
 };
 
 export const authApi = {
-  status: () => request<{ feishu_login_configured: boolean }>("/auth/status"),
+  status: () => request<{ mode: "disabled" | "required"; feishu_login_configured: boolean }>("/auth/status"),
   me: () => request<{ ok: true; user: GatewayUser }>("/auth/me"),
   logout: () => request<{ ok: true }>("/auth/logout", { method: "POST" }),
+  createAccessToken: () => request<{ access_token: string }>("/auth/access-tokens", { method: "POST" }),
 };

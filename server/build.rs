@@ -36,7 +36,13 @@ fn web_install_dir() -> PathBuf {
 }
 
 fn emit_rerun_if_changed(web_dir: &Path) {
-    for path in ["package.json", "bun.lock", "components.json", "scripts", "src"] {
+    for path in [
+        "package.json",
+        "bun.lock",
+        "components.json",
+        "scripts",
+        "src",
+    ] {
         emit_paths(&web_dir.join(path));
     }
 }

@@ -17,7 +17,7 @@ fail() {
 usage() {
   cat <<'EOF'
 Usage:
-  instances.sh create <name> <gateway-base-url>
+  instances.sh create <name> <gateway-base-url> [gateway-api-key]
   instances.sh start <name>
   instances.sh delete <name>
   instances.sh list
@@ -83,6 +83,7 @@ configure_gateway() {
   config_path=$1
   gateway_base_url=$2
   codex_home=$3
+  gateway_access_token=$4
   temp_path="${config_path}.ai-gateway.$$"
   source_path=$config_path
 
@@ -186,6 +187,9 @@ name = "ai-gateway"
 base_url = "$gateway_base_url"
 wire_api = "responses"
 EOF
+  if [ -n "$gateway_access_token" ]; then
+    printf 'bearer_token_env_var = "%s"\n' "$gateway_access_token" >> "$temp_path"
+  fi
 
   chmod 600 "$temp_path"
   mv "$temp_path" "$config_path"
@@ -230,8 +234,18 @@ start_instance() {
 create_instance() {
   name=$1
   gateway_base_url=$2
+  gateway_access_token=${3:-}
   require_instance_name "$name"
   require_gateway_url "$gateway_base_url"
+  case "$gateway_access_token" in
+    ""|agw_*) ;;
+    *) fail "Gateway API Key 格式无效" ;;
+  esac
+  newline='
+'
+  case "$gateway_access_token" in
+    *\"*|*\\*|*"$newline"*) fail "Gateway API Key 包含不支持的字符" ;;
+  esac
   gateway_base_url=$(trim_trailing_slashes "$gateway_base_url")
 
   root=$(instance_dir "$name")
@@ -249,7 +263,7 @@ create_instance() {
   link_shared_path "$template_home/rules" "$codex_home/rules"
   link_shared_path "$template_home/AGENTS.md" "$codex_home/AGENTS.md"
 
-  configure_gateway "$config_path" "$gateway_base_url" "$codex_home"
+  configure_gateway "$config_path" "$gateway_base_url" "$codex_home" "$gateway_access_token"
   printf '%s\n' \
     "已创建隔离实例：$name" \
     "未复制 auth.json；请在新窗口中单独登录所需账号。"
@@ -294,11 +308,11 @@ list_instances() {
 command=${1:-}
 case "$command" in
   create)
-    [ "$#" -eq 3 ] || {
+    [ "$#" -ge 3 ] && [ "$#" -le 4 ] || {
       usage
       exit 1
     }
-    create_instance "$2" "$3"
+    create_instance "$2" "$3" "${4:-}"
     ;;
   start)
     [ "$#" -eq 2 ] || {

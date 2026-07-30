@@ -58,6 +58,8 @@ mod tests {
         assert!(SETUP_SCRIPT.contains("gateway_base_url=${1:-}"));
         assert!(SETUP_SCRIPT.contains("[model_providers.ai-gateway]"));
         assert!(SETUP_SCRIPT.contains("wire_api = \"responses\""));
+        assert!(SETUP_SCRIPT.contains("gateway_access_token=${2:-}"));
+        assert!(SETUP_SCRIPT.contains("bearer_token_env_var"));
         assert!(SETUP_SCRIPT.contains("# ai-gateway.previous-model-provider: "));
         assert!(SETUP_SCRIPT.contains("state_5.sqlite"));
         assert!(SETUP_SCRIPT.contains("aliases.tsv"));
@@ -82,6 +84,8 @@ mod tests {
         assert!(INSTANCES_SCRIPT.contains("auth.json is intentionally never copied"));
         assert!(INSTANCES_SCRIPT.contains("link_shared_path \"$template_home/skills\""));
         assert!(INSTANCES_SCRIPT.contains("instances.sh delete <name>"));
+        assert!(INSTANCES_SCRIPT.contains("gateway-api-key"));
+        assert!(INSTANCES_SCRIPT.contains("bearer_token_env_var"));
         assert!(INSTANCES_SCRIPT.contains("rm -rf \"$root\""));
     }
 

@@ -62,6 +62,7 @@ cargo run -p ai-gateway
 | --- | --- | --- |
 | `AI_GATEWAY_BIND_ADDR` | `0.0.0.0:4242` | HTTP 监听地址 |
 | `AI_GATEWAY_DATA_DIR` | `$HOME/.ai-gateway` | SQLite 数据目录 |
+| `AI_GATEWAY_AUTH_MODE` | `disabled` | 认证模式：`disabled` 为单人无账户模式，`required` 为飞书登录模式 |
 | `AI_GATEWAY_ENCRYPTION_KEY` | 无（必填） | 用于加密数据库凭据的 Base64 编码 32 字节密钥 |
 | `FEISHU_APP_ID` | 无 | 飞书 OAuth 应用 App ID（必填） |
 | `FEISHU_APP_SECRET` | 无 | 飞书 OAuth 应用 App Secret（必填） |
@@ -104,6 +105,13 @@ curl -fsSL 'https://gateway.example.com/codex/setup.sh' |
   sh -s -- 'https://gateway.example.com/openai/v1'
 ```
 
+账户模式下，将管理端生成的 API Key 作为第二个参数传入：
+
+```bash
+curl -fsSL 'https://gateway.example.com/codex/setup.sh' |
+  sh -s -- 'https://gateway.example.com/openai/v1' 'agw_...'
+```
+
 脚本会：
 
 - 在 `config.toml` 注释中记录切换前的 `model_provider`
@@ -135,6 +143,8 @@ curl -fsSL 'https://gateway.example.com/codex/instances.sh' |
 curl -fsSL 'https://gateway.example.com/codex/instances.sh' |
   sh -s -- create account-b 'https://gateway.example.com/instances/account-b/openai/v1'
 ```
+
+账户模式下，`create` 命令可在实例 URL 后附加 API Key。
 
 实例保存在 `~/.ai-gateway/codex-instances/<name>/`。每个实例有独立的 `CODEX_HOME`、`config.toml`、`auth.json`、会话记录和 Electron 用户数据目录，因此可分别在窗口中登录不同的 Codex 账号。创建时不会复制默认实例的 `auth.json`。`skills`、`rules` 和 `AGENTS.md` 会从默认 `~/.codex` 共享，便于复用本地工作流。
 
@@ -281,7 +291,25 @@ curl -X POST http://127.0.0.1:4242/openai/v1/responses \
 
 ## 管理控制台账户与登录
 
-管理端使用飞书 OAuth 与同源、HttpOnly Cookie 会话进行访问控制。每一位在飞书完成授权的用户都会自动创建或更新本地账户，并可登录管理控制台；不再存在“首个管理员”或邮箱密码注册流程。飞书身份及会话保存在 `$AI_GATEWAY_DATA_DIR/db.sqlite` 的 `gateway_feishu_identities`、`gateway_sessions` 表中。
+认证通过 `AI_GATEWAY_AUTH_MODE` 配置：
+
+- `disabled`（默认）：不启用账户系统，管理端和网关接口保持当前的无鉴权单人部署行为。
+- `required`：管理端必须使用飞书 OAuth 登录。首个成功登录的用户自动成为 `admin`，后续用户为 `user`。飞书身份、角色和会话保存在 `$AI_GATEWAY_DATA_DIR/db.sqlite` 的 `gateway_users`、`gateway_feishu_identities`、`gateway_sessions` 表中。
+
+```bash
+AI_GATEWAY_AUTH_MODE=required \
+FEISHU_APP_ID=... \
+FEISHU_APP_SECRET=... \
+cargo run -p ai-gateway
+```
+
+在 `required` 模式下，网关请求还必须使用用户自己的 API Key：
+
+```http
+Authorization: Bearer agw_...
+```
+
+登录管理端后，点击顶部的“API Key”生成并复制。该 Key 仅在生成时显示一次；Provider、OpenAI 账户、默认实例及命名实例均按该 Key 对应的用户隔离。
 
 启动服务前需要配置飞书应用凭据：
 
