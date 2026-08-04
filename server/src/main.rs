@@ -20,7 +20,8 @@ use openai_tokens::OpenAiTokenService;
 use reqwest::Client;
 use std::sync::Arc;
 use store::{
-    AccountStore, ModelStore, ProviderStore, RouteStore, SettingsStore, TurnLogStore, UsageStore,
+    AccountStore, IssueStore, ModelStore, ProviderStore, RouteStore, SettingsStore, TurnLogStore,
+    UsageStore,
 };
 use upstream::UpstreamClient;
 
@@ -38,6 +39,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let models = ModelStore::new(config.clone())?;
     let settings = SettingsStore::new(config.clone())?;
     let turn_logs = TurnLogStore::new(config.clone())?;
+    let issues = IssueStore::new(config.clone())?;
     let usage = UsageStore::new(config.clone())?;
     let openai_tokens = OpenAiTokenService::new();
     let openai_device_login = OpenAiDeviceLoginService::new();
@@ -54,6 +56,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         models,
         settings,
         turn_logs,
+        issues,
         usage,
         upstream,
     };

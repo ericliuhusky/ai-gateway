@@ -310,6 +310,46 @@ pub struct TurnRouteLogUpdate {
     pub timestamp: i64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GatewayIssue {
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instance_id: Option<String>,
+    pub provider_id: String,
+    pub provider_name: String,
+    pub model: String,
+    pub upstream_url: String,
+    pub failure_kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status_code: Option<u16>,
+    pub error_message: String,
+    pub request_body: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_body: Option<String>,
+    pub request_truncated: bool,
+    pub response_truncated: bool,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct GatewayIssueRecord {
+    pub id: String,
+    pub owner_user_id: Option<i64>,
+    pub instance_id: Option<String>,
+    pub provider_id: String,
+    pub provider_name: String,
+    pub model: String,
+    pub upstream_url: String,
+    pub failure_kind: String,
+    pub status_code: Option<u16>,
+    pub error_message: String,
+    pub request_body: String,
+    pub response_body: Option<String>,
+    pub request_truncated: bool,
+    pub response_truncated: bool,
+    pub created_at: i64,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TokenUsage {
     pub input_tokens: u64,

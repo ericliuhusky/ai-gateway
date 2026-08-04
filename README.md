@@ -23,6 +23,14 @@ AI Gateway 现在由远程 Server 和 Web 管理端组成：
 
 观测数据保存在同一 SQLite 数据库的 `turn_route_logs` 表中，不会写入响应头。每个 turn 一行，记录首条用户输入的最多 160 字预览、哈希后的 turn ID、模型、路由档位/原因、分类置信度、推理度、请求次数、工具回合数和时间。分类失败时保存最多 500 字的上游错误详情；分类模型返回文本时同样最多保存 500 字，便于判断 JSON 是否有效。不保存完整提示词、工具结果或最终回答。表最多保留 1000 条，按 `updated_at` 作为 LRU 淘汰最旧数据。管理端首页会显示“最近路由 Turn”。
 
+## 网关故障记录与修复提示词
+
+网关只在无法连接上游、上游返回非 2xx、响应体读取失败或流式响应中途断开时，把实际发送给上游的请求和收到的响应写入 SQLite 的 `gateway_issues` 表。成功请求不会写入故障表。
+
+记录按登录用户隔离，每位用户最多保留最近 200 条；每条请求体和响应体分别最多保存 128 KiB，超出后会在 UTF-8 字符边界截断。记录包含实例、供应商、模型、上游 URL、错误类型、HTTP 状态、错误信息和创建时间，但不保存 Authorization 请求头。
+
+管理端首页的“网关问题”区域可查看原始请求/响应。点击“复制修复提示词”会生成一段包含故障证据、安全约束和测试要求的提示词并复制到剪贴板；网关不会执行修复，用户可将提示词粘贴到 Codex 或其他 Agent 的用户输入中。点击“一键清空”会删除当前用户的全部故障记录。
+
 网关优先使用 Codex 请求头 `x-codex-turn-metadata` 中的 `turn_id` 聚合同一 turn，并兼容请求 Body 中的 `client_metadata.turn_id` / `turnId`；原始 ID 不会落库，仅保存不可逆哈希。如果客户端未提供这些字段，网关会为该请求生成独立的匿名 turn，无法跨工具回合保持模型粘性。
 
 分类器读取的是经长度限制的文本摘要，且业务输入会以不可信用户内容传给分类器，不会作为系统指令执行。
@@ -262,6 +270,9 @@ DELETE /settings/codex-client-version
 GET    /settings/automatic-routing
 PUT    /settings/automatic-routing
 GET    /routing/turns?limit=50
+GET    /gateway/issues?limit=50
+GET    /gateway/issues/:issue_id/repair-prompt
+DELETE /gateway/issues
 GET    /selected-provider
 PUT    /selected-provider
 GET    /selected-model

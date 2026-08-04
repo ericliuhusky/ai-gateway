@@ -3,9 +3,10 @@ use crate::{
     crypto::FieldEncryptor,
     models::{
         AccountRecord, AccountType, ApiProviderRecord, AutoRoutingSettings, CachedProviderModels,
-        DailyUsageSummary, ProviderAuthMode, ProviderCompatibilityProfile,
-        ProviderUpstreamProtocol, ROUTING_LOW_CONFIDENCE_THRESHOLD, RoutingModelTarget,
-        SelectedRoute, TurnRouteLog, TurnRouteLogUpdate, UsageIncrement, UsageSummary,
+        DailyUsageSummary, GatewayIssue, GatewayIssueRecord, ProviderAuthMode,
+        ProviderCompatibilityProfile, ProviderUpstreamProtocol, ROUTING_LOW_CONFIDENCE_THRESHOLD,
+        RoutingModelTarget, SelectedRoute, TurnRouteLog, TurnRouteLogUpdate, UsageIncrement,
+        UsageSummary,
     },
 };
 use chrono::{Datelike, FixedOffset, TimeZone};
@@ -680,6 +681,114 @@ impl SqliteStore {
             .map_err(|err| format!("commit turn route log transaction failed: {err}"))
     }
 
+    pub fn record_gateway_issue(
+        &self,
+        issue: &GatewayIssueRecord,
+        limit: i64,
+    ) -> Result<(), String> {
+        let owner_user_id = issue.owner_user_id.unwrap_or(0);
+        let mut conn = self.connect()?;
+        let transaction = conn
+            .transaction()
+            .map_err(|err| format!("begin gateway issue transaction failed: {err}"))?;
+        transaction
+            .execute(
+                "INSERT INTO gateway_issues (
+                    id, owner_user_id, instance_id, provider_id, provider_name, model,
+                    upstream_url, failure_kind, status_code, error_message,
+                    request_body, response_body, request_truncated, response_truncated, created_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                params![
+                    issue.id,
+                    owner_user_id,
+                    issue.instance_id,
+                    issue.provider_id,
+                    issue.provider_name,
+                    issue.model,
+                    issue.upstream_url,
+                    issue.failure_kind,
+                    issue.status_code,
+                    issue.error_message,
+                    issue.request_body,
+                    issue.response_body,
+                    i64::from(issue.request_truncated),
+                    i64::from(issue.response_truncated),
+                    issue.created_at,
+                ],
+            )
+            .map_err(|err| format!("insert gateway issue failed: {err}"))?;
+        transaction
+            .execute(
+                "DELETE FROM gateway_issues
+                 WHERE owner_user_id = ?1 AND id IN (
+                    SELECT id FROM gateway_issues
+                    WHERE owner_user_id = ?1
+                    ORDER BY created_at DESC, rowid DESC
+                    LIMIT -1 OFFSET ?2
+                 )",
+                params![owner_user_id, limit],
+            )
+            .map_err(|err| format!("trim gateway issues failed: {err}"))?;
+        transaction
+            .commit()
+            .map_err(|err| format!("commit gateway issue transaction failed: {err}"))
+    }
+
+    pub fn list_gateway_issues(
+        &self,
+        owner_user_id: Option<i64>,
+        limit: i64,
+    ) -> Result<Vec<GatewayIssue>, String> {
+        let conn = self.connect()?;
+        let mut statement = conn
+            .prepare(
+                "SELECT id, instance_id, provider_id, provider_name, model, upstream_url,
+                        failure_kind, status_code, error_message, request_body, response_body,
+                        request_truncated, response_truncated, created_at
+                 FROM gateway_issues
+                 WHERE owner_user_id = ?1
+                 ORDER BY created_at DESC, rowid DESC
+                 LIMIT ?2",
+            )
+            .map_err(|err| format!("prepare gateway issue list failed: {err}"))?;
+        statement
+            .query_map(
+                params![owner_user_id.unwrap_or(0), limit],
+                gateway_issue_from_row,
+            )
+            .map_err(|err| format!("query gateway issues failed: {err}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|err| format!("read gateway issues failed: {err}"))
+    }
+
+    pub fn load_gateway_issue(
+        &self,
+        owner_user_id: Option<i64>,
+        issue_id: &str,
+    ) -> Result<Option<GatewayIssue>, String> {
+        let conn = self.connect()?;
+        conn.query_row(
+            "SELECT id, instance_id, provider_id, provider_name, model, upstream_url,
+                    failure_kind, status_code, error_message, request_body, response_body,
+                    request_truncated, response_truncated, created_at
+             FROM gateway_issues
+             WHERE owner_user_id = ?1 AND id = ?2",
+            params![owner_user_id.unwrap_or(0), issue_id],
+            gateway_issue_from_row,
+        )
+        .optional()
+        .map_err(|err| format!("load gateway issue failed: {err}"))
+    }
+
+    pub fn clear_gateway_issues(&self, owner_user_id: Option<i64>) -> Result<usize, String> {
+        let conn = self.connect()?;
+        conn.execute(
+            "DELETE FROM gateway_issues WHERE owner_user_id = ?1",
+            params![owner_user_id.unwrap_or(0)],
+        )
+        .map_err(|err| format!("clear gateway issues failed: {err}"))
+    }
+
     pub(crate) fn record_usage_increment(&self, increment: &UsageIncrement) -> Result<(), String> {
         if increment.usage.total_tokens == 0 {
             return Ok(());
@@ -1182,6 +1291,26 @@ impl SqliteStore {
             );
             CREATE INDEX IF NOT EXISTS idx_usage_rollups_owner_bucket
                 ON usage_rollups(owner_user_id, bucket_type, bucket_key, provider_id);
+
+            CREATE TABLE IF NOT EXISTS gateway_issues (
+                id TEXT PRIMARY KEY,
+                owner_user_id INTEGER NOT NULL DEFAULT 0,
+                instance_id TEXT,
+                provider_id TEXT NOT NULL,
+                provider_name TEXT NOT NULL,
+                model TEXT NOT NULL,
+                upstream_url TEXT NOT NULL,
+                failure_kind TEXT NOT NULL,
+                status_code INTEGER,
+                error_message TEXT NOT NULL,
+                request_body TEXT NOT NULL,
+                response_body TEXT,
+                request_truncated INTEGER NOT NULL DEFAULT 0,
+                response_truncated INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_gateway_issues_owner_created
+                ON gateway_issues(owner_user_id, created_at DESC);
             ",
         )
         .map_err(|err| format!("initialize sqlite schema failed: {err}"))?;
@@ -1409,6 +1538,25 @@ fn turn_route_log_from_row(row: &rusqlite::Row<'_>) -> Result<TurnRouteLog, rusq
         updated_at: row.get(14)?,
         request_count: row.get(15)?,
         tool_round_count: row.get(16)?,
+    })
+}
+
+fn gateway_issue_from_row(row: &rusqlite::Row<'_>) -> Result<GatewayIssue, rusqlite::Error> {
+    Ok(GatewayIssue {
+        id: row.get(0)?,
+        instance_id: row.get(1)?,
+        provider_id: row.get(2)?,
+        provider_name: row.get(3)?,
+        model: row.get(4)?,
+        upstream_url: row.get(5)?,
+        failure_kind: row.get(6)?,
+        status_code: row.get(7)?,
+        error_message: row.get(8)?,
+        request_body: row.get(9)?,
+        response_body: row.get(10)?,
+        request_truncated: row.get::<_, i64>(11)? != 0,
+        response_truncated: row.get::<_, i64>(12)? != 0,
+        created_at: row.get(13)?,
     })
 }
 

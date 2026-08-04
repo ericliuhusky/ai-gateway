@@ -4,6 +4,7 @@ import type {
   CodexClientVersionSetting,
   GatewayCompatibilityProfile,
   GatewayModel,
+  GatewayIssue,
   GatewayProvider,
   ModelBenchmarkResult,
   FeishuAppSecretResponse,
@@ -132,6 +133,21 @@ export const gatewayApi = {
   async routingTurns(limit = 50) {
     const payload = await request<{ turns: TurnRouteLog[] }>(`/routing/turns?limit=${limit}`);
     return payload.turns;
+  },
+
+  async gatewayIssues(limit = 200) {
+    const payload = await request<{ issues: GatewayIssue[] }>(`/gateway/issues?limit=${limit}`);
+    return payload.issues;
+  },
+
+  gatewayIssueRepairPrompt(issueId: string) {
+    return request<{ prompt: string }>(
+      `/gateway/issues/${encodeURIComponent(issueId)}/repair-prompt`,
+    );
+  },
+
+  clearGatewayIssues() {
+    return request<{ deleted: number }>("/gateway/issues", { method: "DELETE" });
   },
 
   usageSummary(period: "total" | "today" | "week", providerId?: string) {

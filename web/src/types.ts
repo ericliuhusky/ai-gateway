@@ -108,6 +108,23 @@ export interface TurnRouteLog {
   tool_round_count: number;
 }
 
+export interface GatewayIssue {
+  id: string;
+  instance_id?: string;
+  provider_id: string;
+  provider_name: string;
+  model: string;
+  upstream_url: string;
+  failure_kind: string;
+  status_code?: number;
+  error_message: string;
+  request_body: string;
+  response_body?: string;
+  request_truncated: boolean;
+  response_truncated: boolean;
+  created_at: number;
+}
+
 export interface TokenUsage {
   input_tokens: number;
   output_tokens: number;
