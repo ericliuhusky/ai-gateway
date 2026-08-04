@@ -278,6 +278,10 @@ pub struct TurnRouteLog {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub classifier_output: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub classifier_raw_input: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub classifier_raw_output: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user_input_preview: Option<String>,
@@ -298,6 +302,8 @@ pub struct TurnRouteLogUpdate {
     pub routing_tier: Option<String>,
     pub classifier_confidence: Option<f64>,
     pub classifier_output: Option<String>,
+    pub classifier_raw_input: Option<String>,
+    pub classifier_raw_output: Option<String>,
     pub reasoning_effort: Option<String>,
     pub user_input_preview: Option<String>,
     pub is_tool_round: bool,

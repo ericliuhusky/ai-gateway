@@ -115,6 +115,8 @@ mod tests {
             routing_tier: Some("light".to_string()),
             classifier_confidence: Some(0.9),
             classifier_output: Some("{\"tier\":\"light\",\"confidence\":0.9}".to_string()),
+            classifier_raw_input: Some("{\"input\":\"hello\"}".to_string()),
+            classifier_raw_output: Some("{\"output_text\":\"low\"}".to_string()),
             reasoning_effort: Some("low".to_string()),
             user_input_preview: Some("hello".to_string()),
             is_tool_round: false,
@@ -135,6 +137,14 @@ mod tests {
         assert_eq!(log.tool_round_count, 1);
         assert_eq!(log.started_at, 10);
         assert_eq!(log.updated_at, 20);
+        assert_eq!(
+            log.classifier_raw_input.as_deref(),
+            Some("{\"input\":\"hello\"}")
+        );
+        assert_eq!(
+            log.classifier_raw_output.as_deref(),
+            Some("{\"output_text\":\"low\"}")
+        );
     }
 
     #[test]
@@ -156,6 +166,8 @@ mod tests {
                         routing_tier: Some("light".to_string()),
                         classifier_confidence: Some(0.9),
                         classifier_output: None,
+                        classifier_raw_input: None,
+                        classifier_raw_output: None,
                         reasoning_effort: None,
                         user_input_preview: None,
                         is_tool_round: false,

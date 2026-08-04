@@ -98,6 +98,8 @@ export interface TurnRouteLog {
   routing_tier?: "low" | "medium" | "high" | "xhigh";
   classifier_confidence?: number;
   classifier_output?: string;
+  classifier_raw_input?: string;
+  classifier_raw_output?: string;
   reasoning_effort?: string;
   user_input_preview?: string;
   started_at: number;

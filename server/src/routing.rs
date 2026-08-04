@@ -30,6 +30,8 @@ pub struct RoutingDecision {
     pub reason: &'static str,
     pub detail: Option<String>,
     pub classifier_output: Option<String>,
+    pub classifier_raw_input: Option<String>,
+    pub classifier_raw_output: Option<String>,
     pub tier: Option<RoutingTier>,
     pub confidence: Option<f64>,
 }
@@ -42,6 +44,8 @@ impl RoutingDecision {
             reason: "automatic_routing_disabled",
             detail: None,
             classifier_output: None,
+            classifier_raw_input: None,
+            classifier_raw_output: None,
             tier: None,
             confidence: None,
         }
@@ -54,6 +58,8 @@ impl RoutingDecision {
             reason: "selected_model_override",
             detail: None,
             classifier_output: None,
+            classifier_raw_input: None,
+            classifier_raw_output: None,
             tier: None,
             confidence: None,
         }
@@ -66,6 +72,8 @@ impl RoutingDecision {
             reason,
             detail: None,
             classifier_output: None,
+            classifier_raw_input: None,
+            classifier_raw_output: None,
             tier: Some(RoutingTier::High),
             confidence: None,
         }
@@ -78,6 +86,8 @@ impl RoutingDecision {
             reason,
             detail: None,
             classifier_output: None,
+            classifier_raw_input: None,
+            classifier_raw_output: None,
             tier: Some(RoutingTier::High),
             confidence: None,
         }
@@ -184,6 +194,8 @@ pub fn decision_from_classifier_output(
         },
         detail: None,
         classifier_output: Some(diagnostic_preview(text, 500)),
+        classifier_raw_input: None,
+        classifier_raw_output: None,
         tier: Some(tier),
         confidence: Some(output.confidence),
     })

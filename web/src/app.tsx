@@ -1116,6 +1116,18 @@ function BenchmarkMetric({ label, value }: { label: string; value: string }) {
 }
 
 function TurnLogSection({ turns }: { turns: TurnRouteLog[] }) {
+  const [copiedTurnId, setCopiedTurnId] = React.useState<string | null>(null);
+
+  async function copyRawRoutingRecord(turn: TurnRouteLog) {
+    const sections = [
+      turn.classifier_raw_input ? `【输入】\n${turn.classifier_raw_input}` : null,
+      turn.classifier_raw_output ? `【输出】\n${turn.classifier_raw_output}` : null,
+    ].filter((section): section is string => section !== null);
+    await copyText(sections.join("\n\n"));
+    setCopiedTurnId(turn.turn_id);
+    window.setTimeout(() => setCopiedTurnId((current) => current === turn.turn_id ? null : current), 1500);
+  }
+
   return (
     <section>
       <div className="mb-3 flex items-center gap-3 px-1">
@@ -1176,6 +1188,43 @@ function TurnLogSection({ turns }: { turns: TurnRouteLog[] }) {
                         返回：{turn.classifier_output}
                       </div>
                     ) : null}
+                    {turn.classifier_raw_input || turn.classifier_raw_output ? (
+                      <details className="mt-2 max-w-[420px] rounded-lg bg-slate-900/[0.035] px-2 py-1.5 text-[10px] dark:bg-white/[0.05]">
+                        <div className="flex items-center justify-between gap-2">
+                          <summary className="cursor-pointer font-semibold text-slate-500 dark:text-slate-400">
+                            查看路由模型原始输入 / 输出
+                          </summary>
+                          <button
+                            type="button"
+                            className="inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-1 font-semibold text-slate-500 hover:bg-slate-900/5 dark:text-slate-400 dark:hover:bg-white/10"
+                            aria-label="复制路由模型原始输入和输出"
+                            onClick={(event) => {
+                              event.preventDefault();
+                              void copyRawRoutingRecord(turn);
+                            }}
+                          >
+                            {copiedTurnId === turn.turn_id ? <Check className="size-3" /> : <Copy className="size-3" />}
+                            {copiedTurnId === turn.turn_id ? "已复制" : "一键复制"}
+                          </button>
+                        </div>
+                        {turn.classifier_raw_input ? (
+                          <div className="mt-2">
+                            <div className="font-bold uppercase tracking-[0.08em] text-slate-400">输入</div>
+                            <pre className="mt-1 max-h-52 overflow-auto whitespace-pre-wrap break-words font-mono leading-4 text-slate-600 dark:text-slate-300">
+                              {turn.classifier_raw_input}
+                            </pre>
+                          </div>
+                        ) : null}
+                        {turn.classifier_raw_output ? (
+                          <div className="mt-2">
+                            <div className="font-bold uppercase tracking-[0.08em] text-slate-400">输出</div>
+                            <pre className="mt-1 max-h-52 overflow-auto whitespace-pre-wrap break-words font-mono leading-4 text-slate-600 dark:text-slate-300">
+                              {turn.classifier_raw_output}
+                            </pre>
+                          </div>
+                        ) : null}
+                      </details>
+                    ) : null}
                   </td>
                   <td className="px-4 py-3.5 text-slate-500 dark:text-slate-400">{turn.reasoning_effort ?? "—"}</td>
                   <td className="px-5 py-3.5 text-right text-slate-500 dark:text-slate-400">
@@ -1188,7 +1237,7 @@ function TurnLogSection({ turns }: { turns: TurnRouteLog[] }) {
         )}
       </div>
       <p className="mt-2 px-1 text-[11px] leading-5 text-slate-400">
-        保存首条用户输入的 160 字预览，以及最多 500 字的分类错误或路由分类模型返回；不保存工具结果和最终回答。超过 1000 条按最近访问淘汰。
+        自动路由时会保存路由模型的原始请求和响应（其中可能包含用户输入），供排障使用；不保存工具结果和最终回答。超过 1000 条按最近访问淘汰。
       </p>
     </section>
   );

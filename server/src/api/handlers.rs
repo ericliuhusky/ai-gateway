@@ -1680,6 +1680,8 @@ async fn choose_model_for_request(
             reason: "same_turn_model_reuse",
             detail: None,
             classifier_output: None,
+            classifier_raw_input: None,
+            classifier_raw_output: None,
             tier: routing_tier_from_log(existing.routing_tier.as_deref()),
             confidence: None,
         });
@@ -1730,7 +1732,7 @@ async fn choose_model_for_request(
             return Ok(decision);
         }
     };
-    let response = match invoke_routing_classifier(
+    let classifier_response = match invoke_routing_classifier(
         state,
         &classifier_provider,
         &classifier.model,
@@ -1747,23 +1749,26 @@ async fn choose_model_for_request(
             return Ok(decision);
         }
     };
-    let Some(text) = classifier_text_from_response(&response) else {
+    let Some(text) = classifier_text_from_response(&classifier_response.response) else {
         let mut decision =
             RoutingDecision::classifier_failure(&settings, "classifier_output_text_missing");
         decision.detail = Some("upstream response contained no classifier output text".to_string());
-        decision.classifier_output = classifier_response_preview(&response);
+        decision.classifier_output = classifier_response_preview(&classifier_response.response);
+        decision.classifier_raw_input = Some(classifier_response.request_body);
+        decision.classifier_raw_output = Some(classifier_response.raw_response);
         return Ok(decision);
     };
 
-    Ok(
-        decision_from_classifier_output(&text, &settings).unwrap_or_else(|| {
-            let mut decision =
-                RoutingDecision::classifier_failure(&settings, "classifier_output_invalid");
-            decision.detail = Some("expected JSON with tier and confidence fields".to_string());
-            decision.classifier_output = Some(diagnostic_preview(&text, 500));
-            decision
-        }),
-    )
+    let mut decision = decision_from_classifier_output(&text, &settings).unwrap_or_else(|| {
+        let mut decision =
+            RoutingDecision::classifier_failure(&settings, "classifier_output_invalid");
+        decision.detail = Some("expected JSON with tier and confidence fields".to_string());
+        decision.classifier_output = Some(diagnostic_preview(&text, 500));
+        decision
+    });
+    decision.classifier_raw_input = Some(classifier_response.request_body);
+    decision.classifier_raw_output = Some(classifier_response.raw_response);
+    Ok(decision)
 }
 
 #[derive(Debug)]
@@ -1870,6 +1875,8 @@ fn record_turn_route(
             routing_tier: routing.tier.map(|tier| tier.as_str().to_string()),
             classifier_confidence: routing.confidence,
             classifier_output: routing.classifier_output.clone(),
+            classifier_raw_input: routing.classifier_raw_input.clone(),
+            classifier_raw_output: routing.classifier_raw_output.clone(),
             reasoning_effort: turn.reasoning_effort.clone(),
             user_input_preview: turn.user_input_preview.clone(),
             is_tool_round: turn.is_tool_round,
@@ -1898,13 +1905,20 @@ fn routing_tier_from_log(tier: Option<&str>) -> Option<crate::routing::RoutingTi
     }
 }
 
+#[derive(Debug)]
+struct RoutingClassifierResponse {
+    request_body: String,
+    response: Value,
+    raw_response: String,
+}
+
 async fn invoke_routing_classifier(
     state: &AppState,
     provider: &ResolvedProvider,
     classifier_model: &str,
     reasoning_effort: Option<&str>,
     prompt: String,
-) -> Result<Value, String> {
+) -> Result<RoutingClassifierResponse, String> {
     if provider.auth_mode == ProviderAuthMode::Account && provider_uses_openai_account(provider) {
         let account = resolve_account_for_provider(state, provider)
             .await
@@ -1915,25 +1929,30 @@ async fn invoke_routing_classifier(
             account_id: account.upstream_account_id(),
             client_version: None,
         };
-        let body = private_classifier_request_body(classifier_model, reasoning_effort, prompt);
+        let request_body =
+            private_classifier_request_body(classifier_model, reasoning_effort, prompt);
         let response = state
             .upstream
             .openai_send(
                 &request,
                 OpenAiEndpoint::Responses {
-                    body: OpenAiRequestBody::Raw(body),
+                    body: OpenAiRequestBody::Raw(request_body.clone()),
                     stream: true,
                 },
             )
             .await?;
-        let body = response
+        let raw_response = response
             .text()
             .await
             .map_err(|err| format!("read routing classifier stream failed: {err}"))?;
-        return Ok(json!({
-            "output_text": classifier_text_from_sse(&body),
-            "raw_classifier_output": diagnostic_preview(&body, 500),
-        }));
+        return Ok(RoutingClassifierResponse {
+            request_body,
+            response: json!({
+                "output_text": classifier_text_from_sse(&raw_response),
+                "raw_classifier_output": diagnostic_preview(&raw_response, 500),
+            }),
+            raw_response,
+        });
     }
 
     let record = provider.record.as_ref().ok_or_else(|| {
@@ -1959,19 +1978,26 @@ async fn invoke_routing_classifier(
         body["reasoning"] = json!({ "effort": effort });
     }
     let body = body.to_string();
-    state
+    let response_body = state
         .upstream
         .openai_send(
             &public,
             OpenAiEndpoint::Responses {
-                body: OpenAiRequestBody::Raw(body),
+                body: OpenAiRequestBody::Raw(body.clone()),
                 stream: false,
             },
         )
         .await?
-        .json()
+        .text()
         .await
-        .map_err(|err| format!("parse routing classifier response failed: {err}"))
+        .map_err(|err| format!("read routing classifier response failed: {err}"))?;
+    let response = serde_json::from_str(&response_body)
+        .map_err(|err| format!("parse routing classifier response failed: {err}"))?;
+    Ok(RoutingClassifierResponse {
+        request_body: body,
+        response,
+        raw_response: response_body,
+    })
 }
 
 fn private_classifier_request_body(
@@ -3079,6 +3105,8 @@ mod tests {
             reason: "classifier_selected",
             detail: None,
             classifier_output: None,
+            classifier_raw_input: None,
+            classifier_raw_output: None,
             tier: None,
             confidence: None,
         };

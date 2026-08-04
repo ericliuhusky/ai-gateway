@@ -557,6 +557,7 @@ impl SqliteStore {
         conn.query_row(
             "SELECT turn_id, provider_id, model, routing_mode, routing_reason, routing_detail,
                     routing_tier, classifier_confidence, classifier_output,
+                    classifier_raw_input, classifier_raw_output,
                     reasoning_effort, user_input_preview,
                     started_at, updated_at, request_count, tool_round_count
              FROM turn_route_logs WHERE turn_id = ?1",
@@ -573,6 +574,7 @@ impl SqliteStore {
             .prepare(
                 "SELECT turn_id, provider_id, model, routing_mode, routing_reason, routing_detail,
                         routing_tier, classifier_confidence, classifier_output,
+                        classifier_raw_input, classifier_raw_output,
                         reasoning_effort, user_input_preview,
                         started_at, updated_at, request_count, tool_round_count
                  FROM turn_route_logs
@@ -597,6 +599,7 @@ impl SqliteStore {
             .prepare(
                 "SELECT turn_id, provider_id, model, routing_mode, routing_reason, routing_detail,
                         routing_tier, classifier_confidence, classifier_output,
+                        classifier_raw_input, classifier_raw_output,
                         reasoning_effort, user_input_preview,
                         started_at, updated_at, request_count, tool_round_count
                  FROM turn_route_logs
@@ -629,15 +632,18 @@ impl SqliteStore {
                 "INSERT INTO turn_route_logs (
                     turn_id, provider_id, model, routing_mode, routing_reason, routing_detail,
                     routing_tier, classifier_confidence, classifier_output,
+                    classifier_raw_input, classifier_raw_output,
                     reasoning_effort, user_input_preview,
                     started_at, updated_at, request_count, tool_round_count
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12, 1, ?13)
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?14, 1, ?15)
                  ON CONFLICT(turn_id) DO UPDATE SET
                     updated_at = excluded.updated_at,
                     request_count = turn_route_logs.request_count + 1,
                     tool_round_count = turn_route_logs.tool_round_count + excluded.tool_round_count,
                     reasoning_effort = COALESCE(excluded.reasoning_effort, turn_route_logs.reasoning_effort),
-                    user_input_preview = COALESCE(turn_route_logs.user_input_preview, excluded.user_input_preview)",
+                    user_input_preview = COALESCE(turn_route_logs.user_input_preview, excluded.user_input_preview),
+                    classifier_raw_input = COALESCE(turn_route_logs.classifier_raw_input, excluded.classifier_raw_input),
+                    classifier_raw_output = COALESCE(turn_route_logs.classifier_raw_output, excluded.classifier_raw_output)",
                 params![
                     update.turn_id,
                     update.provider_id,
@@ -648,6 +654,8 @@ impl SqliteStore {
                     update.routing_tier,
                     update.classifier_confidence,
                     update.classifier_output,
+                    update.classifier_raw_input,
+                    update.classifier_raw_output,
                     update.reasoning_effort,
                     update.user_input_preview,
                     update.timestamp,
@@ -984,6 +992,8 @@ impl SqliteStore {
                 routing_tier TEXT,
                 classifier_confidence REAL,
                 classifier_output TEXT,
+                classifier_raw_input TEXT,
+                classifier_raw_output TEXT,
                 reasoning_effort TEXT,
                 user_input_preview TEXT,
                 started_at INTEGER NOT NULL,
@@ -1212,12 +1222,14 @@ fn turn_route_log_from_row(row: &rusqlite::Row<'_>) -> Result<TurnRouteLog, rusq
         routing_tier: row.get(6)?,
         classifier_confidence: row.get(7)?,
         classifier_output: row.get(8)?,
-        reasoning_effort: row.get(9)?,
-        user_input_preview: row.get(10)?,
-        started_at: row.get(11)?,
-        updated_at: row.get(12)?,
-        request_count: row.get(13)?,
-        tool_round_count: row.get(14)?,
+        classifier_raw_input: row.get(9)?,
+        classifier_raw_output: row.get(10)?,
+        reasoning_effort: row.get(11)?,
+        user_input_preview: row.get(12)?,
+        started_at: row.get(13)?,
+        updated_at: row.get(14)?,
+        request_count: row.get(15)?,
+        tool_round_count: row.get(16)?,
     })
 }
 
