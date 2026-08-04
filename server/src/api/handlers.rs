@@ -2053,6 +2053,9 @@ fn classifier_text_from_response(response: &Value) -> Option<String> {
                         .into_iter()
                         .flatten()
                 })
+                .filter(|content| {
+                    content.get("type").and_then(Value::as_str) == Some("output_text")
+                })
                 .find_map(|content| {
                     let text = content.get("text")?;
                     text.as_str().map(str::to_string).or_else(|| {
@@ -2953,10 +2956,10 @@ impl IntoResponse for AppError {
 mod tests {
     use super::{
         AppState, ResolvedProvider, apply_gateway_overrides_to_raw_request,
-        classifier_response_preview, classifier_text_from_sse, codex_turn_metadata,
-        delete_provider, opaque_turn_id, openai_models_response, private_classifier_request_body,
-        provider_uses_openai_account, quota_from_openai_usage, reasoning_effort_for_routing,
-        turn_context_from_request,
+        classifier_response_preview, classifier_text_from_response, classifier_text_from_sse,
+        codex_turn_metadata, delete_provider, opaque_turn_id, openai_models_response,
+        private_classifier_request_body, provider_uses_openai_account, quota_from_openai_usage,
+        reasoning_effort_for_routing, turn_context_from_request,
     };
     use super::{CodexAuthFile, import_tokens_from_value};
     use crate::{
@@ -3353,6 +3356,33 @@ mod tests {
         assert_eq!(
             classifier_text_from_sse(body).as_deref(),
             Some("{\"tier\":\"light\",\"confidence\":0.95}")
+        );
+    }
+
+    #[test]
+    fn ignores_reasoning_text_when_extracting_classifier_output() {
+        let response = json!({
+            "output": [
+                {
+                    "type": "reasoning",
+                    "content": [{
+                        "type": "reasoning_text",
+                        "text": "The user asked a difficult question."
+                    }]
+                },
+                {
+                    "type": "message",
+                    "content": [{
+                        "type": "output_text",
+                        "text": "{\"tier\":\"high\",\"confidence\":0.95}"
+                    }]
+                }
+            ]
+        });
+
+        assert_eq!(
+            classifier_text_from_response(&response).as_deref(),
+            Some("{\"tier\":\"high\",\"confidence\":0.95}")
         );
     }
 
