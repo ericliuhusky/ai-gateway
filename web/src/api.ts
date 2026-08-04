@@ -13,6 +13,8 @@ import type {
   SecuritySettings,
   SelectedProvider,
   TurnRouteLog,
+  UsageSummary,
+  DailyUsageSummary,
   OpenAiDeviceLoginStart,
   OpenAiDeviceLoginStatus,
 } from "./types";
@@ -130,6 +132,16 @@ export const gatewayApi = {
   async routingTurns(limit = 50) {
     const payload = await request<{ turns: TurnRouteLog[] }>(`/routing/turns?limit=${limit}`);
     return payload.turns;
+  },
+
+  usageSummary(period: "total" | "today" | "week", providerId?: string) {
+    const query = new URLSearchParams({ period });
+    if (providerId) query.set("provider_id", providerId);
+    return request<UsageSummary[]>(`/usage/summary?${query.toString()}`);
+  },
+
+  usageDaily(days = 30) {
+    return request<DailyUsageSummary[]>(`/usage/daily?days=${days}`);
   },
 
   async providers() {

@@ -1,6 +1,7 @@
 import * as React from "react";
 import {
   Activity,
+  BarChart3,
   Check,
   CheckCircle2,
   ChevronDown,
@@ -39,6 +40,8 @@ import type {
   ReasoningEffort,
   SelectedProvider,
   TurnRouteLog,
+  UsageSummary,
+  DailyUsageSummary,
   GatewayCompatibilityProfile,
   RoutingModelTarget,
   InstanceRoutingConfig,
@@ -51,6 +54,7 @@ type Dialog = "provider" | "instances" | "scripts" | null;
 type Page = "home" | "account" | "admin";
 type QuotaMap = Record<string, ProviderQuotaSummary | undefined>;
 type ErrorMap = Record<string, string | undefined>;
+type UsagePeriod = "total" | "today" | "week";
 
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
@@ -129,6 +133,13 @@ function shellQuote(text: string) {
   return `'${text.replace(/'/g, `'\"'\"'`)}'`;
 }
 
+function formatTokenCount(value: number) {
+  return new Intl.NumberFormat("zh-CN", {
+    notation: value >= 10_000 ? "compact" : "standard",
+    maximumFractionDigits: 1,
+  }).format(value);
+}
+
 export function App() {
   return (
     <AuthProvider>
@@ -158,6 +169,12 @@ export function GatewayDashboard() {
   const [selected, setSelected] = React.useState<SelectedProvider>({ updated_at: 0 });
   const [models, setModels] = React.useState<GatewayModel[]>([]);
   const [turnLogs, setTurnLogs] = React.useState<TurnRouteLog[]>([]);
+  const [usageByPeriod, setUsageByPeriod] = React.useState<Record<UsagePeriod, UsageSummary[]>>({
+    total: [],
+    today: [],
+    week: [],
+  });
+  const [dailyUsage, setDailyUsage] = React.useState<DailyUsageSummary[]>([]);
   const [quotas, setQuotas] = React.useState<QuotaMap>({});
   const [quotaErrors, setQuotaErrors] = React.useState<ErrorMap>({});
   const [loadingQuotas, setLoadingQuotas] = React.useState<Set<string>>(new Set());
@@ -209,6 +226,21 @@ export function GatewayDashboard() {
     }
   }, []);
 
+  const loadUsage = React.useCallback(async (showError = true) => {
+    try {
+      const [total, today, week, daily] = await Promise.all([
+        gatewayApi.usageSummary("total"),
+        gatewayApi.usageSummary("today"),
+        gatewayApi.usageSummary("week"),
+        gatewayApi.usageDaily(30),
+      ]);
+      setUsageByPeriod({ total, today, week });
+      setDailyUsage(daily);
+    } catch (usageError) {
+      if (showError) setError(errorMessage(usageError));
+    }
+  }, []);
+
   const refresh = React.useCallback(async () => {
     setLoading(true);
     try {
@@ -232,12 +264,13 @@ export function GatewayDashboard() {
         setModels([]);
       }
       void loadQuotas(sorted);
+      void loadUsage(false);
     } catch (loadError) {
       setError(errorMessage(loadError));
     } finally {
       setLoading(false);
     }
-  }, [loadModels, loadQuotas]);
+  }, [loadModels, loadQuotas, loadUsage]);
 
   React.useEffect(() => {
     void refresh();
@@ -447,6 +480,11 @@ export function GatewayDashboard() {
                   onSelect={selectProvider}
                   onDelete={deleteProvider}
                   onRefreshQuota={refreshQuota}
+                />
+                <UsageSection
+                  providers={providers}
+                  usageByPeriod={usageByPeriod}
+                  dailyUsage={dailyUsage}
                 />
                 <ModelBenchmarkSection
                   providers={providers}
@@ -1112,6 +1150,227 @@ function BenchmarkMetric({ label, value }: { label: string; value: string }) {
       <div className="text-[10px] font-bold uppercase tracking-[0.1em] text-slate-400">{label}</div>
       <div className="mt-1.5 font-mono text-lg font-bold tracking-[-0.025em]">{value}</div>
     </div>
+  );
+}
+
+function UsageSection({
+  providers,
+  usageByPeriod,
+  dailyUsage,
+}: {
+  providers: GatewayProvider[];
+  usageByPeriod: Record<UsagePeriod, UsageSummary[]>;
+  dailyUsage: DailyUsageSummary[];
+}) {
+  const providerNames = React.useMemo(
+    () => new Map(providers.map((provider) => [provider.id, provider.name])),
+    [providers],
+  );
+  const providerRows = usageByPeriod.today.filter((row) => !row.model);
+  const modelRows = usageByPeriod.today.filter((row) => row.model);
+  const totalFor = (period: UsagePeriod) =>
+    usageByPeriod[period]
+      .filter((row) => !row.model)
+      .reduce((sum, row) => sum + row.total_tokens, 0);
+
+  return (
+    <section>
+      <div className="mb-3 flex items-center gap-2 px-1">
+        <BarChart3 className="size-4 text-blue-600 dark:text-blue-400" />
+        <h2 className="text-sm font-bold">Token 用量</h2>
+        <span className="text-xs text-slate-400">按实际的上游响应累计</span>
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-3">
+        <UsageMetric label="累计总用量" value={totalFor("total")} />
+        <UsageMetric label="今日用量" value={totalFor("today")} />
+        <UsageMetric label="本周用量" value={totalFor("week")} />
+      </div>
+      <UsageDailyChart providers={providers} rows={dailyUsage} />
+
+      <div className="glass-panel mt-3 overflow-hidden rounded-2xl">
+        <div className="flex items-center justify-between border-b border-slate-900/6 px-5 py-3 dark:border-white/8">
+          <div>
+            <div className="text-sm font-bold">今日按供应商 / 模型</div>
+            <div className="mt-0.5 text-[11px] text-slate-400">包含输入、输出、缓存与推理 token。</div>
+          </div>
+          <span className="rounded-full bg-blue-500/10 px-2.5 py-1 text-[10px] font-bold text-blue-700 dark:text-blue-300">
+            UTC+8
+          </span>
+        </div>
+        {providerRows.length === 0 ? (
+          <div className="px-5 py-8 text-center text-xs text-slate-400">
+            今天还没有收到带 usage 的模型响应。
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[760px] text-left text-xs">
+              <thead className="bg-slate-900/[0.025] text-[10px] font-bold uppercase tracking-[0.08em] text-slate-400 dark:bg-white/[0.035]">
+                <tr>
+                  <th className="px-5 py-3">供应商 / 模型</th>
+                  <th className="px-3 py-3 text-right">请求</th>
+                  <th className="px-3 py-3 text-right">输入</th>
+                  <th className="px-3 py-3 text-right">输出</th>
+                  <th className="px-3 py-3 text-right">缓存</th>
+                  <th className="px-3 py-3 text-right">推理</th>
+                  <th className="px-5 py-3 text-right">总计</th>
+                </tr>
+              </thead>
+              <tbody>
+                {providerRows.flatMap((provider) => {
+                  const models = modelRows.filter((row) => row.provider_id === provider.provider_id);
+                  return [
+                    <UsageRow
+                      key={`provider-${provider.provider_id}`}
+                      row={provider}
+                      label={providerNames.get(provider.provider_id) ?? provider.provider_id}
+                      emphasized
+                    />,
+                    ...models.map((model) => (
+                      <UsageRow
+                        key={`model-${model.provider_id}-${model.model}`}
+                        row={model}
+                        label={model.model ?? "未知模型"}
+                        nested
+                      />
+                    )),
+                  ];
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function UsageMetric({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="glass-panel rounded-2xl p-4">
+      <div className="text-[10px] font-bold uppercase tracking-[0.1em] text-slate-400">{label}</div>
+      <div className="mt-1.5 font-mono text-2xl font-bold tracking-[-0.035em]">{formatTokenCount(value)}</div>
+      <div className="mt-0.5 text-[11px] text-slate-400">tokens</div>
+    </div>
+  );
+}
+
+function UsageDailyChart({
+  providers,
+  rows,
+}: {
+  providers: GatewayProvider[];
+  rows: DailyUsageSummary[];
+}) {
+  const providerNames = new Map(providers.map((provider) => [provider.id, provider.name]));
+  const series = Array.from(new Set(rows.map((row) => `${row.provider_id}::${row.model}`)));
+  const colors = ["bg-blue-500", "bg-emerald-500", "bg-violet-500", "bg-amber-500", "bg-rose-500", "bg-cyan-500"];
+  const byDate = new Map<string, DailyUsageSummary[]>();
+  rows.forEach((row) => byDate.set(row.date, [...(byDate.get(row.date) ?? []), row]));
+  const dates = Array.from(byDate.keys()).sort();
+  const totals = dates.map((date) => (byDate.get(date) ?? []).reduce((sum, row) => sum + row.total_tokens, 0));
+  const max = Math.max(...totals, 1);
+
+  return (
+    <div className="glass-panel mt-3 rounded-2xl p-5">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="text-sm font-bold">近 30 天每日消耗</div>
+          <div className="mt-0.5 text-[11px] text-slate-400">按供应商 / 模型堆叠显示总 token。</div>
+        </div>
+        <div className="flex max-w-[60%] flex-wrap justify-end gap-x-3 gap-y-1">
+          {series.map((key, index) => {
+            const [providerId, model] = key.split("::");
+            return (
+              <span key={key} className="inline-flex items-center gap-1 text-[10px] text-slate-500 dark:text-slate-400">
+                <span className={cn("size-2 rounded-full", colors[index % colors.length])} />
+                {providerNames.get(providerId) ?? providerId} / {model}
+              </span>
+            );
+          })}
+        </div>
+      </div>
+      {dates.length === 0 ? (
+        <div className="flex h-44 items-center justify-center text-xs text-slate-400">暂无历史用量数据。</div>
+      ) : (
+        <div className="mt-5 flex h-52 items-end gap-1.5 overflow-x-auto pb-6 sm:gap-2">
+          {dates.map((date, dateIndex) => {
+            const dateRows = byDate.get(date) ?? [];
+            const total = totals[dateIndex];
+            return (
+              <div key={date} className="group relative flex h-full min-w-7 flex-1 flex-col items-center justify-end">
+                <div className="pointer-events-none mb-1 rounded-lg bg-slate-900 px-2 py-1 text-[10px] font-bold text-white opacity-0 shadow-lg transition group-hover:opacity-100 dark:bg-white dark:text-slate-900">
+                  {date}: {formatTokenCount(total)}
+                </div>
+                <div
+                  className="flex w-full max-w-11 flex-col-reverse overflow-hidden rounded-t-lg bg-slate-900/5 dark:bg-white/8"
+                  style={{ height: `${Math.max(4, (total / max) * 100)}%` }}
+                >
+                  {dateRows.map((row) => {
+                    const key = `${row.provider_id}::${row.model}`;
+                    const index = series.indexOf(key);
+                    return (
+                      <div
+                        key={key}
+                        className={cn(colors[index % colors.length], "min-h-0 opacity-85")}
+                        style={{ height: `${(row.total_tokens / total) * 100}%` }}
+                        title={`${row.model}: ${formatTokenCount(row.total_tokens)} tokens`}
+                      />
+                    );
+                  })}
+                </div>
+                <span className="absolute mt-56 whitespace-nowrap text-[9px] text-slate-400">
+                  {date.slice(5)}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function UsageRow({
+  row,
+  label,
+  nested = false,
+  emphasized = false,
+}: {
+  row: UsageSummary;
+  label: string;
+  nested?: boolean;
+  emphasized?: boolean;
+}) {
+  const cells = [
+    row.request_count,
+    row.input_tokens,
+    row.output_tokens,
+    row.cached_input_tokens,
+    row.reasoning_tokens,
+    row.total_tokens,
+  ];
+  return (
+    <tr className={cn(
+      "border-t border-slate-900/5 dark:border-white/6",
+      emphasized && "bg-slate-900/[0.025] dark:bg-white/[0.025]",
+    )}>
+      <td className={cn("px-5 py-3", nested && "pl-9 text-slate-500 dark:text-slate-400", emphasized && "font-bold")}>
+        {nested ? <span className="mr-2 text-slate-300 dark:text-slate-600">└</span> : null}
+        {label}
+      </td>
+      {cells.map((value, index) => (
+        <td
+          key={index}
+          className={cn(
+            "px-3 py-3 text-right font-mono text-slate-600 dark:text-slate-300",
+            index === cells.length - 1 && "px-5 font-bold text-slate-900 dark:text-slate-100",
+          )}
+        >
+          {formatTokenCount(value)}
+        </td>
+      ))}
+    </tr>
   );
 }
 

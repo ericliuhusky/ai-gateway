@@ -310,6 +310,43 @@ pub struct TurnRouteLogUpdate {
     pub timestamp: i64,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TokenUsage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cached_input_tokens: u64,
+    pub reasoning_tokens: u64,
+    pub total_tokens: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct UsageIncrement {
+    pub owner_user_id: Option<i64>,
+    pub provider_id: String,
+    pub model: String,
+    pub usage: TokenUsage,
+    pub timestamp: i64,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct UsageSummary {
+    pub provider_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    pub request_count: u64,
+    #[serde(flatten)]
+    pub usage: TokenUsage,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct DailyUsageSummary {
+    pub date: String,
+    pub provider_id: String,
+    pub model: String,
+    pub request_count: u64,
+    pub total_tokens: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelListResponse {
     pub object: String,

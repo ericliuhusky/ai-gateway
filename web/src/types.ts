@@ -108,6 +108,33 @@ export interface TurnRouteLog {
   tool_round_count: number;
 }
 
+export interface TokenUsage {
+  input_tokens: number;
+  output_tokens: number;
+  cached_input_tokens: number;
+  reasoning_tokens: number;
+  total_tokens: number;
+}
+
+export interface UsageSummary {
+  provider_id: string;
+  model?: string;
+  request_count: number;
+  input_tokens: number;
+  output_tokens: number;
+  cached_input_tokens: number;
+  reasoning_tokens: number;
+  total_tokens: number;
+}
+
+export interface DailyUsageSummary {
+  date: string;
+  provider_id: string;
+  model: string;
+  request_count: number;
+  total_tokens: number;
+}
+
 export interface ProviderQuotaWindow {
   used_percent: number;
   window_minutes?: number;

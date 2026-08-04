@@ -3,11 +3,12 @@ use crate::{
     crypto::FieldEncryptor,
     models::{
         AccountRecord, AccountType, ApiProviderRecord, AutoRoutingSettings, CachedProviderModels,
-        ProviderAuthMode, ProviderCompatibilityProfile, ProviderUpstreamProtocol,
-        ROUTING_LOW_CONFIDENCE_THRESHOLD, RoutingModelTarget, SelectedRoute, TurnRouteLog,
-        TurnRouteLogUpdate,
+        DailyUsageSummary, ProviderAuthMode, ProviderCompatibilityProfile,
+        ProviderUpstreamProtocol, ROUTING_LOW_CONFIDENCE_THRESHOLD, RoutingModelTarget,
+        SelectedRoute, TurnRouteLog, TurnRouteLogUpdate, UsageIncrement, UsageSummary,
     },
 };
+use chrono::{Datelike, FixedOffset, TimeZone};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use std::{fs, path::PathBuf, sync::Arc};
 #[derive(Clone, Debug)]
@@ -679,6 +680,164 @@ impl SqliteStore {
             .map_err(|err| format!("commit turn route log transaction failed: {err}"))
     }
 
+    pub(crate) fn record_usage_increment(&self, increment: &UsageIncrement) -> Result<(), String> {
+        if increment.usage.total_tokens == 0 {
+            return Ok(());
+        }
+        let owner_user_id = increment.owner_user_id.unwrap_or(0);
+        let mut conn = self.connect()?;
+        let transaction = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|err| format!("begin usage aggregation transaction failed: {err}"))?;
+        for (bucket_type, bucket_key) in [
+            ("total", "all".to_string()),
+            ("day", Self::usage_bucket_key("day", increment.timestamp)),
+            ("week", Self::usage_bucket_key("week", increment.timestamp)),
+        ] {
+            for (aggregation_level, model) in
+                [("provider", ""), ("model", increment.model.as_str())]
+            {
+                transaction
+                    .execute(
+                        "INSERT INTO usage_rollups (
+                            owner_user_id, provider_id, aggregation_level, model, bucket_type, bucket_key,
+                            request_count, input_tokens, output_tokens, cached_input_tokens,
+                            reasoning_tokens, total_tokens
+                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, ?8, ?9, ?10, ?11)
+                         ON CONFLICT(owner_user_id, provider_id, aggregation_level, model, bucket_type, bucket_key)
+                         DO UPDATE SET
+                            request_count = usage_rollups.request_count + 1,
+                            input_tokens = usage_rollups.input_tokens + excluded.input_tokens,
+                            output_tokens = usage_rollups.output_tokens + excluded.output_tokens,
+                            cached_input_tokens = usage_rollups.cached_input_tokens + excluded.cached_input_tokens,
+                            reasoning_tokens = usage_rollups.reasoning_tokens + excluded.reasoning_tokens,
+                            total_tokens = usage_rollups.total_tokens + excluded.total_tokens",
+                        params![
+                            owner_user_id,
+                            increment.provider_id,
+                            aggregation_level,
+                            model,
+                            bucket_type,
+                            bucket_key,
+                            increment.usage.input_tokens,
+                            increment.usage.output_tokens,
+                            increment.usage.cached_input_tokens,
+                            increment.usage.reasoning_tokens,
+                            increment.usage.total_tokens,
+                        ],
+                    )
+                    .map_err(|err| format!("upsert usage aggregation failed: {err}"))?;
+            }
+        }
+        transaction
+            .commit()
+            .map_err(|err| format!("commit usage aggregation transaction failed: {err}"))
+    }
+
+    pub(crate) fn list_usage_summaries(
+        &self,
+        owner_user_id: Option<i64>,
+        bucket_type: &str,
+        bucket_key: String,
+        provider_id: Option<&str>,
+    ) -> Result<Vec<UsageSummary>, String> {
+        let conn = self.connect()?;
+        let mut statement = conn
+            .prepare(
+                "SELECT provider_id, aggregation_level, model, request_count,
+                        input_tokens, output_tokens, cached_input_tokens, reasoning_tokens, total_tokens
+                 FROM usage_rollups
+                 WHERE owner_user_id = ?1 AND bucket_type = ?2 AND bucket_key = ?3
+                   AND (?4 IS NULL OR provider_id = ?4)
+                 ORDER BY provider_id ASC,
+                          CASE aggregation_level WHEN 'provider' THEN 0 ELSE 1 END ASC,
+                          model ASC",
+            )
+            .map_err(|err| format!("prepare usage summary query failed: {err}"))?;
+        statement
+            .query_map(
+                params![
+                    owner_user_id.unwrap_or(0),
+                    bucket_type,
+                    bucket_key,
+                    provider_id
+                ],
+                |row| {
+                    Ok(UsageSummary {
+                        provider_id: row.get(0)?,
+                        model: (row.get::<_, String>(1)? == "model")
+                            .then(|| row.get(2))
+                            .transpose()?,
+                        request_count: row.get(3)?,
+                        usage: crate::models::TokenUsage {
+                            input_tokens: row.get(4)?,
+                            output_tokens: row.get(5)?,
+                            cached_input_tokens: row.get(6)?,
+                            reasoning_tokens: row.get(7)?,
+                            total_tokens: row.get(8)?,
+                        },
+                    })
+                },
+            )
+            .map_err(|err| format!("query usage summaries failed: {err}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|err| format!("read usage summaries failed: {err}"))
+    }
+
+    pub(crate) fn list_daily_usage_summaries(
+        &self,
+        owner_user_id: Option<i64>,
+        from_date: &str,
+        to_date: &str,
+    ) -> Result<Vec<DailyUsageSummary>, String> {
+        let conn = self.connect()?;
+        let mut statement = conn
+            .prepare(
+                "SELECT bucket_key, provider_id, model, request_count, total_tokens
+                 FROM usage_rollups
+                 WHERE owner_user_id = ?1
+                   AND aggregation_level = 'model'
+                   AND bucket_type = 'day'
+                   AND bucket_key >= ?2
+                   AND bucket_key <= ?3
+                 ORDER BY bucket_key ASC, provider_id ASC, model ASC",
+            )
+            .map_err(|err| format!("prepare daily usage query failed: {err}"))?;
+        statement
+            .query_map(
+                params![owner_user_id.unwrap_or(0), from_date, to_date],
+                |row| {
+                    Ok(DailyUsageSummary {
+                        date: row.get(0)?,
+                        provider_id: row.get(1)?,
+                        model: row.get(2)?,
+                        request_count: row.get(3)?,
+                        total_tokens: row.get(4)?,
+                    })
+                },
+            )
+            .map_err(|err| format!("query daily usage failed: {err}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|err| format!("read daily usage failed: {err}"))
+    }
+
+    pub(crate) fn usage_bucket_key(bucket_type: &str, timestamp: i64) -> String {
+        let timezone = FixedOffset::east_opt(8 * 60 * 60).expect("valid UTC+08 offset");
+        let datetime = timezone
+            .timestamp_opt(timestamp, 0)
+            .single()
+            .unwrap_or_else(|| timezone.timestamp_nanos(0));
+        match bucket_type {
+            "total" => "all".to_string(),
+            "day" => datetime.format("%F").to_string(),
+            "week" => {
+                let iso_week = datetime.iso_week();
+                format!("{}-W{:02}", iso_week.year(), iso_week.week())
+            }
+            _ => "all".to_string(),
+        }
+    }
+
     pub(crate) fn initialize_user_auth_schema(&self) -> Result<(), String> {
         let conn = self.connect()?;
         conn.execute_batch("
@@ -1003,6 +1162,26 @@ impl SqliteStore {
             );
             CREATE INDEX IF NOT EXISTS idx_turn_route_logs_updated_at
                 ON turn_route_logs(updated_at DESC);
+
+            CREATE TABLE IF NOT EXISTS usage_rollups (
+                owner_user_id INTEGER NOT NULL DEFAULT 0,
+                provider_id TEXT NOT NULL,
+                aggregation_level TEXT NOT NULL CHECK (aggregation_level IN ('provider', 'model')),
+                model TEXT NOT NULL DEFAULT '',
+                bucket_type TEXT NOT NULL CHECK (bucket_type IN ('total', 'day', 'week')),
+                bucket_key TEXT NOT NULL,
+                request_count INTEGER NOT NULL DEFAULT 0,
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+                reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+                total_tokens INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (
+                    owner_user_id, provider_id, aggregation_level, model, bucket_type, bucket_key
+                )
+            );
+            CREATE INDEX IF NOT EXISTS idx_usage_rollups_owner_bucket
+                ON usage_rollups(owner_user_id, bucket_type, bucket_key, provider_id);
             ",
         )
         .map_err(|err| format!("initialize sqlite schema failed: {err}"))?;

@@ -5,11 +5,12 @@ use crate::{
         get_auto_routing_settings, get_codex_client_version, get_feishu_app_secret,
         get_instance_routing_config, get_provider_quota, get_route, get_security_settings,
         get_selected_model, get_selected_reasoning_effort, healthz, import_openai_token,
-        list_instance_routing_configs, list_models, list_models_for_instance, list_providers,
-        list_turn_logs, poll_openai_device_login, regenerate_database_encryption_key, responses,
-        responses_for_instance, run_model_benchmark, set_auto_routing_settings,
-        set_codex_client_version, set_instance_routing_config, set_route, set_security_settings,
-        set_selected_model, set_selected_reasoning_effort, start_openai_device_login,
+        list_daily_usage, list_instance_routing_configs, list_models, list_models_for_instance,
+        list_providers, list_turn_logs, list_usage_summary, poll_openai_device_login,
+        regenerate_database_encryption_key, responses, responses_for_instance, run_model_benchmark,
+        set_auto_routing_settings, set_codex_client_version, set_instance_routing_config,
+        set_route, set_security_settings, set_selected_model, set_selected_reasoning_effort,
+        start_openai_device_login,
     },
     auth::{self, require_auth},
     codex_scripts,
@@ -64,6 +65,8 @@ pub fn build_router(state: AppState, web_dir: PathBuf) -> Router {
             get(get_auto_routing_settings).put(set_auto_routing_settings),
         )
         .route("/routing/turns", get(list_turn_logs))
+        .route("/usage/summary", get(list_usage_summary))
+        .route("/usage/daily", get(list_daily_usage))
         .route("/selected-provider", get(get_route).put(set_route))
         .route(
             "/selected-model",

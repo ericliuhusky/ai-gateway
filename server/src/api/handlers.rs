@@ -10,16 +10,17 @@ use crate::{
     },
     models::{
         AccountRecord, ApiProviderRecord, ApiProviderSummary, AutoRoutingSettings,
-        CodexClientVersionSetting, CreateApiProviderRequest, FeishuAppSecretResponse,
-        InstanceRoutingConfig, ModelBenchmarkResponse, ModelBenchmarkSample, ModelListItem,
-        ModelListResponse, OPENAI_ACCOUNT_PROVIDER_NAME, ProviderAuthMode,
-        ProviderCompatibilityProfile, ProviderQuotaCredits, ProviderQuotaResponse,
-        ProviderQuotaSnapshot, ProviderQuotaSummary, ProviderQuotaWindow, QuotaSource,
-        QuotaSupportStatus, RoutingModelTarget, RunModelBenchmarkRequest, SecuritySettings,
-        SelectedRoute, TurnRouteLogUpdate, UpdateAutoRoutingSettingsRequest,
-        UpdateCodexClientVersionRequest, UpdateInstanceRoutingConfigRequest,
-        UpdateSecuritySettingsRequest, UpdateSelectedModelRequest, UpdateSelectedProviderRequest,
-        UpdateSelectedReasoningEffortRequest,
+        CodexClientVersionSetting, CreateApiProviderRequest, DailyUsageSummary,
+        FeishuAppSecretResponse, InstanceRoutingConfig, ModelBenchmarkResponse,
+        ModelBenchmarkSample, ModelListItem, ModelListResponse, OPENAI_ACCOUNT_PROVIDER_NAME,
+        ProviderAuthMode, ProviderCompatibilityProfile, ProviderQuotaCredits,
+        ProviderQuotaResponse, ProviderQuotaSnapshot, ProviderQuotaSummary, ProviderQuotaWindow,
+        QuotaSource, QuotaSupportStatus, RoutingModelTarget, RunModelBenchmarkRequest,
+        SecuritySettings, SelectedRoute, TokenUsage, TurnRouteLogUpdate,
+        UpdateAutoRoutingSettingsRequest, UpdateCodexClientVersionRequest,
+        UpdateInstanceRoutingConfigRequest, UpdateSecuritySettingsRequest,
+        UpdateSelectedModelRequest, UpdateSelectedProviderRequest,
+        UpdateSelectedReasoningEffortRequest, UsageIncrement, UsageSummary,
     },
     openai_device_login::{
         DeviceLoginCompletion, DeviceLoginPoll, DeviceLoginStart, OpenAiDeviceLoginService,
@@ -30,7 +31,10 @@ use crate::{
         decision_from_classifier_output, diagnostic_preview, is_tool_round, summarize_request,
         user_input_preview,
     },
-    store::{AccountStore, ModelStore, ProviderStore, RouteStore, SettingsStore, TurnLogStore},
+    store::{
+        AccountStore, ModelStore, ProviderStore, RouteStore, SettingsStore, TurnLogStore,
+        UsagePeriod, UsageStore,
+    },
     support::time::now_unix,
     upstream::{
         OPENAI_CODEX_BASE_URL, OpenAiEndpoint, OpenAiRequestBody, OpenAiRequestBuilder,
@@ -66,6 +70,7 @@ pub struct AppState {
     pub models: ModelStore,
     pub settings: SettingsStore,
     pub turn_logs: TurnLogStore,
+    pub usage: UsageStore,
     pub upstream: UpstreamClient,
 }
 
@@ -77,8 +82,55 @@ pub struct ListModelsQuery {
     pub provider_id: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct UsageSummaryQuery {
+    #[serde(default)]
+    pub period: Option<String>,
+    #[serde(default)]
+    pub provider_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UsageDailyQuery {
+    #[serde(default = "default_usage_days")]
+    pub days: u32,
+}
+
+fn default_usage_days() -> u32 {
+    30
+}
+
 pub async fn healthz() -> &'static str {
     "ok"
+}
+
+pub async fn list_usage_summary(
+    State(state): State<AppState>,
+    Extension(scope): Extension<RequestScope>,
+    Query(query): Query<UsageSummaryQuery>,
+) -> Result<Json<Vec<UsageSummary>>, AppError> {
+    let period = UsagePeriod::parse(query.period.as_deref()).map_err(AppError::bad_request)?;
+    let provider_id = query
+        .provider_id
+        .as_deref()
+        .filter(|id| !id.trim().is_empty());
+    state
+        .usage
+        .list(scope.owner_user_id, period, provider_id)
+        .map(Json)
+        .map_err(AppError::internal)
+}
+
+pub async fn list_daily_usage(
+    State(state): State<AppState>,
+    Extension(scope): Extension<RequestScope>,
+    Query(query): Query<UsageDailyQuery>,
+) -> Result<Json<Vec<DailyUsageSummary>>, AppError> {
+    state
+        .usage
+        .list_daily(scope.owner_user_id, query.days)
+        .map(Json)
+        .map_err(AppError::internal)
 }
 
 const BENCHMARK_PROMPT: &str = "使用 Rust 2021 实现 `fn fibonacci(n: u32) -> u64`。要求使用迭代方式，\
@@ -1512,6 +1564,7 @@ async fn responses_inner_for_instance(
         request_stream,
     )
     .map_err(adapter_error_to_app_error)?;
+    let usage_attribution = UsageAttribution::new(owner_user_id, &routed_provider, &request_json);
 
     let response = match prepared {
         PreparedResponsesUpstream::OpenAiAccountResponsesPassthrough(prepared) => {
@@ -1529,6 +1582,7 @@ async fn responses_inner_for_instance(
                 private_responses,
                 prepared.request_stream,
                 prepared.request_body,
+                usage_attribution,
             )
             .await?
         }
@@ -1542,6 +1596,7 @@ async fn responses_inner_for_instance(
                 public_responses,
                 prepared.request_stream,
                 prepared.request_body,
+                usage_attribution,
             )
             .await?
         }
@@ -1555,6 +1610,7 @@ async fn responses_passthrough_inner<B>(
     builder: B,
     request_stream: bool,
     request_body: String,
+    attribution: UsageAttribution,
 ) -> Result<Response, AppError>
 where
     B: OpenAiRequestBuilder,
@@ -1572,10 +1628,14 @@ where
         .map_err(AppError::upstream_message)?;
     let upstream_status = upstream.status();
     let upstream_headers = upstream.headers().clone();
-    let response_is_stream = is_event_stream_response(&upstream_headers);
+    // The Codex upstream currently omits `Content-Type: text/event-stream`
+    // for some streamed Responses replies, even though its body is SSE.
+    // The original request is therefore the reliable fallback signal.
+    let response_is_stream = request_stream || is_event_stream_response(&upstream_headers);
 
     if !response_is_stream {
         let response_bytes = upstream.bytes().await.map_err(AppError::upstream)?;
+        record_usage_from_json_bytes(&state.usage, &attribution, &response_bytes);
         return build_passthrough_response(
             upstream_status,
             &upstream_headers,
@@ -1585,9 +1645,14 @@ where
 
     let output = stream! {
         let mut stream = upstream.bytes_stream();
+        let usage_store = state.usage.clone();
+        let mut usage_parser = StreamingUsageParser::default();
         while let Some(result) = stream.next().await {
             match result {
-                Ok(chunk) => yield Ok::<Bytes, std::io::Error>(chunk),
+                Ok(chunk) => {
+                    usage_parser.push(&usage_store, &attribution, &chunk);
+                    yield Ok::<Bytes, std::io::Error>(chunk);
+                }
                 Err(err) => {
                     yield Err(std::io::Error::other(err));
                     return;
@@ -1601,6 +1666,122 @@ where
         &upstream_headers,
         Body::from_stream(output),
     )
+}
+
+#[derive(Clone)]
+struct UsageAttribution {
+    owner_user_id: Option<i64>,
+    provider_id: String,
+    model: String,
+}
+
+impl UsageAttribution {
+    fn new(owner_user_id: Option<i64>, provider: &ResolvedProvider, request: &Value) -> Self {
+        Self {
+            owner_user_id,
+            provider_id: provider
+                .record
+                .as_ref()
+                .map(|record| record.id.clone())
+                .unwrap_or_else(|| "unknown".to_string()),
+            model: responses_request_model(request)
+                .and_then(safe_model_name)
+                .unwrap_or_else(|| "unknown".to_string()),
+        }
+    }
+}
+
+#[derive(Default)]
+struct StreamingUsageParser {
+    pending: String,
+    recorded: bool,
+}
+
+impl StreamingUsageParser {
+    fn push(&mut self, store: &UsageStore, attribution: &UsageAttribution, bytes: &Bytes) {
+        if self.recorded {
+            return;
+        }
+        self.pending.push_str(&String::from_utf8_lossy(bytes));
+        while let Some(newline) = self.pending.find('\n') {
+            let line = self.pending[..newline].trim_end_matches('\r').to_string();
+            self.pending.drain(..=newline);
+            let Some(data) = line.strip_prefix("data:") else {
+                continue;
+            };
+            let data = data.trim();
+            if data != "[DONE]" && record_usage_from_json(store, attribution, data.as_bytes()) {
+                self.recorded = true;
+                return;
+            }
+        }
+    }
+}
+
+fn record_usage_from_json_bytes(store: &UsageStore, attribution: &UsageAttribution, bytes: &Bytes) {
+    let _ = record_usage_from_json(store, attribution, bytes);
+}
+
+fn record_usage_from_json(
+    store: &UsageStore,
+    attribution: &UsageAttribution,
+    bytes: &[u8],
+) -> bool {
+    let Ok(value) = serde_json::from_slice::<Value>(bytes) else {
+        return false;
+    };
+    let Some(usage) = token_usage_from_response(&value) else {
+        return false;
+    };
+    if usage.total_tokens == 0 {
+        return false;
+    }
+    if let Err(error) = store.record(&UsageIncrement {
+        owner_user_id: attribution.owner_user_id,
+        provider_id: attribution.provider_id.clone(),
+        model: attribution.model.clone(),
+        usage,
+        timestamp: now_unix() as i64,
+    }) {
+        eprintln!("record token usage failed: {error}");
+        return false;
+    }
+    true
+}
+
+fn token_usage_from_response(value: &Value) -> Option<TokenUsage> {
+    let usage = value
+        .get("usage")
+        .or_else(|| value.pointer("/response/usage"))?;
+    let input_tokens = usage
+        .get("input_tokens")
+        .or_else(|| usage.get("prompt_tokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let output_tokens = usage
+        .get("output_tokens")
+        .or_else(|| usage.get("completion_tokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let total_tokens = usage
+        .get("total_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or_else(|| input_tokens.saturating_add(output_tokens));
+    Some(TokenUsage {
+        input_tokens,
+        output_tokens,
+        cached_input_tokens: usage
+            .pointer("/input_tokens_details/cached_tokens")
+            .or_else(|| usage.pointer("/prompt_tokens_details/cached_tokens"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
+        reasoning_tokens: usage
+            .pointer("/output_tokens_details/reasoning_tokens")
+            .or_else(|| usage.pointer("/completion_tokens_details/reasoning_tokens"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
+        total_tokens,
+    })
 }
 
 pub(super) async fn resolve_selected_provider(
@@ -3103,7 +3284,7 @@ mod tests {
         classifier_text_from_response, classifier_text_from_sse, codex_turn_metadata,
         delete_provider, opaque_turn_id, openai_models_response, private_classifier_request_body,
         provider_uses_openai_account, public_benchmark_request_body, quota_from_openai_usage,
-        reasoning_effort_for_routing, turn_context_from_request,
+        reasoning_effort_for_routing, token_usage_from_response, turn_context_from_request,
     };
     use super::{CodexAuthFile, import_tokens_from_value};
     use crate::{
@@ -3115,7 +3296,10 @@ mod tests {
         },
         openai_device_login::OpenAiDeviceLoginService,
         openai_tokens::{ImportedOpenAIAuth, OpenAiTokenService},
-        store::{AccountStore, ModelStore, ProviderStore, RouteStore, SettingsStore, TurnLogStore},
+        store::{
+            AccountStore, ModelStore, ProviderStore, RouteStore, SettingsStore, TurnLogStore,
+            UsageStore,
+        },
         upstream::UpstreamClient,
     };
     use axum::{
@@ -3169,6 +3353,7 @@ mod tests {
             models: ModelStore::new(config.clone()).expect("create model store"),
             settings: SettingsStore::new(config.clone()).expect("create settings store"),
             turn_logs: TurnLogStore::new(config.clone()).expect("create turn-log store"),
+            usage: UsageStore::new(config.clone()).expect("create usage store"),
             upstream: UpstreamClient::new(),
         };
 
@@ -3555,6 +3740,33 @@ mod tests {
         );
 
         assert_eq!(accumulator.finish(), ("hello".to_string(), Some(5)));
+    }
+
+    #[test]
+    fn extracts_usage_from_completed_responses_stream_event() {
+        let payload = json!({
+            "type": "response.completed",
+            "response": {
+                "usage": {
+                    "input_tokens": 12,
+                    "output_tokens": 34,
+                    "total_tokens": 46,
+                    "input_tokens_details": { "cached_tokens": 5 },
+                    "output_tokens_details": { "reasoning_tokens": 21 }
+                }
+            }
+        });
+
+        assert_eq!(
+            token_usage_from_response(&payload),
+            Some(crate::models::TokenUsage {
+                input_tokens: 12,
+                output_tokens: 34,
+                cached_input_tokens: 5,
+                reasoning_tokens: 21,
+                total_tokens: 46,
+            })
+        );
     }
 
     #[test]
