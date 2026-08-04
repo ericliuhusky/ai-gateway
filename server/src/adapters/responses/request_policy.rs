@@ -8,14 +8,29 @@ pub fn apply_responses_request_policy(
     profile: &ProviderCompatibilityProfile,
     request_body: String,
 ) -> Result<String, String> {
-    if !matches!(profile, ProviderCompatibilityProfile::GenericOpenAi) {
-        return Ok(request_body);
+    match profile {
+        ProviderCompatibilityProfile::OfficialOpenAi => Ok(request_body),
+        ProviderCompatibilityProfile::GenericOpenAi => {
+            let mut body = parse_request_body(&request_body)?;
+            filter_generic_openai_tools(&mut body);
+            serialize_request_body(&body)
+        }
+        ProviderCompatibilityProfile::OpenAiCodex => {
+            let mut body = parse_request_body(&request_body)?;
+            if !strip_plaintext_reasoning_content(&mut body) {
+                return Ok(request_body);
+            }
+            serialize_request_body(&body)
+        }
     }
+}
 
-    let mut body: Value = serde_json::from_str(&request_body)
-        .map_err(|err| format!("invalid request JSON: {err}"))?;
-    filter_generic_openai_tools(&mut body);
-    serde_json::to_string(&body).map_err(|err| err.to_string())
+fn parse_request_body(request_body: &str) -> Result<Value, String> {
+    serde_json::from_str(request_body).map_err(|err| format!("invalid request JSON: {err}"))
+}
+
+fn serialize_request_body(body: &Value) -> Result<String, String> {
+    serde_json::to_string(body).map_err(|err| err.to_string())
 }
 
 fn filter_generic_openai_tools(body: &mut Value) {
@@ -39,6 +54,26 @@ fn should_remove(tool: &Value) -> bool {
             .get("name")
             .and_then(Value::as_str)
             .is_some_and(|name| GENERIC_FILTERED_FUNCTION_TOOLS.contains(&name))
+}
+
+fn strip_plaintext_reasoning_content(body: &mut Value) -> bool {
+    let Some(input) = body.get_mut("input").and_then(Value::as_array_mut) else {
+        return false;
+    };
+    let mut changed = false;
+    for item in input {
+        if item.get("type").and_then(Value::as_str) != Some("reasoning") {
+            continue;
+        }
+        let Some(content) = item.get_mut("content").and_then(Value::as_array_mut) else {
+            continue;
+        };
+        if !content.is_empty() {
+            content.clear();
+            changed = true;
+        }
+    }
+    changed
 }
 
 #[cfg(test)]
@@ -76,5 +111,45 @@ mod tests {
 
         let body: serde_json::Value = serde_json::from_str(&transformed).unwrap();
         assert_eq!(body["tools"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn codex_profile_only_empties_reasoning_content() {
+        let body = json!({
+            "input": [
+                {
+                    "type": "reasoning",
+                    "content": [{"type": "reasoning_text", "text": "do not forward"}],
+                    "encrypted_content": "opaque",
+                    "summary": [{"type": "summary_text", "text": "summary"}]
+                },
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "visible answer"}]
+                }
+            ]
+        });
+        let transformed = apply_responses_request_policy(
+            &ProviderCompatibilityProfile::OpenAiCodex,
+            body.to_string(),
+        )
+        .unwrap();
+        let adapted: serde_json::Value = serde_json::from_str(&transformed).unwrap();
+
+        assert_eq!(adapted["input"][0]["content"], json!([]));
+        assert_eq!(adapted["input"][0]["encrypted_content"], "opaque");
+        assert_eq!(adapted["input"][0]["summary"], body["input"][0]["summary"]);
+        assert_eq!(adapted["input"][1], body["input"][1]);
+    }
+
+    #[test]
+    fn codex_profile_preserves_raw_body_without_plaintext_reasoning() {
+        let raw = "{ \"input\": [{\"type\":\"reasoning\",\"content\":[]}] }".to_string();
+        let transformed =
+            apply_responses_request_policy(&ProviderCompatibilityProfile::OpenAiCodex, raw.clone())
+                .unwrap();
+
+        assert_eq!(transformed, raw);
     }
 }

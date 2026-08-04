@@ -1736,17 +1736,13 @@ where
                 return Err(AppError::upstream(error));
             }
         };
-        if !upstream_status.is_success() {
-            record_gateway_issue(
-                &state.issues,
-                &failure_context,
-                "upstream_http_error",
-                Some(upstream_status.as_u16()),
-                &format!("上游返回 HTTP {upstream_status}"),
-                Some(&String::from_utf8_lossy(&response_bytes)),
-                false,
-            );
-        }
+        record_upstream_http_issue_if_failed(
+            &state.issues,
+            &failure_context,
+            upstream_status,
+            &String::from_utf8_lossy(&response_bytes),
+            false,
+        );
         record_usage_from_json_bytes(&state.usage, &attribution, &response_bytes);
         return build_passthrough_response(
             upstream_status,
@@ -1761,7 +1757,6 @@ where
         let issue_store = state.issues.clone();
         let failure_context = failure_context.clone();
         let status_code = upstream_status.as_u16();
-        let status_is_success = upstream_status.is_success();
         let mut usage_parser = StreamingUsageParser::default();
         let mut captured_response = Vec::new();
         let mut response_truncated = false;
@@ -1792,18 +1787,14 @@ where
                 }
             }
         }
-        if !status_is_success {
-            let captured_response = String::from_utf8_lossy(&captured_response);
-            record_gateway_issue(
-                &issue_store,
-                &failure_context,
-                "upstream_http_error",
-                Some(status_code),
-                &format!("上游返回 HTTP {status_code}"),
-                Some(captured_response.as_ref()),
-                response_truncated,
-            );
-        }
+        let captured_response = String::from_utf8_lossy(&captured_response);
+        record_upstream_http_issue_if_failed(
+            &issue_store,
+            &failure_context,
+            upstream_status,
+            captured_response.as_ref(),
+            response_truncated,
+        );
     };
 
     build_passthrough_response(
@@ -1907,6 +1898,27 @@ fn record_gateway_issue(
     if let Err(error) = store.record(&issue) {
         eprintln!("record gateway issue failed: {error}");
     }
+}
+
+fn record_upstream_http_issue_if_failed(
+    store: &IssueStore,
+    context: &GatewayFailureContext,
+    status: StatusCode,
+    response_body: &str,
+    response_truncated: bool,
+) {
+    if status.is_success() {
+        return;
+    }
+    record_gateway_issue(
+        store,
+        context,
+        "upstream_http_error",
+        Some(status.as_u16()),
+        &format!("上游返回 HTTP {status}"),
+        Some(response_body),
+        response_truncated,
+    );
 }
 
 fn gateway_issue_repair_prompt(issue: &GatewayIssue) -> String {
@@ -3553,13 +3565,13 @@ impl IntoResponse for AppError {
 #[cfg(test)]
 mod tests {
     use super::{
-        AppState, BenchmarkEventKind, BenchmarkStreamAccumulator, ResolvedProvider,
-        append_issue_response_bytes, apply_gateway_overrides_to_raw_request,
+        AppState, BenchmarkEventKind, BenchmarkStreamAccumulator, GatewayFailureContext,
+        ResolvedProvider, append_issue_response_bytes, apply_gateway_overrides_to_raw_request,
         classifier_response_preview, classifier_text_from_response, classifier_text_from_sse,
         codex_turn_metadata, delete_provider, gateway_issue_repair_prompt, opaque_turn_id,
         openai_models_response, private_classifier_request_body, provider_uses_openai_account,
         public_benchmark_request_body, quota_from_openai_usage, reasoning_effort_for_routing,
-        token_usage_from_response, turn_context_from_request,
+        record_upstream_http_issue_if_failed, token_usage_from_response, turn_context_from_request,
     };
     use super::{CodexAuthFile, import_tokens_from_value};
     use crate::{
@@ -3629,6 +3641,34 @@ mod tests {
             crate::store::issue_store::GATEWAY_ISSUE_BODY_LIMIT
         );
         assert!(truncated);
+    }
+
+    #[test]
+    fn successful_upstream_response_does_not_write_gateway_issue_database() {
+        let data_dir = unique_test_data_dir("successful-response-issues");
+        let config = Arc::new(Config::for_test(data_dir.clone()));
+        let issues = IssueStore::new(config).expect("create issue store");
+        let context = GatewayFailureContext {
+            owner_user_id: None,
+            instance_id: None,
+            provider_id: "provider".to_string(),
+            provider_name: "Provider".to_string(),
+            model: "model".to_string(),
+            upstream_url: "https://example.com/v1/responses".to_string(),
+            request_body: "{\"input\":[]}".to_string(),
+            request_truncated: false,
+        };
+
+        record_upstream_http_issue_if_failed(
+            &issues,
+            &context,
+            axum::http::StatusCode::OK,
+            "{\"status\":\"ok\"}",
+            false,
+        );
+
+        assert!(issues.list_for_owner(None, 50).unwrap().is_empty());
+        let _ = fs::remove_dir_all(data_dir);
     }
 
     #[tokio::test]

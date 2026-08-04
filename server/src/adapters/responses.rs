@@ -41,6 +41,11 @@ pub fn prepare_responses_upstream(
     request_stream: bool,
 ) -> Result<PreparedResponsesUpstream, ResponsesAdapterError> {
     if provider.auth_mode == ProviderAuthMode::Account && provider.uses_openai_account {
+        let request_body = apply_responses_request_policy(
+            &crate::models::ProviderCompatibilityProfile::OpenAiCodex,
+            request_body,
+        )
+        .map_err(ResponsesAdapterError::BadRequest)?;
         return Ok(
             PreparedResponsesUpstream::OpenAiAccountResponsesPassthrough(
                 PreparedResponsesPassthrough {
@@ -241,5 +246,69 @@ mod tests {
         let adapted: serde_json::Value = serde_json::from_str(&prepared.request_body).unwrap();
 
         assert_eq!(adapted["tools"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn strips_plaintext_reasoning_content_for_openai_account_requests() {
+        let body = json!({
+            "model": "gpt-test",
+            "input": [
+                {
+                    "type": "message",
+                    "role": "developer",
+                    "content": [{"type": "input_text", "text": "context"}]
+                },
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "first"}]
+                },
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "second"}]
+                },
+                {
+                    "type": "reasoning",
+                    "content": [{"type": "reasoning_text", "text": "private reasoning"}],
+                    "encrypted_content": null,
+                    "summary": []
+                },
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "hi"}]
+                }
+            ]
+        });
+
+        let prepared = prepare_responses_upstream(
+            ResponsesAdapterProvider {
+                name: "GPT账户".to_string(),
+                auth_mode: ProviderAuthMode::Account,
+                record: None,
+                uses_openai_account: true,
+            },
+            body.to_string(),
+            true,
+        )
+        .unwrap();
+
+        let PreparedResponsesUpstream::OpenAiAccountResponsesPassthrough(prepared) = prepared
+        else {
+            panic!("expected OpenAI account passthrough");
+        };
+        let adapted: serde_json::Value = serde_json::from_str(&prepared.request_body).unwrap();
+
+        assert_eq!(adapted["input"][3]["content"], json!([]));
+        assert!(adapted["input"][3]["encrypted_content"].is_null());
+        assert_eq!(
+            adapted["input"][0]["content"][0]["text"],
+            body["input"][0]["content"][0]["text"]
+        );
+        assert_eq!(
+            adapted["input"][4]["content"][0]["text"],
+            body["input"][4]["content"][0]["text"]
+        );
     }
 }
