@@ -167,10 +167,15 @@ pub async fn run_model_benchmark(
 fn public_benchmark_request_body(model: &str, prompt: &str) -> String {
     json!({
         "model": model,
-        "input": prompt,
+        "input": [{
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": prompt}]
+        }],
+        "reasoning": {"effort": "low", "summary": "auto"},
         "stream": true,
         "store": false,
-        "max_output_tokens": 256
+        "max_output_tokens": 4096
     })
     .to_string()
 }
@@ -215,9 +220,9 @@ where
         .await
         .map_err(AppError::upstream_message)?;
 
-    let mut first_token_at = None;
-    let mut output_tokens = None;
-    let mut output_text = String::new();
+    let mut first_output_at = None;
+    let mut first_generated_at = None;
+    let mut accumulator = BenchmarkStreamAccumulator::default();
     let mut buffer = String::new();
     let mut stream = response.bytes_stream();
     while let Some(chunk) = stream.next().await {
@@ -235,29 +240,27 @@ where
             let Ok(event) = serde_json::from_str::<Value>(&payload) else {
                 continue;
             };
-            let event_type = event
-                .get("type")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            if event_type == "response.output_text.delta" && first_token_at.is_none() {
-                first_token_at = Some(started.elapsed());
-            }
-            if event_type == "response.output_text.delta" {
-                if let Some(delta) = event.get("delta").and_then(Value::as_str) {
-                    output_text.push_str(delta);
+            let event_kind = accumulator.ingest(&event);
+            match event_kind {
+                BenchmarkEventKind::Reasoning | BenchmarkEventKind::Output
+                    if first_generated_at.is_none() =>
+                {
+                    first_generated_at = Some(started.elapsed());
                 }
+                _ => {}
             }
-            if event_type == "response.completed" {
-                output_tokens = event
-                    .pointer("/response/usage/output_tokens")
-                    .and_then(Value::as_u64);
+            if event_kind == BenchmarkEventKind::Output && first_output_at.is_none() {
+                first_output_at = Some(started.elapsed());
             }
         }
     }
 
     let total = started.elapsed();
-    let ttft = first_token_at.unwrap_or(total);
-    let generation_seconds = total.saturating_sub(ttft).as_secs_f64();
+    let ttft = first_output_at.unwrap_or(total);
+    let generation_seconds = total
+        .saturating_sub(first_generated_at.unwrap_or(total))
+        .as_secs_f64();
+    let (output_text, output_tokens) = accumulator.finish();
     let generation_tokens_per_second = output_tokens
         .filter(|tokens| *tokens > 0 && generation_seconds > 0.0)
         .map(|tokens| tokens as f64 / generation_seconds);
@@ -268,6 +271,146 @@ where
         output_tokens,
         generation_tokens_per_second,
     })
+}
+
+#[derive(Debug, Default)]
+struct BenchmarkStreamAccumulator {
+    output_delta_text: String,
+    output_text_done: Option<String>,
+    output_item_done_text: String,
+    completed_output_text: Option<String>,
+    output_tokens: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum BenchmarkEventKind {
+    #[default]
+    None,
+    Reasoning,
+    Output,
+}
+
+impl BenchmarkStreamAccumulator {
+    /// Ingest one Responses SSE event.
+    ///
+    /// Returns whether the event contained final output text.
+    ///
+    /// Final events are preferred over deltas so `delta + done` is never
+    /// concatenated twice.
+    fn ingest(&mut self, event: &Value) -> BenchmarkEventKind {
+        let event_type = event
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+
+        if let Some(tokens) = benchmark_output_tokens(event) {
+            // Usage is a final value, not an increment. Never add values from
+            // multiple SSE events together.
+            self.output_tokens = Some(tokens);
+        }
+
+        match event_type {
+            "response.output_text.delta" => {
+                let Some(delta) = event.get("delta").and_then(Value::as_str) else {
+                    return BenchmarkEventKind::None;
+                };
+                if delta.is_empty() {
+                    return BenchmarkEventKind::None;
+                }
+                self.output_delta_text.push_str(delta);
+                BenchmarkEventKind::Output
+            }
+            "response.output_text.done" => {
+                let Some(text) = event.get("text").and_then(Value::as_str) else {
+                    return BenchmarkEventKind::None;
+                };
+                if text.is_empty() {
+                    return BenchmarkEventKind::None;
+                }
+                self.output_text_done = Some(text.to_string());
+                BenchmarkEventKind::Output
+            }
+            "response.reasoning_text.delta"
+            | "response.reasoning_text.done"
+            | "response.reasoning_summary_text.delta"
+            | "response.reasoning_summary_text.done" => {
+                let has_text = event
+                    .get("delta")
+                    .or_else(|| event.get("text"))
+                    .and_then(Value::as_str)
+                    .is_some_and(|text| !text.is_empty());
+                if has_text {
+                    BenchmarkEventKind::Reasoning
+                } else {
+                    BenchmarkEventKind::None
+                }
+            }
+            "response.output_item.done" => {
+                let Some(text) = benchmark_response_output_text(event.get("item")) else {
+                    return BenchmarkEventKind::None;
+                };
+                self.output_item_done_text.push_str(&text);
+                BenchmarkEventKind::Output
+            }
+            "response.completed" => {
+                self.completed_output_text =
+                    benchmark_response_output_text(event.pointer("/response/output"));
+                if self.completed_output_text.is_some() {
+                    BenchmarkEventKind::Output
+                } else {
+                    BenchmarkEventKind::None
+                }
+            }
+            _ => BenchmarkEventKind::None,
+        }
+    }
+
+    fn finish(self) -> (String, Option<u64>) {
+        let output_text = self
+            .completed_output_text
+            .or(self.output_text_done)
+            .or_else(|| {
+                (!self.output_item_done_text.is_empty()).then_some(self.output_item_done_text)
+            })
+            .or_else(|| (!self.output_delta_text.is_empty()).then_some(self.output_delta_text));
+        (output_text.unwrap_or_default(), self.output_tokens)
+    }
+}
+
+fn benchmark_output_tokens(event: &Value) -> Option<u64> {
+    event
+        .pointer("/response/usage/output_tokens")
+        .and_then(Value::as_u64)
+}
+
+fn benchmark_response_output_text(value: Option<&Value>) -> Option<String> {
+    let value = value?;
+    let mut text = String::new();
+    collect_benchmark_output_text(value, &mut text);
+    (!text.is_empty()).then_some(text)
+}
+
+fn collect_benchmark_output_text(value: &Value, text: &mut String) {
+    match value {
+        Value::Array(items) => {
+            for item in items {
+                collect_benchmark_output_text(item, text);
+            }
+        }
+        Value::Object(object) => {
+            if object.get("type").and_then(Value::as_str) == Some("output_text")
+                && let Some(value) = object.get("text").and_then(Value::as_str)
+            {
+                text.push_str(value);
+                return;
+            }
+
+            if let Some(content) = object.get("content") {
+                collect_benchmark_output_text(content, text);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn sse_frame_boundary(buffer: &str) -> Option<(usize, usize)> {
@@ -2955,10 +3098,11 @@ impl IntoResponse for AppError {
 #[cfg(test)]
 mod tests {
     use super::{
-        AppState, ResolvedProvider, apply_gateway_overrides_to_raw_request,
-        classifier_response_preview, classifier_text_from_response, classifier_text_from_sse,
-        codex_turn_metadata, delete_provider, opaque_turn_id, openai_models_response,
-        private_classifier_request_body, provider_uses_openai_account, quota_from_openai_usage,
+        AppState, BenchmarkEventKind, BenchmarkStreamAccumulator, ResolvedProvider,
+        apply_gateway_overrides_to_raw_request, classifier_response_preview,
+        classifier_text_from_response, classifier_text_from_sse, codex_turn_metadata,
+        delete_provider, opaque_turn_id, openai_models_response, private_classifier_request_body,
+        provider_uses_openai_account, public_benchmark_request_body, quota_from_openai_usage,
         reasoning_effort_for_routing, turn_context_from_request,
     };
     use super::{CodexAuthFile, import_tokens_from_value};
@@ -3357,6 +3501,101 @@ mod tests {
             classifier_text_from_sse(body).as_deref(),
             Some("{\"tier\":\"light\",\"confidence\":0.95}")
         );
+    }
+
+    #[test]
+    fn public_benchmark_uses_canonical_responses_message_input() {
+        let body: serde_json::Value = serde_json::from_str(&public_benchmark_request_body(
+            "qwen3.6-27b",
+            "benchmark prompt",
+        ))
+        .expect("benchmark request should be JSON");
+
+        assert_eq!(body["input"][0]["type"], "message");
+        assert_eq!(body["input"][0]["content"][0]["type"], "input_text");
+        assert_eq!(body["reasoning"]["effort"], "low");
+        assert_eq!(body["reasoning"]["summary"], "auto");
+        assert_eq!(body["max_output_tokens"], 4096);
+    }
+
+    #[test]
+    fn benchmark_does_not_duplicate_delta_and_done_text_or_usage() {
+        let mut accumulator = BenchmarkStreamAccumulator::default();
+        assert_eq!(
+            accumulator.ingest(&json!({
+                "type": "response.output_text.delta",
+                "delta": "hello"
+            })),
+            BenchmarkEventKind::Output
+        );
+        assert_eq!(
+            accumulator.ingest(&json!({
+                "type": "response.output_text.done",
+                "text": "hello"
+            })),
+            BenchmarkEventKind::Output
+        );
+        assert_eq!(
+            accumulator.ingest(&json!({
+                "type": "response.completed",
+                "response": {
+                    "usage": {"output_tokens": 5}
+                }
+            })),
+            BenchmarkEventKind::None
+        );
+        assert_eq!(
+            accumulator.ingest(&json!({
+                "type": "response.completed",
+                "response": {
+                    "usage": {"output_tokens": 5}
+                }
+            })),
+            BenchmarkEventKind::None
+        );
+
+        assert_eq!(accumulator.finish(), ("hello".to_string(), Some(5)));
+    }
+
+    #[test]
+    fn benchmark_falls_back_to_done_output_item_text() {
+        let mut accumulator = BenchmarkStreamAccumulator::default();
+        assert_eq!(
+            accumulator.ingest(&json!({
+                "type": "response.output_item.done",
+                "item": {
+                    "type": "message",
+                    "content": [{
+                        "type": "output_text",
+                        "text": "final answer"
+                    }]
+                }
+            })),
+            BenchmarkEventKind::Output
+        );
+
+        assert_eq!(accumulator.finish(), ("final answer".to_string(), None));
+    }
+
+    #[test]
+    fn benchmark_does_not_expose_reasoning_as_output_text() {
+        let mut accumulator = BenchmarkStreamAccumulator::default();
+        assert_eq!(
+            accumulator.ingest(&json!({
+                "type": "response.reasoning_text.delta",
+                "delta": "reason"
+            })),
+            BenchmarkEventKind::Reasoning
+        );
+        assert_eq!(
+            accumulator.ingest(&json!({
+                "type": "response.reasoning_text.done",
+                "text": "reasoning"
+            })),
+            BenchmarkEventKind::Reasoning
+        );
+
+        assert_eq!(accumulator.finish(), (String::new(), None));
     }
 
     #[test]
