@@ -14,9 +14,11 @@ import {
   EyeOff,
   Gauge,
   KeyRound,
+  LayoutDashboard,
   LoaderCircle,
   Plus,
   RefreshCw,
+  Route,
   Server,
   Settings,
   Trash2,
@@ -54,7 +56,20 @@ import type {
 } from "./types";
 
 type Dialog = "provider" | "instances" | "scripts" | null;
-type Page = "home" | "account" | "admin";
+type Page = "overview" | "usage" | "benchmark" | "routing" | "issues" | "account" | "admin";
+
+const NAV_TABS: {
+  id: Exclude<Page, "account" | "admin">;
+  label: string;
+  icon: React.ComponentType<{ className?: string }>;
+}[] = [
+  { id: "overview", label: "概览", icon: LayoutDashboard },
+  { id: "usage", label: "Token 用量", icon: BarChart3 },
+  { id: "benchmark", label: "吞吐测试", icon: Gauge },
+  { id: "routing", label: "路由日志", icon: Route },
+  { id: "issues", label: "网关问题", icon: Bug },
+];
+
 type QuotaMap = Record<string, ProviderQuotaSummary | undefined>;
 type ErrorMap = Record<string, string | undefined>;
 type UsagePeriod = "total" | "today" | "week";
@@ -185,7 +200,7 @@ export function GatewayDashboard() {
   const [loading, setLoading] = React.useState(true);
   const [loadingModels, setLoadingModels] = React.useState(false);
   const [dialog, setDialog] = React.useState<Dialog>(null);
-  const [activePage, setActivePage] = React.useState<Page>("home");
+  const [activePage, setActivePage] = React.useState<Page>("overview");
   const [error, setError] = React.useState<string | null>(null);
   const [deleting, setDeleting] = React.useState<Set<string>>(new Set());
 
@@ -362,13 +377,14 @@ export function GatewayDashboard() {
             type="button"
             className="flex items-center gap-3 rounded-xl text-left outline-none transition-opacity hover:opacity-80 focus-visible:ring-2 focus-visible:ring-blue-500"
             aria-label="返回首页"
-            onClick={() => setActivePage("home")}
+            onClick={() => setActivePage("overview")}
           >
             <span className="flex size-9 items-center justify-center rounded-xl bg-slate-900 text-white shadow-lg shadow-slate-900/15 dark:bg-white dark:text-slate-950">
               <Cloud className="size-[18px]" />
             </span>
             <span className="text-[15px] font-bold tracking-[-0.02em]">AI网关</span>
           </button>
+          <NavTabs active={activePage} onSelect={setActivePage} />
           <div className="ml-auto flex items-center gap-2">
             <AccountMenu
               user={currentUser}
@@ -400,6 +416,29 @@ export function GatewayDashboard() {
           />
         ) : loading ? (
           <LoadingState />
+        ) : activePage === "usage" ? (
+          <UsageSection
+            providers={providers}
+            usageByPeriod={usageByPeriod}
+            dailyUsage={dailyUsage}
+          />
+        ) : activePage === "benchmark" ? (
+          <ModelBenchmarkSection
+            providers={providers}
+            initialProviderId={selected.provider_id}
+            initialModel={selected.selected_model}
+            onError={setError}
+          />
+        ) : activePage === "routing" ? (
+          <TurnLogSection turns={turnLogs} />
+        ) : activePage === "issues" ? (
+          <GatewayIssueSection
+            issues={gatewayIssues}
+            onChanged={async () => {
+              setGatewayIssues(await gatewayApi.gatewayIssues());
+            }}
+            onError={setError}
+          />
         ) : (
           <>
             <section>
@@ -474,7 +513,7 @@ export function GatewayDashboard() {
             {providers.length === 0 ? (
               <div className="mt-8"><EmptyState onAdd={() => setDialog("provider")} /></div>
             ) : (
-              <div className="mt-8 space-y-9">
+              <div className="mt-8">
                 <ProviderSection
                   title="供应商"
                   providers={providers}
@@ -487,29 +526,8 @@ export function GatewayDashboard() {
                   onDelete={deleteProvider}
                   onRefreshQuota={refreshQuota}
                 />
-                <UsageSection
-                  providers={providers}
-                  usageByPeriod={usageByPeriod}
-                  dailyUsage={dailyUsage}
-                />
-                <ModelBenchmarkSection
-                  providers={providers}
-                  initialProviderId={selected.provider_id}
-                  initialModel={selected.selected_model}
-                  onError={setError}
-                />
-                <TurnLogSection turns={turnLogs} />
               </div>
             )}
-            <div className="mt-8">
-              <GatewayIssueSection
-                issues={gatewayIssues}
-                onChanged={async () => {
-                  setGatewayIssues(await gatewayApi.gatewayIssues());
-                }}
-                onError={setError}
-              />
-            </div>
           </>
         )}
       </main>
@@ -559,7 +577,42 @@ export function GatewayDashboard() {
   );
 }
 
+
+function NavTabs({
+  active,
+  onSelect,
+}: {
+  active: Page;
+  onSelect: (page: Page) => void;
+}) {
+  return (
+    <nav className="ml-2 flex min-w-0 items-center gap-1 overflow-x-auto whitespace-nowrap md:ml-6" aria-label="主导航">
+      {NAV_TABS.map(({ id, label, icon: Icon }) => {
+        const isActive = active === id;
+        return (
+          <button
+            key={id}
+            type="button"
+            aria-current={isActive ? "page" : undefined}
+            onClick={() => onSelect(id)}
+            className={cn(
+              "inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-semibold transition-colors",
+              isActive
+                ? "bg-slate-900 text-white shadow-sm dark:bg-white dark:text-slate-950"
+                : "text-slate-500 hover:bg-slate-900/5 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-white/10 dark:hover:text-white",
+            )}
+          >
+            <Icon className="size-4" />
+            {label}
+          </button>
+        );
+      })}
+    </nav>
+  );
+}
+
 function AccountMenu({
+
   user,
   showAccountSettings,
   showLogout,
