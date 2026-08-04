@@ -249,7 +249,7 @@ mod tests {
     }
 
     #[test]
-    fn strips_plaintext_reasoning_content_for_openai_account_requests() {
+    fn removes_non_replayable_reasoning_for_openai_account_requests() {
         let body = json!({
             "model": "gpt-test",
             "input": [
@@ -300,14 +300,13 @@ mod tests {
         };
         let adapted: serde_json::Value = serde_json::from_str(&prepared.request_body).unwrap();
 
-        assert_eq!(adapted["input"][3]["content"], json!([]));
-        assert!(adapted["input"][3]["encrypted_content"].is_null());
+        assert_eq!(adapted["input"].as_array().unwrap().len(), 4);
         assert_eq!(
             adapted["input"][0]["content"][0]["text"],
             body["input"][0]["content"][0]["text"]
         );
         assert_eq!(
-            adapted["input"][4]["content"][0]["text"],
+            adapted["input"][3]["content"][0]["text"],
             body["input"][4]["content"][0]["text"]
         );
     }

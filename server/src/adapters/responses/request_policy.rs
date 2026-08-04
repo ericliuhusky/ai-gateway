@@ -1,5 +1,6 @@
 use crate::models::ProviderCompatibilityProfile;
 use serde_json::Value;
+use std::collections::HashSet;
 
 const GENERIC_FILTERED_FUNCTION_TOOLS: &[&str] = &["list_available_plugins_to_install", "get_goal"];
 const GENERIC_FILTERED_TOOL_TYPES: &[&str] = &["tool_search"];
@@ -17,7 +18,7 @@ pub fn apply_responses_request_policy(
         }
         ProviderCompatibilityProfile::OpenAiCodex => {
             let mut body = parse_request_body(&request_body)?;
-            if !strip_plaintext_reasoning_content(&mut body) {
+            if !sanitize_codex_history(&mut body) {
                 return Ok(request_body);
             }
             serialize_request_body(&body)
@@ -56,11 +57,36 @@ fn should_remove(tool: &Value) -> bool {
             .is_some_and(|name| GENERIC_FILTERED_FUNCTION_TOOLS.contains(&name))
 }
 
-fn strip_plaintext_reasoning_content(body: &mut Value) -> bool {
+fn sanitize_codex_history(body: &mut Value) -> bool {
     let Some(input) = body.get_mut("input").and_then(Value::as_array_mut) else {
         return false;
     };
     let mut changed = false;
+    let invalid_call_ids = input
+        .iter()
+        .filter(|item| {
+            item.get("type").and_then(Value::as_str) == Some("function_call")
+                && !has_non_empty_string(item, "name")
+        })
+        .filter_map(|item| item.get("call_id").and_then(Value::as_str))
+        .map(str::to_string)
+        .collect::<HashSet<_>>();
+
+    input.retain(|item| {
+        let item_type = item.get("type").and_then(Value::as_str);
+        let remove = match item_type {
+            Some("function_call") => !has_non_empty_string(item, "name"),
+            Some("function_call_output") => item
+                .get("call_id")
+                .and_then(Value::as_str)
+                .is_some_and(|call_id| invalid_call_ids.contains(call_id)),
+            Some("reasoning") => !has_non_empty_string(item, "encrypted_content"),
+            _ => false,
+        };
+        changed |= remove;
+        !remove
+    });
+
     for item in input {
         if item.get("type").and_then(Value::as_str) != Some("reasoning") {
             continue;
@@ -74,6 +100,12 @@ fn strip_plaintext_reasoning_content(body: &mut Value) -> bool {
         }
     }
     changed
+}
+
+fn has_non_empty_string(item: &Value, key: &str) -> bool {
+    item.get(key)
+        .and_then(Value::as_str)
+        .is_some_and(|value| !value.trim().is_empty())
 }
 
 #[cfg(test)]
@@ -144,12 +176,79 @@ mod tests {
     }
 
     #[test]
-    fn codex_profile_preserves_raw_body_without_plaintext_reasoning() {
-        let raw = "{ \"input\": [{\"type\":\"reasoning\",\"content\":[]}] }".to_string();
-        let transformed =
-            apply_responses_request_policy(&ProviderCompatibilityProfile::OpenAiCodex, raw.clone())
-                .unwrap();
+    fn codex_profile_removes_reasoning_without_encrypted_content() {
+        let body = json!({
+            "input": [
+                {
+                    "type": "reasoning",
+                    "id": "rs_not_persisted",
+                    "content": [],
+                    "encrypted_content": null,
+                    "summary": [{"type": "summary_text", "text": "summary"}]
+                },
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "continue"}]
+                }
+            ]
+        });
+        let transformed = apply_responses_request_policy(
+            &ProviderCompatibilityProfile::OpenAiCodex,
+            body.to_string(),
+        )
+        .unwrap();
+        let adapted: serde_json::Value = serde_json::from_str(&transformed).unwrap();
 
-        assert_eq!(transformed, raw);
+        assert_eq!(adapted["input"].as_array().unwrap().len(), 1);
+        assert_eq!(adapted["input"][0]["type"], "message");
+    }
+
+    #[test]
+    fn codex_profile_removes_invalid_function_call_and_matching_output() {
+        let body = json!({
+            "input": [
+                {
+                    "type": "function_call",
+                    "call_id": "valid_call",
+                    "name": "exec_command",
+                    "arguments": "{}"
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "valid_call",
+                    "output": "ok"
+                },
+                {
+                    "type": "function_call",
+                    "call_id": "invalid_call",
+                    "name": " ",
+                    "arguments": "}"
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "invalid_call",
+                    "output": "discarded"
+                },
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "continue"}]
+                }
+            ]
+        });
+
+        let transformed = apply_responses_request_policy(
+            &ProviderCompatibilityProfile::OpenAiCodex,
+            body.to_string(),
+        )
+        .unwrap();
+        let adapted: serde_json::Value = serde_json::from_str(&transformed).unwrap();
+        let input = adapted["input"].as_array().unwrap();
+
+        assert_eq!(input.len(), 3);
+        assert_eq!(input[0]["call_id"], "valid_call");
+        assert_eq!(input[1]["call_id"], "valid_call");
+        assert_eq!(input[2]["type"], "message");
     }
 }
