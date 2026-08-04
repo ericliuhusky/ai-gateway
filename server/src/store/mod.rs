@@ -1,4 +1,5 @@
 pub mod account_store;
+pub mod group_store;
 pub mod issue_store;
 pub mod model_store;
 pub mod provider_store;
@@ -10,6 +11,7 @@ pub mod usage_store;
 pub mod user_store;
 
 pub use account_store::AccountStore;
+pub use group_store::GroupStore;
 pub use issue_store::IssueStore;
 pub use model_store::ModelStore;
 pub use provider_store::ProviderStore;

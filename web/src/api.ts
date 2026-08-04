@@ -18,6 +18,9 @@ import type {
   DailyUsageSummary,
   OpenAiDeviceLoginStart,
   OpenAiDeviceLoginStatus,
+  GatewayGroup,
+  GatewayGroupDetail,
+  GatewayUser,
 } from "./types";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -165,6 +168,50 @@ export const gatewayApi = {
     return payload.providers;
   },
 
+  async groups() {
+    const payload = await request<{ groups: GatewayGroup[] }>("/groups");
+    return payload.groups;
+  },
+
+  group(groupId: number) {
+    return request<GatewayGroupDetail>(`/groups/${groupId}`);
+  },
+
+  createGroup(name: string) {
+    return request<GatewayGroup>("/groups", {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    });
+  },
+
+  searchUsers(query: string) {
+    return request<{ users: GatewayUser[] }>(`/users/search?q=${encodeURIComponent(query)}`);
+  },
+
+  addGroupMember(groupId: number, userId: number) {
+    return request<{ ok: true }>(`/groups/${groupId}/members`, {
+      method: "POST",
+      body: JSON.stringify({ user_id: userId }),
+    });
+  },
+
+  removeGroupMember(groupId: number, userId: number) {
+    return request<{ ok: true }>(`/groups/${groupId}/members/${userId}`, { method: "DELETE" });
+  },
+
+  shareGroupProvider(groupId: number, providerId: string) {
+    return request<{ ok: true }>(`/groups/${groupId}/providers`, {
+      method: "POST",
+      body: JSON.stringify({ provider_id: providerId }),
+    });
+  },
+
+  unshareGroupProvider(groupId: number, providerId: string) {
+    return request<{ ok: true }>(`/groups/${groupId}/providers/${encodeURIComponent(providerId)}`, {
+      method: "DELETE",
+    });
+  },
+
   async selectedProvider() {
     const payload = await request<{ selected_provider: SelectedProvider }>("/selected-provider");
     return payload.selected_provider;
@@ -282,13 +329,6 @@ export const gatewayApi = {
 };
 
 
-export type GatewayUser = {
-  id: number;
-  name: string;
-  avatar_url: string;
-  role: "admin" | "user";
-};
-
 export const authApi = {
   status: () => request<{ mode: "disabled" | "required"; feishu_login_configured: boolean }>("/auth/status"),
   me: () => request<{ ok: true; user: GatewayUser }>("/auth/me"),
@@ -296,3 +336,5 @@ export const authApi = {
   gatewayAccessToken: () => request<{ access_token: string }>("/auth/access-tokens"),
   regenerateAccessToken: () => request<{ access_token: string }>("/auth/access-tokens", { method: "POST" }),
 };
+
+export type { GatewayUser } from "./types";

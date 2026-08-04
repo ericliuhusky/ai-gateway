@@ -9,14 +9,16 @@ use crate::{
         CodexUsageCredits, CodexUsageRateLimit, CodexUsageRateLimitWindow, CodexUsageResponse,
     },
     models::{
-        AccountRecord, ApiProviderRecord, ApiProviderSummary, AutoRoutingSettings,
-        CodexClientVersionSetting, CreateApiProviderRequest, DailyUsageSummary,
-        FeishuAppSecretResponse, GatewayIssue, GatewayIssueRecord, InstanceRoutingConfig,
+        AccountRecord, AddGatewayGroupMemberRequest, ApiProviderRecord, ApiProviderSummary,
+        AutoRoutingSettings, CodexClientVersionSetting, CreateApiProviderRequest,
+        CreateGatewayGroupRequest, DailyUsageSummary, FeishuAppSecretResponse, GatewayGroupDetail,
+        GatewayGroupSummary, GatewayIssue, GatewayIssueRecord, InstanceRoutingConfig,
         ModelBenchmarkResponse, ModelBenchmarkSample, ModelListItem, ModelListResponse,
         OPENAI_ACCOUNT_PROVIDER_NAME, ProviderAuthMode, ProviderCompatibilityProfile,
         ProviderQuotaCredits, ProviderQuotaResponse, ProviderQuotaSnapshot, ProviderQuotaSummary,
         ProviderQuotaWindow, QuotaSource, QuotaSupportStatus, RoutingModelTarget,
-        RunModelBenchmarkRequest, SecuritySettings, SelectedRoute, TokenUsage, TurnRouteLogUpdate,
+        RunModelBenchmarkRequest, SecuritySettings, SelectedRoute,
+        ShareGatewayGroupProviderRequest, TokenUsage, TurnRouteLogUpdate,
         UpdateAutoRoutingSettingsRequest, UpdateCodexClientVersionRequest,
         UpdateInstanceRoutingConfigRequest, UpdateSecuritySettingsRequest,
         UpdateSelectedModelRequest, UpdateSelectedProviderRequest,
@@ -32,7 +34,7 @@ use crate::{
         user_input_preview,
     },
     store::{
-        AccountStore, IssueStore, ModelStore, ProviderStore, RouteStore, SettingsStore,
+        AccountStore, GroupStore, IssueStore, ModelStore, ProviderStore, RouteStore, SettingsStore,
         TurnLogStore, UsagePeriod, UsageStore, issue_store::truncate_issue_body,
     },
     support::time::now_unix,
@@ -65,6 +67,7 @@ pub struct AppState {
     pub openai_tokens: OpenAiTokenService,
     pub openai_device_login: OpenAiDeviceLoginService,
     pub accounts: AccountStore,
+    pub groups: GroupStore,
     pub providers: ProviderStore,
     pub routes: RouteStore,
     pub models: ModelStore,
@@ -1040,6 +1043,138 @@ pub async fn list_providers(
 ) -> Json<Value> {
     let providers = hydrated_provider_summaries_for_owner(&state, scope.owner_user_id).await;
     Json(json!({ "providers": providers }))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UserSearchQuery {
+    #[serde(default)]
+    pub q: String,
+}
+
+fn required_group_user(scope: &RequestScope) -> Result<i64, AppError> {
+    scope
+        .owner_user_id
+        .ok_or_else(|| AppError::bad_request("群组功能需要启用账户登录"))
+}
+
+pub async fn list_user_search(
+    State(state): State<AppState>,
+    Extension(scope): Extension<RequestScope>,
+    Query(query): Query<UserSearchQuery>,
+) -> Result<Json<Value>, AppError> {
+    let user_id = required_group_user(&scope)?;
+    if query.q.trim().len() < 1 {
+        return Ok(Json(json!({ "users": [] })));
+    }
+    let users = state
+        .groups
+        .search_users(&query.q, user_id)
+        .map_err(AppError::internal)?;
+    Ok(Json(json!({ "users": users })))
+}
+
+pub async fn list_groups(
+    State(state): State<AppState>,
+    Extension(scope): Extension<RequestScope>,
+) -> Result<Json<Value>, AppError> {
+    let user_id = required_group_user(&scope)?;
+    let groups = state
+        .groups
+        .list_for_user(user_id)
+        .map_err(AppError::internal)?;
+    Ok(Json(json!({ "groups": groups })))
+}
+
+pub async fn create_group(
+    State(state): State<AppState>,
+    Extension(scope): Extension<RequestScope>,
+    Json(request): Json<CreateGatewayGroupRequest>,
+) -> Result<Json<GatewayGroupSummary>, AppError> {
+    let user_id = required_group_user(&scope)?;
+    let group = state
+        .groups
+        .create_group(user_id, &request.name, now_unix() as i64)
+        .map_err(AppError::bad_request)?;
+    Ok(Json(group))
+}
+
+pub async fn get_group(
+    State(state): State<AppState>,
+    Extension(scope): Extension<RequestScope>,
+    AxumPath(group_id): AxumPath<i64>,
+) -> Result<Json<GatewayGroupDetail>, AppError> {
+    let user_id = required_group_user(&scope)?;
+    let group = state
+        .groups
+        .get_detail(group_id, user_id)
+        .map_err(AppError::internal)?
+        .ok_or_else(|| AppError::bad_request("群组不存在或你不是群组成员"))?;
+    Ok(Json(group))
+}
+
+pub async fn add_group_member(
+    State(state): State<AppState>,
+    Extension(scope): Extension<RequestScope>,
+    AxumPath(group_id): AxumPath<i64>,
+    Json(request): Json<AddGatewayGroupMemberRequest>,
+) -> Result<Json<Value>, AppError> {
+    let user_id = required_group_user(&scope)?;
+    state
+        .groups
+        .add_member(
+            group_id,
+            user_id,
+            request.user_id,
+            scope.is_admin,
+            now_unix() as i64,
+        )
+        .map_err(AppError::bad_request)?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+pub async fn delete_group_member(
+    State(state): State<AppState>,
+    Extension(scope): Extension<RequestScope>,
+    AxumPath((group_id, user_id)): AxumPath<(i64, i64)>,
+) -> Result<Json<Value>, AppError> {
+    let actor = required_group_user(&scope)?;
+    state
+        .groups
+        .remove_member(group_id, actor, user_id, scope.is_admin)
+        .map_err(AppError::bad_request)?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+pub async fn share_group_provider(
+    State(state): State<AppState>,
+    Extension(scope): Extension<RequestScope>,
+    AxumPath(group_id): AxumPath<i64>,
+    Json(request): Json<ShareGatewayGroupProviderRequest>,
+) -> Result<Json<Value>, AppError> {
+    let user_id = required_group_user(&scope)?;
+    state
+        .groups
+        .share_provider(
+            group_id,
+            user_id,
+            request.provider_id.trim(),
+            now_unix() as i64,
+        )
+        .map_err(AppError::bad_request)?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+pub async fn unshare_group_provider(
+    State(state): State<AppState>,
+    Extension(scope): Extension<RequestScope>,
+    AxumPath((group_id, provider_id)): AxumPath<(i64, String)>,
+) -> Result<Json<Value>, AppError> {
+    let user_id = required_group_user(&scope)?;
+    state
+        .groups
+        .unshare_provider(group_id, user_id, &provider_id, scope.is_admin)
+        .map_err(AppError::bad_request)?;
+    Ok(Json(json!({ "ok": true })))
 }
 
 pub async fn get_provider_quota(
@@ -3219,11 +3354,21 @@ async fn resolve_provider_by_id_for_owner(
     owner_user_id: Option<i64>,
     provider_id: &str,
 ) -> Result<ResolvedProvider, AppError> {
-    let record = state
-        .providers
-        .find_by_id_for_owner(owner_user_id, provider_id)
-        .await
-        .ok_or_else(|| AppError::bad_request(format!("unknown provider_id: {provider_id}")))?;
+    let record = match owner_user_id {
+        Some(user_id) => {
+            state
+                .providers
+                .find_visible_by_id_for_user(user_id, provider_id)
+                .await
+        }
+        None => {
+            state
+                .providers
+                .find_by_id_for_owner(None, provider_id)
+                .await
+        }
+    }
+    .ok_or_else(|| AppError::bad_request(format!("unknown provider_id: {provider_id}")))?;
     Ok(resolved_provider_from_record(record))
 }
 
@@ -3276,10 +3421,15 @@ async fn resolve_account_for_provider_for_owner(
             ))
         })?;
 
+    let provider_owner_user_id = provider
+        .record
+        .as_ref()
+        .and_then(|record| record.owner_user_id)
+        .or(owner_user_id);
     state
         .accounts
         .acquire_by_id_for_owner(
-            owner_user_id,
+            provider_owner_user_id,
             &state.openai_tokens,
             &state.upstream,
             account_id,
@@ -3308,7 +3458,10 @@ async fn hydrated_provider_summaries_for_owner(
     state: &AppState,
     owner_user_id: Option<i64>,
 ) -> Vec<ApiProviderSummary> {
-    let mut providers = state.providers.list_for_owner(owner_user_id).await;
+    let mut providers = match owner_user_id {
+        Some(user_id) => state.providers.list_visible_for_user(user_id).await,
+        None => state.providers.list_for_owner(None).await,
+    };
     for provider in &mut providers {
         hydrate_provider_summary_for_owner(state, owner_user_id, provider).await;
     }
@@ -3332,6 +3485,7 @@ async fn provider_summary_for_resolved(
         account_email: None,
         upstream_protocol: record.upstream_protocol.clone(),
         compatibility_profile: record.compatibility_profile.clone(),
+        shared: false,
     };
     hydrate_provider_summary(state, &mut summary).await;
     Ok(summary)
@@ -3355,6 +3509,7 @@ async fn provider_summary_for_resolved_for_owner(
         account_email: None,
         upstream_protocol: record.upstream_protocol.clone(),
         compatibility_profile: record.compatibility_profile.clone(),
+        shared: record.owner_user_id != owner_user_id,
     };
     hydrate_provider_summary_for_owner(state, owner_user_id, &mut summary).await;
     Ok(summary)
@@ -3374,7 +3529,7 @@ async fn hydrate_provider_summary(state: &AppState, provider: &mut ApiProviderSu
 
 async fn hydrate_provider_summary_for_owner(
     state: &AppState,
-    owner_user_id: Option<i64>,
+    _owner_user_id: Option<i64>,
     provider: &mut ApiProviderSummary,
 ) {
     if provider.auth_mode == ProviderAuthMode::Account
@@ -3382,7 +3537,7 @@ async fn hydrate_provider_summary_for_owner(
     {
         provider.account_email = state
             .accounts
-            .find_by_id_for_owner(owner_user_id, account_id)
+            .find_by_id(account_id)
             .await
             .map(|account| account.email);
     }
@@ -3584,8 +3739,8 @@ mod tests {
         openai_device_login::OpenAiDeviceLoginService,
         openai_tokens::{ImportedOpenAIAuth, OpenAiTokenService},
         store::{
-            AccountStore, IssueStore, ModelStore, ProviderStore, RouteStore, SettingsStore,
-            TurnLogStore, UsageStore,
+            AccountStore, GroupStore, IssueStore, ModelStore, ProviderStore, RouteStore,
+            SettingsStore, TurnLogStore, UsageStore,
         },
         upstream::UpstreamClient,
     };
@@ -3679,6 +3834,7 @@ mod tests {
         accounts.load().await.expect("load accounts");
         let providers = ProviderStore::new(config.clone()).expect("create provider store");
         providers.load().await.expect("load providers");
+        let groups = GroupStore::new(config.clone()).expect("create group store");
         let routes = RouteStore::new(config.clone()).expect("create route store");
         routes.load().await.expect("load routes");
         let account = accounts
@@ -3704,6 +3860,7 @@ mod tests {
             openai_tokens: OpenAiTokenService::new(),
             openai_device_login: OpenAiDeviceLoginService::new(),
             accounts: accounts.clone(),
+            groups,
             providers: providers.clone(),
             routes,
             models: ModelStore::new(config.clone()).expect("create model store"),

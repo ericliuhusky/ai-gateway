@@ -1,17 +1,18 @@
 use crate::{
     api::handlers::{
-        add_provider, cancel_openai_device_login, clear_codex_client_version, clear_gateway_issues,
-        clear_selected_model, clear_selected_reasoning_effort, delete_instance, delete_provider,
-        get_auto_routing_settings, get_codex_client_version, get_feishu_app_secret,
-        get_gateway_issue_repair_prompt, get_instance_routing_config, get_provider_quota,
-        get_route, get_security_settings, get_selected_model, get_selected_reasoning_effort,
-        healthz, import_openai_token, list_daily_usage, list_gateway_issues,
+        add_group_member, add_provider, cancel_openai_device_login, clear_codex_client_version,
+        clear_gateway_issues, clear_selected_model, clear_selected_reasoning_effort, create_group,
+        delete_group_member, delete_instance, delete_provider, get_auto_routing_settings,
+        get_codex_client_version, get_feishu_app_secret, get_gateway_issue_repair_prompt,
+        get_group, get_instance_routing_config, get_provider_quota, get_route,
+        get_security_settings, get_selected_model, get_selected_reasoning_effort, healthz,
+        import_openai_token, list_daily_usage, list_gateway_issues, list_groups,
         list_instance_routing_configs, list_models, list_models_for_instance, list_providers,
-        list_turn_logs, list_usage_summary, poll_openai_device_login,
+        list_turn_logs, list_usage_summary, list_user_search, poll_openai_device_login,
         regenerate_database_encryption_key, responses, responses_for_instance, run_model_benchmark,
         set_auto_routing_settings, set_codex_client_version, set_instance_routing_config,
         set_route, set_security_settings, set_selected_model, set_selected_reasoning_effort,
-        start_openai_device_login,
+        share_group_provider, start_openai_device_login, unshare_group_provider,
     },
     auth::{self, require_auth},
     codex_scripts,
@@ -42,6 +43,19 @@ pub fn build_router(state: AppState, web_dir: PathBuf) -> Router {
         .route("/providers", get(list_providers).post(add_provider))
         .route("/providers/:provider_id", delete(delete_provider))
         .route("/providers/:provider_id/quota", get(get_provider_quota))
+        .route("/groups", get(list_groups).post(create_group))
+        .route("/groups/:group_id", get(get_group))
+        .route("/groups/:group_id/members", post(add_group_member))
+        .route(
+            "/groups/:group_id/members/:user_id",
+            delete(delete_group_member),
+        )
+        .route("/groups/:group_id/providers", post(share_group_provider))
+        .route(
+            "/groups/:group_id/providers/:provider_id",
+            delete(unshare_group_provider),
+        )
+        .route("/users/search", get(list_user_search))
         .route("/benchmarks/models", post(run_model_benchmark))
         .route(
             "/settings/codex-client-version",

@@ -8,6 +8,7 @@ use crate::{
     store::sqlite::SqliteStore,
 };
 use reqwest::Url;
+use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use uuid::Uuid;
@@ -60,6 +61,33 @@ impl ProviderStore {
                 account_email: None,
                 upstream_protocol: provider.upstream_protocol.clone(),
                 compatibility_profile: provider.compatibility_profile.clone(),
+                shared: false,
+            })
+            .collect()
+    }
+
+    pub async fn list_visible_for_user(&self, user_id: i64) -> Vec<ApiProviderSummary> {
+        let shared_ids = self
+            .sqlite
+            .shared_provider_ids_for_user(user_id)
+            .unwrap_or_default();
+        self.providers
+            .lock()
+            .await
+            .iter()
+            .filter(|provider| {
+                provider.owner_user_id == Some(user_id) || shared_ids.contains(&provider.id)
+            })
+            .map(|provider| ApiProviderSummary {
+                id: provider.id.clone(),
+                name: provider.name.clone(),
+                auth_mode: provider.auth_mode.clone(),
+                base_url: provider.base_url.clone(),
+                account_id: provider.account_id.clone(),
+                account_email: None,
+                upstream_protocol: provider.upstream_protocol.clone(),
+                compatibility_profile: provider.compatibility_profile.clone(),
+                shared: provider.owner_user_id != Some(user_id),
             })
             .collect()
     }
@@ -137,6 +165,27 @@ impl ProviderStore {
             .await
             .iter()
             .find(|provider| provider.id == id && provider.owner_user_id == owner_user_id)
+            .cloned()
+    }
+
+    pub async fn find_visible_by_id_for_user(
+        &self,
+        user_id: i64,
+        id: &str,
+    ) -> Option<ApiProviderRecord> {
+        let shared_ids: HashSet<String> = self
+            .sqlite
+            .shared_provider_ids_for_user(user_id)
+            .unwrap_or_default();
+        self.providers
+            .lock()
+            .await
+            .iter()
+            .find(|provider| {
+                provider.id == id
+                    && (provider.owner_user_id == Some(user_id)
+                        || shared_ids.contains(&provider.id))
+            })
             .cloned()
     }
 

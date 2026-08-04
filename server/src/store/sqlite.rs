@@ -181,6 +181,59 @@ impl SqliteStore {
         Ok(())
     }
 
+    pub fn initialize_group_schema(&self) -> Result<(), String> {
+        let conn = self.connect()?;
+        conn.execute_batch(
+            "
+            CREATE TABLE IF NOT EXISTS gateway_groups (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                owner_user_id INTEGER NOT NULL REFERENCES gateway_users(id) ON DELETE CASCADE,
+                created_at INTEGER NOT NULL DEFAULT (unixepoch())
+            );
+            CREATE TABLE IF NOT EXISTS gateway_group_members (
+                group_id INTEGER NOT NULL REFERENCES gateway_groups(id) ON DELETE CASCADE,
+                user_id INTEGER NOT NULL REFERENCES gateway_users(id) ON DELETE CASCADE,
+                role TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('owner', 'member')),
+                joined_at INTEGER NOT NULL DEFAULT (unixepoch()),
+                PRIMARY KEY (group_id, user_id)
+            );
+            CREATE TABLE IF NOT EXISTS gateway_group_providers (
+                group_id INTEGER NOT NULL REFERENCES gateway_groups(id) ON DELETE CASCADE,
+                provider_id TEXT NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
+                shared_by_user_id INTEGER NOT NULL REFERENCES gateway_users(id) ON DELETE CASCADE,
+                shared_at INTEGER NOT NULL DEFAULT (unixepoch()),
+                PRIMARY KEY (group_id, provider_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_gateway_group_members_user
+                ON gateway_group_members(user_id, group_id);
+            CREATE INDEX IF NOT EXISTS idx_gateway_group_providers_provider
+                ON gateway_group_providers(provider_id, group_id);
+            ",
+        )
+        .map_err(|error| format!("initialize group schema failed: {error}"))
+    }
+
+    pub fn shared_provider_ids_for_user(
+        &self,
+        user_id: i64,
+    ) -> Result<std::collections::HashSet<String>, String> {
+        let conn = self.connect()?;
+        let mut statement = conn
+            .prepare(
+                "SELECT DISTINCT gp.provider_id
+                 FROM gateway_group_providers AS gp
+                 JOIN gateway_group_members AS gm ON gm.group_id = gp.group_id
+                 WHERE gm.user_id = ?1",
+            )
+            .map_err(|error| format!("prepare shared provider query failed: {error}"))?;
+        let rows = statement
+            .query_map(params![user_id], |row| row.get::<_, String>(0))
+            .map_err(|error| format!("query shared providers failed: {error}"))?;
+        rows.collect::<Result<std::collections::HashSet<_>, _>>()
+            .map_err(|error| format!("read shared providers failed: {error}"))
+    }
+
     pub fn delete_instance_route(&self, instance_id: &str) -> Result<bool, String> {
         let conn = self.connect()?;
         let deleted = conn

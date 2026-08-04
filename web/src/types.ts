@@ -14,6 +14,46 @@ export interface GatewayProvider {
   account_email?: string;
   upstream_protocol: GatewayUpstreamProtocol;
   compatibility_profile: GatewayCompatibilityProfile;
+  shared?: boolean;
+}
+
+export interface GatewayUser {
+  id: number;
+  name: string;
+  avatar_url: string;
+  role?: "admin" | "user";
+}
+
+export interface GatewayGroup {
+  id: number;
+  name: string;
+  owner_user_id: number;
+  owner_name: string;
+  role: "owner" | "member";
+  member_count: number;
+  provider_count: number;
+  created_at: number;
+}
+
+export interface GatewayGroupMember {
+  user_id: number;
+  name: string;
+  avatar_url: string;
+  role: "owner" | "member";
+}
+
+export interface GatewayGroupProvider {
+  provider: GatewayProvider;
+  shared_by_user_id: number;
+  shared_by_name: string;
+  shared_at: number;
+  can_remove: boolean;
+}
+
+export interface GatewayGroupDetail {
+  group: GatewayGroup;
+  members: GatewayGroupMember[];
+  providers: GatewayGroupProvider[];
 }
 
 export interface SelectedProvider {

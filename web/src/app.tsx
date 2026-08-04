@@ -24,6 +24,9 @@ import {
   Trash2,
   Wrench,
   UserRound,
+  Users,
+  UserPlus,
+  Share2,
   LogOut,
   X,
 } from "lucide-react";
@@ -53,10 +56,13 @@ import type {
   ModelBenchmarkResult,
   OpenAiDeviceLoginStart,
   SecuritySettings,
+  GatewayGroup,
+  GatewayGroupDetail,
+  GatewayUser,
 } from "./types";
 
 type Dialog = "provider" | "instances" | "scripts" | null;
-type Page = "overview" | "usage" | "benchmark" | "routing" | "issues" | "account" | "admin";
+type Page = "overview" | "groups" | "usage" | "benchmark" | "routing" | "issues" | "account" | "admin";
 
 const NAV_TABS: {
   id: Exclude<Page, "account" | "admin">;
@@ -64,6 +70,7 @@ const NAV_TABS: {
   icon: React.ComponentType<{ className?: string }>;
 }[] = [
   { id: "overview", label: "概览", icon: LayoutDashboard },
+  { id: "groups", label: "群组", icon: Users },
   { id: "usage", label: "Token 用量", icon: BarChart3 },
   { id: "benchmark", label: "吞吐测试", icon: Gauge },
   { id: "routing", label: "路由日志", icon: Route },
@@ -178,6 +185,7 @@ export function GatewayDashboard() {
   const { user, logout, authMode } = useAuth();
   const currentUser = user!;
   const [providers, setProviders] = React.useState<GatewayProvider[]>([]);
+  const [groups, setGroups] = React.useState<GatewayGroup[]>([]);
   const [instances, setInstances] = React.useState<InstanceRoutingConfig[]>([]);
   const [defaultAutomaticRouting, setDefaultAutomaticRouting] = React.useState<AutoRoutingSettings>({
     enabled: false,
@@ -263,16 +271,18 @@ export function GatewayDashboard() {
   const refresh = React.useCallback(async () => {
     setLoading(true);
     try {
-      const [providerList, route, turns, issues, instanceList, automaticRouting] = await Promise.all([
+      const [providerList, route, turns, issues, instanceList, automaticRouting, groupList] = await Promise.all([
         gatewayApi.providers(),
         gatewayApi.selectedProvider(),
         gatewayApi.routingTurns(),
         gatewayApi.gatewayIssues(),
         gatewayApi.instances(),
         gatewayApi.automaticRouting(),
+        authMode === "required" ? gatewayApi.groups() : Promise.resolve([]),
       ]);
       const sorted = [...providerList].sort((a, b) => a.name.localeCompare(b.name));
       setProviders(sorted);
+      setGroups(groupList);
       setInstances(instanceList);
       setDefaultAutomaticRouting(automaticRouting);
       setSelected(route);
@@ -291,7 +301,7 @@ export function GatewayDashboard() {
     } finally {
       setLoading(false);
     }
-  }, [loadModels, loadQuotas, loadUsage]);
+  }, [authMode, loadModels, loadQuotas, loadUsage]);
 
   React.useEffect(() => {
     void refresh();
@@ -384,7 +394,7 @@ export function GatewayDashboard() {
             </span>
             <span className="text-[15px] font-bold tracking-[-0.02em]">AI网关</span>
           </button>
-          <NavTabs active={activePage} onSelect={setActivePage} />
+          <NavTabs active={activePage} onSelect={setActivePage} showGroups={authMode === "required"} />
           <div className="ml-auto flex items-center gap-2">
             <AccountMenu
               user={currentUser}
@@ -412,6 +422,14 @@ export function GatewayDashboard() {
                 await loadModels(true);
               }
             }}
+          onError={setError}
+          />
+        ) : activePage === "groups" ? (
+          <GroupsPage
+            groups={groups}
+            providers={providers}
+            currentUserId={currentUser.id}
+            onChanged={refresh}
             onError={setError}
           />
         ) : loading ? (
@@ -581,13 +599,15 @@ export function GatewayDashboard() {
 function NavTabs({
   active,
   onSelect,
+  showGroups,
 }: {
   active: Page;
   onSelect: (page: Page) => void;
+  showGroups: boolean;
 }) {
   return (
     <nav className="ml-2 flex min-w-0 items-center gap-1 overflow-x-auto whitespace-nowrap md:ml-6" aria-label="主导航">
-      {NAV_TABS.map(({ id, label, icon: Icon }) => {
+      {NAV_TABS.filter(({ id }) => id !== "groups" || showGroups).map(({ id, label, icon: Icon }) => {
         const isActive = active === id;
         return (
           <button
@@ -611,6 +631,233 @@ function NavTabs({
   );
 }
 
+function GroupsPage({
+  groups,
+  providers,
+  currentUserId,
+  onChanged,
+  onError,
+}: {
+  groups: GatewayGroup[];
+  providers: GatewayProvider[];
+  currentUserId: number;
+  onChanged: () => Promise<void>;
+  onError: (message: string) => void;
+}) {
+  const [selectedGroupId, setSelectedGroupId] = React.useState<number | null>(groups[0]?.id ?? null);
+  const [detail, setDetail] = React.useState<GatewayGroupDetail | null>(null);
+  const [groupName, setGroupName] = React.useState("");
+  const [search, setSearch] = React.useState("");
+  const [searchResults, setSearchResults] = React.useState<GatewayUser[]>([]);
+  const [busy, setBusy] = React.useState(false);
+
+  React.useEffect(() => {
+    if (selectedGroupId === null && groups[0]) setSelectedGroupId(groups[0].id);
+    if (selectedGroupId !== null && !groups.some((group) => group.id === selectedGroupId)) {
+      setSelectedGroupId(groups[0]?.id ?? null);
+    }
+  }, [groups, selectedGroupId]);
+
+  const loadDetail = React.useCallback(async () => {
+    if (selectedGroupId === null) {
+      setDetail(null);
+      return;
+    }
+    try {
+      setDetail(await gatewayApi.group(selectedGroupId));
+    } catch (loadError) {
+      onError(errorMessage(loadError));
+    }
+  }, [onError, selectedGroupId]);
+
+  React.useEffect(() => { void loadDetail(); }, [loadDetail]);
+
+  React.useEffect(() => {
+    if (search.trim().length < 1) {
+      setSearchResults([]);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      void gatewayApi.searchUsers(search.trim())
+        .then((payload) => setSearchResults(payload.users))
+        .catch((searchError) => onError(errorMessage(searchError)));
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [onError, search]);
+
+  async function run(action: () => Promise<unknown>) {
+    setBusy(true);
+    try {
+      await action();
+      await onChanged();
+      await loadDetail();
+    } catch (actionError) {
+      onError(errorMessage(actionError));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function createGroup(event: React.FormEvent) {
+    event.preventDefault();
+    if (!groupName.trim()) return;
+    await run(async () => {
+      const created = await gatewayApi.createGroup(groupName.trim());
+      setGroupName("");
+      setSelectedGroupId(created.id);
+    });
+  }
+
+  const selectedGroup = detail?.group ?? groups.find((group) => group.id === selectedGroupId);
+  const canManageMembers = selectedGroup?.role === "owner";
+  const ownProviders = providers.filter((provider) => !provider.shared);
+  const sharedProviderIds = new Set(detail?.providers.map((item) => item.provider.id) ?? []);
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <div className="eyebrow">协作空间</div>
+          <h1 className="mt-1 text-2xl font-bold tracking-[-0.03em]">群组共享</h1>
+          <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">邀请成员，并把自己的供应商放到群组里共同使用。</p>
+        </div>
+        <form className="flex gap-2" onSubmit={(event) => void createGroup(event)}>
+          <input className="field h-9 w-48 text-xs" value={groupName} onChange={(event) => setGroupName(event.target.value)} placeholder="新群组名称" />
+          <Button size="sm" type="submit" disabled={busy || !groupName.trim()}><Plus className="size-3.5" />新建群组</Button>
+        </form>
+      </div>
+
+      {!groups.length ? (
+        <div className="glass-panel rounded-[26px] p-10 text-center">
+          <Users className="mx-auto size-10 text-slate-300" />
+          <h2 className="mt-4 text-lg font-bold">还没有群组</h2>
+          <p className="mt-1 text-sm text-slate-500">创建一个群组，邀请同事后即可共享供应商。</p>
+        </div>
+      ) : (
+        <div className="grid gap-5 lg:grid-cols-[280px_1fr]">
+          <div className="space-y-2">
+            {groups.map((group) => (
+              <button
+                key={group.id}
+                type="button"
+                onClick={() => setSelectedGroupId(group.id)}
+                className={cn(
+                  "glass-panel w-full rounded-2xl p-4 text-left transition",
+                  selectedGroupId === group.id && "ring-2 ring-blue-500/40",
+                )}
+              >
+                <div className="flex items-center gap-3">
+                  <span className="flex size-9 items-center justify-center rounded-xl bg-blue-500/10 text-blue-600"><Users className="size-4" /></span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-sm font-bold">{group.name}</span>
+                    <span className="mt-1 block text-[11px] text-slate-400">{group.member_count} 位成员 · {group.provider_count} 个供应商</span>
+                  </span>
+                </div>
+              </button>
+            ))}
+          </div>
+
+          {selectedGroup && detail ? (
+            <section className="glass-panel rounded-[26px] p-5 sm:p-6">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h2 className="text-xl font-bold">{detail.group.name}</h2>
+                    <Badge tone={detail.group.role === "owner" ? "blue" : "slate"}>{detail.group.role === "owner" ? "创建者" : "成员"}</Badge>
+                  </div>
+                  <p className="mt-1 text-xs text-slate-400">创建者：{detail.group.owner_name}</p>
+                </div>
+              </div>
+
+              <div className="mt-6 grid gap-6 xl:grid-cols-2">
+                <div>
+                  <div className="mb-3 flex items-center justify-between">
+                    <h3 className="text-sm font-bold">群组成员</h3>
+                    <span className="text-xs text-slate-400">{detail.members.length} 人</span>
+                  </div>
+                  {canManageMembers ? (
+                    <div className="relative mb-3">
+                      <div className="flex items-center gap-2">
+                        <UserPlus className="size-4 text-slate-400" />
+                        <input className="field h-9 text-xs" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索姓名或邮箱，添加成员" />
+                      </div>
+                      {searchResults.length ? (
+                        <div className="absolute left-6 right-0 top-11 z-10 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl dark:border-slate-700 dark:bg-slate-900">
+                          {searchResults.map((user) => (
+                            <button
+                              key={user.id}
+                              type="button"
+                              className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs hover:bg-slate-100 dark:hover:bg-white/10"
+                              onClick={() => void run(async () => {
+                                await gatewayApi.addGroupMember(detail.group.id, user.id);
+                                setSearch("");
+                                setSearchResults([]);
+                              })}
+                            >
+                              <span className="flex size-6 items-center justify-center overflow-hidden rounded-full bg-slate-200 text-[10px] font-bold">{user.avatar_url ? <img src={user.avatar_url} alt="" className="size-full object-cover" /> : user.name.slice(0, 1)}</span>
+                              <span>{user.name}</span>
+                            </button>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
+                  <div className="space-y-2">
+                    {detail.members.map((member) => (
+                      <div key={member.user_id} className="flex items-center gap-2 rounded-xl bg-slate-500/5 px-3 py-2">
+                        <span className="flex size-7 items-center justify-center overflow-hidden rounded-full bg-slate-200 text-[10px] font-bold">{member.avatar_url ? <img src={member.avatar_url} alt="" className="size-full object-cover" /> : member.name.slice(0, 1)}</span>
+                        <span className="min-w-0 flex-1 truncate text-xs font-semibold">{member.name}</span>
+                        <Badge tone={member.role === "owner" ? "blue" : "slate"}>{member.role === "owner" ? "创建者" : "成员"}</Badge>
+                        {canManageMembers && member.role !== "owner" ? <button type="button" className="text-[11px] text-red-500" disabled={busy} onClick={() => void run(() => gatewayApi.removeGroupMember(detail.group.id, member.user_id))}>移除</button> : null}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div>
+                  <div className="mb-3 flex items-center justify-between">
+                    <h3 className="text-sm font-bold">共享供应商</h3>
+                    <span className="text-xs text-slate-400">{detail.providers.length} 个</span>
+                  </div>
+                  <div className="mb-3 flex gap-2">
+                    <select
+                      className="field h-9 min-w-0 flex-1 text-xs"
+                      defaultValue=""
+                      disabled={busy}
+                      onChange={(event) => {
+                        const providerId = event.target.value;
+                        event.target.value = "";
+                        if (providerId) void run(() => gatewayApi.shareGroupProvider(detail.group.id, providerId));
+                      }}
+                    >
+                      <option value="">选择自己的供应商并共享</option>
+                      {ownProviders.filter((provider) => !sharedProviderIds.has(provider.id)).map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
+                    </select>
+                    <Share2 className="mt-2.5 size-4 shrink-0 text-slate-400" />
+                  </div>
+                  <div className="space-y-2">
+                    {detail.providers.map((item) => (
+                      <div key={item.provider.id} className="flex items-center gap-2 rounded-xl bg-slate-500/5 px-3 py-2">
+                        <Server className="size-4 text-blue-500" />
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-xs font-semibold">{item.provider.name}</span>
+                          <span className="block truncate text-[10px] text-slate-400">由 {item.shared_by_name} 共享</span>
+                        </span>
+                        {item.can_remove ? <button type="button" className="text-[11px] text-red-500" disabled={busy} onClick={() => void run(() => gatewayApi.unshareGroupProvider(detail.group.id, item.provider.id))}>取消共享</button> : null}
+                      </div>
+                    ))}
+                    {!detail.providers.length ? <div className="rounded-xl border border-dashed border-slate-300/70 p-5 text-center text-xs text-slate-400 dark:border-slate-700">还没有共享供应商</div> : null}
+                  </div>
+                </div>
+              </div>
+            </section>
+          ) : <div className="glass-panel rounded-[26px] p-8 text-sm text-slate-400">加载群组详情…</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AccountMenu({
 
   user,
@@ -621,7 +868,7 @@ function AccountMenu({
   onOpenAdminSettings,
   onLogout,
 }: {
-  user: { id: number; name: string; avatar_url: string; role: "admin" | "user" };
+  user: { id: number; name: string; avatar_url: string; role?: "admin" | "user" };
   showAccountSettings: boolean;
   showLogout: boolean;
   showAdminSettings: boolean;
@@ -1824,9 +2071,10 @@ function ProviderCard({
                   ? "Codex 账户"
                   : "兼容接口"}
             </Badge>
+            {provider.shared ? <Badge tone="purple"><Share2 className="mr-1 inline size-3" />群组共享</Badge> : null}
           </div>
         </div>
-        {selected ? (
+        {!provider.shared && selected ? (
           <div className="relative size-5 shrink-0">
             <CheckCircle2 className="size-5 text-blue-500" />
             {deleting ? (
@@ -1845,9 +2093,9 @@ function ProviderCard({
               </button>
             )}
           </div>
-        ) : deleting ? (
+        ) : !provider.shared && deleting ? (
           <LoaderCircle className="size-5 shrink-0 animate-spin text-slate-400" />
-        ) : (
+        ) : !provider.shared ? (
           <button
             className="flex size-8 shrink-0 items-center justify-center rounded-xl text-slate-400 opacity-0 transition hover:bg-black/5 hover:text-red-500 group-hover:opacity-100 focus-visible:opacity-100 dark:hover:bg-white/8"
             type="button"
@@ -1859,7 +2107,7 @@ function ProviderCard({
           >
             <Trash2 className="size-3.5" />
           </button>
-        )}
+        ) : null}
       </div>
 
       {provider.auth_mode !== "account" ? (
