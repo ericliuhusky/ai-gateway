@@ -5,6 +5,7 @@ import type {
   GatewayCompatibilityProfile,
   GatewayModel,
   GatewayProvider,
+  ModelBenchmarkResult,
   FeishuAppSecretResponse,
   InstanceRoutingConfig,
   ProviderQuotaSummary,
@@ -211,6 +212,18 @@ export const gatewayApi = {
       `/providers/${encodeURIComponent(providerId)}/quota`,
     );
     return payload.quota;
+  },
+
+  benchmarkModel(input: {
+    provider_id: string;
+    model: string;
+    runs?: number;
+    account_usage_confirmed?: boolean;
+  }) {
+    return request<ModelBenchmarkResult>("/benchmarks/models", {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
   },
 
   importAccount(payload: CodexAuthPayload) {

@@ -42,6 +42,7 @@ import type {
   GatewayCompatibilityProfile,
   RoutingModelTarget,
   InstanceRoutingConfig,
+  ModelBenchmarkResult,
   OpenAiDeviceLoginStart,
   SecuritySettings,
 } from "./types";
@@ -446,6 +447,12 @@ export function GatewayDashboard() {
                   onSelect={selectProvider}
                   onDelete={deleteProvider}
                   onRefreshQuota={refreshQuota}
+                />
+                <ModelBenchmarkSection
+                  providers={providers}
+                  initialProviderId={selected.provider_id}
+                  initialModel={selected.selected_model}
+                  onError={setError}
                 />
                 <TurnLogSection turns={turnLogs} />
               </div>
@@ -954,6 +961,157 @@ function ProviderSection(props: {
         ))}
       </div>
     </section>
+  );
+}
+
+function ModelBenchmarkSection({
+  providers,
+  initialProviderId,
+  initialModel,
+  onError,
+}: {
+  providers: GatewayProvider[];
+  initialProviderId?: string;
+  initialModel?: string;
+  onError: (message: string) => void;
+}) {
+  const [providerId, setProviderId] = React.useState(initialProviderId ?? "");
+  const [model, setModel] = React.useState(initialModel ?? "");
+  const [models, setModels] = React.useState<GatewayModel[]>([]);
+  const [loadingModels, setLoadingModels] = React.useState(false);
+  const [running, setRunning] = React.useState(false);
+  const [result, setResult] = React.useState<ModelBenchmarkResult | null>(null);
+  const [accountUsageConfirmed, setAccountUsageConfirmed] = React.useState(false);
+  const selectedProvider = providers.find((provider) => provider.id === providerId);
+  const isAccountProvider = selectedProvider?.auth_mode === "account";
+
+  React.useEffect(() => {
+    if (!providerId) {
+      setModels([]);
+      setModel("");
+      setAccountUsageConfirmed(false);
+      return;
+    }
+    let cancelled = false;
+    setLoadingModels(true);
+    void gatewayApi.models(providerId)
+      .then((items) => {
+        if (!cancelled) {
+          const sorted = [...items].sort((a, b) => a.id.localeCompare(b.id));
+          setModels(sorted);
+          setModel((current) => sorted.some((item) => item.id === current) ? current : "");
+        }
+      })
+      .catch((loadError) => {
+        if (!cancelled) onError(`加载压测模型失败：${errorMessage(loadError)}`);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingModels(false);
+      });
+    return () => { cancelled = true; };
+  }, [providerId, onError]);
+
+  async function run() {
+    if (!providerId || !model) return;
+    if (isAccountProvider && !accountUsageConfirmed) return;
+    setRunning(true);
+    try {
+      setResult(await gatewayApi.benchmarkModel({
+        provider_id: providerId,
+        model,
+        runs: 3,
+        account_usage_confirmed: accountUsageConfirmed,
+      }));
+    } catch (benchmarkError) {
+      onError(errorMessage(benchmarkError));
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  return (
+    <section>
+      <div className="mb-3 flex items-center gap-3 px-1">
+        <h2 className="text-xs font-bold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">模型实测吞吐</h2>
+        <span className="text-[11px] text-slate-400">3 次流式请求取中位数</span>
+      </div>
+      <div className="rounded-[22px] border border-white/70 bg-white/55 p-4 shadow-sm backdrop-blur-xl dark:border-white/8 dark:bg-white/[0.035]">
+        <p className="mb-4 text-xs leading-5 text-slate-500 dark:text-slate-400">
+          测量 TTFT（首个输出 token）、总耗时及生成吞吐。固定任务：Rust 2021 迭代版斐波那契函数及单元测试。
+        </p>
+        <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1.25fr)_auto] md:items-end">
+          <FormField label="供应商">
+            <select className="field h-10 w-full text-xs" value={providerId} disabled={running} onChange={(event) => {
+              setProviderId(event.target.value);
+              setAccountUsageConfirmed(false);
+            }}>
+              <option value="">选择供应商</option>
+              {providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
+            </select>
+          </FormField>
+          <FormField label="模型">
+            <select className="field h-10 w-full font-mono text-xs" value={model} disabled={running || loadingModels || !providerId} onChange={(event) => setModel(event.target.value)}>
+              <option value="">{loadingModels ? "加载模型中…" : "选择模型"}</option>
+              {models.map((item) => <option key={item.id} value={item.id}>{item.id}</option>)}
+            </select>
+          </FormField>
+          <Button type="button" className="h-10" disabled={running || !providerId || !model || (isAccountProvider && !accountUsageConfirmed)} onClick={() => void run()}>
+            {running ? <LoaderCircle className="size-4 animate-spin" /> : <Gauge className="size-4" />}
+            {running ? "测试中…" : "开始测试"}
+          </Button>
+        </div>
+        {isAccountProvider ? (
+          <label className="mt-4 flex items-start gap-3 rounded-2xl border border-amber-500/25 bg-amber-500/5 p-3 text-xs text-amber-800 dark:text-amber-200">
+            <input
+              type="checkbox"
+              className="mt-0.5 size-4"
+              checked={accountUsageConfirmed}
+              disabled={running}
+              onChange={(event) => setAccountUsageConfirmed(event.target.checked)}
+            />
+            <span>
+              我确认这会消耗当前 ChatGPT/Codex 账户额度，并理解测试将发起 3 次真实流式请求。
+            </span>
+          </label>
+        ) : null}
+        {result ? (
+          <div className="mt-5 grid gap-3 sm:grid-cols-3">
+            <BenchmarkMetric label="TTFT 中位数" value={`${result.median_ttft_ms} ms`} />
+            <BenchmarkMetric label="总耗时中位数" value={`${(result.median_total_ms / 1000).toFixed(2)} s`} />
+            <BenchmarkMetric
+              label="生成吞吐中位数"
+              value={result.median_generation_tokens_per_second
+                ? `${result.median_generation_tokens_per_second.toFixed(1)} tok/s`
+                : "上游未返回 token 用量"}
+            />
+            <div className="sm:col-span-3 rounded-xl bg-slate-900/[0.035] px-3 py-2 text-[11px] text-slate-500 dark:bg-white/[0.05] dark:text-slate-400">
+              单次：{result.samples.map((sample) => `${sample.ttft_ms}ms TTFT / ${(sample.total_ms / 1000).toFixed(2)}s${sample.generation_tokens_per_second ? ` / ${sample.generation_tokens_per_second.toFixed(1)} tok/s` : ""}`).join(" · ")}
+            </div>
+            <div className="sm:col-span-3 space-y-2">
+              {result.samples.map((sample, index) => (
+                <details key={index} className="rounded-xl bg-slate-900/[0.035] px-3 py-2 text-xs dark:bg-white/[0.05]">
+                  <summary className="cursor-pointer font-semibold text-slate-600 dark:text-slate-300">
+                    查看第 {index + 1} 次模型回复
+                  </summary>
+                  <p className="mt-2 whitespace-pre-wrap leading-5 text-slate-500 dark:text-slate-400">
+                    {sample.output_text || "上游未返回文本 delta。"}
+                  </p>
+                </details>
+              ))}
+            </div>
+          </div>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
+function BenchmarkMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-2xl bg-slate-900/[0.035] p-3 dark:bg-white/[0.05]">
+      <div className="text-[10px] font-bold uppercase tracking-[0.1em] text-slate-400">{label}</div>
+      <div className="mt-1.5 font-mono text-lg font-bold tracking-[-0.025em]">{value}</div>
+    </div>
   );
 }
 

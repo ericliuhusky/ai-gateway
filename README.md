@@ -255,6 +255,7 @@ GET    /providers
 POST   /providers
 DELETE /providers/:provider_id
 GET    /providers/:provider_id/quota
+POST   /benchmarks/models
 GET    /settings/codex-client-version
 PUT    /settings/codex-client-version
 DELETE /settings/codex-client-version
@@ -269,6 +270,10 @@ DELETE /selected-model
 GET    /openai/v1/models
 POST   /openai/v1/responses
 ```
+
+`POST /benchmarks/models` 会向指定供应商发送 1–5 次固定的 Rust 斐波那契代码生成请求，
+返回真实的首 token 延迟（TTFT）、总耗时和生成 tokens/s 中位数；该接口会消耗上游
+token，管理控制台默认执行 3 次。
 
 所有推理请求仍统一使用 OpenAI Responses 客户端协议：
 

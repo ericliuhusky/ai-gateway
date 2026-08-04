@@ -131,6 +131,43 @@ pub struct UpdateSelectedReasoningEffortRequest {
     pub effort: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct RunModelBenchmarkRequest {
+    pub provider_id: String,
+    pub model: String,
+    #[serde(default = "default_benchmark_runs")]
+    pub runs: u8,
+    #[serde(default)]
+    pub account_usage_confirmed: bool,
+}
+
+fn default_benchmark_runs() -> u8 {
+    3
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ModelBenchmarkSample {
+    pub ttft_ms: u64,
+    pub total_ms: u64,
+    pub output_text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub generation_tokens_per_second: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ModelBenchmarkResponse {
+    pub provider_id: String,
+    pub model: String,
+    pub prompt: String,
+    pub samples: Vec<ModelBenchmarkSample>,
+    pub median_ttft_ms: u64,
+    pub median_total_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub median_generation_tokens_per_second: Option<f64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CodexClientVersionSetting {
     pub default_version: String,

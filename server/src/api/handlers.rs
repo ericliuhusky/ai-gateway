@@ -11,13 +11,14 @@ use crate::{
     models::{
         AccountRecord, ApiProviderRecord, ApiProviderSummary, AutoRoutingSettings,
         CodexClientVersionSetting, CreateApiProviderRequest, FeishuAppSecretResponse,
-        InstanceRoutingConfig, ModelListItem, ModelListResponse, OPENAI_ACCOUNT_PROVIDER_NAME,
-        ProviderAuthMode, ProviderCompatibilityProfile, ProviderQuotaCredits,
-        ProviderQuotaResponse, ProviderQuotaSnapshot, ProviderQuotaSummary, ProviderQuotaWindow,
-        QuotaSource, QuotaSupportStatus, RoutingModelTarget, SecuritySettings, SelectedRoute,
-        TurnRouteLogUpdate, UpdateAutoRoutingSettingsRequest, UpdateCodexClientVersionRequest,
-        UpdateInstanceRoutingConfigRequest, UpdateSecuritySettingsRequest,
-        UpdateSelectedModelRequest, UpdateSelectedProviderRequest,
+        InstanceRoutingConfig, ModelBenchmarkResponse, ModelBenchmarkSample, ModelListItem,
+        ModelListResponse, OPENAI_ACCOUNT_PROVIDER_NAME, ProviderAuthMode,
+        ProviderCompatibilityProfile, ProviderQuotaCredits, ProviderQuotaResponse,
+        ProviderQuotaSnapshot, ProviderQuotaSummary, ProviderQuotaWindow, QuotaSource,
+        QuotaSupportStatus, RoutingModelTarget, RunModelBenchmarkRequest, SecuritySettings,
+        SelectedRoute, TurnRouteLogUpdate, UpdateAutoRoutingSettingsRequest,
+        UpdateCodexClientVersionRequest, UpdateInstanceRoutingConfigRequest,
+        UpdateSecuritySettingsRequest, UpdateSelectedModelRequest, UpdateSelectedProviderRequest,
         UpdateSelectedReasoningEffortRequest,
     },
     openai_device_login::{
@@ -49,7 +50,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::sync::Arc;
+use std::{sync::Arc, time::Instant};
 use uuid::Uuid;
 
 #[derive(Clone)]
@@ -78,6 +79,206 @@ pub struct ListModelsQuery {
 
 pub async fn healthz() -> &'static str {
     "ok"
+}
+
+const BENCHMARK_PROMPT: &str = "使用 Rust 2021 实现 `fn fibonacci(n: u32) -> u64`。要求使用迭代方式，\
+时间复杂度 O(n)、额外空间 O(1)，并为 n=0、1、10 添加单元测试。只输出可编译的 Rust 代码，不要解释。";
+
+pub async fn run_model_benchmark(
+    State(state): State<AppState>,
+    Extension(scope): Extension<RequestScope>,
+    Json(request): Json<RunModelBenchmarkRequest>,
+) -> Result<Json<ModelBenchmarkResponse>, AppError> {
+    let provider_id = request.provider_id.trim();
+    let model = safe_model_name(&request.model)
+        .ok_or_else(|| AppError::bad_request("model must be 1-128 URL-safe characters"))?;
+    let provider =
+        resolve_provider_by_id_for_owner(&state, scope.owner_user_id, provider_id).await?;
+
+    let mut samples = Vec::with_capacity(request.runs.clamp(1, 5) as usize);
+    if provider.auth_mode == ProviderAuthMode::Account && provider_uses_openai_account(&provider) {
+        if !request.account_usage_confirmed {
+            return Err(AppError::bad_request(
+                "account_usage_confirmed must be true to benchmark an account provider because it consumes account quota",
+            ));
+        }
+        let account =
+            resolve_account_for_provider_for_owner(&state, scope.owner_user_id, &provider).await?;
+        let builder = PrivateOpenAiRequestBuilder {
+            base_url: OPENAI_CODEX_BASE_URL,
+            access_token: account.access_token(),
+            account_id: account.upstream_account_id(),
+            client_version: None,
+        };
+        for _ in 0..request.runs.clamp(1, 5) {
+            samples.push(
+                run_streaming_benchmark(
+                    &state,
+                    &builder,
+                    private_benchmark_request_body(&model, BENCHMARK_PROMPT),
+                )
+                .await?,
+            );
+        }
+    } else {
+        let record = provider
+            .record
+            .as_ref()
+            .ok_or_else(|| AppError::bad_request("benchmark provider could not be resolved"))?;
+        let builder = PublicOpenAiRequestBuilder {
+            base_url: record.base_url.as_str(),
+            api_key: record.api_key.as_str(),
+        };
+        for _ in 0..request.runs.clamp(1, 5) {
+            samples.push(
+                run_streaming_benchmark(
+                    &state,
+                    &builder,
+                    public_benchmark_request_body(&model, BENCHMARK_PROMPT),
+                )
+                .await?,
+            );
+        }
+    }
+
+    let mut ttft_values: Vec<u64> = samples.iter().map(|sample| sample.ttft_ms).collect();
+    let mut total_values: Vec<u64> = samples.iter().map(|sample| sample.total_ms).collect();
+    ttft_values.sort_unstable();
+    total_values.sort_unstable();
+    let mut throughput_values: Vec<f64> = samples
+        .iter()
+        .filter_map(|sample| sample.generation_tokens_per_second)
+        .collect();
+    throughput_values.sort_by(f64::total_cmp);
+
+    Ok(Json(ModelBenchmarkResponse {
+        provider_id: provider_id.to_string(),
+        model,
+        prompt: BENCHMARK_PROMPT.to_string(),
+        samples,
+        median_ttft_ms: ttft_values[ttft_values.len() / 2],
+        median_total_ms: total_values[total_values.len() / 2],
+        median_generation_tokens_per_second: throughput_values
+            .get(throughput_values.len() / 2)
+            .copied(),
+    }))
+}
+
+fn public_benchmark_request_body(model: &str, prompt: &str) -> String {
+    json!({
+        "model": model,
+        "input": prompt,
+        "stream": true,
+        "store": false,
+        "max_output_tokens": 256
+    })
+    .to_string()
+}
+
+fn private_benchmark_request_body(model: &str, prompt: &str) -> String {
+    json!({
+        "model": model,
+        "input": [{
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": prompt}]
+        }],
+        "tools": [],
+        "tool_choice": "auto",
+        "parallel_tool_calls": false,
+        "reasoning": {"effort": "low", "summary": "auto"},
+        "include": [],
+        "stream": true,
+        "store": false
+    })
+    .to_string()
+}
+
+async fn run_streaming_benchmark<B>(
+    state: &AppState,
+    builder: &B,
+    body: String,
+) -> Result<ModelBenchmarkSample, AppError>
+where
+    B: OpenAiRequestBuilder + ?Sized,
+{
+    let started = Instant::now();
+    let response = state
+        .upstream
+        .openai_send(
+            builder,
+            OpenAiEndpoint::Responses {
+                body: OpenAiRequestBody::Raw(body),
+                stream: true,
+            },
+        )
+        .await
+        .map_err(AppError::upstream_message)?;
+
+    let mut first_token_at = None;
+    let mut output_tokens = None;
+    let mut output_text = String::new();
+    let mut buffer = String::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(AppError::upstream)?;
+        buffer.push_str(&String::from_utf8_lossy(&chunk));
+        while let Some((index, separator_len)) = sse_frame_boundary(&buffer) {
+            let frame = buffer[..index].to_string();
+            buffer.drain(..index + separator_len);
+            let Some(payload) = sse_payload_from_frame(&frame) else {
+                continue;
+            };
+            if payload == "[DONE]" {
+                continue;
+            }
+            let Ok(event) = serde_json::from_str::<Value>(&payload) else {
+                continue;
+            };
+            let event_type = event
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if event_type == "response.output_text.delta" && first_token_at.is_none() {
+                first_token_at = Some(started.elapsed());
+            }
+            if event_type == "response.output_text.delta" {
+                if let Some(delta) = event.get("delta").and_then(Value::as_str) {
+                    output_text.push_str(delta);
+                }
+            }
+            if event_type == "response.completed" {
+                output_tokens = event
+                    .pointer("/response/usage/output_tokens")
+                    .and_then(Value::as_u64);
+            }
+        }
+    }
+
+    let total = started.elapsed();
+    let ttft = first_token_at.unwrap_or(total);
+    let generation_seconds = total.saturating_sub(ttft).as_secs_f64();
+    let generation_tokens_per_second = output_tokens
+        .filter(|tokens| *tokens > 0 && generation_seconds > 0.0)
+        .map(|tokens| tokens as f64 / generation_seconds);
+    Ok(ModelBenchmarkSample {
+        ttft_ms: ttft.as_millis() as u64,
+        total_ms: total.as_millis() as u64,
+        output_text,
+        output_tokens,
+        generation_tokens_per_second,
+    })
+}
+
+fn sse_frame_boundary(buffer: &str) -> Option<(usize, usize)> {
+    let lf = buffer.find("\n\n");
+    let crlf = buffer.find("\r\n\r\n");
+    match (lf, crlf) {
+        (Some(lf), Some(crlf)) if crlf <= lf => Some((crlf, 4)),
+        (Some(lf), _) => Some((lf, 2)),
+        (None, Some(crlf)) => Some((crlf, 4)),
+        (None, None) => None,
+    }
 }
 
 pub async fn get_codex_client_version(

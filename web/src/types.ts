@@ -29,6 +29,24 @@ export interface GatewayModel {
   id: string;
 }
 
+export interface ModelBenchmarkSample {
+  ttft_ms: number;
+  total_ms: number;
+  output_text: string;
+  output_tokens?: number;
+  generation_tokens_per_second?: number;
+}
+
+export interface ModelBenchmarkResult {
+  provider_id: string;
+  model: string;
+  prompt: string;
+  samples: ModelBenchmarkSample[];
+  median_ttft_ms: number;
+  median_total_ms: number;
+  median_generation_tokens_per_second?: number;
+}
+
 export interface RoutingModelTarget {
   provider_id: string;
   model: string;
