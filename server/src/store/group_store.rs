@@ -21,6 +21,30 @@ impl GroupStore {
         Ok(Self { sqlite })
     }
 
+    pub fn list_users(&self) -> Result<Vec<GatewayUserSummary>, String> {
+        let conn = self.sqlite.connect_for_auth()?;
+        let mut statement = conn
+            .prepare(
+                "SELECT id, name, COALESCE(
+                    (SELECT avatar_url FROM gateway_feishu_identities WHERE user_id = gateway_users.id), ''
+                 )
+                 FROM gateway_users
+                 ORDER BY name COLLATE NOCASE, id",
+            )
+            .map_err(|error| format!("prepare user list failed: {error}"))?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok(GatewayUserSummary {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    avatar_url: row.get(2)?,
+                })
+            })
+            .map_err(|error| format!("list users failed: {error}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("read user list failed: {error}"))
+    }
+
     pub fn search_users(
         &self,
         query: &str,
@@ -482,6 +506,10 @@ mod tests {
         let searched = store.search_users("Member", 1).expect("search users");
         assert_eq!(searched.len(), 1);
         assert_eq!(searched[0].id, 2);
+        let users = store.list_users().expect("list users");
+        assert_eq!(users.len(), 2);
+        assert_eq!(users[0].name, "Member");
+        assert_eq!(users[1].name, "Owner");
         let detail = store
             .get_detail(group.id, 2)
             .expect("load detail")

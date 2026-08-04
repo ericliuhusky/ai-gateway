@@ -29,7 +29,7 @@ AI Gateway 现在由远程 Server 和 Web 管理端组成：
 
 记录按登录用户隔离，每位用户最多保留最近 200 条；每条请求体和响应体分别最多保存 128 KiB，超出后会在 UTF-8 字符边界截断。记录包含实例、供应商、模型、上游 URL、错误类型、HTTP 状态、错误信息和创建时间，但不保存 Authorization 请求头。
 
-管理端首页的“网关问题”区域可查看原始请求/响应。点击“复制修复提示词”会生成一段包含故障证据、安全约束和测试要求的提示词并复制到剪贴板；网关不会执行修复，用户可将提示词粘贴到 Codex 或其他 Agent 的用户输入中。点击“一键清空”会删除当前用户的全部故障记录。
+只有管理员可以访问“路由日志”和“网关问题”。页面默认展示当前管理员自己的记录，并可通过用户下拉列表切换查看其他用户的数据。“网关问题”区域可查看原始请求/响应；点击“复制修复提示词”会生成一段包含故障证据、安全约束和测试要求的提示词并复制到剪贴板，点击“一键清空”会删除当前下拉用户的全部故障记录。
 
 网关优先使用 Codex 请求头 `x-codex-turn-metadata` 中的 `turn_id` 聚合同一 turn，并兼容请求 Body 中的 `client_metadata.turn_id` / `turnId`；原始 ID 不会落库，仅保存不可逆哈希。如果客户端未提供这些字段，网关会为该请求生成独立的匿名 turn，无法跨工具回合保持模型粘性。
 
@@ -269,10 +269,11 @@ PUT    /settings/codex-client-version
 DELETE /settings/codex-client-version
 GET    /settings/automatic-routing
 PUT    /settings/automatic-routing
-GET    /routing/turns?limit=50
-GET    /gateway/issues?limit=50
-GET    /gateway/issues/:issue_id/repair-prompt
-DELETE /gateway/issues
+GET    /routing/turns?limit=50&user_id=123
+GET    /gateway/issues?limit=50&user_id=123
+GET    /gateway/issues/:issue_id/repair-prompt?user_id=123
+DELETE /gateway/issues?user_id=123
+GET    /observability/users
 GET    /selected-provider
 PUT    /selected-provider
 GET    /selected-model
@@ -322,4 +323,4 @@ https://gateway.example.com/auth/feishu/callback
 
 网关会根据请求的 `Host` 与 `X-Forwarded-Proto` / `X-Forwarded-Host` 生成回调地址。
 
-以下**管理 API**需要飞书登录：供应商和 OpenAI 账号导入、网关设置、路由设置、实例管理和路由日志。为兼容已部署的 Codex 客户端，请求转发接口、模型查询接口、健康检查和一次性 Codex 脚本仍保持公开；生产环境应继续在反向代理层为这些接口配置 TLS 与客户端访问控制。
+以下**管理 API**需要飞书登录：供应商和 OpenAI 账号导入、网关设置、路由设置、实例管理等。其中路由日志和网关问题接口还要求管理员角色，普通用户无法访问。为兼容已部署的 Codex 客户端，请求转发接口、模型查询接口、健康检查和一次性 Codex 脚本仍保持公开；生产环境应继续在反向代理层为这些接口配置 TLS 与客户端访问控制。

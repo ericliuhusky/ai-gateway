@@ -133,24 +133,39 @@ export const gatewayApi = {
     });
   },
 
-  async routingTurns(limit = 50) {
-    const payload = await request<{ turns: TurnRouteLog[] }>(`/routing/turns?limit=${limit}`);
+  async routingTurns(limit = 50, userId?: number) {
+    const query = new URLSearchParams({ limit: String(limit) });
+    if (userId !== undefined && userId > 0) query.set("user_id", String(userId));
+    const payload = await request<{ turns: TurnRouteLog[] }>(`/routing/turns?${query.toString()}`);
     return payload.turns;
   },
 
-  async gatewayIssues(limit = 200) {
-    const payload = await request<{ issues: GatewayIssue[] }>(`/gateway/issues?limit=${limit}`);
+  async gatewayIssues(limit = 200, userId?: number) {
+    const query = new URLSearchParams({ limit: String(limit) });
+    if (userId !== undefined && userId > 0) query.set("user_id", String(userId));
+    const payload = await request<{ issues: GatewayIssue[] }>(`/gateway/issues?${query.toString()}`);
     return payload.issues;
   },
 
-  gatewayIssueRepairPrompt(issueId: string) {
+  gatewayIssueRepairPrompt(issueId: string, userId?: number) {
+    const query = new URLSearchParams();
+    if (userId !== undefined && userId > 0) query.set("user_id", String(userId));
+    const suffix = query.size ? `?${query.toString()}` : "";
     return request<{ prompt: string }>(
-      `/gateway/issues/${encodeURIComponent(issueId)}/repair-prompt`,
+      `/gateway/issues/${encodeURIComponent(issueId)}/repair-prompt${suffix}`,
     );
   },
 
-  clearGatewayIssues() {
-    return request<{ deleted: number }>("/gateway/issues", { method: "DELETE" });
+  clearGatewayIssues(userId?: number) {
+    const query = new URLSearchParams();
+    if (userId !== undefined && userId > 0) query.set("user_id", String(userId));
+    const suffix = query.size ? `?${query.toString()}` : "";
+    return request<{ deleted: number }>(`/gateway/issues${suffix}`, { method: "DELETE" });
+  },
+
+  async observabilityUsers() {
+    const payload = await request<{ users: GatewayUser[] }>("/observability/users");
+    return payload.users;
   },
 
   usageSummary(period: "total" | "today" | "week", providerId?: string) {

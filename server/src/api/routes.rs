@@ -7,12 +7,13 @@ use crate::{
         get_group, get_instance_routing_config, get_provider_quota, get_route,
         get_security_settings, get_selected_model, get_selected_reasoning_effort, healthz,
         import_openai_token, list_daily_usage, list_gateway_issues, list_groups,
-        list_instance_routing_configs, list_models, list_models_for_instance, list_providers,
-        list_turn_logs, list_usage_summary, list_user_search, poll_openai_device_login,
-        regenerate_database_encryption_key, responses, responses_for_instance, run_model_benchmark,
-        set_auto_routing_settings, set_codex_client_version, set_instance_routing_config,
-        set_route, set_security_settings, set_selected_model, set_selected_reasoning_effort,
-        share_group_provider, start_openai_device_login, unshare_group_provider,
+        list_instance_routing_configs, list_models, list_models_for_instance,
+        list_observability_users, list_providers, list_turn_logs, list_usage_summary,
+        list_user_search, poll_openai_device_login, regenerate_database_encryption_key, responses,
+        responses_for_instance, run_model_benchmark, set_auto_routing_settings,
+        set_codex_client_version, set_instance_routing_config, set_route, set_security_settings,
+        set_selected_model, set_selected_reasoning_effort, share_group_provider,
+        start_openai_device_login, unshare_group_provider,
     },
     auth::{self, require_auth},
     codex_scripts,
@@ -56,6 +57,7 @@ pub fn build_router(state: AppState, web_dir: PathBuf) -> Router {
             delete(unshare_group_provider),
         )
         .route("/users/search", get(list_user_search))
+        .route("/observability/users", get(list_observability_users))
         .route("/benchmarks/models", post(run_model_benchmark))
         .route(
             "/settings/codex-client-version",

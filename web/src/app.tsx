@@ -184,6 +184,7 @@ function AuthenticatedApp() {
 export function GatewayDashboard() {
   const { user, logout, authMode } = useAuth();
   const currentUser = user!;
+  const isAdmin = currentUser.role === "admin";
   const [providers, setProviders] = React.useState<GatewayProvider[]>([]);
   const [groups, setGroups] = React.useState<GatewayGroup[]>([]);
   const [instances, setInstances] = React.useState<InstanceRoutingConfig[]>([]);
@@ -196,6 +197,9 @@ export function GatewayDashboard() {
   const [models, setModels] = React.useState<GatewayModel[]>([]);
   const [turnLogs, setTurnLogs] = React.useState<TurnRouteLog[]>([]);
   const [gatewayIssues, setGatewayIssues] = React.useState<GatewayIssue[]>([]);
+  const [observabilityUsers, setObservabilityUsers] = React.useState<GatewayUser[]>([currentUser]);
+  const [observabilityUserId, setObservabilityUserId] = React.useState(currentUser.id);
+  const observabilityUserIdRef = React.useRef(currentUser.id);
   const [usageByPeriod, setUsageByPeriod] = React.useState<Record<UsagePeriod, UsageSummary[]>>({
     total: [],
     today: [],
@@ -268,17 +272,39 @@ export function GatewayDashboard() {
     }
   }, []);
 
+  const loadObservability = React.useCallback(async (userId: number, showError = true) => {
+    if (!isAdmin) return;
+    try {
+      const [turns, issues] = await Promise.all([
+        gatewayApi.routingTurns(50, userId),
+        gatewayApi.gatewayIssues(200, userId),
+      ]);
+      setTurnLogs(turns);
+      setGatewayIssues(issues);
+    } catch (observabilityError) {
+      if (showError) setError(errorMessage(observabilityError));
+    }
+  }, [isAdmin]);
+
+  function selectObservabilityUser(userId: number) {
+    observabilityUserIdRef.current = userId;
+    setObservabilityUserId(userId);
+    void loadObservability(userId);
+  }
+
   const refresh = React.useCallback(async () => {
     setLoading(true);
     try {
-      const [providerList, route, turns, issues, instanceList, automaticRouting, groupList] = await Promise.all([
+      const selectedObservabilityUserId = observabilityUserIdRef.current;
+      const [providerList, route, turns, issues, instanceList, automaticRouting, groupList, userList] = await Promise.all([
         gatewayApi.providers(),
         gatewayApi.selectedProvider(),
-        gatewayApi.routingTurns(),
-        gatewayApi.gatewayIssues(),
+        isAdmin ? gatewayApi.routingTurns(50, selectedObservabilityUserId) : Promise.resolve([]),
+        isAdmin ? gatewayApi.gatewayIssues(200, selectedObservabilityUserId) : Promise.resolve([]),
         gatewayApi.instances(),
         gatewayApi.automaticRouting(),
         authMode === "required" ? gatewayApi.groups() : Promise.resolve([]),
+        isAdmin ? gatewayApi.observabilityUsers() : Promise.resolve([]),
       ]);
       const sorted = [...providerList].sort((a, b) => a.name.localeCompare(b.name));
       setProviders(sorted);
@@ -288,6 +314,11 @@ export function GatewayDashboard() {
       setSelected(route);
       setTurnLogs(turns);
       setGatewayIssues(issues);
+      setObservabilityUsers(
+        userList.some((item) => item.id === currentUser.id)
+          ? userList
+          : [currentUser, ...userList],
+      );
       setError(null);
       if (route.provider_id) {
         void loadModels();
@@ -301,7 +332,7 @@ export function GatewayDashboard() {
     } finally {
       setLoading(false);
     }
-  }, [authMode, loadModels, loadQuotas, loadUsage]);
+  }, [authMode, currentUser, isAdmin, loadModels, loadQuotas, loadUsage]);
 
   React.useEffect(() => {
     void refresh();
@@ -394,7 +425,12 @@ export function GatewayDashboard() {
             </span>
             <span className="text-[15px] font-bold tracking-[-0.02em]">AI网关</span>
           </button>
-          <NavTabs active={activePage} onSelect={setActivePage} showGroups={authMode === "required"} />
+          <NavTabs
+            active={activePage}
+            onSelect={setActivePage}
+            showGroups={authMode === "required"}
+            showObservability={isAdmin}
+          />
           <div className="ml-auto flex items-center gap-2">
             <AccountMenu
               user={currentUser}
@@ -448,12 +484,29 @@ export function GatewayDashboard() {
             onError={setError}
           />
         ) : activePage === "routing" ? (
-          <TurnLogSection turns={turnLogs} />
+          <TurnLogSection
+            turns={turnLogs}
+            userSelector={
+              <ObservabilityUserSelect
+                users={observabilityUsers}
+                value={observabilityUserId}
+                onChange={selectObservabilityUser}
+              />
+            }
+          />
         ) : activePage === "issues" ? (
           <GatewayIssueSection
             issues={gatewayIssues}
+            userId={observabilityUserId}
+            userSelector={
+              <ObservabilityUserSelect
+                users={observabilityUsers}
+                value={observabilityUserId}
+                onChange={selectObservabilityUser}
+              />
+            }
             onChanged={async () => {
-              setGatewayIssues(await gatewayApi.gatewayIssues());
+              setGatewayIssues(await gatewayApi.gatewayIssues(200, observabilityUserId));
             }}
             onError={setError}
           />
@@ -600,14 +653,20 @@ function NavTabs({
   active,
   onSelect,
   showGroups,
+  showObservability,
 }: {
   active: Page;
   onSelect: (page: Page) => void;
   showGroups: boolean;
+  showObservability: boolean;
 }) {
   return (
     <nav className="ml-2 flex min-w-0 items-center gap-1 overflow-x-auto whitespace-nowrap md:ml-6" aria-label="主导航">
-      {NAV_TABS.filter(({ id }) => id !== "groups" || showGroups).map(({ id, label, icon: Icon }) => {
+      {NAV_TABS.filter(({ id }) => {
+        if (id === "groups" && !showGroups) return false;
+        if ((id === "routing" || id === "issues") && !showObservability) return false;
+        return true;
+      }).map(({ id, label, icon: Icon }) => {
         const isActive = active === id;
         return (
           <button
@@ -1689,12 +1748,44 @@ function UsageRow({
   );
 }
 
+function ObservabilityUserSelect({
+  users,
+  value,
+  onChange,
+}: {
+  users: GatewayUser[];
+  value: number;
+  onChange: (userId: number) => void;
+}) {
+  return (
+    <label className="ml-auto flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+      <span className="hidden sm:inline">查看用户</span>
+      <select
+        className="h-8 min-w-36 rounded-lg border border-slate-200/80 bg-white/80 px-2.5 text-xs font-semibold text-slate-700 outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-500/15 dark:border-white/10 dark:bg-slate-900/80 dark:text-slate-200"
+        value={value}
+        onChange={(event) => onChange(Number(event.target.value))}
+        aria-label="选择要查看的用户"
+      >
+        {users.map((item) => (
+          <option key={item.id} value={item.id}>
+            {item.name}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
 function GatewayIssueSection({
   issues,
+  userId,
+  userSelector,
   onChanged,
   onError,
 }: {
   issues: GatewayIssue[];
+  userId: number;
+  userSelector: React.ReactNode;
   onChanged: () => Promise<void>;
   onError: (message: string) => void;
 }) {
@@ -1705,7 +1796,7 @@ function GatewayIssueSection({
   async function copyRepairPrompt(issue: GatewayIssue) {
     setCopyingId(issue.id);
     try {
-      const { prompt } = await gatewayApi.gatewayIssueRepairPrompt(issue.id);
+      const { prompt } = await gatewayApi.gatewayIssueRepairPrompt(issue.id, userId);
       await copyText(prompt);
       setCopiedId(issue.id);
       window.setTimeout(
@@ -1725,7 +1816,7 @@ function GatewayIssueSection({
     }
     setClearing(true);
     try {
-      await gatewayApi.clearGatewayIssues();
+      await gatewayApi.clearGatewayIssues(userId);
       await onChanged();
     } catch (clearError) {
       onError(errorMessage(clearError));
@@ -1746,8 +1837,8 @@ function GatewayIssueSection({
         <span className="rounded-full bg-red-500/10 px-2 py-0.5 text-[10px] font-bold text-red-600 dark:text-red-400">
           {issues.length} / 200
         </span>
+        {userSelector}
         <Button
-          className="ml-auto"
           variant="outline"
           size="sm"
           disabled={!issues.length || clearing}
@@ -1855,7 +1946,13 @@ function gatewayIssueKindLabel(kind: string) {
   return labels[kind] ?? kind;
 }
 
-function TurnLogSection({ turns }: { turns: TurnRouteLog[] }) {
+function TurnLogSection({
+  turns,
+  userSelector,
+}: {
+  turns: TurnRouteLog[];
+  userSelector: React.ReactNode;
+}) {
   const [copiedTurnId, setCopiedTurnId] = React.useState<string | null>(null);
 
   async function copyRawRoutingRecord(turn: TurnRouteLog) {
@@ -1877,6 +1974,7 @@ function TurnLogSection({ turns }: { turns: TurnRouteLog[] }) {
         <span className="rounded-full bg-white/60 px-2 py-0.5 text-[10px] font-bold text-slate-400 dark:bg-white/5">
           {turns.length} / 1000
         </span>
+        {userSelector}
       </div>
       <div className="overflow-x-auto rounded-[22px] border border-white/70 bg-white/55 shadow-sm backdrop-blur-xl dark:border-white/8 dark:bg-white/[0.035]">
         {!turns.length ? (

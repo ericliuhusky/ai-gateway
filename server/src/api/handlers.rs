@@ -104,6 +104,14 @@ pub struct UsageDailyQuery {
 pub struct GatewayIssueListQuery {
     #[serde(default = "default_gateway_issue_limit")]
     pub limit: i64,
+    #[serde(default)]
+    pub user_id: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ObservabilityOwnerQuery {
+    #[serde(default)]
+    pub user_id: Option<i64>,
 }
 
 fn default_gateway_issue_limit() -> i64 {
@@ -157,9 +165,11 @@ pub async fn list_gateway_issues(
     Extension(scope): Extension<RequestScope>,
     Query(query): Query<GatewayIssueListQuery>,
 ) -> Result<Json<Value>, AppError> {
+    require_admin(&scope)?;
+    let owner_user_id = query.user_id.or(scope.owner_user_id);
     let issues = state
         .issues
-        .list_for_owner(scope.owner_user_id, query.limit)
+        .list_for_owner(owner_user_id, query.limit)
         .map_err(AppError::internal)?;
     Ok(Json(json!({ "issues": issues })))
 }
@@ -167,10 +177,13 @@ pub async fn list_gateway_issues(
 pub async fn clear_gateway_issues(
     State(state): State<AppState>,
     Extension(scope): Extension<RequestScope>,
+    Query(query): Query<ObservabilityOwnerQuery>,
 ) -> Result<Json<Value>, AppError> {
+    require_admin(&scope)?;
+    let owner_user_id = query.user_id.or(scope.owner_user_id);
     let deleted = state
         .issues
-        .clear_for_owner(scope.owner_user_id)
+        .clear_for_owner(owner_user_id)
         .map_err(AppError::internal)?;
     Ok(Json(json!({ "deleted": deleted })))
 }
@@ -179,10 +192,13 @@ pub async fn get_gateway_issue_repair_prompt(
     State(state): State<AppState>,
     Extension(scope): Extension<RequestScope>,
     AxumPath(issue_id): AxumPath<String>,
+    Query(query): Query<ObservabilityOwnerQuery>,
 ) -> Result<Json<GatewayIssueRepairPromptResponse>, AppError> {
+    require_admin(&scope)?;
+    let owner_user_id = query.user_id.or(scope.owner_user_id);
     let issue = state
         .issues
-        .get_for_owner(scope.owner_user_id, &issue_id)
+        .get_for_owner(owner_user_id, &issue_id)
         .map_err(AppError::internal)?
         .ok_or_else(|| AppError::bad_request("gateway issue not found"))?;
     Ok(Json(GatewayIssueRepairPromptResponse {
@@ -664,6 +680,8 @@ pub async fn set_auto_routing_settings(
 pub struct ListTurnLogsQuery {
     #[serde(default = "default_turn_log_limit")]
     pub limit: i64,
+    #[serde(default)]
+    pub user_id: Option<i64>,
 }
 
 fn default_turn_log_limit() -> i64 {
@@ -675,9 +693,11 @@ pub async fn list_turn_logs(
     Extension(scope): Extension<RequestScope>,
     Query(query): Query<ListTurnLogsQuery>,
 ) -> Result<Json<Value>, AppError> {
+    require_admin(&scope)?;
+    let owner_user_id = query.user_id.or(scope.owner_user_id);
     let turns = state
         .turn_logs
-        .list_for_owner(scope.owner_user_id, query.limit)
+        .list_for_owner(owner_user_id, query.limit)
         .map_err(AppError::internal)?;
     Ok(Json(json!({ "turns": turns })))
 }
@@ -1070,6 +1090,15 @@ pub async fn list_user_search(
         .groups
         .search_users(&query.q, user_id)
         .map_err(AppError::internal)?;
+    Ok(Json(json!({ "users": users })))
+}
+
+pub async fn list_observability_users(
+    State(state): State<AppState>,
+    Extension(scope): Extension<RequestScope>,
+) -> Result<Json<Value>, AppError> {
+    require_admin(&scope)?;
+    let users = state.groups.list_users().map_err(AppError::internal)?;
     Ok(Json(json!({ "users": users })))
 }
 
