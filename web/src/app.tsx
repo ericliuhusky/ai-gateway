@@ -64,6 +64,32 @@ import type {
 type Dialog = "provider" | "instances" | "scripts" | null;
 type Page = "overview" | "groups" | "usage" | "benchmark" | "routing" | "issues" | "account" | "admin";
 
+const ROUTE_TO_PAGE: Record<string, Page> = {
+  "/": "overview",
+  "/groups": "groups",
+  "/usage": "usage",
+  "/benchmark": "benchmark",
+  "/routing": "routing",
+  "/issues": "issues",
+  "/account": "account",
+  "/admin": "admin",
+};
+
+const PAGE_TO_ROUTE: Record<Page, string> = {
+  overview: "/",
+  groups: "/groups",
+  usage: "/usage",
+  benchmark: "/benchmark",
+  routing: "/routing",
+  issues: "/issues",
+  account: "/account",
+  admin: "/admin",
+};
+
+function pageFromPath(path: string): Page {
+  return ROUTE_TO_PAGE[path] ?? "overview";
+}
+
 const NAV_TABS: {
   id: Exclude<Page, "account" | "admin">;
   label: string;
@@ -212,9 +238,23 @@ export function GatewayDashboard() {
   const [loading, setLoading] = React.useState(true);
   const [loadingModels, setLoadingModels] = React.useState(false);
   const [dialog, setDialog] = React.useState<Dialog>(null);
-  const [activePage, setActivePage] = React.useState<Page>("overview");
+  const [activePage, setActivePageState] = React.useState<Page>(() => pageFromPath(window.location.pathname));
   const [error, setError] = React.useState<string | null>(null);
   const [deleting, setDeleting] = React.useState<Set<string>>(new Set());
+
+  function setActivePage(page: Page) {
+    const route = PAGE_TO_ROUTE[page];
+    if (window.location.pathname !== route) {
+      window.history.pushState(null, "", route);
+    }
+    setActivePageState(page);
+  }
+
+  React.useEffect(() => {
+    const onPopState = () => setActivePageState(pageFromPath(window.location.pathname));
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
 
   const selectedProvider = providers.find((provider) => provider.id === selected.provider_id);
 
