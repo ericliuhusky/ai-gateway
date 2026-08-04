@@ -10,12 +10,11 @@ use crate::{
     },
     models::{
         AccountRecord, ApiProviderRecord, ApiProviderSummary, AutoRoutingSettings,
-        CodexClientVersionSetting, CreateApiProviderRequest, InstanceRoutingConfig, ModelListItem,
-        ModelListResponse, OPENAI_ACCOUNT_PROVIDER_NAME, ProviderAuthMode,
-        ProviderCompatibilityProfile, ProviderQuotaCredits, ProviderQuotaResponse,
-        ProviderQuotaSnapshot, ProviderQuotaSummary, ProviderQuotaWindow, QuotaSource,
-        FeishuAppSecretResponse, QuotaSupportStatus, RoutingModelTarget, SecuritySettings,
-        SelectedRoute,
+        CodexClientVersionSetting, CreateApiProviderRequest, FeishuAppSecretResponse,
+        InstanceRoutingConfig, ModelListItem, ModelListResponse, OPENAI_ACCOUNT_PROVIDER_NAME,
+        ProviderAuthMode, ProviderCompatibilityProfile, ProviderQuotaCredits,
+        ProviderQuotaResponse, ProviderQuotaSnapshot, ProviderQuotaSummary, ProviderQuotaWindow,
+        QuotaSource, QuotaSupportStatus, RoutingModelTarget, SecuritySettings, SelectedRoute,
         TurnRouteLogUpdate, UpdateAutoRoutingSettingsRequest, UpdateCodexClientVersionRequest,
         UpdateInstanceRoutingConfigRequest, UpdateSecuritySettingsRequest,
         UpdateSelectedModelRequest, UpdateSelectedProviderRequest,
@@ -1136,13 +1135,11 @@ async fn responses_inner_for_instance(
         instance_id,
     )
     .await?;
-    let selected_reasoning_effort = route.selected_reasoning_effort;
-    let reasoning_effort = selected_reasoning_effort.as_deref().or_else(|| {
-        routing
-            .target
-            .as_ref()
-            .and_then(|target| target.reasoning_effort.as_deref())
-    });
+    let reasoning_effort = reasoning_effort_for_routing(
+        &route.selected_reasoning_effort,
+        &routing,
+        automatic_routing.enabled,
+    );
     let request_overridden =
         apply_gateway_overrides_to_raw_request(&routing, reasoning_effort, &mut request_json);
     turn.reasoning_effort = reasoning_effort_from_request(&request_json);
@@ -1338,6 +1335,22 @@ fn responses_request_stream(request: &Value) -> bool {
         .unwrap_or(false)
 }
 
+fn reasoning_effort_for_routing<'a>(
+    selected_reasoning_effort: &'a Option<String>,
+    routing: &'a RoutingDecision,
+    automatic_routing_enabled: bool,
+) -> Option<&'a str> {
+    let routed_effort = routing
+        .target
+        .as_ref()
+        .and_then(|target| target.reasoning_effort.as_deref());
+    if automatic_routing_enabled {
+        routed_effort
+    } else {
+        selected_reasoning_effort.as_deref().or(routed_effort)
+    }
+}
+
 fn apply_gateway_overrides_to_raw_request(
     routing: &RoutingDecision,
     selected_reasoning_effort: Option<&str>,
@@ -1471,23 +1484,22 @@ async fn choose_model_for_request(
         });
     }
 
-    if let Some(model) = route.selected_model.as_deref() {
-        let provider_id = provider
-            .ok_or_else(|| {
-                AppError::bad_request("a provider is required when a fixed model is selected")
-            })?
-            .record
-            .as_ref()
-            .map(|record| record.id.clone())
-            .ok_or_else(|| AppError::internal("selected provider record missing"))?;
-        return Ok(RoutingDecision::selected_model(RoutingModelTarget {
-            provider_id,
-            model: model.to_string(),
-            reasoning_effort: None,
-        }));
-    }
-
     if !settings.enabled {
+        if let Some(model) = route.selected_model.as_deref() {
+            let provider_id = provider
+                .ok_or_else(|| {
+                    AppError::bad_request("a provider is required when a fixed model is selected")
+                })?
+                .record
+                .as_ref()
+                .map(|record| record.id.clone())
+                .ok_or_else(|| AppError::internal("selected provider record missing"))?;
+            return Ok(RoutingDecision::selected_model(RoutingModelTarget {
+                provider_id,
+                model: model.to_string(),
+                reasoning_effort: None,
+            }));
+        }
         return Ok(RoutingDecision::disabled());
     }
 
@@ -2716,7 +2728,8 @@ mod tests {
         AppState, ResolvedProvider, apply_gateway_overrides_to_raw_request,
         classifier_response_preview, classifier_text_from_sse, codex_turn_metadata,
         delete_provider, opaque_turn_id, openai_models_response, private_classifier_request_body,
-        provider_uses_openai_account, quota_from_openai_usage, turn_context_from_request,
+        provider_uses_openai_account, quota_from_openai_usage, reasoning_effort_for_routing,
+        turn_context_from_request,
     };
     use super::{CodexAuthFile, import_tokens_from_value};
     use crate::{
@@ -2724,7 +2737,7 @@ mod tests {
         config::Config,
         models::{
             ApiProviderRecord, ProviderAuthMode, ProviderCompatibilityProfile,
-            ProviderUpstreamProtocol,
+            ProviderUpstreamProtocol, RoutingModelTarget,
         },
         openai_device_login::OpenAiDeviceLoginService,
         openai_tokens::{ImportedOpenAIAuth, OpenAiTokenService},
@@ -2850,6 +2863,33 @@ mod tests {
             "0.147.0-beta.1"
         );
         assert!(super::normalize_codex_client_version("0.147.0 ?".to_string()).is_err());
+    }
+
+    #[test]
+    fn automatic_routing_ignores_instance_reasoning_override() {
+        let selected_effort = Some("high".to_string());
+        let routing = super::RoutingDecision {
+            target: Some(RoutingModelTarget {
+                provider_id: "router".to_string(),
+                model: "routed-model".to_string(),
+                reasoning_effort: Some("low".to_string()),
+            }),
+            mode: "classifier",
+            reason: "classifier_selected",
+            detail: None,
+            classifier_output: None,
+            tier: None,
+            confidence: None,
+        };
+
+        assert_eq!(
+            reasoning_effort_for_routing(&selected_effort, &routing, true),
+            Some("low")
+        );
+        assert_eq!(
+            reasoning_effort_for_routing(&selected_effort, &routing, false),
+            Some("high")
+        );
     }
 
     #[test]
