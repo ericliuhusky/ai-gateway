@@ -117,6 +117,7 @@ curl -fsSL 'https://gateway.example.com/codex/setup.sh' |
 - 在 `config.toml` 注释中记录切换前的 `model_provider`
 - 将 `model_provider` 指向 `ai-gateway`
 - 写入当前 Gateway 的 `base_url`
+- 账户模式下备份原 `auth.json`，并将 Gateway API Key 写入 `OPENAI_API_KEY`
 - 为切换前 Provider 的现有任务创建 `ai-gateway` 历史别名
 - 首次同步前备份 `state_5.sqlite`，重复执行时复用已有别名
 - 使用临时文件原子替换配置
@@ -146,7 +147,7 @@ curl -fsSL 'https://gateway.example.com/codex/instances.sh' |
 
 账户模式下，`create` 命令可在实例 URL 后附加 API Key。
 
-实例保存在 `~/.ai-gateway/codex-instances/<name>/`。每个实例有独立的 `CODEX_HOME`、`config.toml`、`auth.json`、会话记录和 Electron 用户数据目录，因此可分别在窗口中登录不同的 Codex 账号。创建时不会复制默认实例的 `auth.json`。`skills`、`rules` 和 `AGENTS.md` 会从默认 `~/.codex` 共享，便于复用本地工作流。
+实例保存在 `~/.ai-gateway/codex-instances/<name>/`。每个实例有独立的 `CODEX_HOME`、`config.toml`、`auth.json`、会话记录和 Electron 用户数据目录。创建时不会复制默认实例的 `auth.json`；账户模式下会在实例自己的 `auth.json` 中写入 Gateway API Key。`skills`、`rules` 和 `AGENTS.md` 会从默认 `~/.codex` 共享，便于复用本地工作流。
 
 删除本机隔离实例及其配置、登录信息、会话和 Electron 数据：
 

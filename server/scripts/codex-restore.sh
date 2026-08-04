@@ -12,6 +12,9 @@ fail() {
 
 codex_dir="$HOME/.codex"
 config_path="$codex_dir/config.toml"
+auth_path="$codex_dir/auth.json"
+auth_backup_path="$codex_dir/.ai-gateway-auth.before-setup.json"
+auth_absent_marker="$codex_dir/.ai-gateway-auth.was-absent"
 lock_dir="$codex_dir/.ai-gateway-config.lock"
 temp_path=
 
@@ -116,7 +119,15 @@ chmod 600 "$temp_path"
 mv "$temp_path" "$config_path"
 temp_path=
 
+if [ -f "$auth_backup_path" ]; then
+  mv "$auth_backup_path" "$auth_path"
+  rm -f "$auth_absent_marker"
+elif [ -f "$auth_absent_marker" ]; then
+  rm -f "$auth_path" "$auth_absent_marker"
+fi
+
 printf '%s\n' \
   "已清理 AI Gateway 的 Codex 配置，并恢复原模型供应商。" \
   "已移除 ai-gateway Provider 配置和切换标记。" \
+  "已恢复切换前的 Codex 登录凭据。" \
   "请重新启动 Codex 或新建任务使配置生效。"

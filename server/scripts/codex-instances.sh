@@ -179,12 +179,16 @@ name = "ai-gateway"
 base_url = "$gateway_base_url"
 wire_api = "responses"
 EOF
-  if [ -n "$gateway_access_token" ]; then
-    printf 'bearer_token_env_var = "%s"\n' "$gateway_access_token" >> "$temp_path"
-  fi
 
   chmod 600 "$temp_path"
   mv "$temp_path" "$config_path"
+
+  if [ -n "$gateway_access_token" ]; then
+    auth_temp="${codex_home}/.auth.json.ai-gateway.$$"
+    printf '{\n  "OPENAI_API_KEY": "%s"\n}\n' "$gateway_access_token" > "$auth_temp"
+    chmod 600 "$auth_temp"
+    mv "$auth_temp" "${codex_home}/auth.json"
+  fi
 }
 
 instances_root="$HOME/.ai-gateway/codex-instances"

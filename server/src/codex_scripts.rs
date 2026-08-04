@@ -59,7 +59,10 @@ mod tests {
         assert!(SETUP_SCRIPT.contains("[model_providers.ai-gateway]"));
         assert!(SETUP_SCRIPT.contains("wire_api = \"responses\""));
         assert!(SETUP_SCRIPT.contains("gateway_access_token=${2:-}"));
-        assert!(SETUP_SCRIPT.contains("bearer_token_env_var"));
+        assert!(SETUP_SCRIPT.contains("\"OPENAI_API_KEY\""));
+        assert!(SETUP_SCRIPT.contains(".ai-gateway-auth.before-setup.json"));
+        assert!(!SETUP_SCRIPT.contains("experimental_bearer_token"));
+        assert!(!SETUP_SCRIPT.contains("bearer_token_env_var"));
         assert!(SETUP_SCRIPT.contains("# ai-gateway.previous-model-provider: "));
         assert!(SETUP_SCRIPT.contains("state_5.sqlite"));
         assert!(SETUP_SCRIPT.contains("aliases.tsv"));
@@ -85,7 +88,9 @@ mod tests {
         assert!(INSTANCES_SCRIPT.contains("link_shared_path \"$template_home/skills\""));
         assert!(INSTANCES_SCRIPT.contains("instances.sh delete <name>"));
         assert!(INSTANCES_SCRIPT.contains("gateway-api-key"));
-        assert!(INSTANCES_SCRIPT.contains("bearer_token_env_var"));
+        assert!(INSTANCES_SCRIPT.contains("\"OPENAI_API_KEY\""));
+        assert!(!INSTANCES_SCRIPT.contains("experimental_bearer_token"));
+        assert!(!INSTANCES_SCRIPT.contains("bearer_token_env_var"));
         assert!(INSTANCES_SCRIPT.contains("rm -rf \"$root\""));
     }
 
@@ -231,6 +236,71 @@ mod tests {
         assert!(config.contains("model_provider = \"openai\""));
         assert!(!config.contains("ai-gateway"));
         assert!(config.contains("[features]"));
+
+        fs::remove_dir_all(test_dir).expect("remove test dir");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn setup_and_restore_preserve_original_codex_auth() {
+        let test_dir = test_dir("setup-auth");
+        let codex_dir = test_dir.join(".codex");
+        fs::create_dir_all(&codex_dir).expect("create codex dir");
+        fs::write(
+            codex_dir.join("config.toml"),
+            "model_provider = \"openai\"\nmodel = \"gpt-5.4\"\n",
+        )
+        .expect("write config");
+        let original_auth = "{\"tokens\":{\"access_token\":\"original\"}}\n";
+        fs::write(codex_dir.join("auth.json"), original_auth).expect("write original auth");
+
+        let setup_path = test_dir.join("setup.sh");
+        fs::write(&setup_path, SETUP_SCRIPT).expect("write setup script");
+        let setup = Command::new("sh")
+            .arg(&setup_path)
+            .args([
+                "https://gateway.example.com/openai/v1",
+                "agw_test_gateway_key",
+            ])
+            .env("HOME", &test_dir)
+            .output()
+            .expect("run setup script");
+        assert!(
+            setup.status.success(),
+            "setup script failed: {}",
+            String::from_utf8_lossy(&setup.stderr)
+        );
+
+        let gateway_auth =
+            fs::read_to_string(codex_dir.join("auth.json")).expect("read gateway auth");
+        assert!(gateway_auth.contains("\"OPENAI_API_KEY\": \"agw_test_gateway_key\""));
+        assert_eq!(
+            fs::read_to_string(codex_dir.join(".ai-gateway-auth.before-setup.json"))
+                .expect("read auth backup"),
+            original_auth
+        );
+
+        let restore_path = test_dir.join("restore.sh");
+        fs::write(&restore_path, RESTORE_SCRIPT).expect("write restore script");
+        let restore = Command::new("sh")
+            .arg(&restore_path)
+            .env("HOME", &test_dir)
+            .output()
+            .expect("run restore script");
+        assert!(
+            restore.status.success(),
+            "restore script failed: {}",
+            String::from_utf8_lossy(&restore.stderr)
+        );
+        assert_eq!(
+            fs::read_to_string(codex_dir.join("auth.json")).expect("read restored auth"),
+            original_auth
+        );
+        assert!(
+            !codex_dir
+                .join(".ai-gateway-auth.before-setup.json")
+                .exists()
+        );
 
         fs::remove_dir_all(test_dir).expect("remove test dir");
     }

@@ -145,7 +145,7 @@ sync_history_aliases() {
   fi
 
   if [ ! -f "$state_path" ]; then
-    warn "未找到 $state_path，已跳过 Codex 历史同步"
+    warn "未找到 ${state_path}，已跳过 Codex 历史同步"
     return 0
   fi
 
@@ -479,8 +479,12 @@ esac
 
 codex_dir="$HOME/.codex"
 config_path="$codex_dir/config.toml"
+auth_path="$codex_dir/auth.json"
+auth_backup_path="$codex_dir/.ai-gateway-auth.before-setup.json"
+auth_absent_marker="$codex_dir/.ai-gateway-auth.was-absent"
 lock_dir="$codex_dir/.ai-gateway-config.lock"
 temp_path=
+auth_temp=
 history_dir=
 backup_temp=
 rollout_temp=
@@ -498,6 +502,9 @@ fi
 cleanup() {
   if [ -n "$temp_path" ]; then
     rm -f "$temp_path"
+  fi
+  if [ -n "$auth_temp" ]; then
+    rm -f "$auth_temp"
   fi
   for history_temp in "$backup_temp" "$rollout_temp" "$source_list" "$pending_list" "$columns_list" "$mapping_temp" "$sql_path"; do
     if [ -n "$history_temp" ]; then
@@ -607,12 +614,28 @@ wire_api = "responses"
 EOF
 
 if [ -n "$gateway_access_token" ]; then
-  printf 'bearer_token_env_var = "%s"\n' "$gateway_access_token" >> "$temp_path"
+  if [ ! -f "$auth_backup_path" ] && [ ! -f "$auth_absent_marker" ]; then
+    if [ -f "$auth_path" ]; then
+      cp "$auth_path" "$auth_backup_path"
+      chmod 600 "$auth_backup_path"
+    else
+      : > "$auth_absent_marker"
+      chmod 600 "$auth_absent_marker"
+    fi
+  fi
+
+  auth_temp="$codex_dir/.auth.json.ai-gateway.$$"
+  printf '{\n  "OPENAI_API_KEY": "%s"\n}\n' "$gateway_access_token" > "$auth_temp"
+  chmod 600 "$auth_temp"
 fi
 
 chmod 600 "$temp_path"
 mv "$temp_path" "$config_path"
 temp_path=
+if [ -n "$auth_temp" ]; then
+  mv "$auth_temp" "$auth_path"
+  auth_temp=
+fi
 
 if ! sync_history_aliases "$previous_provider"; then
   warn "Codex 历史同步未完成，可稍后重新执行接入脚本重试"

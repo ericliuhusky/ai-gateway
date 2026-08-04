@@ -2559,6 +2559,7 @@ async fn choose_model_for_request(
     };
     let classifier_response = match invoke_routing_classifier(
         state,
+        owner_user_id,
         &classifier_provider,
         &classifier.model,
         classifier.reasoning_effort.as_deref(),
@@ -2739,13 +2740,14 @@ struct RoutingClassifierResponse {
 
 async fn invoke_routing_classifier(
     state: &AppState,
+    owner_user_id: Option<i64>,
     provider: &ResolvedProvider,
     classifier_model: &str,
     reasoning_effort: Option<&str>,
     prompt: String,
 ) -> Result<RoutingClassifierResponse, String> {
     if provider.auth_mode == ProviderAuthMode::Account && provider_uses_openai_account(provider) {
-        let account = resolve_account_for_provider(state, provider)
+        let account = resolve_account_for_provider_for_owner(state, owner_user_id, provider)
             .await
             .map_err(|err| err.message)?;
         let request = PrivateOpenAiRequestBuilder {
@@ -3609,7 +3611,7 @@ async fn hydrate_provider_summary(state: &AppState, provider: &mut ApiProviderSu
 
 async fn hydrate_provider_summary_for_owner(
     state: &AppState,
-    _owner_user_id: Option<i64>,
+    owner_user_id: Option<i64>,
     provider: &mut ApiProviderSummary,
 ) {
     if provider.auth_mode == ProviderAuthMode::Account
@@ -3617,7 +3619,7 @@ async fn hydrate_provider_summary_for_owner(
     {
         provider.account_email = state
             .accounts
-            .find_by_id(account_id)
+            .find_by_id_for_owner(owner_user_id, account_id)
             .await
             .map(|account| account.email);
     }
