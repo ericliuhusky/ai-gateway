@@ -133,12 +133,29 @@ pub async fn set_security_settings(
     let settings = state
         .settings
         .update_security_settings(
-            request.encryption_key.as_deref(),
+            None,
             &request.feishu_app_id,
             request.feishu_app_secret.as_deref(),
             request.auth_required,
         )
         .map_err(AppError::bad_request)?;
+    Ok(Json(SecuritySettings {
+        encryption_key_configured: settings.encryption_key_configured,
+        feishu_app_id: settings.feishu_app_id,
+        feishu_app_secret_configured: settings.feishu_app_secret_configured,
+        auth_required: settings.auth_required,
+    }))
+}
+
+pub async fn regenerate_database_encryption_key(
+    State(state): State<AppState>,
+    Extension(scope): Extension<RequestScope>,
+) -> Result<Json<SecuritySettings>, AppError> {
+    require_admin(&scope)?;
+    let settings = state
+        .settings
+        .regenerate_database_encryption_key()
+        .map_err(AppError::internal)?;
     Ok(Json(SecuritySettings {
         encryption_key_configured: settings.encryption_key_configured,
         feishu_app_id: settings.feishu_app_id,

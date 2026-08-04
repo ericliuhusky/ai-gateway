@@ -156,8 +156,6 @@ pub struct SecuritySettings {
 #[derive(Debug, Deserialize)]
 pub struct UpdateSecuritySettingsRequest {
     #[serde(default)]
-    pub encryption_key: Option<String>,
-    #[serde(default)]
     pub feishu_app_id: String,
     #[serde(default)]
     pub feishu_app_secret: Option<String>,

@@ -75,14 +75,16 @@ Codex 模型接口的客户端版本默认使用代码内置值 `0.146.0`。可�
 - `accounts.access_token`
 - `accounts.refresh_token`
 - `providers.api_key`
+- `gateway_state.feishu_app_secret`
+- `gateway_access_tokens.token_ciphertext`
 
-首次启动时可先访问管理端的“管理员设置 → 安全与账户登录”，设置 Base64 编码且解码后为 32 字节的数据库加密密钥，例如：
+首次创建数据库时，网关会自动生成并保存一个 Base64 编码、解码后为 32 字节的数据库加密密钥（等同于执行以下命令）：
 
 ```bash
 openssl rand -base64 32
 ```
 
-未设置密钥时，网关可以运行并允许管理员完成初始配置，但会拒绝保存 Provider API Key、OpenAI 账户 Token 和用户网关 API Key 等需加密的内容。密钥设置后不能直接更换，避免现有凭据无法解密。
+已有旧数据库且尚未设置密钥时，网关仍允许管理员完成初始配置，但会拒绝保存 Provider API Key、OpenAI 账户 Token 和用户网关 API Key 等需加密的内容。管理员设置页只提供系统生成密钥的操作，不显示或接受密钥内容。点击生成或重新生成后，经二次确认即立即生效，无需再保存安全设置。网关会在一个 SQLite 事务中先解密全部已加密凭据，再用新密钥重新加密并保存新密钥。任一条记录无法解密时，整个更换会回滚。
 
 > 注意：按当前设计，加密密钥本身保存在 SQLite，因此数据库文件的访问控制仍然至关重要；请限制 `$HOME/.ai-gateway/db.sqlite` 的文件权限并定期备份。
 

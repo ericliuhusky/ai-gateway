@@ -6,9 +6,10 @@ use crate::{
         get_provider_quota, get_route, get_security_settings, get_selected_model,
         get_selected_reasoning_effort, healthz, import_openai_token, list_instance_routing_configs,
         list_models, list_models_for_instance, list_providers, list_turn_logs,
-        poll_openai_device_login, responses, responses_for_instance, set_auto_routing_settings,
-        set_codex_client_version, set_instance_routing_config, set_route, set_security_settings,
-        set_selected_model, set_selected_reasoning_effort, start_openai_device_login,
+        poll_openai_device_login, regenerate_database_encryption_key, responses,
+        responses_for_instance, set_auto_routing_settings, set_codex_client_version,
+        set_instance_routing_config, set_route, set_security_settings, set_selected_model,
+        set_selected_reasoning_effort, start_openai_device_login,
     },
     auth::{self, require_auth},
     codex_scripts,
@@ -48,6 +49,10 @@ pub fn build_router(state: AppState, web_dir: PathBuf) -> Router {
         .route(
             "/settings/security",
             get(get_security_settings).put(set_security_settings),
+        )
+        .route(
+            "/settings/security/encryption-key/regenerate",
+            post(regenerate_database_encryption_key),
         )
         .route(
             "/settings/automatic-routing",

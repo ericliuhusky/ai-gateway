@@ -2084,6 +2084,48 @@ function CommandBlock({
   );
 }
 
+function RegenerateEncryptionKeyDialog({
+  configured,
+  submitting,
+  onClose,
+  onConfirm,
+}: {
+  configured: boolean;
+  submitting: boolean;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <DialogFrame
+      title={configured ? "重新生成数据库加密密钥" : "生成数据库加密密钥"}
+      description="系统将生成新的 32 字节随机密钥，密钥内容不会显示或返回到浏览器。"
+      onClose={submitting ? () => {} : onClose}
+    >
+      <div className="space-y-5">
+        <div className="rounded-2xl border border-amber-500/20 bg-amber-500/5 p-4 text-xs leading-5 text-amber-700 dark:text-amber-300">
+          {configured
+            ? "确认后会立即替换当前密钥，并在同一 SQLite 事务中重新加密全部已保存凭据。操作过程中请勿关闭或重启服务；任一记录处理失败时会自动回滚。"
+            : "确认后会立即生成并启用数据库加密密钥，无需再点击“保存安全设置”。"}
+        </div>
+        <div className="flex justify-end gap-2">
+          <Button type="button" variant="outline" disabled={submitting} onClick={onClose}>
+            取消
+          </Button>
+          <Button
+            type="button"
+            disabled={submitting}
+            onClick={onConfirm}
+            className="bg-amber-600 text-white hover:bg-amber-700"
+          >
+            {submitting ? <LoaderCircle className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
+            {submitting ? "正在重新加密" : configured ? "确认重新生成" : "确认生成"}
+          </Button>
+        </div>
+      </div>
+    </DialogFrame>
+  );
+}
+
 function AdminSettingsPage({
   onChanged,
   onError,
@@ -2094,11 +2136,12 @@ function AdminSettingsPage({
   const [setting, setSetting] = React.useState<CodexClientVersionSetting | null>(null);
   const [security, setSecurity] = React.useState<SecuritySettings | null>(null);
   const [version, setVersion] = React.useState("");
-  const [encryptionKey, setEncryptionKey] = React.useState("");
   const [feishuAppId, setFeishuAppId] = React.useState("");
   const [feishuAppSecret, setFeishuAppSecret] = React.useState("");
   const [authRequired, setAuthRequired] = React.useState(false);
   const [submitting, setSubmitting] = React.useState(false);
+  const [showKeyConfirmation, setShowKeyConfirmation] = React.useState(false);
+  const [regeneratingKey, setRegeneratingKey] = React.useState(false);
 
   React.useEffect(() => {
     void gatewayApi
@@ -2139,13 +2182,11 @@ function AdminSettingsPage({
     setSubmitting(true);
     try {
       const value = await gatewayApi.setSecuritySettings({
-        encryption_key: encryptionKey.trim() || undefined,
         feishu_app_id: feishuAppId.trim(),
         feishu_app_secret: feishuAppSecret.trim() || undefined,
         auth_required: authRequired,
       });
       setSecurity(value);
-      setEncryptionKey("");
       setFeishuAppSecret("");
       setFeishuAppId(value.feishu_app_id);
       setAuthRequired(value.auth_required);
@@ -2155,6 +2196,20 @@ function AdminSettingsPage({
       onError(errorMessage(saveError));
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  async function regenerateEncryptionKey() {
+    setRegeneratingKey(true);
+    try {
+      const value = await gatewayApi.regenerateDatabaseEncryptionKey();
+      setSecurity(value);
+      setShowKeyConfirmation(false);
+      await onChanged();
+    } catch (regenerateError) {
+      onError(errorMessage(regenerateError));
+    } finally {
+      setRegeneratingKey(false);
     }
   }
 
@@ -2182,7 +2237,7 @@ function AdminSettingsPage({
         <div className="mb-4">
           <h2 className="text-base font-bold">安全与账户登录</h2>
           <p className="mt-1 text-xs leading-5 text-slate-400">
-            配置保存在 SQLite。数据库加密密钥一经设置不能直接更换，以免已有凭据无法解密。
+            配置保存在 SQLite。更换数据库加密密钥时，已保存的凭据会在同一事务中使用新密钥重新加密。
           </p>
         </div>
         {!security ? (
@@ -2192,16 +2247,29 @@ function AdminSettingsPage({
         ) : (
           <form onSubmit={saveSecurity} className="space-y-4">
             <div className="grid gap-4 sm:grid-cols-2">
-              <FormField label={`数据库加密密钥${security.encryption_key_configured ? "（已设置）" : ""}`}>
-                <input
-                  className="field w-full font-mono text-sm"
-                  type="password"
-                  value={encryptionKey}
-                  placeholder={security.encryption_key_configured ? "已设置，不能更换" : "Base64 编码的 32 字节密钥"}
-                  disabled={submitting || security.encryption_key_configured}
-                  onChange={(event) => setEncryptionKey(event.target.value)}
-                />
-              </FormField>
+              <div>
+                <div className="mb-2 text-[11px] font-bold text-slate-500 dark:text-slate-400">数据库加密密钥</div>
+                <div className="flex min-h-11 items-center justify-between gap-3 rounded-xl border border-white/65 bg-white/45 px-3 dark:border-white/8 dark:bg-white/[0.035]">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <KeyRound className="size-4 shrink-0 text-emerald-500" />
+                    <span className="truncate text-xs font-semibold">
+                      {security.encryption_key_configured ? "已自动生成并安全保存" : "尚未生成"}
+                    </span>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={submitting || regeneratingKey}
+                    onClick={() => setShowKeyConfirmation(true)}
+                  >
+                    <RefreshCw className="size-4" />
+                    {security.encryption_key_configured ? "重新生成" : "立即生成"}
+                  </Button>
+                </div>
+                <p className="mt-2 text-[11px] leading-5 text-slate-400">
+                  密钥只能由系统随机生成，不支持手动输入。重新生成后会立即替换密钥并重新加密已有凭据。
+                </p>
+              </div>
               <FormField label="飞书 App ID">
                 <input
                   className="field w-full font-mono text-sm"
@@ -2311,6 +2379,14 @@ function AdminSettingsPage({
         </div>
       )}
       </section>
+      {showKeyConfirmation ? (
+        <RegenerateEncryptionKeyDialog
+          configured={security?.encryption_key_configured ?? false}
+          submitting={regeneratingKey}
+          onClose={() => setShowKeyConfirmation(false)}
+          onConfirm={() => void regenerateEncryptionKey()}
+        />
+      ) : null}
     </SettingsPageFrame>
   );
 }

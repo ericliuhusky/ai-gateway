@@ -8,7 +8,7 @@ use crate::{
         TurnRouteLogUpdate,
     },
 };
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use std::{fs, path::PathBuf, sync::Arc};
 #[derive(Clone, Debug)]
 pub struct SqliteStore {
@@ -779,26 +779,17 @@ impl SqliteStore {
     }
 
     pub(crate) fn set_database_encryption_key(&self, key: &str) -> Result<(), String> {
-        FieldEncryptor::from_base64_key(key)?;
-        let conn = self.connect()?;
-        let current: String = conn
-            .query_row(
-                "SELECT COALESCE(database_encryption_key, '') FROM gateway_state WHERE id = 1",
-                [],
-                |row| row.get(0),
-            )
-            .map_err(|err| format!("read database encryption key failed: {err}"))?;
-        if !current.is_empty() && current != key.trim() {
-            return Err(
-                "数据库加密密钥已经设置；为避免现有凭据无法解密，不支持直接更换密钥".to_string(),
-            );
-        }
-        conn.execute(
-            "UPDATE gateway_state SET database_encryption_key = ?1 WHERE id = 1",
-            params![key.trim()],
-        )
-        .map_err(|err| format!("save database encryption key failed: {err}"))?;
-        Ok(())
+        let key = key.trim();
+        let new_encryptor = FieldEncryptor::from_base64_key(key)?;
+        let mut conn = self.connect()?;
+        let transaction = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|err| format!("begin database encryption key transaction failed: {err}"))?;
+        let current = database_security_settings_from(&transaction)?;
+        rotate_database_encryption_key(&transaction, &current.encryption_key, key, &new_encryptor)?;
+        transaction
+            .commit()
+            .map_err(|err| format!("commit database encryption key transaction failed: {err}"))
     }
 
     pub(crate) fn update_database_security_settings(
@@ -808,17 +799,27 @@ impl SqliteStore {
         feishu_app_secret: Option<&str>,
         auth_required: bool,
     ) -> Result<(), String> {
-        if let Some(key) = encryption_key.filter(|key| !key.trim().is_empty()) {
-            self.set_database_encryption_key(key)?;
-        }
-        let settings = self.database_security_settings()?;
-        let encryptor = if feishu_app_secret.is_some_and(|value| !value.trim().is_empty()) {
-            Some(self.encryption()?)
-        } else {
+        let requested_key = encryption_key.map(str::trim).filter(|key| !key.is_empty());
+        let requested_encryptor = requested_key
+            .map(FieldEncryptor::from_base64_key)
+            .transpose()?;
+        let mut conn = self.connect()?;
+        let transaction = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|err| format!("begin database security settings transaction failed: {err}"))?;
+        let settings = database_security_settings_from(&transaction)?;
+        let effective_key = requested_key.unwrap_or(&settings.encryption_key);
+        let effective_encryptor = if effective_key.is_empty() {
             None
+        } else {
+            Some(match requested_encryptor.as_ref() {
+                Some(encryptor) => encryptor.clone(),
+                None => FieldEncryptor::from_base64_key(effective_key)?,
+            })
         };
+
         if auth_required
-            && (settings.encryption_key.is_empty()
+            && (effective_key.is_empty()
                 || feishu_app_id.trim().is_empty()
                 || (settings.feishu_app_secret.is_empty()
                     && feishu_app_secret.is_none_or(|value| value.trim().is_empty())))
@@ -827,19 +828,46 @@ impl SqliteStore {
                 "启用账户登录前，必须先设置数据库加密密钥、飞书 App ID 和 App Secret".to_string(),
             );
         }
-        let conn = self.connect()?;
+        let key_rotated = requested_key.is_some() && settings.encryption_key != effective_key;
+        if let Some(new_encryptor) = requested_encryptor.as_ref() {
+            rotate_database_encryption_key(
+                &transaction,
+                &settings.encryption_key,
+                effective_key,
+                new_encryptor,
+            )?;
+        }
         let app_secret = match feishu_app_secret.filter(|value| !value.trim().is_empty()) {
-            Some(value) => encryptor.expect("encryptor exists").encrypt(value)?,
+            Some(value) => effective_encryptor
+                .as_ref()
+                .ok_or_else(|| "尚未设置数据库加密密钥；请先在管理员设置中完成配置".to_string())?
+                .encrypt(value)?,
+            None if key_rotated => transaction
+                .query_row(
+                    "SELECT COALESCE(feishu_app_secret, '') FROM gateway_state WHERE id = 1",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|err| format!("load rotated Feishu App Secret failed: {err}"))?,
             None => settings.feishu_app_secret,
         };
-        conn.execute(
-            "UPDATE gateway_state
-             SET feishu_app_id = ?1, feishu_app_secret = ?2, auth_required = ?3
+        transaction
+            .execute(
+                "UPDATE gateway_state
+             SET database_encryption_key = ?1, feishu_app_id = ?2, feishu_app_secret = ?3,
+                 auth_required = ?4
              WHERE id = 1",
-            params![feishu_app_id.trim(), app_secret, i64::from(auth_required)],
-        )
-        .map_err(|err| format!("save database security settings failed: {err}"))?;
-        Ok(())
+                params![
+                    effective_key,
+                    feishu_app_id.trim(),
+                    app_secret,
+                    i64::from(auth_required)
+                ],
+            )
+            .map_err(|err| format!("save database security settings failed: {err}"))?;
+        transaction
+            .commit()
+            .map_err(|err| format!("commit database security settings transaction failed: {err}"))
     }
 
     pub(crate) fn encryption(&self) -> Result<FieldEncryptor, String> {
@@ -993,8 +1021,17 @@ impl SqliteStore {
             "gateway_state",
             "auth_required INTEGER NOT NULL DEFAULT 0",
         )?;
-        conn.execute("INSERT OR IGNORE INTO gateway_state (id) VALUES (1)", [])
+        let created_gateway_state = conn
+            .execute("INSERT OR IGNORE INTO gateway_state (id) VALUES (1)", [])
             .map_err(|err| format!("initialize gateway state failed: {err}"))?;
+        if created_gateway_state == 1 {
+            let key = FieldEncryptor::generate_base64_key()?;
+            conn.execute(
+                "UPDATE gateway_state SET database_encryption_key = ?1 WHERE id = 1",
+                params![key],
+            )
+            .map_err(|err| format!("initialize database encryption key failed: {err}"))?;
+        }
         add_column_if_missing(
             &conn,
             "providers",
@@ -1019,6 +1056,135 @@ impl SqliteStore {
             .map_err(|err| format!("configure sqlite connection failed: {err}"))?;
         Ok(conn)
     }
+}
+
+fn database_security_settings_from(
+    transaction: &Transaction<'_>,
+) -> Result<DatabaseSecuritySettings, String> {
+    transaction
+        .query_row(
+            "SELECT COALESCE(database_encryption_key, ''), COALESCE(feishu_app_id, ''),
+                    COALESCE(feishu_app_secret, ''), auth_required
+             FROM gateway_state WHERE id = 1",
+            [],
+            |row| {
+                Ok(DatabaseSecuritySettings {
+                    encryption_key: row.get(0)?,
+                    feishu_app_id: row.get(1)?,
+                    feishu_app_secret: row.get(2)?,
+                    auth_required: row.get::<_, i64>(3)? != 0,
+                })
+            },
+        )
+        .map_err(|err| format!("load database security settings failed: {err}"))
+}
+
+fn rotate_database_encryption_key(
+    transaction: &Transaction<'_>,
+    current_key: &str,
+    new_key: &str,
+    new_encryptor: &FieldEncryptor,
+) -> Result<(), String> {
+    if !current_key.is_empty() && current_key != new_key {
+        let current_encryptor = FieldEncryptor::from_base64_key(current_key)?;
+        reencrypt_column(
+            transaction,
+            "accounts",
+            "access_token",
+            "rotate account access tokens",
+            &current_encryptor,
+            new_encryptor,
+        )?;
+        reencrypt_column(
+            transaction,
+            "accounts",
+            "refresh_token",
+            "rotate account refresh tokens",
+            &current_encryptor,
+            new_encryptor,
+        )?;
+        reencrypt_column(
+            transaction,
+            "providers",
+            "api_key",
+            "rotate provider API keys",
+            &current_encryptor,
+            new_encryptor,
+        )?;
+        reencrypt_column(
+            transaction,
+            "gateway_state",
+            "feishu_app_secret",
+            "rotate Feishu App Secret",
+            &current_encryptor,
+            new_encryptor,
+        )?;
+        let has_access_tokens: bool = transaction
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM sqlite_master
+                    WHERE type = 'table' AND name = 'gateway_access_tokens'
+                )",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|err| format!("check gateway access token table failed: {err}"))?;
+        if has_access_tokens {
+            reencrypt_column(
+                transaction,
+                "gateway_access_tokens",
+                "token_ciphertext",
+                "rotate gateway access tokens",
+                &current_encryptor,
+                new_encryptor,
+            )?;
+        }
+    }
+    transaction
+        .execute(
+            "UPDATE gateway_state SET database_encryption_key = ?1 WHERE id = 1",
+            params![new_key],
+        )
+        .map_err(|err| format!("save database encryption key failed: {err}"))?;
+    Ok(())
+}
+
+fn reencrypt_column(
+    transaction: &Transaction<'_>,
+    table: &str,
+    column: &str,
+    operation: &str,
+    current_encryptor: &FieldEncryptor,
+    new_encryptor: &FieldEncryptor,
+) -> Result<(), String> {
+    let select = format!(
+        "SELECT rowid, {column} FROM {table} WHERE {column} IS NOT NULL AND {column} <> ''"
+    );
+    let values = {
+        let mut statement = transaction
+            .prepare(&select)
+            .map_err(|err| format!("{operation}: prepare query failed: {err}"))?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|err| format!("{operation}: query failed: {err}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|err| format!("{operation}: read values failed: {err}"))?
+    };
+    let update = format!("UPDATE {table} SET {column} = ?1 WHERE rowid = ?2");
+    for (rowid, ciphertext) in values {
+        let plaintext = current_encryptor
+            .decrypt(&ciphertext)
+            .map_err(|err| format!("{operation}: {err}"))?;
+        let ciphertext = new_encryptor
+            .encrypt(&plaintext)
+            .map_err(|err| format!("{operation}: {err}"))?;
+        transaction
+            .execute(&update, params![ciphertext, rowid])
+            .map_err(|err| format!("{operation}: save value failed: {err}"))?;
+    }
+    Ok(())
 }
 
 fn add_column_if_missing(conn: &Connection, table: &str, definition: &str) -> Result<(), String> {
@@ -1222,11 +1388,14 @@ fn decrypt_conversion_error(error: String) -> rusqlite::Error {
 #[cfg(test)]
 mod tests {
     use super::SqliteStore;
-    use crate::models::{
-        AccountRecord, AccountType, ApiProviderRecord, CachedProviderModels, ProviderAuthMode,
-        ProviderCompatibilityProfile, ProviderUpstreamProtocol, SelectedRoute,
+    use crate::{
+        crypto::FieldEncryptor,
+        models::{
+            AccountRecord, AccountType, ApiProviderRecord, CachedProviderModels, ProviderAuthMode,
+            ProviderCompatibilityProfile, ProviderUpstreamProtocol, SelectedRoute,
+        },
     };
-    use rusqlite::Connection;
+    use rusqlite::{Connection, params};
     use std::{
         fs,
         path::PathBuf,
@@ -1365,6 +1534,137 @@ mod tests {
         assert_eq!(loaded_account.access_token, account.access_token);
         assert_eq!(loaded_account.refresh_token, account.refresh_token);
         assert_eq!(store.load_providers().unwrap()[0].api_key, "sk-test");
+
+        let _ = fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn changing_database_encryption_key_reencrypts_all_credentials() {
+        const NEW_KEY: &str = "ZmVkY2JhOTg3NjU0MzIxMGZlZGNiYTk4NzY1NDMyMTA=";
+
+        let db_path = unique_test_db_path("rotate-encryption-key");
+        let store = SqliteStore::for_test(db_path.clone()).expect("create encrypted database");
+        let account = AccountRecord {
+            id: "account-1".to_string(),
+            account_type: AccountType::Openai,
+            email: "account@example.com".to_string(),
+            access_token: "access-secret".to_string(),
+            refresh_token: "refresh-secret".to_string(),
+            expiry_timestamp: 1,
+            client_id: None,
+            upstream_account_id: None,
+            owner_user_id: None,
+        };
+        store.upsert_account(&account).expect("save account");
+        store
+            .upsert_provider(&api_provider("provider-1"))
+            .expect("save provider");
+        store
+            .initialize_user_auth_schema()
+            .expect("initialize auth tables");
+        store
+            .update_database_security_settings(None, "cli_test", Some("app-secret"), false)
+            .expect("save Feishu credentials");
+
+        let old_encryptor = store.encryption().expect("load old encryptor");
+        let conn = Connection::open(&db_path).expect("open encrypted database");
+        conn.execute(
+            "INSERT INTO gateway_users (email, name, password_hash) VALUES (?1, ?2, ?3)",
+            params!["user@example.com", "User", ""],
+        )
+        .expect("create gateway user");
+        conn.execute(
+            "INSERT INTO gateway_access_tokens (token_hash, token_ciphertext, user_id)
+             VALUES (?1, ?2, ?3)",
+            params![
+                "token-hash",
+                old_encryptor
+                    .encrypt("gateway-token")
+                    .expect("encrypt token"),
+                1
+            ],
+        )
+        .expect("save gateway access token");
+        let before: Vec<String> = conn
+            .prepare(
+                "SELECT access_token FROM accounts
+                 UNION ALL SELECT refresh_token FROM accounts
+                 UNION ALL SELECT api_key FROM providers
+                 UNION ALL SELECT feishu_app_secret FROM gateway_state
+                 UNION ALL SELECT token_ciphertext FROM gateway_access_tokens",
+            )
+            .expect("prepare ciphertext query")
+            .query_map([], |row| row.get(0))
+            .expect("query ciphertext")
+            .collect::<Result<_, _>>()
+            .expect("read ciphertext");
+
+        store
+            .update_database_security_settings(Some(NEW_KEY), "cli_test", None, false)
+            .expect("rotate encryption key");
+
+        let rotated_account = store.load_accounts().unwrap().remove(0);
+        assert_eq!(rotated_account.access_token, account.access_token);
+        assert_eq!(rotated_account.refresh_token, account.refresh_token);
+        assert_eq!(store.load_providers().unwrap()[0].api_key, "sk-test");
+        let settings = store
+            .database_security_settings()
+            .expect("load security settings");
+        assert_eq!(settings.encryption_key, NEW_KEY);
+        let new_encryptor = FieldEncryptor::from_base64_key(NEW_KEY).expect("new encryptor");
+        assert_eq!(
+            new_encryptor
+                .decrypt(&settings.feishu_app_secret)
+                .expect("decrypt Feishu secret"),
+            "app-secret"
+        );
+        let token_ciphertext: String = conn
+            .query_row(
+                "SELECT token_ciphertext FROM gateway_access_tokens WHERE user_id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("load gateway token");
+        assert_eq!(
+            new_encryptor
+                .decrypt(&token_ciphertext)
+                .expect("decrypt gateway token"),
+            "gateway-token"
+        );
+
+        let after: Vec<String> = conn
+            .prepare(
+                "SELECT access_token FROM accounts
+                 UNION ALL SELECT refresh_token FROM accounts
+                 UNION ALL SELECT api_key FROM providers
+                 UNION ALL SELECT feishu_app_secret FROM gateway_state
+                 UNION ALL SELECT token_ciphertext FROM gateway_access_tokens",
+            )
+            .expect("prepare rotated ciphertext query")
+            .query_map([], |row| row.get(0))
+            .expect("query rotated ciphertext")
+            .collect::<Result<_, _>>()
+            .expect("read rotated ciphertext");
+        assert_ne!(before, after);
+        assert!(old_encryptor.decrypt(&after[0]).is_err());
+
+        let _ = fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn initializes_new_databases_with_a_generated_encryption_key() {
+        let db_path = unique_test_db_path("generated-encryption-key");
+        let store = SqliteStore {
+            db_path: db_path.clone(),
+        };
+
+        store.init().expect("initialize database");
+
+        let settings = store
+            .database_security_settings()
+            .expect("load security settings");
+        assert!(!settings.encryption_key.is_empty());
+        assert!(FieldEncryptor::from_base64_key(&settings.encryption_key).is_ok());
 
         let _ = fs::remove_file(db_path);
     }

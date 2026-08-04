@@ -2,7 +2,10 @@ use aes_gcm::{
     Aes256Gcm, Nonce,
     aead::{Aead, KeyInit, consts::U12},
 };
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use base64::{
+    Engine as _,
+    engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
+};
 
 const ENCRYPTED_VALUE_PREFIX: &str = "aigw:v1:";
 const NONCE_LENGTH: usize = 12;
@@ -24,6 +27,14 @@ impl std::fmt::Debug for FieldEncryptor {
 }
 
 impl FieldEncryptor {
+    /// Generates a Base64-encoded 32-byte AES-256-GCM key, equivalent to
+    /// `openssl rand -base64 32`.
+    pub fn generate_base64_key() -> Result<String, String> {
+        let mut key = [0_u8; KEY_LENGTH];
+        getrandom::fill(&mut key).map_err(|_| "generate database encryption key failed")?;
+        Ok(STANDARD.encode(key))
+    }
+
     pub fn from_base64_key(encoded_key: &str) -> Result<Self, String> {
         let key = URL_SAFE_NO_PAD
             .decode(encoded_key.trim())
@@ -123,5 +134,11 @@ mod tests {
         encrypted.replace_range(ciphertext_start..ciphertext_start + 1, replacement);
 
         assert!(encryptor.decrypt(&encrypted).is_err());
+    }
+
+    #[test]
+    fn generates_valid_database_encryption_keys() {
+        let key = FieldEncryptor::generate_base64_key().expect("generate key");
+        assert!(FieldEncryptor::from_base64_key(&key).is_ok());
     }
 }

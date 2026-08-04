@@ -70,7 +70,6 @@ export const gatewayApi = {
   securitySettings: () => request<SecuritySettings>("/settings/security"),
 
   setSecuritySettings(settings: {
-    encryption_key?: string;
     feishu_app_id: string;
     feishu_app_secret?: string;
     auth_required: boolean;
@@ -78,6 +77,12 @@ export const gatewayApi = {
     return request<SecuritySettings>("/settings/security", {
       method: "PUT",
       body: JSON.stringify(settings),
+    });
+  },
+
+  regenerateDatabaseEncryptionKey() {
+    return request<SecuritySettings>("/settings/security/encryption-key/regenerate", {
+      method: "POST",
     });
   },
 

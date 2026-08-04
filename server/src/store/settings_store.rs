@@ -74,6 +74,12 @@ impl SettingsStore {
         self.security_settings()
     }
 
+    pub fn regenerate_database_encryption_key(&self) -> Result<SecuritySettings, String> {
+        let key = crate::crypto::FieldEncryptor::generate_base64_key()?;
+        self.sqlite.set_database_encryption_key(&key)?;
+        self.security_settings()
+    }
+
     pub fn instance_auto_routing_settings(
         &self,
         instance_id: &str,
@@ -172,6 +178,39 @@ mod tests {
 
         store.set_auto_routing_settings(&settings).unwrap();
         assert_eq!(store.auto_routing_settings().unwrap(), settings);
+    }
+
+    #[test]
+    fn regenerates_encryption_key_and_preserves_security_settings() {
+        let sqlite = SqliteStore::for_test(unique_test_db_path("regenerate-encryption-key"))
+            .expect("create settings database");
+        sqlite
+            .update_database_security_settings(None, "cli_test", Some("app-secret"), true)
+            .expect("save security settings");
+        let store = SettingsStore { sqlite };
+        let old_key = store
+            .sqlite
+            .database_security_settings()
+            .expect("load old security settings")
+            .encryption_key;
+
+        let settings = store
+            .regenerate_database_encryption_key()
+            .expect("regenerate key");
+
+        let new_key = store
+            .sqlite
+            .database_security_settings()
+            .expect("load new security settings")
+            .encryption_key;
+        assert_ne!(old_key, new_key);
+        assert_eq!(settings.feishu_app_id, "cli_test");
+        assert!(settings.feishu_app_secret_configured);
+        assert!(settings.auth_required);
+        assert_eq!(
+            store.feishu_credentials().expect("decrypt credentials"),
+            ("cli_test".to_string(), "app-secret".to_string())
+        );
     }
 
     fn unique_test_db_path(prefix: &str) -> PathBuf {
