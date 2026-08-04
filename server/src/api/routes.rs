@@ -1,19 +1,19 @@
 use crate::{
     api::handlers::{
-        add_group_member, add_provider, cancel_openai_device_login, clear_codex_client_version,
-        clear_gateway_issues, clear_selected_model, clear_selected_reasoning_effort, create_group,
-        delete_group_member, delete_instance, delete_provider, get_auto_routing_settings,
-        get_codex_client_version, get_feishu_app_secret, get_gateway_issue_repair_prompt,
-        get_group, get_instance_routing_config, get_provider_quota, get_route,
-        get_security_settings, get_selected_model, get_selected_reasoning_effort, healthz,
-        import_openai_token, list_daily_usage, list_gateway_issues, list_groups,
-        list_instance_routing_configs, list_models, list_models_for_instance,
-        list_observability_users, list_providers, list_turn_logs, list_usage_summary,
-        list_user_search, poll_openai_device_login, regenerate_database_encryption_key, responses,
-        responses_for_instance, run_model_benchmark, set_auto_routing_settings,
-        set_codex_client_version, set_instance_routing_config, set_route, set_security_settings,
-        set_selected_model, set_selected_reasoning_effort, share_group_provider,
-        start_openai_device_login, unshare_group_provider,
+        add_group_member, add_provider, admin_create_user, admin_delete_user, admin_list_users,
+        cancel_openai_device_login, clear_codex_client_version, clear_gateway_issues,
+        clear_selected_model, clear_selected_reasoning_effort, create_group, delete_group_member,
+        delete_instance, delete_provider, get_auto_routing_settings, get_codex_client_version,
+        get_feishu_app_secret, get_gateway_issue_repair_prompt, get_group,
+        get_instance_routing_config, get_provider_quota, get_route, get_security_settings,
+        get_selected_model, get_selected_reasoning_effort, healthz, import_openai_token,
+        list_daily_usage, list_gateway_issues, list_groups, list_instance_routing_configs,
+        list_models, list_models_for_instance, list_observability_users, list_providers,
+        list_turn_logs, list_usage_summary, list_user_search, poll_openai_device_login,
+        regenerate_database_encryption_key, responses, responses_for_instance, run_model_benchmark,
+        set_auto_routing_settings, set_codex_client_version, set_instance_routing_config,
+        set_route, set_security_settings, set_selected_model, set_selected_reasoning_effort,
+        share_group_provider, start_openai_device_login, unshare_group_provider,
     },
     auth::{self, require_auth},
     codex_scripts,
@@ -58,6 +58,8 @@ pub fn build_router(state: AppState, web_dir: PathBuf) -> Router {
         )
         .route("/users/search", get(list_user_search))
         .route("/observability/users", get(list_observability_users))
+        .route("/users", get(admin_list_users).post(admin_create_user))
+        .route("/users/:user_id", delete(admin_delete_user))
         .route("/benchmarks/models", post(run_model_benchmark))
         .route(
             "/settings/codex-client-version",
@@ -121,6 +123,7 @@ pub fn build_router(state: AppState, web_dir: PathBuf) -> Router {
         .route("/auth/status", get(auth::auth_status))
         .route("/auth/feishu/authorize", get(auth::feishu_authorize))
         .route("/auth/feishu/callback", get(auth::feishu_callback))
+        .route("/auth/login", post(auth::email_login))
         .route("/auth/me", get(auth::me))
         .route("/auth/logout", post(auth::logout))
         .with_state(state.auth.clone());

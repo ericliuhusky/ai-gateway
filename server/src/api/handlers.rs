@@ -1102,6 +1102,57 @@ pub async fn list_observability_users(
     Ok(Json(json!({ "users": users })))
 }
 
+#[derive(Debug, Deserialize)]
+pub struct CreateManagedUserRequest {
+    pub email: String,
+    pub name: String,
+    pub role: String,
+    pub password: String,
+}
+
+pub async fn admin_list_users(
+    State(state): State<AppState>,
+    Extension(scope): Extension<RequestScope>,
+) -> Result<Json<Value>, AppError> {
+    require_admin(&scope)?;
+    let users = state.auth.list_users().map_err(AppError::internal)?;
+    Ok(Json(json!({ "users": users })))
+}
+
+pub async fn admin_create_user(
+    State(state): State<AppState>,
+    Extension(scope): Extension<RequestScope>,
+    Json(request): Json<CreateManagedUserRequest>,
+) -> Result<Json<Value>, AppError> {
+    require_admin(&scope)?;
+    let auth = state.auth.clone();
+    let user = tokio::task::spawn_blocking(move || {
+        auth.create_user(
+            &request.email,
+            &request.name,
+            &request.role,
+            &request.password,
+        )
+    })
+    .await
+    .map_err(|error| AppError::internal(format!("等待密码哈希任务失败：{error}")))?
+    .map_err(AppError::bad_request)?;
+    Ok(Json(json!({ "user": user })))
+}
+
+pub async fn admin_delete_user(
+    State(state): State<AppState>,
+    Extension(scope): Extension<RequestScope>,
+    AxumPath(user_id): AxumPath<i64>,
+) -> Result<Json<Value>, AppError> {
+    require_admin(&scope)?;
+    let deleted = state
+        .auth
+        .delete_user(user_id)
+        .map_err(AppError::internal)?;
+    Ok(Json(json!({ "deleted": deleted, "user_id": user_id })))
+}
+
 pub async fn list_groups(
     State(state): State<AppState>,
     Extension(scope): Extension<RequestScope>,

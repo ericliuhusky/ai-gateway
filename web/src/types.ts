@@ -24,6 +24,15 @@ export interface GatewayUser {
   role?: "admin" | "user";
 }
 
+export interface ManagedUser {
+  id: number;
+  email: string;
+  name: string;
+  avatar_url: string;
+  role: "admin" | "user";
+  has_password: boolean;
+}
+
 export interface GatewayGroup {
   id: number;
   name: string;

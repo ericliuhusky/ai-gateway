@@ -21,6 +21,7 @@ import type {
   GatewayGroup,
   GatewayGroupDetail,
   GatewayUser,
+  ManagedUser,
 } from "./types";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -166,6 +167,22 @@ export const gatewayApi = {
   async observabilityUsers() {
     const payload = await request<{ users: GatewayUser[] }>("/observability/users");
     return payload.users;
+  },
+
+  async adminUsers() {
+    const payload = await request<{ users: ManagedUser[] }>("/users");
+    return payload.users;
+  },
+
+  createManagedUser(input: { email: string; name: string; role: "admin" | "user"; password: string }) {
+    return request<{ user: ManagedUser }>("/users", {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+  },
+
+  deleteManagedUser(userId: number) {
+    return request<{ deleted: boolean; user_id: number }>(`/users/${userId}`, { method: "DELETE" });
   },
 
   usageSummary(period: "total" | "today" | "week", providerId?: string) {
@@ -348,6 +365,11 @@ export const authApi = {
   status: () => request<{ mode: "disabled" | "required"; feishu_login_configured: boolean }>("/auth/status"),
   me: () => request<{ ok: true; user: GatewayUser }>("/auth/me"),
   logout: () => request<{ ok: true }>("/auth/logout", { method: "POST" }),
+  loginEmail: (email: string, password: string) =>
+    request<{ ok: true; user: GatewayUser }>("/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ email, password }),
+    }),
   gatewayAccessToken: () => request<{ access_token: string }>("/auth/access-tokens"),
   regenerateAccessToken: () => request<{ access_token: string }>("/auth/access-tokens", { method: "POST" }),
 };

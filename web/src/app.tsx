@@ -59,6 +59,7 @@ import type {
   GatewayGroup,
   GatewayGroupDetail,
   GatewayUser,
+  ManagedUser,
 } from "./types";
 
 type Dialog = "provider" | "instances" | "scripts" | null;
@@ -3236,7 +3237,68 @@ function AdminSettingsPage({
   const credentialSaveTimer = React.useRef<number | null>(null);
   const securitySavingRef = React.useRef(false);
 
+  const [users, setUsers] = React.useState<ManagedUser[]>([]);
+  const [userEmail, setUserEmail] = React.useState("");
+  const [userName, setUserName] = React.useState("");
+  const [userRole, setUserRole] = React.useState<"admin" | "user">("user");
+  const [userPassword, setUserPassword] = React.useState("");
+  const [creatingUser, setCreatingUser] = React.useState(false);
+  const [createdUserNote, setCreatedUserNote] = React.useState<string | null>(null);
+  const [deletingUser, setDeletingUser] = React.useState<Set<number>>(new Set());
+
+  const loadUsers = React.useCallback(async () => {
+    try {
+      const list = await gatewayApi.adminUsers();
+      setUsers(list);
+    } catch (loadError) {
+      onError(errorMessage(loadError));
+    }
+  }, [onError]);
+
+  async function createUser(event: React.FormEvent) {
+    event.preventDefault();
+    if (creatingUser) return;
+    if (!userEmail.trim() || !userName.trim() || !userPassword) return;
+    setCreatingUser(true);
+    setCreatedUserNote(null);
+    try {
+      const { user } = await gatewayApi.createManagedUser({
+        email: userEmail.trim(),
+        name: userName.trim(),
+        role: userRole,
+        password: userPassword,
+      });
+      setUserEmail("");
+      setUserName("");
+      setUserPassword("");
+      setUserRole("user");
+      setCreatedUserNote(`已创建账号 ${user.email}`);
+      await loadUsers();
+    } catch (createError) {
+      onError(errorMessage(createError));
+    } finally {
+      setCreatingUser(false);
+    }
+  }
+
+  async function deleteUser(userId: number) {
+    setDeletingUser((current) => new Set(current).add(userId));
+    try {
+      await gatewayApi.deleteManagedUser(userId);
+      setUsers((current) => current.filter((item) => item.id !== userId));
+    } catch (deleteError) {
+      onError(errorMessage(deleteError));
+    } finally {
+      setDeletingUser((current) => {
+        const next = new Set(current);
+        next.delete(userId);
+        return next;
+      });
+    }
+  }
+
   React.useEffect(() => {
+    void loadUsers();
     void gatewayApi
       .codexClientVersion()
       .then((value) => {
@@ -3425,7 +3487,7 @@ function AdminSettingsPage({
     <SettingsPageFrame
       title="管理员设置"
       description="集中管理网关配置。后续管理员设置会继续添加到此标签页。"
-      tabs={["安全与登录", "Codex 版本"]}
+      tabs={["安全与登录", "Codex 版本", "用户管理"]}
     >
       <section className="mb-10">
         <div className="mb-4">
@@ -3551,6 +3613,124 @@ function AdminSettingsPage({
             </div>
           </div>
         )}
+      </section>
+      <section className="mb-10">
+        <div className="mb-4">
+          <h2 className="text-base font-bold">用户管理</h2>
+          <p className="mt-1 text-xs leading-5 text-slate-400">
+            管理员可手动创建账号（邮箱 + 密码）用于调试，或为没有飞书的成员开通登录。
+          </p>
+        </div>
+
+        <form onSubmit={createUser} className="rounded-2xl border border-white/65 bg-white/45 p-4 dark:border-white/8 dark:bg-white/[0.035]">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <FormField label="邮箱">
+              <input
+                className="field w-full text-sm"
+                type="email"
+                value={userEmail}
+                placeholder="name@example.com"
+                autoComplete="off"
+                disabled={creatingUser}
+                onChange={(event) => setUserEmail(event.target.value)}
+              />
+            </FormField>
+            <FormField label="姓名">
+              <input
+                className="field w-full text-sm"
+                value={userName}
+                placeholder="显示名称"
+                autoComplete="off"
+                disabled={creatingUser}
+                onChange={(event) => setUserName(event.target.value)}
+              />
+            </FormField>
+            <FormField label="角色">
+              <select
+                className="field w-full text-sm"
+                value={userRole}
+                disabled={creatingUser}
+                onChange={(event) => setUserRole(event.target.value === "admin" ? "admin" : "user")}
+              >
+                <option value="user">成员（user）</option>
+                <option value="admin">管理员（admin）</option>
+              </select>
+            </FormField>
+            <FormField label="密码（至少 6 个字符）">
+              <input
+                className="field w-full text-sm"
+                type="password"
+                value={userPassword}
+                placeholder="初始密码"
+                autoComplete="off"
+                disabled={creatingUser}
+                onChange={(event) => setUserPassword(event.target.value)}
+              />
+            </FormField>
+          </div>
+          {createdUserNote ? (
+            <div className="mt-3 flex items-center gap-1.5 text-[11px] text-emerald-600 dark:text-emerald-300">
+              <CheckCircle2 className="size-3.5" />
+              {createdUserNote}
+            </div>
+          ) : null}
+          <div className="mt-4 flex flex-wrap justify-end gap-2">
+            <Button
+              type="submit"
+              disabled={creatingUser || !userEmail.trim() || !userName.trim() || !userPassword}
+            >
+              {creatingUser ? <LoaderCircle className="size-4 animate-spin" /> : <UserPlus className="size-4" />}
+              {creatingUser ? "正在创建" : "创建用户"}
+            </Button>
+          </div>
+        </form>
+
+        <div className="mt-4">
+          <div className="mb-1 text-[11px] font-bold text-slate-500 dark:text-slate-400">已有账号</div>
+          {users.length === 0 ? (
+            <div className="rounded-xl border border-white/65 bg-white/45 px-4 py-3 text-xs text-slate-400 dark:border-white/8 dark:bg-white/[0.035]">
+              暂无其他账号。
+            </div>
+          ) : (
+            <ul className="divide-y divide-slate-200/70 rounded-2xl border border-white/65 bg-white/45 dark:divide-white/8 dark:border-white/8 dark:bg-white/[0.035]">
+              {users.map((item) => (
+                <li key={item.id} className="flex items-center gap-3 px-4 py-3">
+                  <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-slate-900 text-xs font-bold text-white dark:bg-white dark:text-slate-950">
+                    {item.name.slice(0, 1).toUpperCase()}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="truncate text-sm font-semibold">{item.name}</span>
+                      <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${item.role === "admin" ? "bg-blue-500/10 text-blue-600 dark:text-blue-300" : "bg-slate-500/10 text-slate-500 dark:text-slate-300"}`}>
+                        {item.role === "admin" ? "管理员" : "成员"}
+                      </span>
+                      {!item.has_password ? (
+                        <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-bold text-amber-600 dark:text-amber-300">
+                          飞书账号
+                        </span>
+                      ) : (
+                        <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-bold text-emerald-600 dark:text-emerald-300">
+                          手动账号
+                        </span>
+                      )}
+                    </div>
+                    <div className="mt-0.5 truncate font-mono text-[11px] text-slate-400">{item.email}</div>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    disabled={deletingUser.has(item.id)}
+                    aria-label={`删除 ${item.name}`}
+                    onClick={() => void deleteUser(item.id)}
+                  >
+                    {deletingUser.has(item.id) ? <LoaderCircle className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
       </section>
       <section>
         <div className="mb-4">

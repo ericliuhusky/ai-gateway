@@ -18,7 +18,7 @@ use uuid::Uuid;
 
 use crate::{
     config::Config,
-    store::{SettingsStore, UserRole, UserStore},
+    store::{LoginIdentity, ManagedUser, SettingsStore, UserRole, UserStore},
 };
 
 const FEISHU_AUTHORIZE_URL: &str = "https://accounts.feishu.cn/open-apis/authen/v1/authorize";
@@ -67,6 +67,12 @@ pub struct AuthStatus {
 pub struct LoginResponse {
     pub ok: bool,
     pub user: PublicUser,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct EmailLoginRequest {
+    pub email: String,
+    pub password: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -172,6 +178,45 @@ impl AuthService {
         ))
     }
 
+    pub fn create_user(
+        &self,
+        email: &str,
+        name: &str,
+        role: &str,
+        password: &str,
+    ) -> Result<PublicUser, String> {
+        let role = match role {
+            "admin" => UserRole::Admin,
+            "user" => UserRole::User,
+            _ => return Err("角色只支持 admin 或 user".to_string()),
+        };
+        let user = self
+            .users
+            .create_managed_user(email, name, role, password)?;
+        Ok(PublicUser {
+            id: user.id,
+            name: name.trim().to_string(),
+            avatar_url: String::new(),
+            role: user.role.as_str().to_string(),
+        })
+    }
+
+    pub fn list_users(&self) -> Result<Vec<ManagedUser>, String> {
+        self.users.list_all_users()
+    }
+
+    pub fn delete_user(&self, user_id: i64) -> Result<(), String> {
+        self.users.delete_user(user_id)
+    }
+
+    pub fn verify_login(
+        &self,
+        email: &str,
+        password: &str,
+    ) -> Result<Option<LoginIdentity>, String> {
+        self.users.verify_login(email, password)
+    }
+
     pub fn user_from_headers(&self, headers: &HeaderMap) -> Result<Option<PublicUser>, String> {
         let Some(session_id) = cookie_value(headers, SESSION_COOKIE_NAME) else {
             return Ok(None);
@@ -186,7 +231,7 @@ impl AuthService {
         }
         self.users.touch_session(&session_id, now)?;
         self.users
-            .find_feishu_user_by_id(session.user_id)
+            .find_user_for_session(session.user_id)
             .map(|profile| {
                 profile.map(|profile| PublicUser {
                     id: profile.user.id,
@@ -388,6 +433,34 @@ pub async fn feishu_callback(
         .map_err(|_| AuthError::internal("生成 session Cookie 失败"))?;
     response.headers_mut().insert(header::SET_COOKIE, value);
     let _ = user;
+    Ok(response)
+}
+
+pub async fn email_login(
+    State(auth): State<AuthService>,
+    Json(request): Json<EmailLoginRequest>,
+) -> Result<Response, AuthError> {
+    let auth_for_verify = auth.clone();
+    let identity = tokio::task::spawn_blocking(move || {
+        auth_for_verify.verify_login(&request.email, &request.password)
+    })
+    .await
+    .map_err(|error| AuthError::internal(format!("等待密码验证任务失败：{error}")))?
+    .map_err(AuthError::internal)?
+    .ok_or_else(AuthError::unauthorized)?;
+    let session_id = auth
+        .create_session(identity.user.id)
+        .map_err(AuthError::internal)?;
+    let user = PublicUser {
+        id: identity.user.id,
+        name: identity.name,
+        avatar_url: String::new(),
+        role: identity.user.role.as_str().to_string(),
+    };
+    let mut response = Json(LoginResponse { ok: true, user }).into_response();
+    let value = HeaderValue::from_str(&auth.session_cookie_header(&session_id))
+        .map_err(|_| AuthError::internal("生成 session Cookie 失败"))?;
+    response.headers_mut().insert(header::SET_COOKIE, value);
     Ok(response)
 }
 
