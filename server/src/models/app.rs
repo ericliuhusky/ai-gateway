@@ -153,6 +153,11 @@ pub struct SecuritySettings {
     pub auth_required: bool,
 }
 
+#[derive(Debug, Serialize)]
+pub struct FeishuAppSecretResponse {
+    pub feishu_app_secret: String,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct UpdateSecuritySettingsRequest {
     #[serde(default)]

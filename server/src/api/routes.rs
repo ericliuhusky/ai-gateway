@@ -3,7 +3,8 @@ use crate::{
         add_provider, cancel_openai_device_login, clear_codex_client_version, clear_selected_model,
         clear_selected_reasoning_effort, delete_instance, delete_provider,
         get_auto_routing_settings, get_codex_client_version, get_instance_routing_config,
-        get_provider_quota, get_route, get_security_settings, get_selected_model,
+        get_feishu_app_secret, get_provider_quota, get_route, get_security_settings,
+        get_selected_model,
         get_selected_reasoning_effort, healthz, import_openai_token, list_instance_routing_configs,
         list_models, list_models_for_instance, list_providers, list_turn_logs,
         poll_openai_device_login, regenerate_database_encryption_key, responses,
@@ -49,6 +50,10 @@ pub fn build_router(state: AppState, web_dir: PathBuf) -> Router {
         .route(
             "/settings/security",
             get(get_security_settings).put(set_security_settings),
+        )
+        .route(
+            "/settings/security/feishu-app-secret",
+            get(get_feishu_app_secret),
         )
         .route(
             "/settings/security/encryption-key/regenerate",

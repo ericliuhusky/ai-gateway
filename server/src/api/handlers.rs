@@ -14,7 +14,8 @@ use crate::{
         ModelListResponse, OPENAI_ACCOUNT_PROVIDER_NAME, ProviderAuthMode,
         ProviderCompatibilityProfile, ProviderQuotaCredits, ProviderQuotaResponse,
         ProviderQuotaSnapshot, ProviderQuotaSummary, ProviderQuotaWindow, QuotaSource,
-        QuotaSupportStatus, RoutingModelTarget, SecuritySettings, SelectedRoute,
+        FeishuAppSecretResponse, QuotaSupportStatus, RoutingModelTarget, SecuritySettings,
+        SelectedRoute,
         TurnRouteLogUpdate, UpdateAutoRoutingSettingsRequest, UpdateCodexClientVersionRequest,
         UpdateInstanceRoutingConfigRequest, UpdateSecuritySettingsRequest,
         UpdateSelectedModelRequest, UpdateSelectedProviderRequest,
@@ -122,6 +123,18 @@ pub async fn get_security_settings(
 ) -> Result<Json<SecuritySettings>, AppError> {
     require_admin(&scope)?;
     security_settings(&state)
+}
+
+pub async fn get_feishu_app_secret(
+    State(state): State<AppState>,
+    Extension(scope): Extension<RequestScope>,
+) -> Result<Json<FeishuAppSecretResponse>, AppError> {
+    require_admin(&scope)?;
+    let (_, feishu_app_secret) = state
+        .settings
+        .feishu_credentials()
+        .map_err(AppError::internal)?;
+    Ok(Json(FeishuAppSecretResponse { feishu_app_secret }))
 }
 
 pub async fn set_security_settings(

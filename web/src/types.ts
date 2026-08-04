@@ -49,6 +49,10 @@ export interface SecuritySettings {
   auth_required: boolean;
 }
 
+export interface FeishuAppSecretResponse {
+  feishu_app_secret: string;
+}
+
 export interface InstanceRoutingConfig {
   instance_id: string;
   provider_id?: string;

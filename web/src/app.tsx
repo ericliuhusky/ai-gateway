@@ -2105,7 +2105,7 @@ function RegenerateEncryptionKeyDialog({
         <div className="rounded-2xl border border-amber-500/20 bg-amber-500/5 p-4 text-xs leading-5 text-amber-700 dark:text-amber-300">
           {configured
             ? "确认后会立即替换当前密钥，并在同一 SQLite 事务中重新加密全部已保存凭据。操作过程中请勿关闭或重启服务；任一记录处理失败时会自动回滚。"
-            : "确认后会立即生成并启用数据库加密密钥，无需再点击“保存安全设置”。"}
+            : "确认后会立即生成并启用数据库加密密钥。"}
         </div>
         <div className="flex justify-end gap-2">
           <Button type="button" variant="outline" disabled={submitting} onClick={onClose}>
@@ -2140,8 +2140,14 @@ function AdminSettingsPage({
   const [feishuAppSecret, setFeishuAppSecret] = React.useState("");
   const [authRequired, setAuthRequired] = React.useState(false);
   const [submitting, setSubmitting] = React.useState(false);
+  const [securitySaving, setSecuritySaving] = React.useState(false);
+  const [securitySaved, setSecuritySaved] = React.useState(false);
+  const [feishuAppSecretVisible, setFeishuAppSecretVisible] = React.useState(false);
+  const [revealingFeishuAppSecret, setRevealingFeishuAppSecret] = React.useState(false);
   const [showKeyConfirmation, setShowKeyConfirmation] = React.useState(false);
   const [regeneratingKey, setRegeneratingKey] = React.useState(false);
+  const credentialSaveTimer = React.useRef<number | null>(null);
+  const securitySavingRef = React.useRef(false);
 
   React.useEffect(() => {
     void gatewayApi
@@ -2161,6 +2167,12 @@ function AdminSettingsPage({
       .catch((loadError) => onError(errorMessage(loadError)));
   }, [onError]);
 
+  React.useEffect(() => () => {
+    if (credentialSaveTimer.current !== null) {
+      window.clearTimeout(credentialSaveTimer.current);
+    }
+  }, []);
+
   async function save(event: React.FormEvent) {
     event.preventDefault();
     if (!version.trim()) return;
@@ -2177,9 +2189,36 @@ function AdminSettingsPage({
     }
   }
 
-  async function saveSecurity(event: React.FormEvent) {
-    event.preventDefault();
-    setSubmitting(true);
+  function clearCredentialSaveTimer() {
+    if (credentialSaveTimer.current !== null) {
+      window.clearTimeout(credentialSaveTimer.current);
+      credentialSaveTimer.current = null;
+    }
+  }
+
+  function hasFeishuCredentials() {
+    return Boolean(
+      feishuAppId.trim()
+      && (feishuAppSecret.trim() || security?.feishu_app_secret_configured),
+    );
+  }
+
+  async function saveFeishuCredentials() {
+    if (
+      !security
+      || securitySavingRef.current
+      || !hasFeishuCredentials()
+      || (
+        feishuAppId.trim() === security.feishu_app_id
+        && !feishuAppSecret.trim()
+      )
+    ) {
+      return;
+    }
+
+    securitySavingRef.current = true;
+    setSecuritySaving(true);
+    setSecuritySaved(false);
     try {
       const value = await gatewayApi.setSecuritySettings({
         feishu_app_id: feishuAppId.trim(),
@@ -2188,14 +2227,82 @@ function AdminSettingsPage({
       });
       setSecurity(value);
       setFeishuAppSecret("");
+      setFeishuAppSecretVisible(false);
+      setFeishuAppId(value.feishu_app_id);
+      setAuthRequired(value.auth_required);
+      setSecuritySaved(true);
+      await onChanged();
+    } catch (saveError) {
+      setSecuritySaved(false);
+      onError(errorMessage(saveError));
+    } finally {
+      securitySavingRef.current = false;
+      setSecuritySaving(false);
+    }
+  }
+
+  function scheduleFeishuCredentialsSave() {
+    clearCredentialSaveTimer();
+    credentialSaveTimer.current = window.setTimeout(() => {
+      credentialSaveTimer.current = null;
+      void saveFeishuCredentials();
+    }, 150);
+  }
+
+  async function saveAuthRequired(nextAuthRequired: boolean) {
+    clearCredentialSaveTimer();
+    if (!security || securitySavingRef.current) return;
+    if (!hasFeishuCredentials()) {
+      onError("请先填写飞书 App ID 和飞书 App Secret，再切换账户登录模式");
+      return;
+    }
+
+    const previousAuthRequired = authRequired;
+    securitySavingRef.current = true;
+    setSecuritySaving(true);
+    setSecuritySaved(false);
+    setAuthRequired(nextAuthRequired);
+    try {
+      const value = await gatewayApi.setSecuritySettings({
+        feishu_app_id: feishuAppId.trim(),
+        feishu_app_secret: feishuAppSecret.trim() || undefined,
+        auth_required: nextAuthRequired,
+      });
+      setSecurity(value);
+      setFeishuAppSecret("");
+      setFeishuAppSecretVisible(false);
       setFeishuAppId(value.feishu_app_id);
       setAuthRequired(value.auth_required);
       await onChanged();
       window.location.reload();
     } catch (saveError) {
+      setAuthRequired(previousAuthRequired);
       onError(errorMessage(saveError));
     } finally {
-      setSubmitting(false);
+      securitySavingRef.current = false;
+      setSecuritySaving(false);
+    }
+  }
+
+  async function toggleFeishuAppSecretVisibility() {
+    if (feishuAppSecretVisible) {
+      setFeishuAppSecretVisible(false);
+      return;
+    }
+    if (feishuAppSecret.trim() || !security?.feishu_app_secret_configured) {
+      setFeishuAppSecretVisible(true);
+      return;
+    }
+
+    setRevealingFeishuAppSecret(true);
+    try {
+      const value = await gatewayApi.feishuAppSecret();
+      setFeishuAppSecret(value.feishu_app_secret);
+      setFeishuAppSecretVisible(true);
+    } catch (revealError) {
+      onError(errorMessage(revealError));
+    } finally {
+      setRevealingFeishuAppSecret(false);
     }
   }
 
@@ -2245,7 +2352,7 @@ function AdminSettingsPage({
             <LoaderCircle className="size-5 animate-spin text-slate-400" />
           </div>
         ) : (
-          <form onSubmit={saveSecurity} className="space-y-4">
+          <div className="space-y-4">
             <div className="grid gap-4 sm:grid-cols-2">
               <div>
                 <div className="mb-2 text-[11px] font-bold text-slate-500 dark:text-slate-400">数据库加密密钥</div>
@@ -2259,7 +2366,7 @@ function AdminSettingsPage({
                   <Button
                     type="button"
                     variant="outline"
-                    disabled={submitting || regeneratingKey}
+                    disabled={securitySaving || regeneratingKey}
                     onClick={() => setShowKeyConfirmation(true)}
                   >
                     <RefreshCw className="size-4" />
@@ -2270,25 +2377,59 @@ function AdminSettingsPage({
                   密钥只能由系统随机生成，不支持手动输入。重新生成后会立即替换密钥并重新加密已有凭据。
                 </p>
               </div>
-              <FormField label="飞书 App ID">
-                <input
-                  className="field w-full font-mono text-sm"
-                  value={feishuAppId}
-                  placeholder="cli_..."
-                  disabled={submitting}
-                  onChange={(event) => setFeishuAppId(event.target.value)}
-                />
-              </FormField>
             </div>
-            <FormField label={`飞书 App Secret${security.feishu_app_secret_configured ? "（已设置；留空不变）" : ""}`}>
+            <FormField label="飞书 App ID">
               <input
                 className="field w-full font-mono text-sm"
-                type="password"
-                value={feishuAppSecret}
-                placeholder={security.feishu_app_secret_configured ? "留空以保持当前值" : "App Secret"}
-                disabled={submitting}
-                onChange={(event) => setFeishuAppSecret(event.target.value)}
+                value={feishuAppId}
+                placeholder="cli_..."
+                disabled={securitySaving}
+                onChange={(event) => {
+                  clearCredentialSaveTimer();
+                  setSecuritySaved(false);
+                  setFeishuAppId(event.target.value);
+                }}
+                onBlur={scheduleFeishuCredentialsSave}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") event.currentTarget.blur();
+                }}
               />
+            </FormField>
+            <FormField label={`飞书 App Secret${security.feishu_app_secret_configured ? "（已设置；留空不变）" : ""}`}>
+              <div className="flex gap-2">
+                <input
+                  className="field min-w-0 flex-1 font-mono text-sm"
+                  type={feishuAppSecretVisible ? "text" : "password"}
+                  value={feishuAppSecret}
+                  placeholder={security.feishu_app_secret_configured ? "********" : "App Secret"}
+                  disabled={securitySaving || revealingFeishuAppSecret}
+                  onChange={(event) => {
+                    clearCredentialSaveTimer();
+                    setSecuritySaved(false);
+                    setFeishuAppSecret(event.target.value);
+                  }}
+                  onBlur={scheduleFeishuCredentialsSave}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") event.currentTarget.blur();
+                  }}
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  disabled={securitySaving || revealingFeishuAppSecret}
+                  aria-label={feishuAppSecretVisible ? "隐藏飞书 App Secret" : "显示飞书 App Secret"}
+                  onClick={() => void toggleFeishuAppSecretVisibility()}
+                >
+                  {revealingFeishuAppSecret ? (
+                    <LoaderCircle className="size-4 animate-spin" />
+                  ) : feishuAppSecretVisible ? (
+                    <EyeOff className="size-4" />
+                  ) : (
+                    <Eye className="size-4" />
+                  )}
+                </Button>
+              </div>
             </FormField>
             <label className="flex items-center justify-between gap-4 rounded-2xl border border-white/65 bg-white/45 p-4 dark:border-white/8 dark:bg-white/[0.035]">
               <span>
@@ -2299,17 +2440,29 @@ function AdminSettingsPage({
                 type="checkbox"
                 className="size-4"
                 checked={authRequired}
-                disabled={submitting}
-                onChange={(event) => setAuthRequired(event.target.checked)}
+                disabled={securitySaving}
+                onChange={(event) => void saveAuthRequired(event.target.checked)}
               />
             </label>
-            <div className="flex justify-end">
-              <Button type="submit" disabled={submitting}>
-                {submitting ? <LoaderCircle className="size-4 animate-spin" /> : <Check className="size-4" />}
-                {submitting ? "保存中" : "保存安全设置"}
-              </Button>
+            <div
+              className="flex min-h-5 items-center justify-end gap-1.5 text-[11px] text-slate-400"
+              aria-live="polite"
+            >
+              {securitySaving ? (
+                <>
+                  <LoaderCircle className="size-3.5 animate-spin" />
+                  正在自动保存
+                </>
+              ) : securitySaved ? (
+                <>
+                  <CheckCircle2 className="size-3.5 text-emerald-500" />
+                  已自动保存
+                </>
+              ) : (
+                "飞书凭据填写完成后会自动保存"
+              )}
             </div>
-          </form>
+          </div>
         )}
       </section>
       <section>

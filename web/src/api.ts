@@ -5,6 +5,7 @@ import type {
   GatewayCompatibilityProfile,
   GatewayModel,
   GatewayProvider,
+  FeishuAppSecretResponse,
   InstanceRoutingConfig,
   ProviderQuotaSummary,
   ReasoningEffort,
@@ -68,6 +69,9 @@ export const gatewayApi = {
   },
 
   securitySettings: () => request<SecuritySettings>("/settings/security"),
+
+  feishuAppSecret: () =>
+    request<FeishuAppSecretResponse>("/settings/security/feishu-app-secret"),
 
   setSecuritySettings(settings: {
     feishu_app_id: string;
