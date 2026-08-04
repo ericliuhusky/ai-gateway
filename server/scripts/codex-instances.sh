@@ -23,14 +23,6 @@ Usage:
   instances.sh list
   instances.sh path <name>
 
-Environment:
-  AI_GATEWAY_CODEX_INSTANCES_DIR  Profile root
-                                  (default: ~/.ai-gateway/codex-instances)
-  AI_GATEWAY_CODEX_TEMPLATE_HOME  Config template home
-                                  (default: ~/.codex)
-  CODEX_APP_PATH                  macOS app name/path passed to `open -a`
-                                  (default: ChatGPT)
-
 `create` creates and starts an isolated Codex window. It copies only the
 template config.toml, rewrites it for AI Gateway, and never copies auth.json.
 Sign in separately in each new window when you need different Codex accounts.
@@ -195,8 +187,8 @@ EOF
   mv "$temp_path" "$config_path"
 }
 
-instances_root=${AI_GATEWAY_CODEX_INSTANCES_DIR:-"$HOME/.ai-gateway/codex-instances"}
-template_home=${AI_GATEWAY_CODEX_TEMPLATE_HOME:-"$HOME/.codex"}
+instances_root="$HOME/.ai-gateway/codex-instances"
+template_home="$HOME/.codex"
 
 instance_dir() {
   printf '%s/%s' "$instances_root" "$1"
@@ -214,8 +206,7 @@ start_instance() {
 
   case "$(uname -s)" in
     Darwin)
-      app_path=${CODEX_APP_PATH:-ChatGPT}
-      open -n -a "$app_path" \
+      open -n -a ChatGPT \
         --env "CODEX_HOME=$codex_home" \
         --env "CODEX_ELECTRON_USER_DATA_PATH=$electron_home" \
         --args "--user-data-dir=$electron_home"

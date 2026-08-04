@@ -477,7 +477,7 @@ esac
 
 [ -n "${HOME:-}" ] || fail "缺少 HOME 环境变量"
 
-codex_dir=${CODEX_HOME:-"$HOME/.codex"}
+codex_dir="$HOME/.codex"
 config_path="$codex_dir/config.toml"
 lock_dir="$codex_dir/.ai-gateway-config.lock"
 temp_path=

@@ -95,7 +95,7 @@ mod tests {
         let test_dir = test_dir("instances");
         let home_dir = test_dir.join("home");
         let template_home = home_dir.join(".codex");
-        let instances_root = test_dir.join("instances");
+        let instances_root = home_dir.join(".ai-gateway/codex-instances");
         let bin_dir = test_dir.join("bin");
         let open_args_path = test_dir.join("open-args");
         fs::create_dir_all(template_home.join("skills")).expect("create template skills");
@@ -146,7 +146,6 @@ mod tests {
             ])
             .env("HOME", &home_dir)
             .env("PATH", &path)
-            .env("AI_GATEWAY_CODEX_INSTANCES_DIR", &instances_root)
             .env("AI_GATEWAY_TEST_OPEN_ARGS", &open_args_path)
             .output()
             .expect("run instances script");
@@ -182,7 +181,6 @@ mod tests {
             .args(["delete", "account-a"])
             .env("HOME", &home_dir)
             .env("PATH", &path)
-            .env("AI_GATEWAY_CODEX_INSTANCES_DIR", &instances_root)
             .output()
             .expect("delete isolated instance");
         assert!(
@@ -199,7 +197,7 @@ mod tests {
     #[test]
     fn restore_script_cleans_gateway_toml_configuration() {
         let test_dir = test_dir("restore-config");
-        let codex_dir = test_dir.join("codex");
+        let codex_dir = test_dir.join(".codex");
         fs::create_dir_all(&codex_dir).expect("create codex dir");
         fs::write(
             codex_dir.join("config.toml"),
@@ -220,7 +218,6 @@ mod tests {
         let output = Command::new("sh")
             .arg(&script_path)
             .env("HOME", &test_dir)
-            .env("CODEX_HOME", &codex_dir)
             .output()
             .expect("run restore script");
         assert!(
@@ -245,7 +242,7 @@ mod tests {
         }
 
         let test_dir = test_dir("history-aliases");
-        let codex_dir = test_dir.join("codex");
+        let codex_dir = test_dir.join(".codex");
         let sessions_dir = codex_dir.join("sessions/2026/07/29");
         fs::create_dir_all(&sessions_dir).expect("create sessions dir");
 
@@ -356,7 +353,6 @@ mod tests {
             .arg(script_path)
             .arg("https://gateway.example.com/openai/v1")
             .env("HOME", codex_dir.parent().expect("test home"))
-            .env("CODEX_HOME", codex_dir)
             .output()
             .expect("run setup script");
         assert!(
