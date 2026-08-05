@@ -120,7 +120,8 @@ curl -fsSL 'https://gateway.example.com/codex/setup.sh' |
 - 账户模式下备份原 `auth.json`，并将 Gateway API Key 写入 `OPENAI_API_KEY`
 - 为切换前 Provider 的现有任务创建 `ai-gateway` 历史别名
 - 首次同步前备份 `state_5.sqlite`，重复执行时复用已有别名
-- 使用临时文件原子替换配置
+- 比较现有配置与目标配置；一致时不重复写入，不一致时更新 `config.toml` 和账户模式凭据
+- 使用临时文件原子替换配置，并在配置发生变化后自动完全重启 Codex（macOS）
 - 执行完成后立即退出，不安装程序或启动后台服务
 
 清理默认 Codex 设置：

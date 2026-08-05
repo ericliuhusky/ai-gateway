@@ -67,6 +67,9 @@ mod tests {
         assert!(SETUP_SCRIPT.contains("state_5.sqlite"));
         assert!(SETUP_SCRIPT.contains("aliases.tsv"));
         assert!(SETUP_SCRIPT.contains("BEGIN IMMEDIATE;"));
+        assert!(SETUP_SCRIPT.contains("restart_codex"));
+        assert!(SETUP_SCRIPT.contains("cmp -s"));
+        assert!(SETUP_SCRIPT.contains("AI Gateway 设置与目标设置一致，无需更新"));
         assert!(!SETUP_SCRIPT.contains("codex-config.before-ai-gateway.toml"));
     }
 
@@ -124,7 +127,7 @@ mod tests {
         let fake_open = bin_dir.join("open");
         fs::write(
             &fake_open,
-            "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$AI_GATEWAY_TEST_OPEN_ARGS\"\n",
+            "#!/bin/sh\nscript_dir=$(CDPATH= cd -- \"$(dirname \"$0\")\" && pwd)\nprintf '%s\\n' \"$@\" > \"$script_dir/../open-args\"\n",
         )
         .expect("write fake open");
         for executable in [&fake_uname, &fake_open] {
@@ -151,7 +154,6 @@ mod tests {
             ])
             .env("HOME", &home_dir)
             .env("PATH", &path)
-            .env("AI_GATEWAY_TEST_OPEN_ARGS", &open_args_path)
             .output()
             .expect("run instances script");
         assert!(
@@ -256,6 +258,7 @@ mod tests {
 
         let setup_path = test_dir.join("setup.sh");
         fs::write(&setup_path, SETUP_SCRIPT).expect("write setup script");
+        let test_path = path_with_fake_uname(&test_dir, "TestOS");
         let setup = Command::new("sh")
             .arg(&setup_path)
             .args([
@@ -263,6 +266,7 @@ mod tests {
                 "agw_test_gateway_key",
             ])
             .env("HOME", &test_dir)
+            .env("PATH", &test_path)
             .output()
             .expect("run setup script");
         assert!(
@@ -278,6 +282,49 @@ mod tests {
             fs::read_to_string(codex_dir.join(".ai-gateway-auth.before-setup.json"))
                 .expect("read auth backup"),
             original_auth
+        );
+
+        let update = Command::new("sh")
+            .arg(&setup_path)
+            .args([
+                "https://gateway-two.example.com/openai/v1",
+                "agw_updated_gateway_key",
+            ])
+            .env("HOME", &test_dir)
+            .env("PATH", &test_path)
+            .output()
+            .expect("rerun setup script with changed settings");
+        assert!(
+            update.status.success(),
+            "updated setup script failed: {}",
+            String::from_utf8_lossy(&update.stderr)
+        );
+        assert!(String::from_utf8_lossy(&update.stdout).contains("AI Gateway 设置已更新"));
+        assert!(
+            fs::read_to_string(codex_dir.join("config.toml"))
+                .expect("read updated config")
+                .contains("base_url = \"https://gateway-two.example.com/openai/v1\"")
+        );
+        assert!(
+            fs::read_to_string(codex_dir.join("auth.json"))
+                .expect("read updated gateway auth")
+                .contains("\"OPENAI_API_KEY\": \"agw_updated_gateway_key\"")
+        );
+
+        let unchanged = Command::new("sh")
+            .arg(&setup_path)
+            .args([
+                "https://gateway-two.example.com/openai/v1",
+                "agw_updated_gateway_key",
+            ])
+            .env("HOME", &test_dir)
+            .env("PATH", &test_path)
+            .output()
+            .expect("rerun setup script with unchanged settings");
+        assert!(unchanged.status.success());
+        assert!(
+            String::from_utf8_lossy(&unchanged.stdout)
+                .contains("AI Gateway 设置与目标设置一致，无需更新")
         );
 
         let restore_path = test_dir.join("restore.sh");
@@ -305,6 +352,7 @@ mod tests {
         fs::remove_dir_all(test_dir).expect("remove test dir");
     }
 
+    #[cfg(unix)]
     #[test]
     fn setup_script_syncs_history_aliases_idempotently() {
         if Command::new("sqlite3").arg("--version").output().is_err() {
@@ -418,11 +466,14 @@ mod tests {
         fs::remove_dir_all(test_dir).expect("remove test dir");
     }
 
+    #[cfg(unix)]
     fn run_setup_script(script_path: &PathBuf, codex_dir: &PathBuf) {
+        let test_path = path_with_fake_uname(codex_dir.parent().expect("test home"), "TestOS");
         let output = Command::new("sh")
             .arg(script_path)
             .arg("https://gateway.example.com/openai/v1")
             .env("HOME", codex_dir.parent().expect("test home"))
+            .env("PATH", test_path)
             .output()
             .expect("run setup script");
         assert!(
@@ -441,5 +492,25 @@ mod tests {
             "ai-gateway-codex-script-{name}-{}-{nanos}",
             std::process::id()
         ))
+    }
+
+    #[cfg(unix)]
+    fn path_with_fake_uname(root: &std::path::Path, system_name: &str) -> String {
+        let bin_dir = root.join("test-bin");
+        fs::create_dir_all(&bin_dir).expect("create test bin");
+        let uname = bin_dir.join("uname");
+        fs::write(
+            &uname,
+            format!("#!/bin/sh\nprintf '%s\\n' '{system_name}'\n"),
+        )
+        .expect("write fake uname");
+        let mut permissions = fs::metadata(&uname).expect("read fake uname").permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&uname, permissions).expect("mark fake uname executable");
+        format!(
+            "{}:{}",
+            bin_dir.display(),
+            std::env::var("PATH").expect("PATH must be present")
+        )
     }
 }

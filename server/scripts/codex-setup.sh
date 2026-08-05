@@ -12,6 +12,44 @@ warn() {
   printf 'ai-gateway: 警告：%s\n' "$*" >&2
 }
 
+restart_codex() {
+  case "$(uname -s)" in
+    Darwin)
+      if [ ! -d "/Applications/ChatGPT.app" ]; then
+        warn "未找到 /Applications/ChatGPT.app，请手动完全退出并重新启动 Codex"
+        return 0
+      fi
+
+      if pgrep -x ChatGPT >/dev/null 2>&1; then
+        printf '%s\n' "正在完全退出 Codex…"
+        if ! osascript -e 'tell application "ChatGPT" to quit' >/dev/null 2>&1; then
+          warn "无法自动退出 Codex，请手动使用 Cmd+Q 完全退出后重启"
+          return 0
+        fi
+
+        attempts=0
+        while pgrep -x ChatGPT >/dev/null 2>&1 && [ "$attempts" -lt 10 ]; do
+          sleep 1
+          attempts=$((attempts + 1))
+        done
+        if pgrep -x ChatGPT >/dev/null 2>&1; then
+          warn "Codex 未在 10 秒内完全退出，请手动使用 Cmd+Q 完全退出后重启"
+          return 0
+        fi
+      fi
+
+      if open -a ChatGPT; then
+        printf '%s\n' "Codex 已重新启动，新认证信息将在新进程中生效。"
+      else
+        warn "无法自动启动 Codex，请手动打开 ChatGPT.app"
+      fi
+      ;;
+    *)
+      warn "当前系统不支持自动重启 Codex，请手动完全退出并重新启动"
+      ;;
+  esac
+}
+
 sql_escape() {
   awk -v value="$1" 'BEGIN {
     gsub(/\047/, "\047\047", value)
@@ -484,6 +522,7 @@ auth_backup_path="$codex_dir/.ai-gateway-auth.before-setup.json"
 auth_absent_marker="$codex_dir/.ai-gateway-auth.was-absent"
 lock_dir="$codex_dir/.ai-gateway-config.lock"
 temp_path=
+normalized_temp=
 auth_temp=
 history_dir=
 backup_temp=
@@ -493,6 +532,8 @@ pending_list=
 columns_list=
 mapping_temp=
 sql_path=
+config_changed=0
+auth_changed=0
 
 mkdir -p "$codex_dir"
 if ! mkdir "$lock_dir" 2>/dev/null; then
@@ -505,6 +546,9 @@ cleanup() {
   fi
   if [ -n "$auth_temp" ]; then
     rm -f "$auth_temp"
+  fi
+  if [ -n "$normalized_temp" ]; then
+    rm -f "$normalized_temp"
   fi
   for history_temp in "$backup_temp" "$rollout_temp" "$source_list" "$pending_list" "$columns_list" "$mapping_temp" "$sql_path"; do
     if [ -n "$history_temp" ]; then
@@ -605,6 +649,25 @@ END {
 }
 ' "$source_path" > "$temp_path"
 
+# Keep the generated provider block idempotent by removing blank lines left
+# behind when an existing ai-gateway block is replaced.
+normalized_temp="$codex_dir/.config.toml.ai-gateway-normalized.$$"
+awk '
+{
+  lines[NR] = $0
+  if ($0 !~ /^[[:space:]]*$/) {
+    last_nonblank = NR
+  }
+}
+END {
+  for (i = 1; i <= last_nonblank; i++) {
+    print lines[i]
+  }
+}
+' "$temp_path" > "$normalized_temp"
+mv "$normalized_temp" "$temp_path"
+normalized_temp=
+
 cat >> "$temp_path" <<EOF
 
 [model_providers.ai-gateway]
@@ -630,19 +693,39 @@ if [ -n "$gateway_access_token" ]; then
 fi
 
 chmod 600 "$temp_path"
-mv "$temp_path" "$config_path"
-temp_path=
+if [ -f "$config_path" ] && cmp -s "$temp_path" "$config_path"; then
+  rm -f "$temp_path"
+  temp_path=
+else
+  mv "$temp_path" "$config_path"
+  temp_path=
+  config_changed=1
+fi
 if [ -n "$auth_temp" ]; then
-  mv "$auth_temp" "$auth_path"
-  auth_temp=
+  if [ -f "$auth_path" ] && cmp -s "$auth_temp" "$auth_path"; then
+    rm -f "$auth_temp"
+    auth_temp=
+  else
+    mv "$auth_temp" "$auth_path"
+    auth_temp=
+    auth_changed=1
+  fi
 fi
 
 if ! sync_history_aliases "$previous_provider"; then
   warn "Codex 历史同步未完成，可稍后重新执行接入脚本重试"
 fi
 
-printf '%s\n' \
-  "AI Gateway 已写入 $config_path" \
-  "Gateway: $gateway_base_url" \
-  "原模型供应商已记录在 config.toml 注释中。" \
-  "请重新启动 Codex 或新建任务使配置生效。"
+if [ "$config_changed" -eq 0 ] && [ "$auth_changed" -eq 0 ]; then
+  printf '%s\n' \
+    "AI Gateway 设置与目标设置一致，无需更新。" \
+    "Gateway: $gateway_base_url"
+else
+  printf '%s\n' \
+    "AI Gateway 设置已更新。" \
+    "Gateway: $gateway_base_url" \
+    "config.toml 已更新：$config_changed" \
+    "auth.json 已更新：$auth_changed" \
+    "原模型供应商已记录在 config.toml 注释中。"
+  restart_codex
+fi

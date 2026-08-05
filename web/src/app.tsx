@@ -3105,7 +3105,7 @@ function CodexScriptsDialog({
       <div className="space-y-5">
         <div className="rounded-2xl border border-blue-500/15 bg-blue-500/5 p-4 text-xs leading-5 text-blue-700 dark:text-blue-300">
           {isDefault
-            ? <>设置脚本会修改 <code>~/.codex/config.toml</code> 并同步历史别名；清理脚本会还原原模型供应商，并移除 AI Gateway 写入的 TOML 配置。</>
+            ? <>设置脚本会比较并更新 <code>~/.codex/config.toml</code> 和账户模式凭据，设置变化后会自动完全重启 Codex；清理脚本会还原原模型供应商，并移除 AI Gateway 写入的配置。</>
             : <>新建脚本会创建独立的 <code>CODEX_HOME</code> 和 Electron 数据目录，请在新窗口中单独登录账号。清理脚本会删除该实例文件夹及其中的登录信息、会话和 Electron 数据。</>}
         </div>
         {tokenError ? (
