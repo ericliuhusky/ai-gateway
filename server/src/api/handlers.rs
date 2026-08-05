@@ -2435,6 +2435,12 @@ fn stored_instance_id(owner_user_id: Option<i64>, instance_id: Option<&str>) -> 
 
 fn external_instance_id(owner_user_id: Option<i64>, stored_id: &str) -> Option<String> {
     let Some(owner_user_id) = owner_user_id else {
+        // 全局/管理员作用域：内部按用户命名空间存储的网关
+        // （例如 __user_1__default 这类用户默认网关）属于具体用户，
+        // 不应在管理员实例列表里被当成“命名实例”暴露出来。
+        if stored_id.starts_with("__user_") {
+            return None;
+        }
         return (stored_id != "default").then(|| stored_id.to_string());
     };
     let prefix = format!("__user_{owner_user_id}__");
@@ -4466,6 +4472,31 @@ mod tests {
         assert_eq!(body["input"][0]["content"][0]["type"], "input_text");
         assert_eq!(body["input"][0]["content"][0]["text"], "classify");
         assert_eq!(body["reasoning"]["effort"], "medium");
+    }
+
+    #[test]
+    fn user_default_gateway_is_hidden_in_global_admin_instance_list() {
+        // 用户在 required 账户模式下，某个用户（id=1）的默认网关会以
+        // __user_1__default 的内部名称存储。
+        assert_eq!(
+            super::stored_instance_id(Some(1), None),
+            Some("__user_1__default".to_string())
+        );
+        // 同一个用户自己查看时，它显示成默认网关（被过滤掉，UI 用默认卡片表示）。
+        assert_eq!(super::external_instance_id(Some(1), "__user_1__default"), None);
+        // 但全局/本地管理员（无归属用户）列出实例时，不能再把它当作命名实例暴露。
+        assert_eq!(super::external_instance_id(None, "__user_1__default"), None);
+        assert_eq!(super::external_instance_id(None, "__user_2__default"), None);
+        // 其他用户命名空间下的命名实例同样不应在管理员列表中暴露。
+        assert_eq!(super::external_instance_id(None, "__user_2__account-a"), None);
+        // 非用户的全局命名实例仍可见（删除后不再是实例，default 仍代表全局默认）。
+        assert_eq!(super::external_instance_id(None, "account-a"), Some("account-a".to_string()));
+        assert_eq!(super::external_instance_id(None, "default"), None);
+        // 用户自己只能看到自己命名空间下的命名实例，并去掉前缀。
+        assert_eq!(
+            super::external_instance_id(Some(2), "__user_2__account-a"),
+            Some("account-a".to_string())
+        );
     }
 
     #[test]
