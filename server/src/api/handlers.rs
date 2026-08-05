@@ -59,6 +59,9 @@ use sha2::{Digest, Sha256};
 use std::{sync::Arc, time::Instant};
 use uuid::Uuid;
 
+const GATEWAY_ERROR_PREFIX: &str = "AI网关错误：";
+const UPSTREAM_ERROR_PREFIX: &str = "上游服务错误：";
+
 #[derive(Clone)]
 pub struct AppState {
     pub _client: Client,
@@ -200,7 +203,7 @@ pub async fn get_gateway_issue_repair_prompt(
         .issues
         .get_for_owner(owner_user_id, &issue_id)
         .map_err(AppError::internal)?
-        .ok_or_else(|| AppError::bad_request("gateway issue not found"))?;
+        .ok_or_else(|| AppError::bad_request("网关问题不存在"))?;
     Ok(Json(GatewayIssueRepairPromptResponse {
         prompt: gateway_issue_repair_prompt(&issue),
     }))
@@ -216,7 +219,7 @@ pub async fn run_model_benchmark(
 ) -> Result<Json<ModelBenchmarkResponse>, AppError> {
     let provider_id = request.provider_id.trim();
     let model = safe_model_name(&request.model)
-        .ok_or_else(|| AppError::bad_request("model must be 1-128 URL-safe characters"))?;
+        .ok_or_else(|| AppError::bad_request("模型名必须为 1-128 个 URL 安全字符"))?;
     let provider =
         resolve_provider_by_id_for_owner(&state, scope.owner_user_id, provider_id).await?;
 
@@ -224,7 +227,7 @@ pub async fn run_model_benchmark(
     if provider.auth_mode == ProviderAuthMode::Account && provider_uses_openai_account(&provider) {
         if !request.account_usage_confirmed {
             return Err(AppError::bad_request(
-                "account_usage_confirmed must be true to benchmark an account provider because it consumes account quota",
+                "账户供应商压测会消耗账户额度，必须将 account_usage_confirmed 设置为 true",
             ));
         }
         let account =
@@ -249,7 +252,7 @@ pub async fn run_model_benchmark(
         let record = provider
             .record
             .as_ref()
-            .ok_or_else(|| AppError::bad_request("benchmark provider could not be resolved"))?;
+            .ok_or_else(|| AppError::bad_request("无法解析压测供应商"))?;
         let builder = PublicOpenAiRequestBuilder {
             base_url: record.base_url.as_str(),
             api_key: record.api_key.as_str(),
@@ -1053,7 +1056,7 @@ fn device_login_failed_response(error: String) -> OpenAiDeviceLoginStatusRespons
         email: None,
         account_id: None,
         has_responses_write: None,
-        error: Some(error),
+        error: Some(format!("{UPSTREAM_ERROR_PREFIX}{error}")),
     }
 }
 
@@ -1286,7 +1289,7 @@ pub async fn get_provider_quota(
             .map_err(|err| AppError::upstream_message(err.to_string()))?;
         quota_from_openai_usage(payload)
     } else {
-        unsupported_quota_summary(format!("missing provider record for `{}`", provider.name))
+        unsupported_quota_summary(format!("供应商 `{}` 缺少供应商记录", provider.name))
     };
 
     Ok(Json(ProviderQuotaResponse {
@@ -1364,7 +1367,7 @@ pub async fn delete_provider(
         .providers
         .find_by_id_for_owner(scope.owner_user_id, &provider_id)
         .await
-        .ok_or_else(|| AppError::bad_request(format!("unknown provider_id: {provider_id}")))?;
+        .ok_or_else(|| AppError::bad_request(format!("未知的 provider_id: {provider_id}")))?;
     state
         .settings
         .clear_auto_routing_provider(&provider_id)
@@ -1472,7 +1475,7 @@ pub async fn set_selected_model(
     let models = load_provider_models(&state, scope.owner_user_id, &provider, false).await?;
     if !models.data.iter().any(|item| item.id == model) {
         return Err(AppError::bad_request(format!(
-            "model `{model}` is not available for selected provider `{}`",
+            "模型 `{model}` 不可用于所选供应商 `{}`",
             provider.name
         )));
     }
@@ -1567,9 +1570,7 @@ pub async fn delete_instance(
 ) -> Result<Json<Value>, AppError> {
     let instance_id = normalize_instance_id(&instance_id)?;
     if instance_id == "default" {
-        return Err(AppError::bad_request(
-            "the default instance cannot be deleted",
-        ));
+        return Err(AppError::bad_request("默认实例不可删除"));
     }
     let deleted = state
         .routes
@@ -1579,9 +1580,7 @@ pub async fn delete_instance(
         )
         .map_err(AppError::internal)?;
     if !deleted {
-        return Err(AppError::bad_request(format!(
-            "unknown instance: {instance_id}"
-        )));
+        return Err(AppError::bad_request(format!("未知实例: {instance_id}")));
     }
     Ok(Json(json!({ "deleted_instance": instance_id })))
 }
@@ -1651,13 +1650,13 @@ pub async fn set_instance_routing_config(
         .map(normalize_selected_model)
         .transpose()?;
     if let Some(model) = selected_model.as_deref() {
-        let provider = provider.as_ref().ok_or_else(|| {
-            AppError::bad_request("a provider is required when a fixed model is selected")
-        })?;
+        let provider = provider
+            .as_ref()
+            .ok_or_else(|| AppError::bad_request("选择固定模型时必须指定供应商"))?;
         let models = load_provider_models(&state, scope.owner_user_id, &provider, false).await?;
         if !models.data.iter().any(|item| item.id == model) {
             return Err(AppError::bad_request(format!(
-                "model `{model}` is not available for provider `{}`",
+                "模型 `{model}` 不可用于供应商 `{}`",
                 provider.name
             )));
         }
@@ -1719,7 +1718,7 @@ pub async fn responses(
     body: Bytes,
 ) -> Result<Response, AppError> {
     let raw_body = std::str::from_utf8(&body)
-        .map_err(|_| AppError::bad_request("request body must be valid UTF-8"))?
+        .map_err(|_| AppError::bad_request("请求体必须是有效的 UTF-8"))?
         .to_owned();
     responses_inner_for_instance(
         state,
@@ -1740,7 +1739,7 @@ pub async fn responses_for_instance(
 ) -> Result<Response, AppError> {
     let instance_id = normalize_instance_id(&instance_id)?;
     let raw_body = std::str::from_utf8(&body)
-        .map_err(|_| AppError::bad_request("request body must be valid UTF-8"))?
+        .map_err(|_| AppError::bad_request("请求体必须是有效的 UTF-8"))?
         .to_owned();
     responses_inner_for_instance(
         state,
@@ -1776,7 +1775,7 @@ async fn responses_inner_for_instance(
         None => None,
     };
     let mut request_json: Value = serde_json::from_str(&raw_body)
-        .map_err(|err| AppError::bad_request(format!("invalid request JSON: {err}")))?;
+        .map_err(|err| AppError::bad_request(format!("无效的请求 JSON: {err}")))?;
     let request_stream = responses_request_stream(&request_json);
     let requested_model = responses_request_model(&request_json)
         .unwrap_or_default()
@@ -1959,10 +1958,31 @@ where
             false,
         );
         record_usage_from_json_bytes(&state.usage, &attribution, &response_bytes);
+        let response_bytes = if upstream_status.is_success() {
+            response_bytes.to_vec()
+        } else {
+            decorate_upstream_error_body(&response_bytes, response_is_stream)
+        };
         return build_passthrough_response(
             upstream_status,
             &upstream_headers,
             Body::from(response_bytes),
+        );
+    }
+
+    if !upstream_status.is_success() {
+        let response_bytes = upstream.bytes().await.map_err(AppError::upstream)?;
+        record_upstream_http_issue_if_failed(
+            &state.issues,
+            &failure_context,
+            upstream_status,
+            &String::from_utf8_lossy(&response_bytes),
+            false,
+        );
+        return build_passthrough_response(
+            upstream_status,
+            &upstream_headers,
+            Body::from(decorate_upstream_error_body(&response_bytes, true)),
         );
     }
 
@@ -2047,11 +2067,11 @@ impl GatewayFailureContext {
                 .record
                 .as_ref()
                 .map(|record| record.id.clone())
-                .unwrap_or_else(|| "unknown".to_string()),
+                .unwrap_or_else(|| "未知".to_string()),
             provider_name: provider.name.clone(),
             model: responses_request_model(request)
                 .and_then(safe_model_name)
-                .unwrap_or_else(|| "unknown".to_string()),
+                .unwrap_or_else(|| "未知".to_string()),
             upstream_url: String::new(),
             request_body,
             request_truncated,
@@ -2111,7 +2131,7 @@ fn record_gateway_issue(
         created_at: now_unix() as i64,
     };
     if let Err(error) = store.record(&issue) {
-        eprintln!("record gateway issue failed: {error}");
+        eprintln!("{GATEWAY_ERROR_PREFIX}记录网关问题失败：{error}");
     }
 }
 
@@ -2184,10 +2204,10 @@ impl UsageAttribution {
                 .record
                 .as_ref()
                 .map(|record| record.id.clone())
-                .unwrap_or_else(|| "unknown".to_string()),
+                .unwrap_or_else(|| "未知".to_string()),
             model: responses_request_model(request)
                 .and_then(safe_model_name)
-                .unwrap_or_else(|| "unknown".to_string()),
+                .unwrap_or_else(|| "未知".to_string()),
         }
     }
 }
@@ -2244,7 +2264,7 @@ fn record_usage_from_json(
         usage,
         timestamp: now_unix() as i64,
     }) {
-        eprintln!("record token usage failed: {error}");
+        eprintln!("{GATEWAY_ERROR_PREFIX}记录 Token 用量失败：{error}");
         return false;
     }
     true
@@ -2307,7 +2327,7 @@ fn no_provider_selected_error(instance_id: Option<&str>) -> AppError {
     let endpoint = instance_id
         .map(|id| format!("PUT /instances/{id}/config"))
         .unwrap_or_else(|| "PUT /selected-provider".to_string());
-    AppError::bad_request(format!("no provider selected; call {endpoint} first"))
+    AppError::bad_request(format!("尚未选择供应商；请先调用 {endpoint}"))
 }
 
 async fn route_for_instance(
@@ -2521,13 +2541,11 @@ async fn choose_model_for_request(
     if !settings.enabled {
         if let Some(model) = route.selected_model.as_deref() {
             let provider_id = provider
-                .ok_or_else(|| {
-                    AppError::bad_request("a provider is required when a fixed model is selected")
-                })?
+                .ok_or_else(|| AppError::bad_request("选择固定模型时必须指定供应商"))?
                 .record
                 .as_ref()
                 .map(|record| record.id.clone())
-                .ok_or_else(|| AppError::internal("selected provider record missing"))?;
+                .ok_or_else(|| AppError::internal("所选供应商记录缺失"))?;
             return Ok(RoutingDecision::selected_model(RoutingModelTarget {
                 provider_id,
                 model: model.to_string(),
@@ -2694,7 +2712,7 @@ fn record_turn_route(
         .map(|target| target.model.as_str())
         .or((!requested_model.is_empty()).then_some(requested_model))
         .and_then(safe_model_name)
-        .unwrap_or_else(|| "unknown".to_string());
+        .unwrap_or_else(|| "未知".to_string());
     let _ = state.turn_logs.record_for_owner(
         owner_user_id,
         &TurnRouteLogUpdate {
@@ -2777,7 +2795,7 @@ async fn invoke_routing_classifier(
         let raw_response = response
             .text()
             .await
-            .map_err(|err| format!("read routing classifier stream failed: {err}"))?;
+            .map_err(|err| format!("读取路由分类器流式响应失败：{err}"))?;
         return Ok(RoutingClassifierResponse {
             request_body,
             response: json!({
@@ -2788,12 +2806,10 @@ async fn invoke_routing_classifier(
         });
     }
 
-    let record = provider.record.as_ref().ok_or_else(|| {
-        format!(
-            "routing classifier cannot resolve provider `{}`",
-            provider.name
-        )
-    })?;
+    let record = provider
+        .record
+        .as_ref()
+        .ok_or_else(|| format!("路由分类器无法解析供应商 `{}`", provider.name))?;
     let public = PublicOpenAiRequestBuilder {
         base_url: record.base_url.as_str(),
         api_key: record.api_key.as_str(),
@@ -2823,9 +2839,9 @@ async fn invoke_routing_classifier(
         .await?
         .text()
         .await
-        .map_err(|err| format!("read routing classifier response failed: {err}"))?;
+        .map_err(|err| format!("读取路由分类器响应失败：{err}"))?;
     let response = serde_json::from_str(&response_body)
-        .map_err(|err| format!("parse routing classifier response failed: {err}"))?;
+        .map_err(|err| format!("解析路由分类器响应失败：{err}"))?;
     Ok(RoutingClassifierResponse {
         request_body: body,
         response,
@@ -2975,6 +2991,96 @@ fn build_passthrough_response(
         .map_err(|err| AppError::internal(err.to_string()))
 }
 
+fn decorate_upstream_error_body(body: &[u8], stream_response: bool) -> Vec<u8> {
+    let text = String::from_utf8_lossy(body);
+    if stream_response {
+        let mut output = String::with_capacity(text.len() + UPSTREAM_ERROR_PREFIX.len());
+        for frame in text.split_inclusive("\n\n") {
+            output.push_str(&decorate_upstream_sse_frame(frame));
+        }
+        return output.into_bytes();
+    }
+
+    let Ok(mut payload) = serde_json::from_slice::<Value>(body) else {
+        return format!("{UPSTREAM_ERROR_PREFIX}{text}").into_bytes();
+    };
+
+    if let Some(message) = payload
+        .get_mut("error")
+        .and_then(Value::as_object_mut)
+        .and_then(|error| error.get_mut("message"))
+        .and_then(|value| value.as_str())
+        .map(str::to_string)
+    {
+        if let Some(error) = payload.get_mut("error").and_then(Value::as_object_mut) {
+            error.insert(
+                "message".to_string(),
+                Value::String(format!("{UPSTREAM_ERROR_PREFIX}{message}")),
+            );
+        }
+    } else if let Some(message) = payload
+        .get("error")
+        .and_then(|value| value.as_str())
+        .map(str::to_string)
+    {
+        payload["error"] = Value::String(format!("{UPSTREAM_ERROR_PREFIX}{message}"));
+    } else if let Some(message) = payload
+        .get("message")
+        .and_then(|value| value.as_str())
+        .map(str::to_string)
+    {
+        payload["message"] = Value::String(format!("{UPSTREAM_ERROR_PREFIX}{message}"));
+    } else {
+        return format!("{UPSTREAM_ERROR_PREFIX}{text}").into_bytes();
+    }
+
+    serde_json::to_vec(&payload)
+        .unwrap_or_else(|_| format!("{UPSTREAM_ERROR_PREFIX}{text}").into_bytes())
+}
+
+fn decorate_upstream_sse_frame(frame: &str) -> String {
+    let mut output = String::with_capacity(frame.len() + UPSTREAM_ERROR_PREFIX.len());
+    let mut changed = false;
+    for line in frame.split_inclusive('\n') {
+        if let Some(data) = line.strip_prefix("data:") {
+            let newline = if line.ends_with('\n') { "\n" } else { "" };
+            let data = data.trim_end_matches('\n').trim_start();
+            if let Ok(mut payload) = serde_json::from_str::<Value>(data) {
+                if let Some(message) = payload
+                    .get_mut("error")
+                    .and_then(Value::as_object_mut)
+                    .and_then(|error| error.get_mut("message"))
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string)
+                {
+                    if let Some(error) = payload.get_mut("error").and_then(Value::as_object_mut) {
+                        error.insert(
+                            "message".to_string(),
+                            Value::String(format!("{UPSTREAM_ERROR_PREFIX}{message}")),
+                        );
+                    }
+                    output.push_str("data: ");
+                    output.push_str(
+                        &serde_json::to_string(&payload).unwrap_or_else(|_| data.to_string()),
+                    );
+                    output.push_str(newline);
+                    changed = true;
+                    continue;
+                }
+            }
+            if data != "[DONE]" {
+                output.push_str("data: ");
+                output.push_str(&format!("{UPSTREAM_ERROR_PREFIX}{data}"));
+                output.push_str(newline);
+                changed = true;
+                continue;
+            }
+        }
+        output.push_str(line);
+    }
+    if changed { output } else { frame.to_string() }
+}
+
 async fn fetch_provider_models(
     state: &AppState,
     owner_user_id: Option<i64>,
@@ -3003,7 +3109,7 @@ async fn fetch_provider_models(
         }
 
         return Err(AppError::bad_request(format!(
-            "account auth provider is not supported yet: {}",
+            "账户认证供应商 `{}` 暂不支持",
             provider.name
         )));
     }
@@ -3011,7 +3117,7 @@ async fn fetch_provider_models(
     let native_provider = provider
         .record
         .as_ref()
-        .ok_or_else(|| AppError::bad_request(format!("unknown provider: {}", provider.name)))?;
+        .ok_or_else(|| AppError::bad_request(format!("未知供应商: {}", provider.name)))?;
     let public_models = PublicOpenAiRequestBuilder {
         base_url: native_provider.base_url.as_str(),
         api_key: native_provider.api_key.as_str(),
@@ -3036,9 +3142,7 @@ async fn load_provider_models(
         .as_ref()
         .map(|record| record.id.as_str())
         .or(provider.account_id.as_deref())
-        .ok_or_else(|| {
-            AppError::bad_request(format!("provider cache key missing: {}", provider.name))
-        })?;
+        .ok_or_else(|| AppError::bad_request(format!("供应商缓存键缺失: {}", provider.name)))?;
 
     if !force_refresh {
         if let Some(cached) = state.models.load(provider_id).map_err(AppError::internal)? {
@@ -3068,7 +3172,8 @@ fn require_admin(scope: &RequestScope) -> Result<(), AppError> {
     } else {
         Err(AppError {
             status: StatusCode::FORBIDDEN,
-            message: "administrator access is required".to_string(),
+            message: "需要管理员权限".to_string(),
+            source: AppErrorSource::Gateway,
         })
     }
 }
@@ -3105,7 +3210,7 @@ fn security_settings(state: &AppState) -> Result<Json<SecuritySettings>, AppErro
 fn normalize_codex_client_version(version: String) -> Result<String, AppError> {
     let version = version.trim();
     if version.is_empty() {
-        return Err(AppError::bad_request("client version cannot be empty"));
+        return Err(AppError::bad_request("客户端版本不能为空"));
     }
     if version.len() > 64
         || !version
@@ -3141,7 +3246,7 @@ fn normalize_auto_routing_settings(
         .any(|target| target.is_none())
     {
         return Err(AppError::bad_request(
-            "light, standard, pro, and max are required when automatic routing is enabled",
+            "启用自动路由时必须配置低、中、高、极高四档模型",
         ));
     }
     Ok(settings)
@@ -3227,20 +3332,19 @@ fn normalize_instance_id(value: &str) -> Result<String, AppError> {
             .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '-'))
     {
         return Err(AppError::bad_request(
-            "instance id must be 1-64 ASCII letters, numbers, `_`, or `-`",
+            "实例 ID 必须为 1-64 个 ASCII 字母、数字、`_` 或 `-`",
         ));
     }
     Ok(value.to_string())
 }
 
 fn normalize_selected_provider_id(provider_id: Option<String>) -> Result<String, AppError> {
-    let provider_id = provider_id.ok_or_else(|| {
-        AppError::bad_request("provider_id is required; automatic routing has been removed")
-    })?;
+    let provider_id =
+        provider_id.ok_or_else(|| AppError::bad_request("必须提供 provider_id；自动路由已移除"))?;
     let trimmed = provider_id.trim();
     if trimmed.is_empty() {
         return Err(AppError::bad_request(
-            "provider_id cannot be empty; automatic routing has been removed",
+            "provider_id 不能为空；自动路由已移除",
         ));
     }
     Ok(trimmed.to_string())
@@ -3256,7 +3360,7 @@ fn normalize_optional_provider_id(provider_id: Option<String>) -> Option<String>
 fn normalize_selected_model(model: String) -> Result<String, AppError> {
     let trimmed = model.trim();
     if trimmed.is_empty() {
-        return Err(AppError::bad_request("model cannot be empty"));
+        return Err(AppError::bad_request("模型不能为空"));
     }
     Ok(trimmed.to_string())
 }
@@ -3267,7 +3371,7 @@ fn normalize_selected_reasoning_effort(effort: String) -> Result<String, AppErro
         return Ok(effort.to_string());
     }
     Err(AppError::bad_request(
-        "reasoning effort must be one of: low, medium, high, xhigh",
+        "推理强度必须是以下值之一：low、medium、high、xhigh",
     ))
 }
 
@@ -3280,7 +3384,7 @@ fn native_models_response(_provider: &str, raw: &Value) -> Result<ModelListRespo
         array.iter().collect()
     } else {
         return Err(AppError::upstream_message(
-            "native models payload missing `data` or `models` array",
+            "原生模型响应缺少 `data` 或 `models` 数组",
         ));
     };
 
@@ -3307,7 +3411,7 @@ fn openai_models_response(_provider: &str, raw: &Value) -> Result<ModelListRespo
     let entries = raw
         .get("models")
         .and_then(Value::as_array)
-        .ok_or_else(|| AppError::upstream_message("openai models payload missing `models`"))?;
+        .ok_or_else(|| AppError::upstream_message("OpenAI 模型响应缺少 `models` 数组"))?;
 
     let mut data = Vec::with_capacity(entries.len());
     for entry in entries {
@@ -3433,7 +3537,7 @@ async fn resolve_provider_by_id(
         .providers
         .find_by_id(provider_id)
         .await
-        .ok_or_else(|| AppError::bad_request(format!("unknown provider_id: {provider_id}")))?;
+        .ok_or_else(|| AppError::bad_request(format!("未知的 provider_id: {provider_id}")))?;
     Ok(resolved_provider_from_record(record))
 }
 
@@ -3456,7 +3560,7 @@ async fn resolve_provider_by_id_for_owner(
                 .await
         }
     }
-    .ok_or_else(|| AppError::bad_request(format!("unknown provider_id: {provider_id}")))?;
+    .ok_or_else(|| AppError::bad_request(format!("未知的 provider_id: {provider_id}")))?;
     Ok(resolved_provider_from_record(record))
 }
 
@@ -3480,7 +3584,7 @@ pub(super) async fn resolve_account_for_provider(
         .filter(|value| !value.is_empty())
         .ok_or_else(|| {
             AppError::bad_request(format!(
-                "account auth provider `{}` is missing account_id; bind an account first",
+                "账户认证供应商 `{}` 缺少 account_id；请先绑定账户",
                 provider.name
             ))
         })?;
@@ -3504,7 +3608,7 @@ async fn resolve_account_for_provider_for_owner(
         .filter(|value| !value.is_empty())
         .ok_or_else(|| {
             AppError::bad_request(format!(
-                "account auth provider `{}` is missing account_id; bind an account first",
+                "账户认证供应商 `{}` 缺少 account_id；请先绑定账户",
                 provider.name
             ))
         })?;
@@ -3563,7 +3667,7 @@ async fn provider_summary_for_resolved(
     let record = provider
         .record
         .clone()
-        .ok_or_else(|| AppError::bad_request(format!("unknown provider: {}", provider.name)))?;
+        .ok_or_else(|| AppError::bad_request(format!("未知供应商: {}", provider.name)))?;
     let mut summary = ApiProviderSummary {
         id: record.id.clone(),
         name: record.name.clone(),
@@ -3587,7 +3691,7 @@ async fn provider_summary_for_resolved_for_owner(
     let record = provider
         .record
         .clone()
-        .ok_or_else(|| AppError::bad_request(format!("unknown provider: {}", provider.name)))?;
+        .ok_or_else(|| AppError::bad_request(format!("未知供应商: {}", provider.name)))?;
     let mut summary = ApiProviderSummary {
         id: record.id.clone(),
         name: record.name.clone(),
@@ -3752,6 +3856,13 @@ fn sse_payload_from_frame(frame: &str) -> Option<String> {
 pub struct AppError {
     pub(super) status: StatusCode,
     pub(super) message: String,
+    source: AppErrorSource,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum AppErrorSource {
+    Gateway,
+    Upstream,
 }
 
 impl AppError {
@@ -3759,6 +3870,7 @@ impl AppError {
         Self {
             status: StatusCode::BAD_REQUEST,
             message: message.into(),
+            source: AppErrorSource::Gateway,
         }
     }
 
@@ -3766,6 +3878,7 @@ impl AppError {
         Self {
             status: StatusCode::BAD_GATEWAY,
             message: error.to_string(),
+            source: AppErrorSource::Upstream,
         }
     }
 
@@ -3773,6 +3886,7 @@ impl AppError {
         Self {
             status: StatusCode::BAD_GATEWAY,
             message: message.into(),
+            source: AppErrorSource::Upstream,
         }
     }
 
@@ -3780,6 +3894,7 @@ impl AppError {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             message: message.into(),
+            source: AppErrorSource::Gateway,
         }
     }
 }
@@ -3796,7 +3911,10 @@ impl IntoResponse for AppError {
             self.status,
             Json(json!({
                 "error": {
-                    "message": self.message,
+                    "message": match self.source {
+                        AppErrorSource::Gateway => format!("{GATEWAY_ERROR_PREFIX}{}", self.message),
+                        AppErrorSource::Upstream => format!("{UPSTREAM_ERROR_PREFIX}{}", self.message),
+                    },
                     "type": "proxy_error"
                 }
             })),
@@ -3811,8 +3929,9 @@ mod tests {
         AppState, BenchmarkEventKind, BenchmarkStreamAccumulator, GatewayFailureContext,
         ResolvedProvider, append_issue_response_bytes, apply_gateway_overrides_to_raw_request,
         classifier_response_preview, classifier_text_from_response, classifier_text_from_sse,
-        codex_turn_metadata, delete_provider, gateway_issue_repair_prompt, opaque_turn_id,
-        openai_models_response, private_classifier_request_body, provider_uses_openai_account,
+        codex_turn_metadata, decorate_upstream_error_body, delete_provider,
+        gateway_issue_repair_prompt, opaque_turn_id, openai_models_response,
+        private_classifier_request_body, provider_uses_openai_account,
         public_benchmark_request_body, quota_from_openai_usage, reasoning_effort_for_routing,
         record_upstream_http_issue_if_failed, token_usage_from_response, turn_context_from_request,
     };
@@ -3844,6 +3963,28 @@ mod tests {
         sync::Arc,
         time::{SystemTime, UNIX_EPOCH},
     };
+
+    #[test]
+    fn prefixes_non_streaming_upstream_errors() {
+        let body = br#"{"error":{"message":"invalid api key","type":"invalid_request_error"}}"#;
+        let decorated = String::from_utf8(decorate_upstream_error_body(body, false)).unwrap();
+
+        assert!(decorated.contains("上游服务错误：invalid api key"));
+        assert!(decorated.contains("invalid_request_error"));
+    }
+
+    #[test]
+    fn prefixes_streaming_upstream_errors_without_corrupting_sse() {
+        let body = br#"event: error
+data: {"error":{"message":"rate limit exceeded"}}
+
+"#;
+        let decorated = String::from_utf8(decorate_upstream_error_body(body, true)).unwrap();
+
+        assert!(decorated.starts_with("event: error\n"));
+        assert!(decorated.contains("上游服务错误：rate limit exceeded"));
+        assert!(decorated.ends_with("\n\n"));
+    }
 
     #[test]
     fn repair_prompt_marks_gateway_payloads_as_untrusted_evidence() {
@@ -4483,14 +4624,23 @@ mod tests {
             Some("__user_1__default".to_string())
         );
         // 同一个用户自己查看时，它显示成默认网关（被过滤掉，UI 用默认卡片表示）。
-        assert_eq!(super::external_instance_id(Some(1), "__user_1__default"), None);
+        assert_eq!(
+            super::external_instance_id(Some(1), "__user_1__default"),
+            None
+        );
         // 但全局/本地管理员（无归属用户）列出实例时，不能再把它当作命名实例暴露。
         assert_eq!(super::external_instance_id(None, "__user_1__default"), None);
         assert_eq!(super::external_instance_id(None, "__user_2__default"), None);
         // 其他用户命名空间下的命名实例同样不应在管理员列表中暴露。
-        assert_eq!(super::external_instance_id(None, "__user_2__account-a"), None);
+        assert_eq!(
+            super::external_instance_id(None, "__user_2__account-a"),
+            None
+        );
         // 非用户的全局命名实例仍可见（删除后不再是实例，default 仍代表全局默认）。
-        assert_eq!(super::external_instance_id(None, "account-a"), Some("account-a".to_string()));
+        assert_eq!(
+            super::external_instance_id(None, "account-a"),
+            Some("account-a".to_string())
+        );
         assert_eq!(super::external_instance_id(None, "default"), None);
         // 用户自己只能看到自己命名空间下的命名实例，并去掉前缀。
         assert_eq!(

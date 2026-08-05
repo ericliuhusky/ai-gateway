@@ -62,6 +62,9 @@ import type {
   ManagedUser,
 } from "./types";
 
+const GATEWAY_ERROR_PREFIX = "AI网关错误：";
+const UPSTREAM_ERROR_PREFIX = "上游服务错误：";
+
 type Dialog = "provider" | "instances" | "scripts" | null;
 type Page = "overview" | "groups" | "usage" | "benchmark" | "routing" | "issues" | "account" | "admin";
 
@@ -109,7 +112,10 @@ type ErrorMap = Record<string, string | undefined>;
 type UsagePeriod = "total" | "today" | "week";
 
 function errorMessage(error: unknown) {
-  return error instanceof Error ? error.message : String(error);
+  const message = error instanceof Error ? error.message : String(error);
+  return message.startsWith(GATEWAY_ERROR_PREFIX) || message.startsWith(UPSTREAM_ERROR_PREFIX)
+    ? message
+    : `${GATEWAY_ERROR_PREFIX}${message}`;
 }
 
 function hasTokenPair(value: unknown): boolean {
@@ -2713,7 +2719,7 @@ function AccountProviderForm({
           }
           if (result.status === "failed") {
             setLoginState("failed");
-            setLoginError(result.error ?? "账户登录失败");
+            setLoginError(result.error ? errorMessage(result.error) : `${GATEWAY_ERROR_PREFIX}账户登录失败`);
             return;
           }
           if (result.status === "completed") {
@@ -2760,7 +2766,7 @@ function AccountProviderForm({
         <div className="space-y-4">
           {loginState === "failed" ? (
             <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-600 dark:border-red-500/20 dark:bg-red-500/10 dark:text-red-300">
-              <div>{loginError ?? "无法创建账户登录。"}</div>
+              <div>{loginError ?? `${GATEWAY_ERROR_PREFIX}无法创建账户登录。`}</div>
               <Button className="mt-3" variant="outline" size="sm" onClick={() => {
                 setDeviceLogin(null);
                 setLoginState("idle");
@@ -3402,7 +3408,7 @@ function AdminSettingsPage({
     clearCredentialSaveTimer();
     if (!security || securitySavingRef.current) return;
     if (!hasFeishuCredentials()) {
-      onError("请先填写飞书 App ID 和飞书 App Secret，再切换账户登录模式");
+      onError(`${GATEWAY_ERROR_PREFIX}请先填写飞书 App ID 和飞书 App Secret，再切换账户登录模式`);
       return;
     }
 

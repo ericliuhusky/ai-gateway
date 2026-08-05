@@ -58,13 +58,13 @@ pub fn prepare_responses_upstream(
 
     if provider.auth_mode == ProviderAuthMode::Account {
         return Err(ResponsesAdapterError::BadRequest(format!(
-            "account auth provider is not supported yet: {}",
+            "账户认证供应商 `{}` 暂不支持",
             provider.name
         )));
     }
 
     let native_provider = provider.record.ok_or_else(|| {
-        ResponsesAdapterError::BadRequest(format!("unknown provider: {}", provider.name))
+        ResponsesAdapterError::BadRequest(format!("未知供应商: {}", provider.name))
     })?;
 
     let transformed =

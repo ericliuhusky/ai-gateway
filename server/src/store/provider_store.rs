@@ -106,25 +106,22 @@ impl ProviderStore {
     ) -> Result<ApiProviderRecord, String> {
         let name = request.name.trim().to_string();
         if name.is_empty() {
-            return Err("name cannot be empty".to_string());
+            return Err("供应商名称不能为空".to_string());
         }
 
         let base_url = request.base_url.unwrap_or_default().trim().to_string();
         let api_key = request.api_key.unwrap_or_default().trim().to_string();
         if api_key.is_empty() {
-            return Err("api_key cannot be empty".to_string());
+            return Err("api_key 不能为空".to_string());
         }
         if base_url.is_empty() {
-            return Err("base_url cannot be empty".to_string());
+            return Err("base_url 不能为空".to_string());
         }
         let compatibility_profile = request
             .compatibility_profile
             .unwrap_or_else(|| compatibility_profile_for_base_url(&base_url));
         if compatibility_profile == ProviderCompatibilityProfile::OpenAiCodex {
-            return Err(
-                "compatibility_profile `openai_codex` is reserved for imported account providers"
-                    .to_string(),
-            );
+            return Err("兼容性配置 `openai_codex` 仅用于导入的账户供应商".to_string());
         }
 
         let mut providers = self.providers.lock().await;

@@ -21,7 +21,12 @@ export function LoginPage() {
       await authApi.loginEmail(email.trim(), password);
       window.location.reload();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      const errMsg = err instanceof Error ? err.message : String(err);
+      setError(
+        errMsg.startsWith("AI网关错误：") || errMsg.startsWith("上游服务错误：")
+          ? errMsg
+          : `AI网关错误：${errMsg}`,
+      );
     } finally {
       setSubmitting(false);
     }

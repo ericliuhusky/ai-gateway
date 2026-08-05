@@ -90,17 +90,17 @@ impl OpenAiTokenService {
             .form(&params)
             .send()
             .await
-            .map_err(|err| format!("OpenAI token refresh failed: {err}"))?;
+            .map_err(|err| format!("刷新 OpenAI Token 失败：{err}"))?;
 
         if !response.status().is_success() {
             let body = response.text().await.unwrap_or_default();
-            return Err(format!("OpenAI token refresh failed: {body}"));
+            return Err(format!("刷新 OpenAI Token 失败：{body}"));
         }
 
         let token = response
             .json::<TokenResponse>()
             .await
-            .map_err(|err| format!("OpenAI refresh response parse failed: {err}"))?;
+            .map_err(|err| format!("解析 OpenAI 刷新响应失败：{err}"))?;
         Ok(RefreshedOpenAiToken {
             access_token: token.access_token,
             expires_in: token.expires_in,
@@ -119,10 +119,10 @@ impl OpenAiTokenService {
         let id_claims = id_token.as_deref().map(decode_openai_claims).transpose()?;
         let email = openai_email_from_claims(&access_claims)
             .or_else(|| id_claims.as_ref().and_then(openai_email_from_claims))
-            .ok_or_else(|| "failed to determine email from pasted Codex tokens".to_string())?;
+            .ok_or_else(|| "无法从粘贴的 Codex Token 中确定邮箱".to_string())?;
         let expiry_timestamp = access_claims
             .exp
-            .ok_or_else(|| "missing exp in OpenAI access token".to_string())?;
+            .ok_or_else(|| "OpenAI 访问 Token 缺少 exp 字段".to_string())?;
         let account_id = openai_account_id_from_claims(&access_claims)
             .or_else(|| id_claims.as_ref().and_then(openai_account_id_from_claims))
             .or(account_id_hint);
@@ -157,12 +157,12 @@ fn decode_openai_claims(token: &str) -> Result<OpenAITokenClaims, String> {
     let payload = token
         .split('.')
         .nth(1)
-        .ok_or_else(|| "invalid jwt payload".to_string())?;
+        .ok_or_else(|| "JWT 载荷无效".to_string())?;
     let bytes = URL_SAFE_NO_PAD
         .decode(payload)
-        .map_err(|err| format!("failed to decode jwt payload: {err}"))?;
+        .map_err(|err| format!("解码 JWT 载荷失败：{err}"))?;
     serde_json::from_slice::<OpenAITokenClaims>(&bytes)
-        .map_err(|err| format!("failed to parse jwt payload: {err}"))
+        .map_err(|err| format!("解析 JWT 载荷失败：{err}"))
 }
 
 fn openai_email_from_claims(claims: &OpenAITokenClaims) -> Option<String> {

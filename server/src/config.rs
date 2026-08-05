@@ -14,11 +14,11 @@ impl Config {
     pub fn from_env() -> Result<Self, String> {
         let bind_addr = DEFAULT_BIND_ADDR
             .parse()
-            .map_err(|err| format!("invalid default bind address: {err}"))?;
+            .map_err(|err| format!("默认监听地址无效：{err}"))?;
 
         let home = env::var("HOME")
             .map(PathBuf::from)
-            .map_err(|_| "set HOME".to_string())?;
+            .map_err(|_| "未设置 HOME 环境变量".to_string())?;
         let data_dir = home.join(".ai-gateway");
 
         let web_dir = home.join(".ai-gateway/web");

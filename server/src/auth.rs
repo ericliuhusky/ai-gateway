@@ -27,6 +27,8 @@ const FEISHU_USER_INFO_URL: &str = "https://open.feishu.cn/open-apis/authen/v1/u
 const SESSION_COOKIE_NAME: &str = "ai_gateway_session";
 const SESSION_TTL_SECS: i64 = 60 * 60 * 24 * 30;
 const OAUTH_STATE_TTL_SECS: i64 = 10 * 60;
+const GATEWAY_ERROR_PREFIX: &str = "AI网关错误：";
+const UPSTREAM_ERROR_PREFIX: &str = "上游服务错误：";
 
 #[derive(Clone)]
 pub struct AuthService {
@@ -650,39 +652,50 @@ fn now_unix() -> i64 {
 pub struct AuthError {
     status: StatusCode,
     message: String,
+    source: AuthErrorSource,
+}
+
+#[derive(Clone, Copy)]
+enum AuthErrorSource {
+    Gateway,
+    Upstream,
 }
 impl AuthError {
     fn precondition_failed(message: String) -> Self {
         Self {
             status: StatusCode::PRECONDITION_FAILED,
             message,
+            source: AuthErrorSource::Gateway,
         }
     }
     fn bad_gateway(message: String) -> Self {
         Self {
             status: StatusCode::BAD_GATEWAY,
             message,
+            source: AuthErrorSource::Upstream,
         }
     }
     fn unauthorized() -> Self {
         Self {
             status: StatusCode::UNAUTHORIZED,
             message: "请先使用飞书登录".to_string(),
+            source: AuthErrorSource::Gateway,
         }
     }
     fn internal(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             message: message.into(),
+            source: AuthErrorSource::Gateway,
         }
     }
 }
 impl IntoResponse for AuthError {
     fn into_response(self) -> Response {
-        (
-            self.status,
-            Json(serde_json::json!({ "error": self.message })),
-        )
-            .into_response()
+        let message = match self.source {
+            AuthErrorSource::Gateway => format!("{GATEWAY_ERROR_PREFIX}{}", self.message),
+            AuthErrorSource::Upstream => format!("{UPSTREAM_ERROR_PREFIX}{}", self.message),
+        };
+        (self.status, Json(serde_json::json!({ "error": message }))).into_response()
     }
 }

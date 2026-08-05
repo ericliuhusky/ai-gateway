@@ -123,23 +123,23 @@ impl OpenAiDeviceLoginService {
             .json(&serde_json::json!({ "client_id": CODEX_CLIENT_ID }))
             .send()
             .await
-            .map_err(|error| format!("OpenAI device login request failed: {error}"))?;
+            .map_err(|error| format!("请求 OpenAI 设备登录失败：{error}"))?;
         let status = response.status();
         let body = response
             .text()
             .await
-            .map_err(|error| format!("OpenAI device login response read failed: {error}"))?;
+            .map_err(|error| format!("读取 OpenAI 设备登录响应失败：{error}"))?;
         if !status.is_success() {
             return Err(format!(
-                "OpenAI device login request failed ({status}): {}",
+                "OpenAI 设备登录请求失败（{status}）：{}",
                 truncate_error_body(&body)
             ));
         }
 
         let payload: DeviceUserCodeResponse = serde_json::from_str(&body)
-            .map_err(|error| format!("OpenAI device login response parse failed: {error}"))?;
+            .map_err(|error| format!("解析 OpenAI 设备登录响应失败：{error}"))?;
         if payload.device_auth_id.trim().is_empty() || payload.user_code.trim().is_empty() {
-            return Err("OpenAI device login response did not include a user code".to_string());
+            return Err("OpenAI 设备登录响应未包含用户代码".to_string());
         }
 
         let interval_seconds = parse_interval(payload.interval);
@@ -273,21 +273,21 @@ impl OpenAiDeviceLoginService {
             .form(&params)
             .send()
             .await
-            .map_err(|error| format!("OpenAI token exchange failed: {error}"))?;
+            .map_err(|error| format!("OpenAI Token 交换失败：{error}"))?;
         let status = response.status();
         let body = response
             .text()
             .await
-            .map_err(|error| format!("OpenAI token exchange response read failed: {error}"))?;
+            .map_err(|error| format!("读取 OpenAI Token 交换响应失败：{error}"))?;
         if !status.is_success() {
             return Err(format!(
-                "OpenAI token exchange failed ({status}): {}",
+                "OpenAI Token 交换失败（{status}）：{}",
                 truncate_error_body(&body)
             ));
         }
 
         let payload: OAuthTokenResponse = serde_json::from_str(&body)
-            .map_err(|error| format!("OpenAI token exchange response parse failed: {error}"))?;
+            .map_err(|error| format!("解析 OpenAI Token 交换响应失败：{error}"))?;
         tokens.import_codex_tokens(
             payload.access_token,
             payload.refresh_token,
@@ -334,26 +334,26 @@ impl OpenAiDeviceLoginService {
             }))
             .send()
             .await
-            .map_err(|error| format!("OpenAI device login polling failed: {error}"))?;
+            .map_err(|error| format!("轮询 OpenAI 设备登录失败：{error}"))?;
         let status = response.status();
-        let body = response.text().await.map_err(|error| {
-            format!("OpenAI device login polling response read failed: {error}")
-        })?;
+        let body = response
+            .text()
+            .await
+            .map_err(|error| format!("读取 OpenAI 设备登录轮询响应失败：{error}"))?;
         if status.as_u16() == 403 || status.as_u16() == 404 {
             return Ok(None);
         }
         if !status.is_success() {
             return Err(format!(
-                "OpenAI device login polling failed ({status}): {}",
+                "OpenAI 设备登录轮询失败（{status}）：{}",
                 truncate_error_body(&body)
             ));
         }
 
-        let payload: DeviceTokenResponse = serde_json::from_str(&body).map_err(|error| {
-            format!("OpenAI device login polling response parse failed: {error}")
-        })?;
+        let payload: DeviceTokenResponse = serde_json::from_str(&body)
+            .map_err(|error| format!("解析 OpenAI 设备登录轮询响应失败：{error}"))?;
         if payload.authorization_code.trim().is_empty() || payload.code_verifier.trim().is_empty() {
-            return Err("OpenAI device login approval response was incomplete".to_string());
+            return Err("OpenAI 设备登录授权响应不完整".to_string());
         }
         Ok(Some(DeviceAuthorization {
             authorization_code: payload.authorization_code,

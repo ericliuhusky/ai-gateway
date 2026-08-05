@@ -27,7 +27,7 @@ pub fn apply_responses_request_policy(
 }
 
 fn parse_request_body(request_body: &str) -> Result<Value, String> {
-    serde_json::from_str(request_body).map_err(|err| format!("invalid request JSON: {err}"))
+    serde_json::from_str(request_body).map_err(|err| format!("无效的请求 JSON: {err}"))
 }
 
 fn serialize_request_body(body: &Value) -> Result<String, String> {
