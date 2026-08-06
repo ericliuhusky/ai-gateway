@@ -99,15 +99,11 @@ impl FieldEncryptor {
         String::from_utf8(plaintext)
             .map_err(|_| "decrypted database credential is not valid UTF-8".to_string())
     }
-
-    pub fn is_encrypted(value: &str) -> bool {
-        value.starts_with(ENCRYPTED_VALUE_PREFIX)
-    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::FieldEncryptor;
+    use super::{ENCRYPTED_VALUE_PREFIX, FieldEncryptor};
 
     const TEST_KEY: &str = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=";
 
@@ -116,7 +112,7 @@ mod tests {
         let encryptor = FieldEncryptor::from_base64_key(TEST_KEY).expect("valid test key");
         let encrypted = encryptor.encrypt("secret-value").expect("encrypt");
 
-        assert!(FieldEncryptor::is_encrypted(&encrypted));
+        assert!(encrypted.starts_with(ENCRYPTED_VALUE_PREFIX));
         assert_ne!(encrypted, "secret-value");
         assert_eq!(encryptor.decrypt(&encrypted).unwrap(), "secret-value");
     }

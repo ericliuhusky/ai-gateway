@@ -42,10 +42,6 @@ impl ProviderStore {
         Ok(())
     }
 
-    pub async fn list(&self) -> Vec<ApiProviderSummary> {
-        self.list_for_owner(None).await
-    }
-
     pub async fn list_for_owner(&self, owner_user_id: Option<i64>) -> Vec<ApiProviderSummary> {
         self.providers
             .lock()
@@ -90,13 +86,6 @@ impl ProviderStore {
                 shared: provider.owner_user_id != Some(user_id),
             })
             .collect()
-    }
-
-    pub async fn upsert(
-        &self,
-        request: CreateApiProviderRequest,
-    ) -> Result<ApiProviderRecord, String> {
-        self.upsert_for_owner(None, request).await
     }
 
     pub async fn upsert_for_owner(
@@ -148,10 +137,6 @@ impl ProviderStore {
         Ok(provider)
     }
 
-    pub async fn find_by_id(&self, id: &str) -> Option<ApiProviderRecord> {
-        self.find_by_id_for_owner(None, id).await
-    }
-
     pub async fn find_by_id_for_owner(
         &self,
         owner_user_id: Option<i64>,
@@ -186,10 +171,6 @@ impl ProviderStore {
             .cloned()
     }
 
-    pub async fn has_account_provider(&self, account_id: &str) -> bool {
-        self.has_account_provider_for_owner(None, account_id).await
-    }
-
     pub async fn has_account_provider_for_owner(
         &self,
         owner_user_id: Option<i64>,
@@ -199,15 +180,6 @@ impl ProviderStore {
             provider.owner_user_id == owner_user_id
                 && provider.account_id.as_deref() == Some(account_id)
         })
-    }
-
-    pub async fn add_account_provider(
-        &self,
-        name: &str,
-        account_id: &str,
-    ) -> Result<ApiProviderRecord, String> {
-        self.add_account_provider_for_owner(None, name, account_id)
-            .await
     }
 
     pub async fn add_account_provider_for_owner(
@@ -237,10 +209,6 @@ impl ProviderStore {
         self.persist_provider(&provider)?;
         providers.push(provider.clone());
         Ok(provider)
-    }
-
-    pub async fn delete(&self, id: &str) -> Result<ApiProviderRecord, String> {
-        self.delete_for_owner(None, id).await
     }
 
     pub async fn delete_for_owner(
@@ -316,11 +284,11 @@ mod tests {
         };
 
         let first = store
-            .add_account_provider(OPENAI_ACCOUNT_PROVIDER_NAME, "account_1")
+            .add_account_provider_for_owner(None, OPENAI_ACCOUNT_PROVIDER_NAME, "account_1")
             .await
             .expect("bind first account");
         let second = store
-            .add_account_provider(OPENAI_ACCOUNT_PROVIDER_NAME, "account_2")
+            .add_account_provider_for_owner(None, OPENAI_ACCOUNT_PROVIDER_NAME, "account_2")
             .await
             .expect("bind second account");
 
@@ -338,7 +306,7 @@ mod tests {
             ProviderUpstreamProtocol::OpenAiResponses
         );
 
-        let providers = store.list().await;
+        let providers = store.list_for_owner(None).await;
         assert_eq!(providers.len(), 2);
         assert_eq!(
             providers
@@ -358,12 +326,15 @@ mod tests {
         };
 
         let provider = store
-            .upsert(CreateApiProviderRequest {
-                name: "official".to_string(),
-                base_url: Some("https://api.openai.com/v1".to_string()),
-                api_key: Some("sk-test".to_string()),
-                compatibility_profile: None,
-            })
+            .upsert_for_owner(
+                None,
+                CreateApiProviderRequest {
+                    name: "official".to_string(),
+                    base_url: Some("https://api.openai.com/v1".to_string()),
+                    api_key: Some("sk-test".to_string()),
+                    compatibility_profile: None,
+                },
+            )
             .await
             .expect("create legacy provider");
 

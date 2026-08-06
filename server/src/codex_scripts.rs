@@ -48,7 +48,7 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     use std::{
         fs,
-        path::PathBuf,
+        path::{Path, PathBuf},
         process::Command,
         time::{SystemTime, UNIX_EPOCH},
     };
@@ -467,7 +467,7 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn run_setup_script(script_path: &PathBuf, codex_dir: &PathBuf) {
+    fn run_setup_script(script_path: &Path, codex_dir: &Path) {
         let test_path = path_with_fake_uname(codex_dir.parent().expect("test home"), "TestOS");
         let output = Command::new("sh")
             .arg(script_path)

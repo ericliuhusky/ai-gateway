@@ -4,7 +4,6 @@ use crate::{
     openai_tokens::{ImportedOpenAIAuth, OpenAiTokenService, extract_openai_chatgpt_account_id},
     store::sqlite::SqliteStore,
     support::time::now_unix,
-    upstream::UpstreamClient,
 };
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -28,13 +27,6 @@ impl AccountStore {
         let loaded = self.sqlite.load_accounts()?;
         *self.records.lock().await = loaded;
         Ok(())
-    }
-
-    pub async fn add_openai_account(
-        &self,
-        imported: ImportedOpenAIAuth,
-    ) -> Result<AccountRecord, String> {
-        self.add_openai_account_for_owner(None, imported).await
     }
 
     pub async fn add_openai_account_for_owner(
@@ -67,33 +59,17 @@ impl AccountStore {
         Ok(account)
     }
 
-    pub async fn acquire_by_id(
-        &self,
-        token_service: &OpenAiTokenService,
-        upstream: &UpstreamClient,
-        account_id: &str,
-    ) -> Result<AccountRecord, String> {
-        self.acquire_by_id_for_owner(None, token_service, upstream, account_id)
-            .await
-    }
-
     pub async fn acquire_by_id_for_owner(
         &self,
         owner_user_id: Option<i64>,
         token_service: &OpenAiTokenService,
-        upstream: &UpstreamClient,
         account_id: &str,
     ) -> Result<AccountRecord, String> {
         let account = self
             .find_by_id_for_owner(owner_user_id, account_id)
             .await
             .ok_or_else(|| format!("账户不存在: {account_id}"))?;
-        self.prepare_account_for_use(account, token_service, upstream)
-            .await
-    }
-
-    pub async fn find_by_id(&self, account_id: &str) -> Option<AccountRecord> {
-        self.find_by_id_for_owner(None, account_id).await
+        self.prepare_account_for_use(account, token_service).await
     }
 
     pub async fn find_by_id_for_owner(
@@ -107,10 +83,6 @@ impl AccountStore {
             .iter()
             .find(|account| account.id == account_id && account.owner_user_id == owner_user_id)
             .cloned()
-    }
-
-    pub async fn delete(&self, account_id: &str) -> Result<AccountRecord, String> {
-        self.delete_for_owner(None, account_id).await
     }
 
     pub async fn delete_for_owner(
@@ -147,7 +119,6 @@ impl AccountStore {
         &self,
         mut account: AccountRecord,
         token_service: &OpenAiTokenService,
-        _upstream: &UpstreamClient,
     ) -> Result<AccountRecord, String> {
         if token_service.refresh_needed(account.expiry_timestamp) {
             let client_id = account

@@ -1086,7 +1086,7 @@ pub async fn list_user_search(
     Query(query): Query<UserSearchQuery>,
 ) -> Result<Json<Value>, AppError> {
     let user_id = required_group_user(&scope)?;
-    if query.q.trim().len() < 1 {
+    if query.q.trim().is_empty() {
         return Ok(Json(json!({ "users": [] })));
     }
     let users = state
@@ -1149,11 +1149,11 @@ pub async fn admin_delete_user(
     AxumPath(user_id): AxumPath<i64>,
 ) -> Result<Json<Value>, AppError> {
     require_admin(&scope)?;
-    let deleted = state
+    state
         .auth
         .delete_user(user_id)
         .map_err(AppError::internal)?;
-    Ok(Json(json!({ "deleted": deleted, "user_id": user_id })))
+    Ok(Json(json!({ "deleted": (), "user_id": user_id })))
 }
 
 pub async fn list_groups(
@@ -1653,7 +1653,7 @@ pub async fn set_instance_routing_config(
         let provider = provider
             .as_ref()
             .ok_or_else(|| AppError::bad_request("选择固定模型时必须指定供应商"))?;
-        let models = load_provider_models(&state, scope.owner_user_id, &provider, false).await?;
+        let models = load_provider_models(&state, scope.owner_user_id, provider, false).await?;
         if !models.data.iter().any(|item| item.id == model) {
             return Err(AppError::bad_request(format!(
                 "模型 `{model}` 不可用于供应商 `{}`",
@@ -1749,14 +1749,6 @@ pub async fn responses_for_instance(
         Some(&instance_id),
     )
     .await
-}
-
-pub(super) async fn responses_inner(
-    state: AppState,
-    raw_body: String,
-    turn_metadata: Option<CodexTurnMetadata>,
-) -> Result<Response, AppError> {
-    responses_inner_for_instance(state, raw_body, turn_metadata, None, None).await
 }
 
 async fn responses_inner_for_instance(
@@ -2305,12 +2297,6 @@ fn token_usage_from_response(value: &Value) -> Option<TokenUsage> {
     })
 }
 
-pub(super) async fn resolve_selected_provider(
-    state: &AppState,
-) -> Result<ResolvedProvider, AppError> {
-    resolve_selected_provider_for_instance(state, None, None).await
-}
-
 async fn resolve_selected_provider_for_instance(
     state: &AppState,
     owner_user_id: Option<i64>,
@@ -2562,25 +2548,27 @@ async fn choose_model_for_request(
         } else {
             "tool_continuation_without_turn_binding"
         };
-        return Ok(RoutingDecision::bypass_pro(&settings, reason));
+        return Ok(RoutingDecision::bypass_pro(settings, reason));
     }
 
     // The low-tier target doubles as the classifier to avoid a separate model setting.
     let Some(classifier) = settings.light.as_ref() else {
         return Ok(RoutingDecision::classifier_failure(
-            &settings,
+            settings,
             "light_model_not_configured",
         ));
     };
-    let classifier_provider = match resolve_provider_by_id(state, &classifier.provider_id).await {
-        Ok(provider) => provider,
-        Err(error) => {
-            let mut decision =
-                RoutingDecision::classifier_failure(&settings, "classifier_provider_not_found");
-            decision.detail = Some(error.message);
-            return Ok(decision);
-        }
-    };
+    let classifier_provider =
+        match resolve_provider_by_id_for_owner(state, owner_user_id, &classifier.provider_id).await
+        {
+            Ok(provider) => provider,
+            Err(error) => {
+                let mut decision =
+                    RoutingDecision::classifier_failure(settings, "classifier_provider_not_found");
+                decision.detail = Some(error.message);
+                return Ok(decision);
+            }
+        };
     let classifier_response = match invoke_routing_classifier(
         state,
         owner_user_id,
@@ -2594,14 +2582,14 @@ async fn choose_model_for_request(
         Ok(response) => response,
         Err(error) => {
             let mut decision =
-                RoutingDecision::classifier_failure(&settings, "classifier_request_failed");
+                RoutingDecision::classifier_failure(settings, "classifier_request_failed");
             decision.detail = Some(diagnostic_preview(&error, 500));
             return Ok(decision);
         }
     };
     let Some(text) = classifier_text_from_response(&classifier_response.response) else {
         let mut decision =
-            RoutingDecision::classifier_failure(&settings, "classifier_output_text_missing");
+            RoutingDecision::classifier_failure(settings, "classifier_output_text_missing");
         decision.detail = Some("upstream response contained no classifier output text".to_string());
         decision.classifier_output = classifier_response_preview(&classifier_response.response);
         decision.classifier_raw_input = Some(classifier_response.request_body);
@@ -2609,9 +2597,9 @@ async fn choose_model_for_request(
         return Ok(decision);
     };
 
-    let mut decision = decision_from_classifier_output(&text, &settings).unwrap_or_else(|| {
+    let mut decision = decision_from_classifier_output(&text, settings).unwrap_or_else(|| {
         let mut decision =
-            RoutingDecision::classifier_failure(&settings, "classifier_output_invalid");
+            RoutingDecision::classifier_failure(settings, "classifier_output_invalid");
         decision.detail = Some("expected JSON with tier and confidence fields".to_string());
         decision.classifier_output = Some(diagnostic_preview(&text, 500));
         decision
@@ -3045,28 +3033,27 @@ fn decorate_upstream_sse_frame(frame: &str) -> String {
         if let Some(data) = line.strip_prefix("data:") {
             let newline = if line.ends_with('\n') { "\n" } else { "" };
             let data = data.trim_end_matches('\n').trim_start();
-            if let Ok(mut payload) = serde_json::from_str::<Value>(data) {
-                if let Some(message) = payload
+            if let Ok(mut payload) = serde_json::from_str::<Value>(data)
+                && let Some(message) = payload
                     .get_mut("error")
                     .and_then(Value::as_object_mut)
                     .and_then(|error| error.get_mut("message"))
                     .and_then(|value| value.as_str())
                     .map(str::to_string)
-                {
-                    if let Some(error) = payload.get_mut("error").and_then(Value::as_object_mut) {
-                        error.insert(
-                            "message".to_string(),
-                            Value::String(format!("{UPSTREAM_ERROR_PREFIX}{message}")),
-                        );
-                    }
-                    output.push_str("data: ");
-                    output.push_str(
-                        &serde_json::to_string(&payload).unwrap_or_else(|_| data.to_string()),
+            {
+                if let Some(error) = payload.get_mut("error").and_then(Value::as_object_mut) {
+                    error.insert(
+                        "message".to_string(),
+                        Value::String(format!("{UPSTREAM_ERROR_PREFIX}{message}")),
                     );
-                    output.push_str(newline);
-                    changed = true;
-                    continue;
                 }
+                output.push_str("data: ");
+                output.push_str(
+                    &serde_json::to_string(&payload).unwrap_or_else(|_| data.to_string()),
+                );
+                output.push_str(newline);
+                changed = true;
+                continue;
             }
             if data != "[DONE]" {
                 output.push_str("data: ");
@@ -3144,10 +3131,10 @@ async fn load_provider_models(
         .or(provider.account_id.as_deref())
         .ok_or_else(|| AppError::bad_request(format!("供应商缓存键缺失: {}", provider.name)))?;
 
-    if !force_refresh {
-        if let Some(cached) = state.models.load(provider_id).map_err(AppError::internal)? {
-            return Ok(cached);
-        }
+    if !force_refresh
+        && let Some(cached) = state.models.load(provider_id).map_err(AppError::internal)?
+    {
+        return Ok(cached);
     }
 
     let models = fetch_provider_models(state, owner_user_id, provider).await?;
@@ -3274,24 +3261,6 @@ fn normalize_optional_target(
         .unwrap_or(Ok(None))
 }
 
-async fn validate_auto_routing_targets(
-    state: &AppState,
-    settings: &AutoRoutingSettings,
-) -> Result<(), AppError> {
-    for target in [
-        settings.light.as_ref(),
-        settings.standard.as_ref(),
-        settings.pro.as_ref(),
-        settings.max.as_ref(),
-    ]
-    .into_iter()
-    .flatten()
-    {
-        resolve_provider_by_id(state, &target.provider_id).await?;
-    }
-    Ok(())
-}
-
 async fn validate_auto_routing_targets_for_owner(
     state: &AppState,
     owner_user_id: Option<i64>,
@@ -3312,7 +3281,7 @@ async fn validate_auto_routing_targets_for_owner(
 }
 
 async fn clear_openai_model_caches(state: &AppState) -> Result<(), AppError> {
-    for provider in state.providers.list().await {
+    for provider in state.providers.list_for_owner(None).await {
         if provider.compatibility_profile == ProviderCompatibilityProfile::OpenAiCodex {
             state
                 .models
@@ -3529,18 +3498,6 @@ pub(super) struct ResolvedProvider {
     pub(super) record: Option<ApiProviderRecord>,
 }
 
-async fn resolve_provider_by_id(
-    state: &AppState,
-    provider_id: &str,
-) -> Result<ResolvedProvider, AppError> {
-    let record = state
-        .providers
-        .find_by_id(provider_id)
-        .await
-        .ok_or_else(|| AppError::bad_request(format!("未知的 provider_id: {provider_id}")))?;
-    Ok(resolved_provider_from_record(record))
-}
-
 async fn resolve_provider_by_id_for_owner(
     state: &AppState,
     owner_user_id: Option<i64>,
@@ -3573,29 +3530,6 @@ fn resolved_provider_from_record(record: ApiProviderRecord) -> ResolvedProvider 
     }
 }
 
-pub(super) async fn resolve_account_for_provider(
-    state: &AppState,
-    provider: &ResolvedProvider,
-) -> Result<AccountRecord, AppError> {
-    let account_id = provider
-        .account_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| {
-            AppError::bad_request(format!(
-                "账户认证供应商 `{}` 缺少 account_id；请先绑定账户",
-                provider.name
-            ))
-        })?;
-
-    state
-        .accounts
-        .acquire_by_id(&state.openai_tokens, &state.upstream, account_id)
-        .await
-        .map_err(AppError::bad_request)
-}
-
 async fn resolve_account_for_provider_for_owner(
     state: &AppState,
     owner_user_id: Option<i64>,
@@ -3620,12 +3554,7 @@ async fn resolve_account_for_provider_for_owner(
         .or(owner_user_id);
     state
         .accounts
-        .acquire_by_id_for_owner(
-            provider_owner_user_id,
-            &state.openai_tokens,
-            &state.upstream,
-            account_id,
-        )
+        .acquire_by_id_for_owner(provider_owner_user_id, &state.openai_tokens, account_id)
         .await
         .map_err(AppError::bad_request)
 }
@@ -3636,14 +3565,6 @@ pub(super) fn provider_uses_openai_account(provider: &ResolvedProvider) -> bool 
         .as_ref()
         .and_then(|record| record.account_id.as_ref())
         .is_some()
-}
-
-async fn hydrated_provider_summaries(state: &AppState) -> Vec<ApiProviderSummary> {
-    let mut providers = state.providers.list().await;
-    for provider in &mut providers {
-        hydrate_provider_summary(state, provider).await;
-    }
-    providers
 }
 
 async fn hydrated_provider_summaries_for_owner(
@@ -3658,29 +3579,6 @@ async fn hydrated_provider_summaries_for_owner(
         hydrate_provider_summary_for_owner(state, owner_user_id, provider).await;
     }
     providers
-}
-
-async fn provider_summary_for_resolved(
-    state: &AppState,
-    provider: &ResolvedProvider,
-) -> Result<ApiProviderSummary, AppError> {
-    let record = provider
-        .record
-        .clone()
-        .ok_or_else(|| AppError::bad_request(format!("未知供应商: {}", provider.name)))?;
-    let mut summary = ApiProviderSummary {
-        id: record.id.clone(),
-        name: record.name.clone(),
-        auth_mode: record.auth_mode.clone(),
-        base_url: record.base_url.clone(),
-        account_id: record.account_id.clone(),
-        account_email: None,
-        upstream_protocol: record.upstream_protocol.clone(),
-        compatibility_profile: record.compatibility_profile.clone(),
-        shared: false,
-    };
-    hydrate_provider_summary(state, &mut summary).await;
-    Ok(summary)
 }
 
 async fn provider_summary_for_resolved_for_owner(
@@ -3705,18 +3603,6 @@ async fn provider_summary_for_resolved_for_owner(
     };
     hydrate_provider_summary_for_owner(state, owner_user_id, &mut summary).await;
     Ok(summary)
-}
-
-async fn hydrate_provider_summary(state: &AppState, provider: &mut ApiProviderSummary) {
-    if provider.auth_mode == ProviderAuthMode::Account
-        && let Some(account_id) = provider.account_id.as_deref()
-    {
-        provider.account_email = state
-            .accounts
-            .find_by_id(account_id)
-            .await
-            .map(|account| account.email);
-    }
 }
 
 async fn hydrate_provider_summary_for_owner(
@@ -4067,19 +3953,22 @@ data: {"error":{"message":"rate limit exceeded"}}
         let routes = RouteStore::new(config.clone()).expect("create route store");
         routes.load().await.expect("load routes");
         let account = accounts
-            .add_openai_account(ImportedOpenAIAuth {
-                email: "account@example.com".to_string(),
-                access_token: "access".to_string(),
-                refresh_token: "refresh".to_string(),
-                expiry_timestamp: 0,
-                client_id: "client".to_string(),
-                account_id: Some("upstream-account".to_string()),
-                scopes: Vec::new(),
-            })
+            .add_openai_account_for_owner(
+                None,
+                ImportedOpenAIAuth {
+                    email: "account@example.com".to_string(),
+                    access_token: "access".to_string(),
+                    refresh_token: "refresh".to_string(),
+                    expiry_timestamp: 0,
+                    client_id: "client".to_string(),
+                    account_id: Some("upstream-account".to_string()),
+                    scopes: Vec::new(),
+                },
+            )
             .await
             .expect("save account");
         let provider = providers
-            .add_account_provider("OpenAI Account", &account.id)
+            .add_account_provider_for_owner(None, "OpenAI Account", &account.id)
             .await
             .expect("save account provider");
         let state = AppState {
@@ -4111,12 +4000,27 @@ data: {"error":{"message":"rate limit exceeded"}}
         .await
         .expect("delete account provider");
 
-        assert!(providers.find_by_id(&provider.id).await.is_none());
-        assert!(accounts.find_by_id(&account.id).await.is_none());
+        assert!(
+            providers
+                .find_by_id_for_owner(None, &provider.id)
+                .await
+                .is_none()
+        );
+        assert!(
+            accounts
+                .find_by_id_for_owner(None, &account.id)
+                .await
+                .is_none()
+        );
 
         let reloaded_accounts = AccountStore::new(config).expect("reopen account store");
         reloaded_accounts.load().await.expect("reload accounts");
-        assert!(reloaded_accounts.find_by_id(&account.id).await.is_none());
+        assert!(
+            reloaded_accounts
+                .find_by_id_for_owner(None, &account.id)
+                .await
+                .is_none()
+        );
 
         let _ = fs::remove_dir_all(data_dir);
     }

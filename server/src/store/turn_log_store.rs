@@ -19,12 +19,6 @@ impl TurnLogStore {
         })
     }
 
-    /// Observability must not affect inference availability, so callers intentionally
-    /// treat storage failures as non-fatal.
-    pub fn record(&self, update: &TurnRouteLogUpdate) -> Result<(), String> {
-        self.sqlite.record_turn_route_log(update, TURN_LOG_LIMIT)
-    }
-
     pub fn record_for_owner(
         &self,
         owner_user_id: Option<i64>,
@@ -33,10 +27,6 @@ impl TurnLogStore {
         let mut update = update.clone();
         update.turn_id = scoped_turn_id(owner_user_id, &update.turn_id);
         self.sqlite.record_turn_route_log(&update, TURN_LOG_LIMIT)
-    }
-
-    pub fn get(&self, turn_id: &str) -> Result<Option<TurnRouteLog>, String> {
-        self.sqlite.load_turn_route_log(turn_id)
     }
 
     pub fn get_for_owner(
@@ -122,16 +112,19 @@ mod tests {
             is_tool_round: false,
             timestamp: 10,
         };
-        store.record(&first).unwrap();
+        store.record_for_owner(None, &first).unwrap();
         store
-            .record(&TurnRouteLogUpdate {
-                is_tool_round: true,
-                timestamp: 20,
-                ..first.clone()
-            })
+            .record_for_owner(
+                None,
+                &TurnRouteLogUpdate {
+                    is_tool_round: true,
+                    timestamp: 20,
+                    ..first.clone()
+                },
+            )
             .unwrap();
 
-        let log = store.get("turn_a").unwrap().unwrap();
+        let log = store.get_for_owner(None, "turn_a").unwrap().unwrap();
         assert_eq!(log.model, "light");
         assert_eq!(log.request_count, 2);
         assert_eq!(log.tool_round_count, 1);
@@ -178,7 +171,7 @@ mod tests {
                 .unwrap();
         }
 
-        assert!(store.get("turn_1").unwrap().is_none());
+        assert!(store.get_for_owner(None, "turn_1").unwrap().is_none());
         assert_eq!(
             store
                 .list(2)

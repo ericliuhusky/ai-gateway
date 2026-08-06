@@ -54,7 +54,10 @@ fn emit_paths(path: &Path) {
     }
 
     if let Ok(entries) = fs::read_dir(path) {
-        for entry in entries.flatten() {
+        for entry in entries
+            .flatten()
+            .filter(|entry| !entry.file_name().to_string_lossy().starts_with('.'))
+        {
             emit_paths(&entry.path());
         }
     }

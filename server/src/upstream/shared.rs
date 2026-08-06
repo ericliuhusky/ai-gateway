@@ -3,15 +3,15 @@ use std::{collections::HashMap, process::Command};
 pub fn build_http_client() -> Client {
     let mut builder = Client::builder();
 
-    if cfg!(target_os = "macos") {
-        if let Some(config) = load_macos_system_proxy() {
-            let http_proxy_for_proxy = config.http_proxy.clone();
-            let https_proxy_for_proxy = config.https_proxy.clone();
-            let proxy = Proxy::custom(move |url| {
-                select_proxy(url, &http_proxy_for_proxy, &https_proxy_for_proxy)
-            });
-            builder = builder.proxy(proxy);
-        }
+    if cfg!(target_os = "macos")
+        && let Some(config) = load_macos_system_proxy()
+    {
+        let http_proxy_for_proxy = config.http_proxy.clone();
+        let https_proxy_for_proxy = config.https_proxy.clone();
+        let proxy = Proxy::custom(move |url| {
+            select_proxy(url, &http_proxy_for_proxy, &https_proxy_for_proxy)
+        });
+        builder = builder.proxy(proxy);
     }
 
     builder.build().unwrap_or_else(|_| Client::new())
