@@ -17,23 +17,19 @@ export interface GatewayProvider {
   shared?: boolean;
 }
 
-export interface GatewayUser {
+export interface CenterUser {
   id: number;
-  name: string;
-  avatar_url: string;
-  role?: "admin" | "user";
-}
-
-export interface ManagedUser {
-  id: number;
-  email: string;
   name: string;
   avatar_url: string;
   role: "admin" | "user";
+}
+
+export interface ManagedCenterUser extends CenterUser {
+  email: string;
   has_password: boolean;
 }
 
-export interface GatewayGroup {
+export interface CenterGroup {
   id: number;
   name: string;
   owner_user_id: number;
@@ -44,25 +40,47 @@ export interface GatewayGroup {
   created_at: number;
 }
 
-export interface GatewayGroupMember {
+export interface CenterGroupMember {
   user_id: number;
   name: string;
   avatar_url: string;
   role: "owner" | "member";
 }
 
-export interface GatewayGroupProvider {
-  provider: GatewayProvider;
+export interface CenterSharedConnection {
+  id: string;
+  name: string;
+  auth_mode: "api_key";
+  base_url: string;
+  upstream_protocol: GatewayUpstreamProtocol;
+  compatibility_profile: Exclude<GatewayCompatibilityProfile, "openai_codex">;
+  shared: boolean;
+}
+
+export interface CenterGroupProvider {
+  provider: CenterSharedConnection;
   shared_by_user_id: number;
   shared_by_name: string;
   shared_at: number;
   can_remove: boolean;
 }
 
-export interface GatewayGroupDetail {
-  group: GatewayGroup;
-  members: GatewayGroupMember[];
-  providers: GatewayGroupProvider[];
+export interface CenterGroupDetail {
+  group: CenterGroup;
+  members: CenterGroupMember[];
+  providers: CenterGroupProvider[];
+}
+
+export interface LocalGatewayStatus {
+  local_gateway_url: string;
+  control_plane_url?: string;
+  device_id: string;
+  sharing_configured: boolean;
+}
+
+export interface SharedSyncStatus {
+  provider_count: number;
+  renewed_count: number;
 }
 
 export interface SelectedProvider {
@@ -107,17 +125,6 @@ export interface CodexClientVersionSetting {
   override_version?: string;
   effective_version: string;
   is_overridden: boolean;
-}
-
-export interface SecuritySettings {
-  encryption_key_configured: boolean;
-  feishu_app_id: string;
-  feishu_app_secret_configured: boolean;
-  auth_required: boolean;
-}
-
-export interface FeishuAppSecretResponse {
-  feishu_app_secret: string;
 }
 
 export interface InstanceRoutingConfig {

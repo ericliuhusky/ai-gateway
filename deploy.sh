@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Builds the server and Web console locally, then deploys only the resulting
-# artifacts to the remote macOS host. Persistent server data is left untouched.
+# Builds and deploys the headless control-plane service. The Tauri UI is a
+# separate local-client artifact and is never uploaded to the center service.
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SERVER_PKG="${SERVER_PKG:-ai-gateway}"
@@ -14,7 +14,7 @@ DEPLOY_USER="${DEPLOY_USER:-ninebot}"
 SSH_PORT="${SSH_PORT:-22}"
 DEPLOY_SERVICE_NAME="${DEPLOY_SERVICE_NAME:-ericliu.husky.ai-gateway}"
 
-# The gateway itself always reads its data and Web files from
+# The control-plane service always reads its persistent data from
 # $HOME/.ai-gateway, so the remote runtime directory must remain fixed.
 REMOTE_APP_DIR=".ai-gateway"
 GATEWAY_PORT="4242"
@@ -26,8 +26,8 @@ usage() {
   ./deploy.sh [--skip-build]
 
 说明:
-  本地构建 ai-gateway 二进制和 Web 管理端，只将构建产物同步至远端
-  ~/.ai-gateway/bin 和 ~/.ai-gateway/web，随后安装/更新 LaunchAgent 并重启服务。
+  本地构建 ai-gateway 中心控制服务，只将二进制同步至远端
+  ~/.ai-gateway/bin，随后安装/更新 LaunchAgent 并重启服务。
   远端已有的 SQLite 数据库、日志和其他持久化文件不会被删除。
 
 默认远端配置:
@@ -93,45 +93,22 @@ REMOTE_TARGET="${DEPLOY_USER}@${DEPLOY_HOST}"
 
 build_local() {
   require_cmd cargo
-  require_cmd bun
 
-  log "安装 Web 构建依赖"
-  (
-    cd "$ROOT_DIR/web"
-    bun install --frozen-lockfile
-  )
-
-  log "构建后端服务: $SERVER_PKG"
+  log "构建中心控制服务: $SERVER_PKG"
   (
     cd "$ROOT_DIR"
     cargo build --release -p "$SERVER_PKG"
   )
 
-  log "构建 Web 管理端"
-  (
-    cd "$ROOT_DIR/web"
-    bun run build
-  )
-
   log "整理发布产物: $ARTIFACT_DIR"
   rm -rf "$ARTIFACT_DIR"
-  mkdir -p "$ARTIFACT_DIR/bin" "$ARTIFACT_DIR/web"
+  mkdir -p "$ARTIFACT_DIR/bin"
   install -m 755 "$ROOT_DIR/target/release/$SERVER_PKG" "$ARTIFACT_DIR/bin/$SERVER_PKG"
-
-  if command -v rsync >/dev/null 2>&1; then
-    rsync -a --delete "$ROOT_DIR/web/dist/" "$ARTIFACT_DIR/web/"
-  else
-    cp -R "$ROOT_DIR/web/dist/." "$ARTIFACT_DIR/web/"
-  fi
 }
 
 verify_artifacts() {
   if [[ ! -x "$ARTIFACT_DIR/bin/$SERVER_PKG" ]]; then
     echo "错误：未找到可执行发布产物: $ARTIFACT_DIR/bin/$SERVER_PKG" >&2
-    exit 1
-  fi
-  if [[ ! -f "$ARTIFACT_DIR/web/index.html" ]]; then
-    echo "错误：未找到 Web 发布产物: $ARTIFACT_DIR/web/index.html" >&2
     exit 1
   fi
 }
@@ -142,19 +119,15 @@ sync_remote() {
 
   log "创建远端运行目录: $REMOTE_TARGET:~/$REMOTE_APP_DIR"
   ssh "${SSH_ARGS[@]}" "$REMOTE_TARGET" \
-    "mkdir -p $(shell_quote "$REMOTE_APP_DIR")/{bin,web,log}"
+    "mkdir -p $(shell_quote "$REMOTE_APP_DIR")/{bin,log}"
 
-  # Upload to temporary filenames. The remote restart step atomically promotes
-  # them only after both binary and static files have arrived.
+  # Upload to a temporary filename. The remote restart step atomically promotes
+  # it after the binary has arrived.
   log "同步二进制"
   rsync -az -e "ssh ${SSH_ARGS[*]}" \
     "$ARTIFACT_DIR/bin/$SERVER_PKG" \
     "$REMOTE_TARGET:$REMOTE_APP_DIR/bin/$SERVER_PKG.new"
 
-  log "同步 Web 静态资源"
-  rsync -az --delete --delay-updates -e "ssh ${SSH_ARGS[*]}" \
-    "$ARTIFACT_DIR/web/" \
-    "$REMOTE_TARGET:$REMOTE_APP_DIR/web/"
 }
 
 restart_remote_service() {
@@ -229,7 +202,7 @@ kill_listening_port() {
 }
 
 remote_log "安装新二进制"
-mkdir -p "$APP_DIR/bin" "$APP_DIR/web" "$LOG_DIR"
+mkdir -p "$APP_DIR/bin" "$LOG_DIR"
 chmod +x "$NEW_BIN_PATH"
 mv -f "$NEW_BIN_PATH" "$BIN_PATH"
 write_plist

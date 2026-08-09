@@ -1,0 +1,28 @@
+[package]
+name = "ai-gateway-client"
+version = "0.1.0"
+edition = "2024"
+description = "AI Gateway local desktop data plane"
+
+[lib]
+name = "ai_gateway_client_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "ai-gateway-client"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+ai-gateway-local-core = { path = "../local-core" }
+aes-gcm = "0.11"
+base64 = "0.22"
+getrandom = "0.4"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = [] }
+tokio = { version = "1", features = ["time"] }
+uuid = { version = "1", features = ["v4"] }

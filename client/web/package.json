@@ -13,6 +13,7 @@
   "dependencies": {
     "@radix-ui/react-slot": "latest",
     "@tailwindcss/cli": "latest",
+    "@tauri-apps/api": "^2",
     "class-variance-authority": "latest",
     "clsx": "latest",
     "lucide-react": "latest",

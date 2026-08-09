@@ -36,6 +36,7 @@ pub struct AuthService {
     settings: SettingsStore,
     http: Client,
     states: Arc<Mutex<HashMap<String, PendingLogin>>>,
+    bootstrap_admin: Option<(String, String, String)>,
 }
 
 #[derive(Clone)]
@@ -93,14 +94,19 @@ impl AuthService {
     pub fn new(config: Arc<Config>) -> Result<Self, String> {
         Ok(Self {
             users: UserStore::new(config.clone())?,
-            settings: SettingsStore::new(config)?,
+            settings: SettingsStore::new(config.clone())?,
             http: Client::new(),
             states: Arc::new(Mutex::new(HashMap::new())),
+            bootstrap_admin: config.bootstrap_admin()?,
         })
     }
 
     pub fn initialize(&self) -> Result<(), String> {
-        self.users.initialize()
+        self.users.initialize()?;
+        if let Some((email, name, password)) = self.bootstrap_admin.as_ref() {
+            self.users.ensure_bootstrap_admin(email, name, password)?;
+        }
+        Ok(())
     }
 
     pub fn feishu_configured(&self) -> bool {
@@ -109,13 +115,6 @@ impl AuthService {
             .map(|settings| {
                 !settings.feishu_app_id.is_empty() && settings.feishu_app_secret_configured
             })
-            .unwrap_or(false)
-    }
-
-    pub fn required(&self) -> bool {
-        self.settings
-            .security_settings()
-            .map(|settings| settings.auth_required)
             .unwrap_or(false)
     }
 
@@ -180,6 +179,14 @@ impl AuthService {
         ))
     }
 
+    pub fn verify_login(
+        &self,
+        email: &str,
+        password: &str,
+    ) -> Result<Option<LoginIdentity>, String> {
+        self.users.verify_login(email, password)
+    }
+
     pub fn create_user(
         &self,
         email: &str,
@@ -207,16 +214,19 @@ impl AuthService {
         self.users.list_all_users()
     }
 
-    pub fn delete_user(&self, user_id: i64) -> Result<(), String> {
+    pub fn delete_user(&self, user_id: i64) -> Result<bool, String> {
         self.users.delete_user(user_id)
     }
 
-    pub fn verify_login(
-        &self,
-        email: &str,
-        password: &str,
-    ) -> Result<Option<LoginIdentity>, String> {
-        self.users.verify_login(email, password)
+    pub fn public_user(&self, user_id: i64) -> Result<Option<PublicUser>, String> {
+        self.users.find_user_for_session(user_id).map(|profile| {
+            profile.map(|profile| PublicUser {
+                id: profile.user.id,
+                name: profile.name,
+                avatar_url: profile.avatar_url,
+                role: profile.user.role.as_str().to_string(),
+            })
+        })
     }
 
     pub fn user_from_headers(&self, headers: &HeaderMap) -> Result<Option<PublicUser>, String> {
@@ -232,16 +242,7 @@ impl AuthService {
             return Ok(None);
         }
         self.users.touch_session(&session_id, now)?;
-        self.users
-            .find_user_for_session(session.user_id)
-            .map(|profile| {
-                profile.map(|profile| PublicUser {
-                    id: profile.user.id,
-                    name: profile.name,
-                    avatar_url: profile.avatar_url,
-                    role: profile.user.role.as_str().to_string(),
-                })
-            })
+        self.public_user(session.user_id)
     }
 
     pub fn delete_session_from_headers(&self, headers: &HeaderMap) -> Result<(), String> {
@@ -403,11 +404,7 @@ struct FeishuProfile {
 
 pub async fn auth_status(State(auth): State<AuthService>) -> Json<AuthStatus> {
     Json(AuthStatus {
-        mode: if auth.required() {
-            "required".to_string()
-        } else {
-            "disabled".to_string()
-        },
+        mode: "required".to_string(),
         feishu_login_configured: auth.feishu_configured(),
     })
 }
@@ -470,17 +467,6 @@ pub async fn me(
     State(auth): State<AuthService>,
     headers: HeaderMap,
 ) -> Result<Json<LoginResponse>, AuthError> {
-    if !auth.required() {
-        return Ok(Json(LoginResponse {
-            ok: true,
-            user: PublicUser {
-                id: 0,
-                name: "本地管理员".to_string(),
-                avatar_url: String::new(),
-                role: UserRole::Admin.as_str().to_string(),
-            },
-        }));
-    }
     let user = auth
         .user_from_headers(&headers)
         .map_err(AuthError::internal)?
@@ -534,13 +520,6 @@ pub async fn require_auth(
     mut request: Request,
     next: Next,
 ) -> Response {
-    if !auth.required() {
-        request.extensions_mut().insert(RequestScope {
-            owner_user_id: None,
-            is_admin: true,
-        });
-        return next.run(request).await;
-    }
     match auth.user_from_headers(request.headers()) {
         Ok(Some(user)) => {
             request.extensions_mut().insert(RequestScope {
@@ -559,13 +538,6 @@ pub async fn require_gateway_auth(
     mut request: Request,
     next: Next,
 ) -> Response {
-    if !auth.required() {
-        request.extensions_mut().insert(RequestScope {
-            owner_user_id: None,
-            is_admin: true,
-        });
-        return next.run(request).await;
-    }
     match auth.gateway_scope_from_headers(request.headers()) {
         Ok(Some(scope)) => {
             request.extensions_mut().insert(scope);
@@ -678,7 +650,7 @@ impl AuthError {
     fn unauthorized() -> Self {
         Self {
             status: StatusCode::UNAUTHORIZED,
-            message: "请先使用飞书登录".to_string(),
+            message: "请先登录中心服务".to_string(),
             source: AuthErrorSource::Gateway,
         }
     }

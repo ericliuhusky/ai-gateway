@@ -3,24 +3,21 @@ use crate::{
         PreparedResponsesUpstream, ResponsesAdapterError, ResponsesAdapterProvider,
         prepare_responses_upstream,
     },
-    auth::{AuthService, RequestScope},
+    api::RequestScope,
     config::{Config, DEFAULT_CODEX_CLIENT_VERSION},
     models::openai::responses::{
         CodexUsageCredits, CodexUsageRateLimit, CodexUsageRateLimitWindow, CodexUsageResponse,
     },
     models::{
-        AccountRecord, AddGatewayGroupMemberRequest, ApiProviderRecord, ApiProviderSummary,
-        AutoRoutingSettings, CodexClientVersionSetting, CreateApiProviderRequest,
-        CreateGatewayGroupRequest, DailyUsageSummary, FeishuAppSecretResponse, GatewayGroupDetail,
-        GatewayGroupSummary, GatewayIssue, GatewayIssueRecord, InstanceRoutingConfig,
-        ModelBenchmarkResponse, ModelBenchmarkSample, ModelListItem, ModelListResponse,
-        OPENAI_ACCOUNT_PROVIDER_NAME, ProviderAuthMode, ProviderCompatibilityProfile,
-        ProviderQuotaCredits, ProviderQuotaResponse, ProviderQuotaSnapshot, ProviderQuotaSummary,
-        ProviderQuotaWindow, QuotaSource, QuotaSupportStatus, RoutingModelTarget,
-        RunModelBenchmarkRequest, SecuritySettings, SelectedRoute,
-        ShareGatewayGroupProviderRequest, TokenUsage, TurnRouteLogUpdate,
-        UpdateAutoRoutingSettingsRequest, UpdateCodexClientVersionRequest,
-        UpdateInstanceRoutingConfigRequest, UpdateSecuritySettingsRequest,
+        AccountRecord, ApiProviderRecord, ApiProviderSummary, AutoRoutingSettings,
+        CodexClientVersionSetting, CreateApiProviderRequest, DailyUsageSummary, GatewayIssue,
+        GatewayIssueRecord, InstanceRoutingConfig, ModelBenchmarkResponse, ModelBenchmarkSample,
+        ModelListItem, ModelListResponse, OPENAI_ACCOUNT_PROVIDER_NAME, ProviderAuthMode,
+        ProviderCompatibilityProfile, ProviderQuotaCredits, ProviderQuotaResponse,
+        ProviderQuotaSnapshot, ProviderQuotaSummary, ProviderQuotaWindow, QuotaSource,
+        QuotaSupportStatus, RoutingModelTarget, RunModelBenchmarkRequest, SelectedRoute,
+        TokenUsage, TurnRouteLogUpdate, UpdateAutoRoutingSettingsRequest,
+        UpdateCodexClientVersionRequest, UpdateInstanceRoutingConfigRequest,
         UpdateSelectedModelRequest, UpdateSelectedProviderRequest,
         UpdateSelectedReasoningEffortRequest, UsageIncrement, UsageSummary,
     },
@@ -33,8 +30,9 @@ use crate::{
         decision_from_classifier_output, diagnostic_preview, is_tool_round, summarize_request,
         user_input_preview,
     },
+    shared_leases::SharedLeaseStore,
     store::{
-        AccountStore, GroupStore, IssueStore, ModelStore, ProviderStore, RouteStore, SettingsStore,
+        AccountStore, IssueStore, ModelStore, ProviderStore, RouteStore, SettingsStore,
         TurnLogStore, UsagePeriod, UsageStore, issue_store::truncate_issue_body,
     },
     support::time::now_unix,
@@ -66,11 +64,9 @@ const UPSTREAM_ERROR_PREFIX: &str = "上游服务错误：";
 pub struct AppState {
     pub _client: Client,
     pub _config: Arc<Config>,
-    pub auth: AuthService,
     pub openai_tokens: OpenAiTokenService,
     pub openai_device_login: OpenAiDeviceLoginService,
     pub accounts: AccountStore,
-    pub groups: GroupStore,
     pub providers: ProviderStore,
     pub routes: RouteStore,
     pub models: ModelStore,
@@ -79,6 +75,7 @@ pub struct AppState {
     pub issues: IssueStore,
     pub usage: UsageStore,
     pub upstream: UpstreamClient,
+    pub shared_leases: SharedLeaseStore,
 }
 
 #[derive(Debug, Deserialize)]
@@ -107,14 +104,6 @@ pub struct UsageDailyQuery {
 pub struct GatewayIssueListQuery {
     #[serde(default = "default_gateway_issue_limit")]
     pub limit: i64,
-    #[serde(default)]
-    pub user_id: Option<i64>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ObservabilityOwnerQuery {
-    #[serde(default)]
-    pub user_id: Option<i64>,
 }
 
 fn default_gateway_issue_limit() -> i64 {
@@ -168,11 +157,9 @@ pub async fn list_gateway_issues(
     Extension(scope): Extension<RequestScope>,
     Query(query): Query<GatewayIssueListQuery>,
 ) -> Result<Json<Value>, AppError> {
-    require_admin(&scope)?;
-    let owner_user_id = query.user_id.or(scope.owner_user_id);
     let issues = state
         .issues
-        .list_for_owner(owner_user_id, query.limit)
+        .list_for_owner(scope.owner_user_id, query.limit)
         .map_err(AppError::internal)?;
     Ok(Json(json!({ "issues": issues })))
 }
@@ -180,13 +167,10 @@ pub async fn list_gateway_issues(
 pub async fn clear_gateway_issues(
     State(state): State<AppState>,
     Extension(scope): Extension<RequestScope>,
-    Query(query): Query<ObservabilityOwnerQuery>,
 ) -> Result<Json<Value>, AppError> {
-    require_admin(&scope)?;
-    let owner_user_id = query.user_id.or(scope.owner_user_id);
     let deleted = state
         .issues
-        .clear_for_owner(owner_user_id)
+        .clear_for_owner(scope.owner_user_id)
         .map_err(AppError::internal)?;
     Ok(Json(json!({ "deleted": deleted })))
 }
@@ -195,13 +179,10 @@ pub async fn get_gateway_issue_repair_prompt(
     State(state): State<AppState>,
     Extension(scope): Extension<RequestScope>,
     AxumPath(issue_id): AxumPath<String>,
-    Query(query): Query<ObservabilityOwnerQuery>,
 ) -> Result<Json<GatewayIssueRepairPromptResponse>, AppError> {
-    require_admin(&scope)?;
-    let owner_user_id = query.user_id.or(scope.owner_user_id);
     let issue = state
         .issues
-        .get_for_owner(owner_user_id, &issue_id)
+        .get_for_owner(scope.owner_user_id, &issue_id)
         .map_err(AppError::internal)?
         .ok_or_else(|| AppError::bad_request("网关问题不存在"))?;
     Ok(Json(GatewayIssueRepairPromptResponse {
@@ -554,18 +535,14 @@ fn sse_frame_boundary(buffer: &str) -> Option<(usize, usize)> {
 
 pub async fn get_codex_client_version(
     State(state): State<AppState>,
-    Extension(scope): Extension<RequestScope>,
 ) -> Result<Json<CodexClientVersionSetting>, AppError> {
-    require_admin(&scope)?;
     Ok(Json(codex_client_version_setting(&state)?))
 }
 
 pub async fn set_codex_client_version(
     State(state): State<AppState>,
-    Extension(scope): Extension<RequestScope>,
     Json(request): Json<UpdateCodexClientVersionRequest>,
 ) -> Result<Json<CodexClientVersionSetting>, AppError> {
-    require_admin(&scope)?;
     let version = normalize_codex_client_version(request.version)?;
     state
         .settings
@@ -577,75 +554,13 @@ pub async fn set_codex_client_version(
 
 pub async fn clear_codex_client_version(
     State(state): State<AppState>,
-    Extension(scope): Extension<RequestScope>,
 ) -> Result<Json<CodexClientVersionSetting>, AppError> {
-    require_admin(&scope)?;
     state
         .settings
         .clear_codex_client_version()
         .map_err(AppError::internal)?;
     clear_openai_model_caches(&state).await?;
     Ok(Json(codex_client_version_setting(&state)?))
-}
-
-pub async fn get_security_settings(
-    State(state): State<AppState>,
-    Extension(scope): Extension<RequestScope>,
-) -> Result<Json<SecuritySettings>, AppError> {
-    require_admin(&scope)?;
-    security_settings(&state)
-}
-
-pub async fn get_feishu_app_secret(
-    State(state): State<AppState>,
-    Extension(scope): Extension<RequestScope>,
-) -> Result<Json<FeishuAppSecretResponse>, AppError> {
-    require_admin(&scope)?;
-    let (_, feishu_app_secret) = state
-        .settings
-        .feishu_credentials()
-        .map_err(AppError::internal)?;
-    Ok(Json(FeishuAppSecretResponse { feishu_app_secret }))
-}
-
-pub async fn set_security_settings(
-    State(state): State<AppState>,
-    Extension(scope): Extension<RequestScope>,
-    Json(request): Json<UpdateSecuritySettingsRequest>,
-) -> Result<Json<SecuritySettings>, AppError> {
-    require_admin(&scope)?;
-    let settings = state
-        .settings
-        .update_security_settings(
-            None,
-            &request.feishu_app_id,
-            request.feishu_app_secret.as_deref(),
-            request.auth_required,
-        )
-        .map_err(AppError::bad_request)?;
-    Ok(Json(SecuritySettings {
-        encryption_key_configured: settings.encryption_key_configured,
-        feishu_app_id: settings.feishu_app_id,
-        feishu_app_secret_configured: settings.feishu_app_secret_configured,
-        auth_required: settings.auth_required,
-    }))
-}
-
-pub async fn regenerate_database_encryption_key(
-    State(state): State<AppState>,
-    Extension(scope): Extension<RequestScope>,
-) -> Result<Json<SecuritySettings>, AppError> {
-    require_admin(&scope)?;
-    let settings = state
-        .settings
-        .regenerate_database_encryption_key()
-        .map_err(AppError::internal)?;
-    Ok(Json(SecuritySettings {
-        encryption_key_configured: settings.encryption_key_configured,
-        feishu_app_id: settings.feishu_app_id,
-        feishu_app_secret_configured: settings.feishu_app_secret_configured,
-        auth_required: settings.auth_required,
-    }))
 }
 
 pub async fn get_auto_routing_settings(
@@ -683,8 +598,6 @@ pub async fn set_auto_routing_settings(
 pub struct ListTurnLogsQuery {
     #[serde(default = "default_turn_log_limit")]
     pub limit: i64,
-    #[serde(default)]
-    pub user_id: Option<i64>,
 }
 
 fn default_turn_log_limit() -> i64 {
@@ -696,11 +609,9 @@ pub async fn list_turn_logs(
     Extension(scope): Extension<RequestScope>,
     Query(query): Query<ListTurnLogsQuery>,
 ) -> Result<Json<Value>, AppError> {
-    require_admin(&scope)?;
-    let owner_user_id = query.user_id.or(scope.owner_user_id);
     let turns = state
         .turn_logs
-        .list_for_owner(owner_user_id, query.limit)
+        .list_for_owner(scope.owner_user_id, query.limit)
         .map_err(AppError::internal)?;
     Ok(Json(json!({ "turns": turns })))
 }
@@ -1066,198 +977,6 @@ pub async fn list_providers(
 ) -> Json<Value> {
     let providers = hydrated_provider_summaries_for_owner(&state, scope.owner_user_id).await;
     Json(json!({ "providers": providers }))
-}
-
-#[derive(Debug, Deserialize)]
-pub struct UserSearchQuery {
-    #[serde(default)]
-    pub q: String,
-}
-
-fn required_group_user(scope: &RequestScope) -> Result<i64, AppError> {
-    scope
-        .owner_user_id
-        .ok_or_else(|| AppError::bad_request("群组功能需要启用账户登录"))
-}
-
-pub async fn list_user_search(
-    State(state): State<AppState>,
-    Extension(scope): Extension<RequestScope>,
-    Query(query): Query<UserSearchQuery>,
-) -> Result<Json<Value>, AppError> {
-    let user_id = required_group_user(&scope)?;
-    if query.q.trim().is_empty() {
-        return Ok(Json(json!({ "users": [] })));
-    }
-    let users = state
-        .groups
-        .search_users(&query.q, user_id)
-        .map_err(AppError::internal)?;
-    Ok(Json(json!({ "users": users })))
-}
-
-pub async fn list_observability_users(
-    State(state): State<AppState>,
-    Extension(scope): Extension<RequestScope>,
-) -> Result<Json<Value>, AppError> {
-    require_admin(&scope)?;
-    let users = state.groups.list_users().map_err(AppError::internal)?;
-    Ok(Json(json!({ "users": users })))
-}
-
-#[derive(Debug, Deserialize)]
-pub struct CreateManagedUserRequest {
-    pub email: String,
-    pub name: String,
-    pub role: String,
-    pub password: String,
-}
-
-pub async fn admin_list_users(
-    State(state): State<AppState>,
-    Extension(scope): Extension<RequestScope>,
-) -> Result<Json<Value>, AppError> {
-    require_admin(&scope)?;
-    let users = state.auth.list_users().map_err(AppError::internal)?;
-    Ok(Json(json!({ "users": users })))
-}
-
-pub async fn admin_create_user(
-    State(state): State<AppState>,
-    Extension(scope): Extension<RequestScope>,
-    Json(request): Json<CreateManagedUserRequest>,
-) -> Result<Json<Value>, AppError> {
-    require_admin(&scope)?;
-    let auth = state.auth.clone();
-    let user = tokio::task::spawn_blocking(move || {
-        auth.create_user(
-            &request.email,
-            &request.name,
-            &request.role,
-            &request.password,
-        )
-    })
-    .await
-    .map_err(|error| AppError::internal(format!("等待密码哈希任务失败：{error}")))?
-    .map_err(AppError::bad_request)?;
-    Ok(Json(json!({ "user": user })))
-}
-
-pub async fn admin_delete_user(
-    State(state): State<AppState>,
-    Extension(scope): Extension<RequestScope>,
-    AxumPath(user_id): AxumPath<i64>,
-) -> Result<Json<Value>, AppError> {
-    require_admin(&scope)?;
-    state
-        .auth
-        .delete_user(user_id)
-        .map_err(AppError::internal)?;
-    Ok(Json(json!({ "deleted": (), "user_id": user_id })))
-}
-
-pub async fn list_groups(
-    State(state): State<AppState>,
-    Extension(scope): Extension<RequestScope>,
-) -> Result<Json<Value>, AppError> {
-    let user_id = required_group_user(&scope)?;
-    let groups = state
-        .groups
-        .list_for_user(user_id)
-        .map_err(AppError::internal)?;
-    Ok(Json(json!({ "groups": groups })))
-}
-
-pub async fn create_group(
-    State(state): State<AppState>,
-    Extension(scope): Extension<RequestScope>,
-    Json(request): Json<CreateGatewayGroupRequest>,
-) -> Result<Json<GatewayGroupSummary>, AppError> {
-    let user_id = required_group_user(&scope)?;
-    let group = state
-        .groups
-        .create_group(user_id, &request.name, now_unix() as i64)
-        .map_err(AppError::bad_request)?;
-    Ok(Json(group))
-}
-
-pub async fn get_group(
-    State(state): State<AppState>,
-    Extension(scope): Extension<RequestScope>,
-    AxumPath(group_id): AxumPath<i64>,
-) -> Result<Json<GatewayGroupDetail>, AppError> {
-    let user_id = required_group_user(&scope)?;
-    let group = state
-        .groups
-        .get_detail(group_id, user_id)
-        .map_err(AppError::internal)?
-        .ok_or_else(|| AppError::bad_request("群组不存在或你不是群组成员"))?;
-    Ok(Json(group))
-}
-
-pub async fn add_group_member(
-    State(state): State<AppState>,
-    Extension(scope): Extension<RequestScope>,
-    AxumPath(group_id): AxumPath<i64>,
-    Json(request): Json<AddGatewayGroupMemberRequest>,
-) -> Result<Json<Value>, AppError> {
-    let user_id = required_group_user(&scope)?;
-    state
-        .groups
-        .add_member(
-            group_id,
-            user_id,
-            request.user_id,
-            scope.is_admin,
-            now_unix() as i64,
-        )
-        .map_err(AppError::bad_request)?;
-    Ok(Json(json!({ "ok": true })))
-}
-
-pub async fn delete_group_member(
-    State(state): State<AppState>,
-    Extension(scope): Extension<RequestScope>,
-    AxumPath((group_id, user_id)): AxumPath<(i64, i64)>,
-) -> Result<Json<Value>, AppError> {
-    let actor = required_group_user(&scope)?;
-    state
-        .groups
-        .remove_member(group_id, actor, user_id, scope.is_admin)
-        .map_err(AppError::bad_request)?;
-    Ok(Json(json!({ "ok": true })))
-}
-
-pub async fn share_group_provider(
-    State(state): State<AppState>,
-    Extension(scope): Extension<RequestScope>,
-    AxumPath(group_id): AxumPath<i64>,
-    Json(request): Json<ShareGatewayGroupProviderRequest>,
-) -> Result<Json<Value>, AppError> {
-    let user_id = required_group_user(&scope)?;
-    state
-        .groups
-        .share_provider(
-            group_id,
-            user_id,
-            request.provider_id.trim(),
-            now_unix() as i64,
-        )
-        .map_err(AppError::bad_request)?;
-    Ok(Json(json!({ "ok": true })))
-}
-
-pub async fn unshare_group_provider(
-    State(state): State<AppState>,
-    Extension(scope): Extension<RequestScope>,
-    AxumPath((group_id, provider_id)): AxumPath<(i64, String)>,
-) -> Result<Json<Value>, AppError> {
-    let user_id = required_group_user(&scope)?;
-    state
-        .groups
-        .unshare_provider(group_id, user_id, &provider_id, scope.is_admin)
-        .map_err(AppError::bad_request)?;
-    Ok(Json(json!({ "ok": true })))
 }
 
 pub async fn get_provider_quota(
@@ -3153,18 +2872,6 @@ fn effective_codex_client_version(state: &AppState) -> Result<String, AppError> 
         .unwrap_or_else(|| DEFAULT_CODEX_CLIENT_VERSION.to_string()))
 }
 
-fn require_admin(scope: &RequestScope) -> Result<(), AppError> {
-    if scope.is_admin {
-        Ok(())
-    } else {
-        Err(AppError {
-            status: StatusCode::FORBIDDEN,
-            message: "需要管理员权限".to_string(),
-            source: AppErrorSource::Gateway,
-        })
-    }
-}
-
 fn codex_client_version_setting(state: &AppState) -> Result<CodexClientVersionSetting, AppError> {
     let override_version = state
         .settings
@@ -3179,19 +2886,6 @@ fn codex_client_version_setting(state: &AppState) -> Result<CodexClientVersionSe
         override_version,
         effective_version,
     })
-}
-
-fn security_settings(state: &AppState) -> Result<Json<SecuritySettings>, AppError> {
-    let settings = state
-        .settings
-        .security_settings()
-        .map_err(AppError::internal)?;
-    Ok(Json(SecuritySettings {
-        encryption_key_configured: settings.encryption_key_configured,
-        feishu_app_id: settings.feishu_app_id,
-        feishu_app_secret_configured: settings.feishu_app_secret_configured,
-        auth_required: settings.auth_required,
-    }))
 }
 
 fn normalize_codex_client_version(version: String) -> Result<String, AppError> {
@@ -3500,24 +3194,18 @@ pub(super) struct ResolvedProvider {
 
 async fn resolve_provider_by_id_for_owner(
     state: &AppState,
-    owner_user_id: Option<i64>,
+    _owner_user_id: Option<i64>,
     provider_id: &str,
 ) -> Result<ResolvedProvider, AppError> {
-    let record = match owner_user_id {
-        Some(user_id) => {
-            state
-                .providers
-                .find_visible_by_id_for_user(user_id, provider_id)
-                .await
-        }
-        None => {
-            state
-                .providers
-                .find_by_id_for_owner(None, provider_id)
-                .await
-        }
-    }
-    .ok_or_else(|| AppError::bad_request(format!("未知的 provider_id: {provider_id}")))?;
+    state
+        .shared_leases
+        .ensure_active(provider_id)
+        .map_err(AppError::bad_request)?;
+    let record = state
+        .providers
+        .find_by_id_for_owner(None, provider_id)
+        .await
+        .ok_or_else(|| AppError::bad_request(format!("未知的 provider_id: {provider_id}")))?;
     Ok(resolved_provider_from_record(record))
 }
 
@@ -3571,10 +3259,7 @@ async fn hydrated_provider_summaries_for_owner(
     state: &AppState,
     owner_user_id: Option<i64>,
 ) -> Vec<ApiProviderSummary> {
-    let mut providers = match owner_user_id {
-        Some(user_id) => state.providers.list_visible_for_user(user_id).await,
-        None => state.providers.list_for_owner(None).await,
-    };
+    let mut providers = state.providers.list_for_owner(None).await;
     for provider in &mut providers {
         hydrate_provider_summary_for_owner(state, owner_user_id, provider).await;
     }
@@ -3599,7 +3284,7 @@ async fn provider_summary_for_resolved_for_owner(
         account_email: None,
         upstream_protocol: record.upstream_protocol.clone(),
         compatibility_profile: record.compatibility_profile.clone(),
-        shared: record.owner_user_id != owner_user_id,
+        shared: record.id.starts_with("shared_"),
     };
     hydrate_provider_summary_for_owner(state, owner_user_id, &mut summary).await;
     Ok(summary)
@@ -3823,7 +3508,7 @@ mod tests {
     };
     use super::{CodexAuthFile, import_tokens_from_value};
     use crate::{
-        auth::{AuthService, RequestScope},
+        api::RequestScope,
         config::Config,
         models::{
             ApiProviderRecord, GatewayIssue, ProviderAuthMode, ProviderCompatibilityProfile,
@@ -3831,9 +3516,10 @@ mod tests {
         },
         openai_device_login::OpenAiDeviceLoginService,
         openai_tokens::{ImportedOpenAIAuth, OpenAiTokenService},
+        shared_leases::SharedLeaseStore,
         store::{
-            AccountStore, GroupStore, IssueStore, ModelStore, ProviderStore, RouteStore,
-            SettingsStore, TurnLogStore, UsageStore,
+            AccountStore, IssueStore, ModelStore, ProviderStore, RouteStore, SettingsStore,
+            TurnLogStore, UsageStore,
         },
         upstream::UpstreamClient,
     };
@@ -3949,7 +3635,6 @@ data: {"error":{"message":"rate limit exceeded"}}
         accounts.load().await.expect("load accounts");
         let providers = ProviderStore::new(config.clone()).expect("create provider store");
         providers.load().await.expect("load providers");
-        let groups = GroupStore::new(config.clone()).expect("create group store");
         let routes = RouteStore::new(config.clone()).expect("create route store");
         routes.load().await.expect("load routes");
         let account = accounts
@@ -3974,11 +3659,9 @@ data: {"error":{"message":"rate limit exceeded"}}
         let state = AppState {
             _client: Client::new(),
             _config: config.clone(),
-            auth: AuthService::new(config.clone()).expect("create auth service"),
             openai_tokens: OpenAiTokenService::new(),
             openai_device_login: OpenAiDeviceLoginService::new(),
             accounts: accounts.clone(),
-            groups,
             providers: providers.clone(),
             routes,
             models: ModelStore::new(config.clone()).expect("create model store"),
@@ -3987,13 +3670,13 @@ data: {"error":{"message":"rate limit exceeded"}}
             issues: IssueStore::new(config.clone()).expect("create issue store"),
             usage: UsageStore::new(config.clone()).expect("create usage store"),
             upstream: UpstreamClient::new(),
+            shared_leases: SharedLeaseStore::default(),
         };
 
         let _ = delete_provider(
             State(state),
             Extension(RequestScope {
                 owner_user_id: None,
-                is_admin: true,
             }),
             AxumPath(provider.id.clone()),
         )

@@ -1,3 +1,5 @@
+import { invoke } from "@tauri-apps/api/core";
+
 import type {
   CodexAuthPayload,
   AutoRoutingSettings,
@@ -7,25 +9,27 @@ import type {
   GatewayIssue,
   GatewayProvider,
   ModelBenchmarkResult,
-  FeishuAppSecretResponse,
   InstanceRoutingConfig,
   ProviderQuotaSummary,
   ReasoningEffort,
-  SecuritySettings,
   SelectedProvider,
   TurnRouteLog,
   UsageSummary,
   DailyUsageSummary,
   OpenAiDeviceLoginStart,
   OpenAiDeviceLoginStatus,
-  GatewayGroup,
-  GatewayGroupDetail,
-  GatewayUser,
-  ManagedUser,
+  CenterGroup,
+  CenterGroupDetail,
+  CenterUser,
+  LocalGatewayStatus,
+  ManagedCenterUser,
+  SharedSyncStatus,
 } from "./types";
 
+export const LOCAL_API_ROOT = "http://127.0.0.1:4242";
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, {
+  const response = await fetch(`${LOCAL_API_ROOT}${path}`, {
     credentials: "same-origin",
     ...init,
     headers: {
@@ -76,28 +80,6 @@ export const gatewayApi = {
     });
   },
 
-  securitySettings: () => request<SecuritySettings>("/settings/security"),
-
-  feishuAppSecret: () =>
-    request<FeishuAppSecretResponse>("/settings/security/feishu-app-secret"),
-
-  setSecuritySettings(settings: {
-    feishu_app_id: string;
-    feishu_app_secret?: string;
-    auth_required: boolean;
-  }) {
-    return request<SecuritySettings>("/settings/security", {
-      method: "PUT",
-      body: JSON.stringify(settings),
-    });
-  },
-
-  regenerateDatabaseEncryptionKey() {
-    return request<SecuritySettings>("/settings/security/encryption-key/regenerate", {
-      method: "POST",
-    });
-  },
-
   automaticRouting() {
     return request<AutoRoutingSettings>("/settings/automatic-routing");
   },
@@ -134,55 +116,26 @@ export const gatewayApi = {
     });
   },
 
-  async routingTurns(limit = 50, userId?: number) {
+  async routingTurns(limit = 50) {
     const query = new URLSearchParams({ limit: String(limit) });
-    if (userId !== undefined && userId > 0) query.set("user_id", String(userId));
     const payload = await request<{ turns: TurnRouteLog[] }>(`/routing/turns?${query.toString()}`);
     return payload.turns;
   },
 
-  async gatewayIssues(limit = 200, userId?: number) {
+  async gatewayIssues(limit = 200) {
     const query = new URLSearchParams({ limit: String(limit) });
-    if (userId !== undefined && userId > 0) query.set("user_id", String(userId));
     const payload = await request<{ issues: GatewayIssue[] }>(`/gateway/issues?${query.toString()}`);
     return payload.issues;
   },
 
-  gatewayIssueRepairPrompt(issueId: string, userId?: number) {
-    const query = new URLSearchParams();
-    if (userId !== undefined && userId > 0) query.set("user_id", String(userId));
-    const suffix = query.size ? `?${query.toString()}` : "";
+  gatewayIssueRepairPrompt(issueId: string) {
     return request<{ prompt: string }>(
-      `/gateway/issues/${encodeURIComponent(issueId)}/repair-prompt${suffix}`,
+      `/gateway/issues/${encodeURIComponent(issueId)}/repair-prompt`,
     );
   },
 
-  clearGatewayIssues(userId?: number) {
-    const query = new URLSearchParams();
-    if (userId !== undefined && userId > 0) query.set("user_id", String(userId));
-    const suffix = query.size ? `?${query.toString()}` : "";
-    return request<{ deleted: number }>(`/gateway/issues${suffix}`, { method: "DELETE" });
-  },
-
-  async observabilityUsers() {
-    const payload = await request<{ users: GatewayUser[] }>("/observability/users");
-    return payload.users;
-  },
-
-  async adminUsers() {
-    const payload = await request<{ users: ManagedUser[] }>("/users");
-    return payload.users;
-  },
-
-  createManagedUser(input: { email: string; name: string; role: "admin" | "user"; password: string }) {
-    return request<{ user: ManagedUser }>("/users", {
-      method: "POST",
-      body: JSON.stringify(input),
-    });
-  },
-
-  deleteManagedUser(userId: number) {
-    return request<{ deleted: boolean; user_id: number }>(`/users/${userId}`, { method: "DELETE" });
+  clearGatewayIssues() {
+    return request<{ deleted: number }>("/gateway/issues", { method: "DELETE" });
   },
 
   usageSummary(period: "total" | "today" | "week", providerId?: string) {
@@ -198,50 +151,6 @@ export const gatewayApi = {
   async providers() {
     const payload = await request<{ providers: GatewayProvider[] }>("/providers");
     return payload.providers;
-  },
-
-  async groups() {
-    const payload = await request<{ groups: GatewayGroup[] }>("/groups");
-    return payload.groups;
-  },
-
-  group(groupId: number) {
-    return request<GatewayGroupDetail>(`/groups/${groupId}`);
-  },
-
-  createGroup(name: string) {
-    return request<GatewayGroup>("/groups", {
-      method: "POST",
-      body: JSON.stringify({ name }),
-    });
-  },
-
-  searchUsers(query: string) {
-    return request<{ users: GatewayUser[] }>(`/users/search?q=${encodeURIComponent(query)}`);
-  },
-
-  addGroupMember(groupId: number, userId: number) {
-    return request<{ ok: true }>(`/groups/${groupId}/members`, {
-      method: "POST",
-      body: JSON.stringify({ user_id: userId }),
-    });
-  },
-
-  removeGroupMember(groupId: number, userId: number) {
-    return request<{ ok: true }>(`/groups/${groupId}/members/${userId}`, { method: "DELETE" });
-  },
-
-  shareGroupProvider(groupId: number, providerId: string) {
-    return request<{ ok: true }>(`/groups/${groupId}/providers`, {
-      method: "POST",
-      body: JSON.stringify({ provider_id: providerId }),
-    });
-  },
-
-  unshareGroupProvider(groupId: number, providerId: string) {
-    return request<{ ok: true }>(`/groups/${groupId}/providers/${encodeURIComponent(providerId)}`, {
-      method: "DELETE",
-    });
   },
 
   async selectedProvider() {
@@ -360,18 +269,94 @@ export const gatewayApi = {
   },
 };
 
+async function centerRequest<T>(
+  method: "GET" | "POST" | "PUT" | "DELETE",
+  path: string,
+  body?: unknown,
+): Promise<T> {
+  return invoke<T>("center_request", {
+    input: {
+      method,
+      path,
+      ...(body === undefined ? {} : { body }),
+    },
+  });
+}
 
-export const authApi = {
-  status: () => request<{ mode: "disabled" | "required"; feishu_login_configured: boolean }>("/auth/status"),
-  me: () => request<{ ok: true; user: GatewayUser }>("/auth/me"),
-  logout: () => request<{ ok: true }>("/auth/logout", { method: "POST" }),
-  loginEmail: (email: string, password: string) =>
-    request<{ ok: true; user: GatewayUser }>("/auth/login", {
-      method: "POST",
-      body: JSON.stringify({ email, password }),
-    }),
-  gatewayAccessToken: () => request<{ access_token: string }>("/auth/access-tokens"),
-  regenerateAccessToken: () => request<{ access_token: string }>("/auth/access-tokens", { method: "POST" }),
+export const centerApi = {
+  gatewayStatus() {
+    return invoke<LocalGatewayStatus>("gateway_status");
+  },
+
+  login(input: { url: string; email: string; password: string }) {
+    return invoke<{ user: CenterUser; control_plane_url: string }>("login_center", { input });
+  },
+
+  disconnect() {
+    return invoke<void>("disconnect_control_plane");
+  },
+
+  sync() {
+    return invoke<SharedSyncStatus>("sync_shared_connections");
+  },
+
+  async me() {
+    const payload = await centerRequest<{ user: CenterUser }>("GET", "/client/v1/me");
+    return payload.user;
+  },
+
+  async groups() {
+    const payload = await centerRequest<{ groups: CenterGroup[] }>("GET", "/groups");
+    return payload.groups;
+  },
+
+  group(groupId: number) {
+    return centerRequest<CenterGroupDetail>("GET", `/groups/${groupId}`);
+  },
+
+  createGroup(name: string) {
+    return centerRequest<CenterGroup>("POST", "/groups", { name });
+  },
+
+  searchUsers(query: string) {
+    return centerRequest<{ users: CenterUser[] }>(
+      "GET",
+      `/users/search?q=${encodeURIComponent(query)}`,
+    );
+  },
+
+  addGroupMember(groupId: number, userId: number) {
+    return centerRequest<{ ok: true }>("POST", `/groups/${groupId}/members`, {
+      user_id: userId,
+    });
+  },
+
+  removeGroupMember(groupId: number, userId: number) {
+    return centerRequest<{ ok: true }>(
+      "DELETE",
+      `/groups/${groupId}/members/${userId}`,
+    );
+  },
+
+  async shareLocalProvider(groupId: number, localProviderId: string) {
+    const providerId = await invoke<string>("share_local_provider", {
+      providerId: localProviderId,
+    });
+    await centerRequest<{ ok: true }>("POST", `/groups/${groupId}/providers`, {
+      provider_id: providerId,
+    });
+    return providerId;
+  },
+
+  unshareProvider(groupId: number, providerId: string) {
+    return centerRequest<{ ok: true }>(
+      "DELETE",
+      `/groups/${groupId}/providers/${encodeURIComponent(providerId)}`,
+    );
+  },
+
+  async users() {
+    const payload = await centerRequest<{ users: ManagedCenterUser[] }>("GET", "/users");
+    return payload.users;
+  },
 };
-
-export type { GatewayUser } from "./types";

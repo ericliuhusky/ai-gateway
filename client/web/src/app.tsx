@@ -10,8 +10,6 @@ import {
   Cloud,
   Code2,
   Copy,
-  Eye,
-  EyeOff,
   Gauge,
   KeyRound,
   LayoutDashboard,
@@ -24,16 +22,15 @@ import {
   Trash2,
   Wrench,
   UserRound,
-  Users,
   UserPlus,
-  Share2,
+  Users,
+  LogIn,
   LogOut,
+  Share2,
   X,
 } from "lucide-react";
 
-import { authApi, gatewayApi } from "./api";
-import { AuthProvider, useAuth } from "./auth";
-import { LoginPage } from "./login";
+import { LOCAL_API_ROOT, centerApi, gatewayApi } from "./api";
 import { Button } from "./components/ui/button";
 import { cn } from "./lib/utils";
 import type {
@@ -55,18 +52,17 @@ import type {
   InstanceRoutingConfig,
   ModelBenchmarkResult,
   OpenAiDeviceLoginStart,
-  SecuritySettings,
-  GatewayGroup,
-  GatewayGroupDetail,
-  GatewayUser,
-  ManagedUser,
+  CenterGroup,
+  CenterGroupDetail,
+  CenterUser,
+  LocalGatewayStatus,
 } from "./types";
 
 const GATEWAY_ERROR_PREFIX = "AI网关错误：";
 const UPSTREAM_ERROR_PREFIX = "上游服务错误：";
 
 type Dialog = "provider" | "instances" | "scripts" | null;
-type Page = "overview" | "groups" | "usage" | "benchmark" | "routing" | "issues" | "account" | "admin";
+type Page = "overview" | "groups" | "usage" | "benchmark" | "routing" | "issues" | "settings";
 
 const ROUTE_TO_PAGE: Record<string, Page> = {
   "/": "overview",
@@ -75,8 +71,7 @@ const ROUTE_TO_PAGE: Record<string, Page> = {
   "/benchmark": "benchmark",
   "/routing": "routing",
   "/issues": "issues",
-  "/account": "account",
-  "/admin": "admin",
+  "/settings": "settings",
 };
 
 const PAGE_TO_ROUTE: Record<Page, string> = {
@@ -86,8 +81,7 @@ const PAGE_TO_ROUTE: Record<Page, string> = {
   benchmark: "/benchmark",
   routing: "/routing",
   issues: "/issues",
-  account: "/account",
-  admin: "/admin",
+  settings: "/settings",
 };
 
 function pageFromPath(path: string): Page {
@@ -95,7 +89,7 @@ function pageFromPath(path: string): Page {
 }
 
 const NAV_TABS: {
-  id: Exclude<Page, "account" | "admin">;
+  id: Page;
   label: string;
   icon: React.ComponentType<{ className?: string }>;
 }[] = [
@@ -105,6 +99,7 @@ const NAV_TABS: {
   { id: "benchmark", label: "吞吐测试", icon: Gauge },
   { id: "routing", label: "路由日志", icon: Route },
   { id: "issues", label: "网关问题", icon: Bug },
+  { id: "settings", label: "本地设置", icon: Settings },
 ];
 
 type QuotaMap = Record<string, ProviderQuotaSummary | undefined>;
@@ -199,27 +194,11 @@ function formatTokenCount(value: number) {
 }
 
 export function App() {
-  return (
-    <AuthProvider>
-      <AuthenticatedApp />
-    </AuthProvider>
-  );
-}
-
-function AuthenticatedApp() {
-  const { loading, user } = useAuth();
-  if (loading) {
-    return <div className="flex min-h-screen items-center justify-center text-sm font-medium text-slate-500">正在验证登录状态…</div>;
-  }
-  return user ? <GatewayDashboard /> : <LoginPage />;
+  return <GatewayDashboard />;
 }
 
 export function GatewayDashboard() {
-  const { user, logout, authMode } = useAuth();
-  const currentUser = user!;
-  const isAdmin = currentUser.role === "admin";
   const [providers, setProviders] = React.useState<GatewayProvider[]>([]);
-  const [groups, setGroups] = React.useState<GatewayGroup[]>([]);
   const [instances, setInstances] = React.useState<InstanceRoutingConfig[]>([]);
   const [defaultAutomaticRouting, setDefaultAutomaticRouting] = React.useState<AutoRoutingSettings>({
     enabled: false,
@@ -227,12 +206,8 @@ export function GatewayDashboard() {
   const [instanceToEdit, setInstanceToEdit] = React.useState<string | null>(null);
   const [scriptInstanceId, setScriptInstanceId] = React.useState<string | null>(null);
   const [selected, setSelected] = React.useState<SelectedProvider>({ updated_at: 0 });
-  const [models, setModels] = React.useState<GatewayModel[]>([]);
   const [turnLogs, setTurnLogs] = React.useState<TurnRouteLog[]>([]);
   const [gatewayIssues, setGatewayIssues] = React.useState<GatewayIssue[]>([]);
-  const [observabilityUsers, setObservabilityUsers] = React.useState<GatewayUser[]>([currentUser]);
-  const [observabilityUserId, setObservabilityUserId] = React.useState(currentUser.id);
-  const observabilityUserIdRef = React.useRef(currentUser.id);
   const [usageByPeriod, setUsageByPeriod] = React.useState<Record<UsagePeriod, UsageSummary[]>>({
     total: [],
     today: [],
@@ -243,7 +218,6 @@ export function GatewayDashboard() {
   const [quotaErrors, setQuotaErrors] = React.useState<ErrorMap>({});
   const [loadingQuotas, setLoadingQuotas] = React.useState<Set<string>>(new Set());
   const [loading, setLoading] = React.useState(true);
-  const [loadingModels, setLoadingModels] = React.useState(false);
   const [dialog, setDialog] = React.useState<Dialog>(null);
   const [activePage, setActivePageState] = React.useState<Page>(() => pageFromPath(window.location.pathname));
   const [error, setError] = React.useState<string | null>(null);
@@ -262,8 +236,6 @@ export function GatewayDashboard() {
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
-
-  const selectedProvider = providers.find((provider) => provider.id === selected.provider_id);
 
   const loadQuotas = React.useCallback(async (items: GatewayProvider[], visibleLoading = true) => {
     const ids = items.filter((item) => item.auth_mode === "account").map((item) => item.id);
@@ -291,19 +263,6 @@ export function GatewayDashboard() {
     );
   }, []);
 
-  const loadModels = React.useCallback(async (force = false) => {
-    setLoadingModels(true);
-    try {
-      const data = await gatewayApi.models(undefined, force);
-      setModels([...data].sort((a, b) => a.id.localeCompare(b.id)));
-    } catch (modelError) {
-      setModels([]);
-      setError(errorMessage(modelError));
-    } finally {
-      setLoadingModels(false);
-    }
-  }, []);
-
   const loadUsage = React.useCallback(async (showError = true) => {
     try {
       const [total, today, week, daily] = await Promise.all([
@@ -319,59 +278,25 @@ export function GatewayDashboard() {
     }
   }, []);
 
-  const loadObservability = React.useCallback(async (userId: number, showError = true) => {
-    if (!isAdmin) return;
-    try {
-      const [turns, issues] = await Promise.all([
-        gatewayApi.routingTurns(50, userId),
-        gatewayApi.gatewayIssues(200, userId),
-      ]);
-      setTurnLogs(turns);
-      setGatewayIssues(issues);
-    } catch (observabilityError) {
-      if (showError) setError(errorMessage(observabilityError));
-    }
-  }, [isAdmin]);
-
-  function selectObservabilityUser(userId: number) {
-    observabilityUserIdRef.current = userId;
-    setObservabilityUserId(userId);
-    void loadObservability(userId);
-  }
-
   const refresh = React.useCallback(async () => {
     setLoading(true);
     try {
-      const selectedObservabilityUserId = observabilityUserIdRef.current;
-      const [providerList, route, turns, issues, instanceList, automaticRouting, groupList, userList] = await Promise.all([
+      const [providerList, route, turns, issues, instanceList, automaticRouting] = await Promise.all([
         gatewayApi.providers(),
         gatewayApi.selectedProvider(),
-        isAdmin ? gatewayApi.routingTurns(50, selectedObservabilityUserId) : Promise.resolve([]),
-        isAdmin ? gatewayApi.gatewayIssues(200, selectedObservabilityUserId) : Promise.resolve([]),
+        gatewayApi.routingTurns(50),
+        gatewayApi.gatewayIssues(200),
         gatewayApi.instances(),
         gatewayApi.automaticRouting(),
-        authMode === "required" ? gatewayApi.groups() : Promise.resolve([]),
-        isAdmin ? gatewayApi.observabilityUsers() : Promise.resolve([]),
       ]);
       const sorted = [...providerList].sort((a, b) => a.name.localeCompare(b.name));
       setProviders(sorted);
-      setGroups(groupList);
       setInstances(instanceList);
       setDefaultAutomaticRouting(automaticRouting);
       setSelected(route);
       setTurnLogs(turns);
       setGatewayIssues(issues);
-      setObservabilityUsers(
-        userList.some((item) => item.id === currentUser.id)
-          ? userList
-          : [currentUser, ...userList],
-      );
       setError(null);
-      if (route.provider_id) {
-        void loadModels();
-      } else {
-        setModels([]);
-      }
       void loadQuotas(sorted);
       void loadUsage(false);
     } catch (loadError) {
@@ -379,7 +304,7 @@ export function GatewayDashboard() {
     } finally {
       setLoading(false);
     }
-  }, [authMode, currentUser, isAdmin, loadModels, loadQuotas, loadUsage]);
+  }, [loadQuotas, loadUsage]);
 
   React.useEffect(() => {
     void refresh();
@@ -400,39 +325,13 @@ export function GatewayDashboard() {
       selected_model: undefined,
       selected_reasoning_effort: undefined,
     }));
-    setModels([]);
     try {
       const route = await gatewayApi.selectProvider(provider.id);
       setSelected(route);
-      await Promise.all([loadModels(), loadQuotas([provider])]);
+      await loadQuotas([provider]);
     } catch (selectionError) {
       setError(errorMessage(selectionError));
       await refresh();
-    }
-  }
-
-  async function selectModel(model: string) {
-    setLoadingModels(true);
-    try {
-      const route = model
-        ? await gatewayApi.selectModel(model)
-        : await gatewayApi.clearSelectedModel();
-      setSelected(route);
-    } catch (modelError) {
-      setError(errorMessage(modelError));
-    } finally {
-      setLoadingModels(false);
-    }
-  }
-
-  async function selectReasoningEffort(effort: string) {
-    try {
-      const route = effort
-        ? await gatewayApi.selectReasoningEffort(effort as ReasoningEffort)
-        : await gatewayApi.clearSelectedReasoningEffort();
-      setSelected(route);
-    } catch (reasoningError) {
-      setError(errorMessage(reasoningError));
     }
   }
 
@@ -475,48 +374,26 @@ export function GatewayDashboard() {
           <NavTabs
             active={activePage}
             onSelect={setActivePage}
-            showGroups={authMode === "required"}
-            showObservability={isAdmin}
           />
           <div className="ml-auto flex items-center gap-2">
-            <AccountMenu
-              user={currentUser}
-              showAccountSettings={authMode === "required"}
-              showLogout={authMode === "required"}
-              showAdminSettings={currentUser.role === "admin"}
-              onOpenAccountSettings={() => setActivePage("account")}
-              onOpenAdminSettings={() => setActivePage("admin")}
-              onLogout={() => { void logout(); }}
-            />
+            <span className="rounded-full bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold text-emerald-700 dark:text-emerald-300">
+              本地功能无需登录
+            </span>
           </div>
         </div>
       </header>
 
       <main className="mx-auto max-w-[1480px] px-5 py-6 sm:px-8 sm:py-8">
-        {activePage === "account" ? (
-          <AccountSettingsPage authMode={authMode} onError={setError} />
-        ) : activePage === "admin" ? (
-          <AdminSettingsPage
-            onChanged={async () => {
-              if (
-                selectedProvider?.auth_mode === "account"
-                && selectedProvider.compatibility_profile === "openai_codex"
-              ) {
-                await loadModels(true);
-              }
-            }}
-          onError={setError}
-          />
+        {loading ? (
+          <LoadingState />
         ) : activePage === "groups" ? (
-          <GroupsPage
-            groups={groups}
+          <CenterGroupsPage
             providers={providers}
-            currentUserId={currentUser.id}
-            onChanged={refresh}
+            onLocalChanged={refresh}
             onError={setError}
           />
-        ) : loading ? (
-          <LoadingState />
+        ) : activePage === "settings" ? (
+          <LocalSettingsPage onError={setError} />
         ) : activePage === "usage" ? (
           <UsageSection
             providers={providers}
@@ -533,27 +410,12 @@ export function GatewayDashboard() {
         ) : activePage === "routing" ? (
           <TurnLogSection
             turns={turnLogs}
-            userSelector={
-              <ObservabilityUserSelect
-                users={observabilityUsers}
-                value={observabilityUserId}
-                onChange={selectObservabilityUser}
-              />
-            }
           />
         ) : activePage === "issues" ? (
           <GatewayIssueSection
             issues={gatewayIssues}
-            userId={observabilityUserId}
-            userSelector={
-              <ObservabilityUserSelect
-                users={observabilityUsers}
-                value={observabilityUserId}
-                onChange={selectObservabilityUser}
-              />
-            }
             onChanged={async () => {
-              setGatewayIssues(await gatewayApi.gatewayIssues(200, observabilityUserId));
+              setGatewayIssues(await gatewayApi.gatewayIssues(200));
             }}
             onError={setError}
           />
@@ -654,10 +516,6 @@ export function GatewayDashboard() {
       {dialog === "provider" ? (
         <ProviderDialog
           onClose={() => setDialog(null)}
-          onOpenSecuritySettings={() => {
-            setDialog(null);
-            setActivePage("admin");
-          }}
           onCreated={async () => {
             setDialog(null);
             await refresh();
@@ -699,21 +557,13 @@ export function GatewayDashboard() {
 function NavTabs({
   active,
   onSelect,
-  showGroups,
-  showObservability,
 }: {
   active: Page;
   onSelect: (page: Page) => void;
-  showGroups: boolean;
-  showObservability: boolean;
 }) {
   return (
     <nav className="ml-2 flex min-w-0 items-center gap-1 overflow-x-auto whitespace-nowrap md:ml-6" aria-label="主导航">
-      {NAV_TABS.filter(({ id }) => {
-        if (id === "groups" && !showGroups) return false;
-        if ((id === "routing" || id === "issues") && !showObservability) return false;
-        return true;
-      }).map(({ id, label, icon: Icon }) => {
+      {NAV_TABS.map(({ id, label, icon: Icon }) => {
         const isActive = active === id;
         return (
           <button
@@ -737,24 +587,258 @@ function NavTabs({
   );
 }
 
-function GroupsPage({
-  groups,
+function CenterGroupsPage({
   providers,
-  currentUserId,
-  onChanged,
+  onLocalChanged,
   onError,
 }: {
-  groups: GatewayGroup[];
   providers: GatewayProvider[];
-  currentUserId: number;
-  onChanged: () => Promise<void>;
+  onLocalChanged: () => Promise<void>;
   onError: (message: string) => void;
 }) {
-  const [selectedGroupId, setSelectedGroupId] = React.useState<number | null>(groups[0]?.id ?? null);
-  const [detail, setDetail] = React.useState<GatewayGroupDetail | null>(null);
+  const [status, setStatus] = React.useState<LocalGatewayStatus | null>(null);
+  const [user, setUser] = React.useState<CenterUser | null>(null);
+  const [groups, setGroups] = React.useState<CenterGroup[]>([]);
+  const [checking, setChecking] = React.useState(true);
+  const [busy, setBusy] = React.useState(false);
+  const [loginError, setLoginError] = React.useState<string | null>(null);
+  const [url, setUrl] = React.useState("");
+  const [email, setEmail] = React.useState("");
+  const [password, setPassword] = React.useState("");
+
+  const refreshGroups = React.useCallback(async () => {
+    const next = await centerApi.groups();
+    setGroups(next);
+  }, []);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    void centerApi.gatewayStatus()
+      .then(async (nextStatus) => {
+        if (cancelled) return;
+        setStatus(nextStatus);
+        setUrl(nextStatus.control_plane_url ?? "");
+        if (!nextStatus.sharing_configured) return;
+        try {
+          const [nextUser, nextGroups] = await Promise.all([
+            centerApi.me(),
+            centerApi.groups(),
+          ]);
+          if (!cancelled) {
+            setUser(nextUser);
+            setGroups(nextGroups);
+          }
+        } catch (loadError) {
+          if (!cancelled) {
+            setLoginError(`中心登录已失效：${errorMessage(loadError)}`);
+          }
+        }
+      })
+      .catch((loadError) => {
+        if (!cancelled) onError(errorMessage(loadError));
+      })
+      .finally(() => {
+        if (!cancelled) setChecking(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [onError]);
+
+  async function login(event: React.FormEvent) {
+    event.preventDefault();
+    if (busy || !url.trim() || !email.trim() || !password) return;
+    setBusy(true);
+    setLoginError(null);
+    try {
+      const result = await centerApi.login({
+        url: url.trim(),
+        email: email.trim(),
+        password,
+      });
+      setUser(result.user);
+      setPassword("");
+      setStatus(await centerApi.gatewayStatus());
+      await refreshGroups();
+      try {
+        await centerApi.sync();
+        await onLocalChanged();
+      } catch (syncError) {
+        onError(`已登录中心，但同步共享供应商失败：${errorMessage(syncError)}`);
+      }
+    } catch (authError) {
+      setLoginError(errorMessage(authError));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function disconnect() {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await centerApi.disconnect();
+      setUser(null);
+      setGroups([]);
+      setLoginError(null);
+      setStatus(await centerApi.gatewayStatus());
+      await onLocalChanged();
+    } catch (disconnectError) {
+      onError(errorMessage(disconnectError));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function sync() {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const result = await centerApi.sync();
+      await Promise.all([refreshGroups(), onLocalChanged()]);
+      if (result.provider_count === 0) {
+        onError("共享同步完成：当前账号没有可用的群组共享供应商。");
+      }
+    } catch (syncError) {
+      onError(errorMessage(syncError));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (checking) {
+    return <LoadingState />;
+  }
+
+  if (!user) {
+    return (
+      <div className="mx-auto max-w-xl">
+        <section className="glass-panel rounded-[28px] p-6 sm:p-8">
+          <div className="flex size-12 items-center justify-center rounded-2xl bg-blue-500/10 text-blue-600 dark:text-blue-300">
+            <Users className="size-6" />
+          </div>
+          <h1 className="mt-5 text-2xl font-bold tracking-[-0.035em]">连接群组共享服务</h1>
+          <p className="mt-2 text-sm leading-6 text-slate-500 dark:text-slate-400">
+            本地供应商和推理功能不需要登录。只有群组、成员和供应商共享会连接中心服务；
+            中心服务本身不承载 Web 页面。
+          </p>
+
+          <form className="mt-6 space-y-3" onSubmit={(event) => void login(event)}>
+            <FormField label="中心服务地址">
+              <input
+                className="field w-full text-sm"
+                type="url"
+                value={url}
+                placeholder="https://gateway.example.com"
+                disabled={busy}
+                onChange={(event) => setUrl(event.target.value)}
+              />
+            </FormField>
+            <FormField label="中心账号">
+              <input
+                className="field w-full text-sm"
+                type="email"
+                value={email}
+                placeholder="name@example.com"
+                autoComplete="email"
+                disabled={busy}
+                onChange={(event) => setEmail(event.target.value)}
+              />
+            </FormField>
+            <FormField label="密码">
+              <input
+                className="field w-full text-sm"
+                type="password"
+                value={password}
+                placeholder="密码"
+                autoComplete="current-password"
+                disabled={busy}
+                onChange={(event) => setPassword(event.target.value)}
+              />
+            </FormField>
+            {loginError ? (
+              <div className="rounded-xl bg-rose-500/10 px-4 py-3 text-sm leading-6 text-rose-600 dark:text-rose-300">
+                {loginError}
+              </div>
+            ) : null}
+            <Button
+              type="submit"
+              className="w-full"
+              disabled={busy || !url.trim() || !email.trim() || !password}
+            >
+              {busy ? <LoaderCircle className="size-4 animate-spin" /> : <LogIn className="size-4" />}
+              {busy ? "正在登录" : "登录中心服务"}
+            </Button>
+          </form>
+
+          {status?.sharing_configured ? (
+            <button
+              type="button"
+              className="mt-4 w-full text-center text-xs font-semibold text-slate-400 hover:text-rose-500"
+              disabled={busy}
+              onClick={() => void disconnect()}
+            >
+              清除已失效的中心登录信息
+            </button>
+          ) : null}
+        </section>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <div className="eyebrow">中心协作</div>
+          <h1 className="mt-1 text-2xl font-bold tracking-[-0.03em]">群组共享</h1>
+          <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+            已登录 {user.name} · {status?.control_plane_url}
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button size="sm" variant="outline" disabled={busy} onClick={() => void sync()}>
+            <RefreshCw className={cn("size-3.5", busy && "animate-spin")} />
+            同步共享
+          </Button>
+          <Button size="sm" variant="outline" disabled={busy} onClick={() => void disconnect()}>
+            <LogOut className="size-3.5" />
+            退出中心
+          </Button>
+        </div>
+      </div>
+
+      <GroupsWorkspace
+        groups={groups}
+        providers={providers}
+        onChanged={refreshGroups}
+        onLocalChanged={onLocalChanged}
+        onError={onError}
+      />
+    </div>
+  );
+}
+
+function GroupsWorkspace({
+  groups,
+  providers,
+  onChanged,
+  onLocalChanged,
+  onError,
+}: {
+  groups: CenterGroup[];
+  providers: GatewayProvider[];
+  onChanged: () => Promise<void>;
+  onLocalChanged: () => Promise<void>;
+  onError: (message: string) => void;
+}) {
+  const [selectedGroupId, setSelectedGroupId] = React.useState<number | null>(
+    groups[0]?.id ?? null,
+  );
+  const [detail, setDetail] = React.useState<CenterGroupDetail | null>(null);
   const [groupName, setGroupName] = React.useState("");
   const [search, setSearch] = React.useState("");
-  const [searchResults, setSearchResults] = React.useState<GatewayUser[]>([]);
+  const [searchResults, setSearchResults] = React.useState<CenterUser[]>([]);
   const [busy, setBusy] = React.useState(false);
 
   React.useEffect(() => {
@@ -770,33 +854,40 @@ function GroupsPage({
       return;
     }
     try {
-      setDetail(await gatewayApi.group(selectedGroupId));
+      setDetail(await centerApi.group(selectedGroupId));
     } catch (loadError) {
       onError(errorMessage(loadError));
     }
   }, [onError, selectedGroupId]);
 
-  React.useEffect(() => { void loadDetail(); }, [loadDetail]);
+  React.useEffect(() => {
+    void loadDetail();
+  }, [loadDetail]);
 
   React.useEffect(() => {
-    if (search.trim().length < 1) {
+    if (!search.trim()) {
       setSearchResults([]);
       return;
     }
     const timer = window.setTimeout(() => {
-      void gatewayApi.searchUsers(search.trim())
+      void centerApi
+        .searchUsers(search.trim())
         .then((payload) => setSearchResults(payload.users))
         .catch((searchError) => onError(errorMessage(searchError)));
     }, 250);
     return () => window.clearTimeout(timer);
   }, [onError, search]);
 
-  async function run(action: () => Promise<unknown>) {
+  async function run(action: () => Promise<unknown>, refreshLocal = false) {
     setBusy(true);
     try {
       await action();
       await onChanged();
       await loadDetail();
+      if (refreshLocal) {
+        await centerApi.sync();
+        await onLocalChanged();
+      }
     } catch (actionError) {
       onError(errorMessage(actionError));
     } finally {
@@ -807,37 +898,49 @@ function GroupsPage({
   async function createGroup(event: React.FormEvent) {
     event.preventDefault();
     if (!groupName.trim()) return;
-    await run(async () => {
-      const created = await gatewayApi.createGroup(groupName.trim());
+    setBusy(true);
+    try {
+      const created = await centerApi.createGroup(groupName.trim());
       setGroupName("");
       setSelectedGroupId(created.id);
-    });
+      await onChanged();
+    } catch (createError) {
+      onError(errorMessage(createError));
+    } finally {
+      setBusy(false);
+    }
   }
 
   const selectedGroup = detail?.group ?? groups.find((group) => group.id === selectedGroupId);
   const canManageMembers = selectedGroup?.role === "owner";
-  const ownProviders = providers.filter((provider) => !provider.shared);
-  const sharedProviderIds = new Set(detail?.providers.map((item) => item.provider.id) ?? []);
+  const ownProviders = providers.filter(
+    (provider) =>
+      provider.auth_mode === "api_key" &&
+      !provider.shared &&
+      provider.compatibility_profile !== "openai_codex",
+  );
+  const sharedNames = new Set(detail?.providers.map((item) => item.provider.name) ?? []);
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <div className="eyebrow">协作空间</div>
-          <h1 className="mt-1 text-2xl font-bold tracking-[-0.03em]">群组共享</h1>
-          <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">邀请成员，并把自己的供应商放到群组里共同使用。</p>
-        </div>
-        <form className="flex gap-2" onSubmit={(event) => void createGroup(event)}>
-          <input className="field h-9 w-48 text-xs" value={groupName} onChange={(event) => setGroupName(event.target.value)} placeholder="新群组名称" />
-          <Button size="sm" type="submit" disabled={busy || !groupName.trim()}><Plus className="size-3.5" />新建群组</Button>
-        </form>
-      </div>
+    <div className="space-y-5">
+      <form className="flex flex-wrap justify-end gap-2" onSubmit={(event) => void createGroup(event)}>
+        <input
+          className="field h-9 w-52 text-xs"
+          value={groupName}
+          onChange={(event) => setGroupName(event.target.value)}
+          placeholder="新群组名称"
+        />
+        <Button size="sm" type="submit" disabled={busy || !groupName.trim()}>
+          <Plus className="size-3.5" />
+          新建群组
+        </Button>
+      </form>
 
       {!groups.length ? (
         <div className="glass-panel rounded-[26px] p-10 text-center">
           <Users className="mx-auto size-10 text-slate-300" />
           <h2 className="mt-4 text-lg font-bold">还没有群组</h2>
-          <p className="mt-1 text-sm text-slate-500">创建一个群组，邀请同事后即可共享供应商。</p>
+          <p className="mt-1 text-sm text-slate-500">创建群组并邀请成员后即可共享本机供应商。</p>
         </div>
       ) : (
         <div className="grid gap-5 lg:grid-cols-[280px_1fr]">
@@ -853,10 +956,14 @@ function GroupsPage({
                 )}
               >
                 <div className="flex items-center gap-3">
-                  <span className="flex size-9 items-center justify-center rounded-xl bg-blue-500/10 text-blue-600"><Users className="size-4" /></span>
+                  <span className="flex size-9 items-center justify-center rounded-xl bg-blue-500/10 text-blue-600">
+                    <Users className="size-4" />
+                  </span>
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-sm font-bold">{group.name}</span>
-                    <span className="mt-1 block text-[11px] text-slate-400">{group.member_count} 位成员 · {group.provider_count} 个供应商</span>
+                    <span className="mt-1 block text-[11px] text-slate-400">
+                      {group.member_count} 位成员 · {group.provider_count} 个供应商
+                    </span>
                   </span>
                 </div>
               </button>
@@ -865,15 +972,13 @@ function GroupsPage({
 
           {selectedGroup && detail ? (
             <section className="glass-panel rounded-[26px] p-5 sm:p-6">
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <h2 className="text-xl font-bold">{detail.group.name}</h2>
-                    <Badge tone={detail.group.role === "owner" ? "blue" : "slate"}>{detail.group.role === "owner" ? "创建者" : "成员"}</Badge>
-                  </div>
-                  <p className="mt-1 text-xs text-slate-400">创建者：{detail.group.owner_name}</p>
-                </div>
+              <div className="flex items-center gap-2">
+                <h2 className="text-xl font-bold">{detail.group.name}</h2>
+                <Badge tone={detail.group.role === "owner" ? "blue" : "slate"}>
+                  {detail.group.role === "owner" ? "创建者" : "成员"}
+                </Badge>
               </div>
+              <p className="mt-1 text-xs text-slate-400">创建者：{detail.group.owner_name}</p>
 
               <div className="mt-6 grid gap-6 xl:grid-cols-2">
                 <div>
@@ -885,23 +990,32 @@ function GroupsPage({
                     <div className="relative mb-3">
                       <div className="flex items-center gap-2">
                         <UserPlus className="size-4 text-slate-400" />
-                        <input className="field h-9 text-xs" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索姓名或邮箱，添加成员" />
+                        <input
+                          className="field h-9 text-xs"
+                          value={search}
+                          onChange={(event) => setSearch(event.target.value)}
+                          placeholder="搜索姓名或邮箱，添加成员"
+                        />
                       </div>
                       {searchResults.length ? (
                         <div className="absolute left-6 right-0 top-11 z-10 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl dark:border-slate-700 dark:bg-slate-900">
-                          {searchResults.map((user) => (
+                          {searchResults.map((result) => (
                             <button
-                              key={user.id}
+                              key={result.id}
                               type="button"
                               className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs hover:bg-slate-100 dark:hover:bg-white/10"
-                              onClick={() => void run(async () => {
-                                await gatewayApi.addGroupMember(detail.group.id, user.id);
-                                setSearch("");
-                                setSearchResults([]);
-                              })}
+                              onClick={() =>
+                                void run(async () => {
+                                  await centerApi.addGroupMember(detail.group.id, result.id);
+                                  setSearch("");
+                                  setSearchResults([]);
+                                })
+                              }
                             >
-                              <span className="flex size-6 items-center justify-center overflow-hidden rounded-full bg-slate-200 text-[10px] font-bold">{user.avatar_url ? <img src={user.avatar_url} alt="" className="size-full object-cover" /> : user.name.slice(0, 1)}</span>
-                              <span>{user.name}</span>
+                              <span className="flex size-6 items-center justify-center rounded-full bg-slate-200 text-[10px] font-bold text-slate-700">
+                                {result.name.slice(0, 1)}
+                              </span>
+                              <span>{result.name}</span>
                             </button>
                           ))}
                         </div>
@@ -910,11 +1024,33 @@ function GroupsPage({
                   ) : null}
                   <div className="space-y-2">
                     {detail.members.map((member) => (
-                      <div key={member.user_id} className="flex items-center gap-2 rounded-xl bg-slate-500/5 px-3 py-2">
-                        <span className="flex size-7 items-center justify-center overflow-hidden rounded-full bg-slate-200 text-[10px] font-bold">{member.avatar_url ? <img src={member.avatar_url} alt="" className="size-full object-cover" /> : member.name.slice(0, 1)}</span>
-                        <span className="min-w-0 flex-1 truncate text-xs font-semibold">{member.name}</span>
-                        <Badge tone={member.role === "owner" ? "blue" : "slate"}>{member.role === "owner" ? "创建者" : "成员"}</Badge>
-                        {canManageMembers && member.role !== "owner" ? <button type="button" className="text-[11px] text-red-500" disabled={busy} onClick={() => void run(() => gatewayApi.removeGroupMember(detail.group.id, member.user_id))}>移除</button> : null}
+                      <div
+                        key={member.user_id}
+                        className="flex items-center gap-2 rounded-xl bg-slate-500/5 px-3 py-2"
+                      >
+                        <span className="flex size-7 items-center justify-center rounded-full bg-slate-200 text-[10px] font-bold text-slate-700">
+                          {member.name.slice(0, 1)}
+                        </span>
+                        <span className="min-w-0 flex-1 truncate text-xs font-semibold">
+                          {member.name}
+                        </span>
+                        <Badge tone={member.role === "owner" ? "blue" : "slate"}>
+                          {member.role === "owner" ? "创建者" : "成员"}
+                        </Badge>
+                        {canManageMembers && member.role !== "owner" ? (
+                          <button
+                            type="button"
+                            className="text-[11px] text-red-500"
+                            disabled={busy}
+                            onClick={() =>
+                              void run(() =>
+                                centerApi.removeGroupMember(detail.group.id, member.user_id),
+                              )
+                            }
+                          >
+                            移除
+                          </button>
+                        ) : null}
                       </div>
                     ))}
                   </div>
@@ -929,147 +1065,86 @@ function GroupsPage({
                     <select
                       className="field h-9 min-w-0 flex-1 text-xs"
                       defaultValue=""
-                      disabled={busy}
+                      disabled={busy || ownProviders.length === 0}
                       onChange={(event) => {
                         const providerId = event.target.value;
                         event.target.value = "";
-                        if (providerId) void run(() => gatewayApi.shareGroupProvider(detail.group.id, providerId));
+                        if (providerId) {
+                          void run(
+                            () => centerApi.shareLocalProvider(detail.group.id, providerId),
+                            false,
+                          );
+                        }
                       }}
                     >
-                      <option value="">选择自己的供应商并共享</option>
-                      {ownProviders.filter((provider) => !sharedProviderIds.has(provider.id)).map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
+                      <option value="">
+                        {ownProviders.length ? "选择本机 API Key 供应商并共享" : "没有可共享的本机供应商"}
+                      </option>
+                      {ownProviders
+                        .filter((provider) => !sharedNames.has(provider.name))
+                        .map((provider) => (
+                          <option key={provider.id} value={provider.id}>
+                            {provider.name}
+                          </option>
+                        ))}
                     </select>
                     <Share2 className="mt-2.5 size-4 shrink-0 text-slate-400" />
                   </div>
+                  <p className="mb-3 text-[11px] leading-5 text-slate-400">
+                    选择后由 Tauri 从本机加密库读取凭据并上传到中心，Web 页面不会获得明文 Key。
+                  </p>
                   <div className="space-y-2">
                     {detail.providers.map((item) => (
-                      <div key={item.provider.id} className="flex items-center gap-2 rounded-xl bg-slate-500/5 px-3 py-2">
+                      <div
+                        key={item.provider.id}
+                        className="flex items-center gap-2 rounded-xl bg-slate-500/5 px-3 py-2"
+                      >
                         <Server className="size-4 text-blue-500" />
                         <span className="min-w-0 flex-1">
-                          <span className="block truncate text-xs font-semibold">{item.provider.name}</span>
-                          <span className="block truncate text-[10px] text-slate-400">由 {item.shared_by_name} 共享</span>
+                          <span className="block truncate text-xs font-semibold">
+                            {item.provider.name}
+                          </span>
+                          <span className="block truncate text-[10px] text-slate-400">
+                            由 {item.shared_by_name} 共享
+                          </span>
                         </span>
-                        {item.can_remove ? <button type="button" className="text-[11px] text-red-500" disabled={busy} onClick={() => void run(() => gatewayApi.unshareGroupProvider(detail.group.id, item.provider.id))}>取消共享</button> : null}
+                        {item.can_remove ? (
+                          <button
+                            type="button"
+                            className="text-[11px] text-red-500"
+                            disabled={busy}
+                            onClick={() =>
+                              void run(
+                                () =>
+                                  centerApi.unshareProvider(
+                                    detail.group.id,
+                                    item.provider.id,
+                                  ),
+                                true,
+                              )
+                            }
+                          >
+                            取消共享
+                          </button>
+                        ) : null}
                       </div>
                     ))}
-                    {!detail.providers.length ? <div className="rounded-xl border border-dashed border-slate-300/70 p-5 text-center text-xs text-slate-400 dark:border-slate-700">还没有共享供应商</div> : null}
+                    {!detail.providers.length ? (
+                      <div className="rounded-xl border border-dashed border-slate-300/70 p-5 text-center text-xs text-slate-400 dark:border-slate-700">
+                        还没有共享供应商
+                      </div>
+                    ) : null}
                   </div>
                 </div>
               </div>
             </section>
-          ) : <div className="glass-panel rounded-[26px] p-8 text-sm text-slate-400">加载群组详情…</div>}
+          ) : (
+            <div className="glass-panel rounded-[26px] p-8 text-sm text-slate-400">
+              加载群组详情…
+            </div>
+          )}
         </div>
       )}
-    </div>
-  );
-}
-
-function AccountMenu({
-
-  user,
-  showAccountSettings,
-  showLogout,
-  showAdminSettings,
-  onOpenAccountSettings,
-  onOpenAdminSettings,
-  onLogout,
-}: {
-  user: { id: number; name: string; avatar_url: string; role?: "admin" | "user" };
-  showAccountSettings: boolean;
-  showLogout: boolean;
-  showAdminSettings: boolean;
-  onOpenAccountSettings: () => void;
-  onOpenAdminSettings: () => void;
-  onLogout: () => void;
-}) {
-  const [open, setOpen] = React.useState(false);
-  const menuRef = React.useRef<HTMLDivElement>(null);
-
-  React.useEffect(() => {
-    function closeOnOutsideClick(event: MouseEvent) {
-      if (!menuRef.current?.contains(event.target as Node)) setOpen(false);
-    }
-    function closeOnEscape(event: KeyboardEvent) {
-      if (event.key === "Escape") setOpen(false);
-    }
-    document.addEventListener("mousedown", closeOnOutsideClick);
-    document.addEventListener("keydown", closeOnEscape);
-    return () => {
-      document.removeEventListener("mousedown", closeOnOutsideClick);
-      document.removeEventListener("keydown", closeOnEscape);
-    };
-  }, []);
-
-  const initial = user.name.trim().charAt(0).toUpperCase();
-
-  return (
-    <div className="relative" ref={menuRef}>
-      <button
-        type="button"
-        className="inline-flex h-8 items-center gap-2 rounded-xl border border-white/60 bg-white/55 px-2.5 text-xs font-semibold text-slate-700 shadow-sm transition hover:bg-white/85 dark:border-white/10 dark:bg-white/5 dark:text-slate-200 dark:hover:bg-white/10"
-        aria-haspopup="menu"
-        aria-expanded={open}
-        onClick={() => setOpen((value) => !value)}
-      >
-        <span className="flex size-5 shrink-0 items-center justify-center overflow-hidden rounded-full bg-slate-900 text-[9px] font-bold text-white dark:bg-white dark:text-slate-950">
-          {user.avatar_url ? <img src={user.avatar_url} alt="" className="size-full object-cover" /> : initial || <UserRound className="size-3" />}
-        </span>
-        <span className="hidden max-w-32 truncate sm:inline" title={user.name}>{user.name}</span>
-        <ChevronDown className={cn("size-3.5 text-slate-400 transition-transform", open && "rotate-180")} />
-      </button>
-      {open ? (
-        <div
-          role="menu"
-          className="absolute right-0 z-50 mt-2 w-52 overflow-hidden rounded-2xl border border-slate-200 bg-white py-1.5 shadow-xl dark:border-slate-700 dark:bg-slate-900"
-        >
-          <div className="border-b border-slate-200/70 px-3.5 py-2.5 dark:border-white/10">
-            <div className="truncate text-xs font-bold text-slate-800 dark:text-slate-100">{user.name}</div>
-            <div className="mt-0.5 text-[10px] text-slate-400">{user.role === "admin" ? "管理员" : "成员"}</div>
-          </div>
-          {showAccountSettings ? (
-            <button
-            type="button"
-            role="menuitem"
-            className="mx-1.5 flex w-[calc(100%-0.75rem)] items-center gap-2.5 rounded-xl px-3 py-2 text-left text-xs font-medium text-slate-600 transition hover:bg-slate-900/5 dark:text-slate-300 dark:hover:bg-white/8"
-            onClick={() => {
-              setOpen(false);
-              onOpenAccountSettings();
-            }}
-          >
-            <Settings className="size-3.5 text-slate-400" />
-            账户设置
-          </button>
-          ) : null}
-          {showAdminSettings ? (
-            <button
-              type="button"
-              role="menuitem"
-              className="mx-1.5 flex w-[calc(100%-0.75rem)] items-center gap-2.5 rounded-xl px-3 py-2 text-left text-xs font-medium text-slate-600 transition hover:bg-slate-900/5 dark:text-slate-300 dark:hover:bg-white/8"
-              onClick={() => {
-                setOpen(false);
-                onOpenAdminSettings();
-              }}
-            >
-              <Settings className="size-3.5 text-slate-400" />
-              管理员设置
-            </button>
-          ) : null}
-          {showLogout ? (
-            <button
-              type="button"
-              role="menuitem"
-              className="mx-1.5 flex w-[calc(100%-0.75rem)] items-center gap-2.5 rounded-xl px-3 py-2 text-left text-xs font-medium text-red-600 transition hover:bg-red-500/5 dark:text-red-400"
-              onClick={() => {
-                setOpen(false);
-                onLogout();
-              }}
-            >
-              <LogOut className="size-3.5" />
-              退出登录
-            </button>
-          ) : null}
-        </div>
-      ) : null}
     </div>
   );
 }
@@ -1795,44 +1870,12 @@ function UsageRow({
   );
 }
 
-function ObservabilityUserSelect({
-  users,
-  value,
-  onChange,
-}: {
-  users: GatewayUser[];
-  value: number;
-  onChange: (userId: number) => void;
-}) {
-  return (
-    <label className="ml-auto flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
-      <span className="hidden sm:inline">查看用户</span>
-      <select
-        className="h-8 min-w-36 rounded-lg border border-slate-200/80 bg-white/80 px-2.5 text-xs font-semibold text-slate-700 outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-500/15 dark:border-white/10 dark:bg-slate-900/80 dark:text-slate-200"
-        value={value}
-        onChange={(event) => onChange(Number(event.target.value))}
-        aria-label="选择要查看的用户"
-      >
-        {users.map((item) => (
-          <option key={item.id} value={item.id}>
-            {item.name}
-          </option>
-        ))}
-      </select>
-    </label>
-  );
-}
-
 function GatewayIssueSection({
   issues,
-  userId,
-  userSelector,
   onChanged,
   onError,
 }: {
   issues: GatewayIssue[];
-  userId: number;
-  userSelector: React.ReactNode;
   onChanged: () => Promise<void>;
   onError: (message: string) => void;
 }) {
@@ -1843,7 +1886,7 @@ function GatewayIssueSection({
   async function copyRepairPrompt(issue: GatewayIssue) {
     setCopyingId(issue.id);
     try {
-      const { prompt } = await gatewayApi.gatewayIssueRepairPrompt(issue.id, userId);
+      const { prompt } = await gatewayApi.gatewayIssueRepairPrompt(issue.id);
       await copyText(prompt);
       setCopiedId(issue.id);
       window.setTimeout(
@@ -1863,7 +1906,7 @@ function GatewayIssueSection({
     }
     setClearing(true);
     try {
-      await gatewayApi.clearGatewayIssues(userId);
+      await gatewayApi.clearGatewayIssues();
       await onChanged();
     } catch (clearError) {
       onError(errorMessage(clearError));
@@ -1884,7 +1927,6 @@ function GatewayIssueSection({
         <span className="rounded-full bg-red-500/10 px-2 py-0.5 text-[10px] font-bold text-red-600 dark:text-red-400">
           {issues.length} / 200
         </span>
-        {userSelector}
         <Button
           variant="outline"
           size="sm"
@@ -1964,7 +2006,7 @@ function GatewayIssueSection({
         )}
       </div>
       <p className="mt-2 px-1 text-[11px] leading-5 text-slate-400">
-        仅记录上游连接失败、非 2xx、响应读取失败和流中断；每位用户最多保留 200 条，单个请求和响应各最多 128 KiB。
+        仅记录本机的上游连接失败、非 2xx、响应读取失败和流中断；最多保留 200 条，单个请求和响应各最多 128 KiB。
         “复制修复提示词”只负责把故障证据和安全约束组成提示词并复制到剪贴板，不会在网关内执行修复；
         复制后可粘贴到 Codex 或其他 Agent 的用户输入中。
       </p>
@@ -1995,10 +2037,8 @@ function gatewayIssueKindLabel(kind: string) {
 
 function TurnLogSection({
   turns,
-  userSelector,
 }: {
   turns: TurnRouteLog[];
-  userSelector: React.ReactNode;
 }) {
   const [copiedTurnId, setCopiedTurnId] = React.useState<string | null>(null);
 
@@ -2021,7 +2061,6 @@ function TurnLogSection({
         <span className="rounded-full bg-white/60 px-2 py-0.5 text-[10px] font-bold text-slate-400 dark:bg-white/5">
           {turns.length} / 1000
         </span>
-        {userSelector}
       </div>
       <div className="overflow-x-auto rounded-[22px] border border-white/70 bg-white/55 shadow-sm backdrop-blur-xl dark:border-white/8 dark:bg-white/[0.035]">
         {!turns.length ? (
@@ -2455,31 +2494,15 @@ function DialogFrame({
 
 function ProviderDialog({
   onClose,
-  onOpenSecuritySettings,
   onCreated,
   onError,
 }: {
   onClose: () => void;
-  onOpenSecuritySettings: () => void;
   onCreated: () => Promise<void>;
   onError: (message: string) => void;
 }) {
   const [providerType, setProviderType] = React.useState<"api" | "account">("account");
   const [apiTabVisited, setApiTabVisited] = React.useState(false);
-  const [security, setSecurity] = React.useState<SecuritySettings | null>(null);
-
-  React.useEffect(() => {
-    void gatewayApi.securitySettings().then(setSecurity).catch(() => {
-      // Non-admin users cannot read security settings. A missing key cannot occur
-      // while account mode is enabled, so keep the form available for them.
-      setSecurity({
-        encryption_key_configured: true,
-        feishu_app_id: "",
-        feishu_app_secret_configured: true,
-        auth_required: true,
-      });
-    });
-  }, []);
 
   return (
     <DialogFrame
@@ -2487,18 +2510,6 @@ function ProviderDialog({
       description="选择使用 API Key 接入 OpenAI 兼容接口，或添加 ChatGPT 账户。"
       onClose={onClose}
     >
-      {security && !security.encryption_key_configured ? (
-        <div className="mb-5 rounded-2xl border border-amber-500/25 bg-amber-500/10 p-4 text-sm leading-6 text-amber-800 dark:text-amber-200">
-          <div className="font-bold">尚未设置数据库加密密钥</div>
-          <p className="mt-1 text-xs">
-            为避免 API Key 和账户 Token 以明文保存，当前不能添加供应商。请先完成安全设置。
-          </p>
-          <Button className="mt-3" size="sm" variant="outline" onClick={onOpenSecuritySettings}>
-            <Settings className="size-4" />
-            前往管理员设置
-          </Button>
-        </div>
-      ) : null}
       <div className="mb-5 flex rounded-xl bg-slate-100 p-1 text-xs font-semibold dark:bg-white/[0.06]">
         <button
           type="button"
@@ -2530,17 +2541,13 @@ function ProviderDialog({
           API Key
         </button>
       </div>
-      {security?.encryption_key_configured ? (
-        <>
-          <div className={providerType === "account" ? undefined : "hidden"}>
-            <AccountProviderForm onClose={onClose} onCreated={onCreated} onError={onError} />
-          </div>
-          {apiTabVisited ? (
-            <div className={providerType === "api" ? undefined : "hidden"}>
-              <ApiProviderForm onClose={onClose} onCreated={onCreated} onError={onError} />
-            </div>
-          ) : null}
-        </>
+      <div className={providerType === "account" ? undefined : "hidden"}>
+        <AccountProviderForm onClose={onClose} onCreated={onCreated} onError={onError} />
+      </div>
+      {apiTabVisited ? (
+        <div className={providerType === "api" ? undefined : "hidden"}>
+          <ApiProviderForm onClose={onClose} onCreated={onCreated} onError={onError} />
+        </div>
       ) : null}
     </DialogFrame>
   );
@@ -3017,7 +3024,7 @@ function DeleteInstanceDialog({
   onConfirm: () => void;
 }) {
   const [copied, setCopied] = React.useState(false);
-  const instancesScriptUrl = `${window.location.origin}/codex/instances.sh`;
+  const instancesScriptUrl = `${LOCAL_API_ROOT}/codex/instances.sh`;
   const deleteCommand = `curl -fsSL ${shellQuote(instancesScriptUrl)} | sh -s -- delete ${shellQuote(instanceId)}`;
 
   function copyDeleteCommand() {
@@ -3064,34 +3071,17 @@ function CodexScriptsDialog({
   onClose: () => void;
 }) {
   const [copied, setCopied] = React.useState<"setup" | "cleanup" | null>(null);
-  const [accessToken, setAccessToken] = React.useState<string | null>(null);
-  const [tokenError, setTokenError] = React.useState<string | null>(null);
-  const { authMode } = useAuth();
   const isDefault = instanceId === "default";
-  const setupScriptUrl = `${window.location.origin}/codex/setup.sh`;
-  const cleanupScriptUrl = `${window.location.origin}/codex/restore.sh`;
-  const instancesScriptUrl = `${window.location.origin}/codex/instances.sh`;
+  const setupScriptUrl = `${LOCAL_API_ROOT}/codex/setup.sh`;
+  const cleanupScriptUrl = `${LOCAL_API_ROOT}/codex/restore.sh`;
+  const instancesScriptUrl = `${LOCAL_API_ROOT}/codex/instances.sh`;
   const gatewayUrl = isDefault
-    ? `${window.location.origin}/openai/v1`
-    : `${window.location.origin}/instances/${encodeURIComponent(instanceId)}/openai/v1`;
-
-  React.useEffect(() => {
-    if (authMode === "disabled") {
-      setAccessToken("");
-      return;
-    }
-    void authApi
-      .gatewayAccessToken()
-      .then((value) => setAccessToken(value.access_token))
-      .catch((error) => setTokenError(errorMessage(error)));
-  }, [authMode]);
+    ? `${LOCAL_API_ROOT}/openai/v1`
+    : `${LOCAL_API_ROOT}/instances/${encodeURIComponent(instanceId)}/openai/v1`;
 
   const setupCommand = isDefault
-    ? `curl -fsSL ${shellQuote(setupScriptUrl)} | sh -s -- ${shellQuote(gatewayUrl)}${accessToken ? ` ${shellQuote(accessToken)}` : ""}`
-    : `curl -fsSL ${shellQuote(instancesScriptUrl)} | sh -s -- create ${shellQuote(instanceId)} ${shellQuote(gatewayUrl)}${accessToken ? ` ${shellQuote(accessToken)}` : ""}`;
-  const displaySetupCommand = accessToken
-    ? setupCommand.replace(accessToken, "********")
-    : setupCommand;
+    ? `curl -fsSL ${shellQuote(setupScriptUrl)} | sh -s -- ${shellQuote(gatewayUrl)}`
+    : `curl -fsSL ${shellQuote(instancesScriptUrl)} | sh -s -- create ${shellQuote(instanceId)} ${shellQuote(gatewayUrl)}`;
   const cleanupCommand = isDefault
     ? `curl -fsSL ${shellQuote(cleanupScriptUrl)} | sh`
     : `curl -fsSL ${shellQuote(instancesScriptUrl)} | sh -s -- delete ${shellQuote(instanceId)}`;
@@ -3114,26 +3104,14 @@ function CodexScriptsDialog({
             ? <>设置脚本会比较并更新 <code>~/.codex/config.toml</code> 和账户模式凭据，设置变化后会自动完全重启 Codex；清理脚本会还原原模型供应商，并移除 AI Gateway 写入的配置。</>
             : <>新建脚本会创建独立的 <code>CODEX_HOME</code> 和 Electron 数据目录，请在新窗口中单独登录账号。清理脚本会删除该实例文件夹及其中的登录信息、会话和 Electron 数据。</>}
         </div>
-        {tokenError ? (
-          <div className="rounded-2xl border border-red-500/20 bg-red-500/5 p-4 text-xs text-red-700 dark:text-red-300">
-            {tokenError}
-          </div>
-        ) : null}
-        {authMode === "required" && accessToken === null ? (
-          <div className="flex min-h-20 items-center justify-center">
-            <LoaderCircle className="size-5 animate-spin text-slate-400" />
-          </div>
-        ) : (
         <FormField label={isDefault ? "设置默认 Codex" : "新建 Codex 实例（macOS）"}>
           <CommandBlock
             command={setupCommand}
-            displayCommand={displaySetupCommand}
             copied={copied === "setup"}
             copyLabel={isDefault ? "复制默认 Codex 设置命令" : "复制新建 Codex 实例命令"}
             onCopy={() => copyCommand("setup", setupCommand)}
           />
         </FormField>
-        )}
         <FormField label={isDefault ? "清理默认 Codex 设置" : "清理 / 删除 Codex 实例"}>
           <CommandBlock
             command={cleanupCommand}
@@ -3152,20 +3130,18 @@ function CodexScriptsDialog({
 
 function CommandBlock({
   command,
-  displayCommand,
   copied,
   copyLabel,
   onCopy,
 }: {
   command: string;
-  displayCommand?: string;
   copied: boolean;
   copyLabel: string;
   onCopy: () => void;
 }) {
   return (
     <div className="relative">
-      <pre className="overflow-x-auto rounded-2xl bg-slate-950 p-4 pr-12 text-[11px] leading-5 text-slate-200">{displayCommand ?? command}</pre>
+      <pre className="overflow-x-auto rounded-2xl bg-slate-950 p-4 pr-12 text-[11px] leading-5 text-slate-200">{command}</pre>
       <button
         className="absolute right-3 top-3 flex size-8 items-center justify-center rounded-lg bg-white/10 text-white hover:bg-white/15"
         type="button"
@@ -3178,133 +3154,16 @@ function CommandBlock({
   );
 }
 
-function RegenerateEncryptionKeyDialog({
-  configured,
-  submitting,
-  onClose,
-  onConfirm,
-}: {
-  configured: boolean;
-  submitting: boolean;
-  onClose: () => void;
-  onConfirm: () => void;
-}) {
-  return (
-    <DialogFrame
-      title={configured ? "重新生成数据库加密密钥" : "生成数据库加密密钥"}
-      description="系统将生成新的 32 字节随机密钥，密钥内容不会显示或返回到浏览器。"
-      onClose={submitting ? () => {} : onClose}
-    >
-      <div className="space-y-5">
-        <div className="rounded-2xl border border-amber-500/20 bg-amber-500/5 p-4 text-xs leading-5 text-amber-700 dark:text-amber-300">
-          {configured
-            ? "确认后会立即替换当前密钥，并在同一 SQLite 事务中重新加密全部已保存凭据。操作过程中请勿关闭或重启服务；任一记录处理失败时会自动回滚。"
-            : "确认后会立即生成并启用数据库加密密钥。"}
-        </div>
-        <div className="flex justify-end gap-2">
-          <Button type="button" variant="outline" disabled={submitting} onClick={onClose}>
-            取消
-          </Button>
-          <Button
-            type="button"
-            disabled={submitting}
-            onClick={onConfirm}
-            className="bg-amber-600 text-white hover:bg-amber-700"
-          >
-            {submitting ? <LoaderCircle className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
-            {submitting ? "正在重新加密" : configured ? "确认重新生成" : "确认生成"}
-          </Button>
-        </div>
-      </div>
-    </DialogFrame>
-  );
-}
-
-function AdminSettingsPage({
-  onChanged,
+function LocalSettingsPage({
   onError,
 }: {
-  onChanged: () => Promise<void>;
   onError: (message: string) => void;
 }) {
   const [setting, setSetting] = React.useState<CodexClientVersionSetting | null>(null);
-  const [security, setSecurity] = React.useState<SecuritySettings | null>(null);
   const [version, setVersion] = React.useState("");
-  const [feishuAppId, setFeishuAppId] = React.useState("");
-  const [feishuAppSecret, setFeishuAppSecret] = React.useState("");
-  const [authRequired, setAuthRequired] = React.useState(false);
   const [submitting, setSubmitting] = React.useState(false);
-  const [securitySaving, setSecuritySaving] = React.useState(false);
-  const [securitySaved, setSecuritySaved] = React.useState(false);
-  const [feishuAppSecretVisible, setFeishuAppSecretVisible] = React.useState(false);
-  const [revealingFeishuAppSecret, setRevealingFeishuAppSecret] = React.useState(false);
-  const [showKeyConfirmation, setShowKeyConfirmation] = React.useState(false);
-  const [regeneratingKey, setRegeneratingKey] = React.useState(false);
-  const credentialSaveTimer = React.useRef<number | null>(null);
-  const securitySavingRef = React.useRef(false);
-
-  const [users, setUsers] = React.useState<ManagedUser[]>([]);
-  const [userEmail, setUserEmail] = React.useState("");
-  const [userName, setUserName] = React.useState("");
-  const [userRole, setUserRole] = React.useState<"admin" | "user">("user");
-  const [userPassword, setUserPassword] = React.useState("");
-  const [creatingUser, setCreatingUser] = React.useState(false);
-  const [createdUserNote, setCreatedUserNote] = React.useState<string | null>(null);
-  const [deletingUser, setDeletingUser] = React.useState<Set<number>>(new Set());
-
-  const loadUsers = React.useCallback(async () => {
-    try {
-      const list = await gatewayApi.adminUsers();
-      setUsers(list);
-    } catch (loadError) {
-      onError(errorMessage(loadError));
-    }
-  }, [onError]);
-
-  async function createUser(event: React.FormEvent) {
-    event.preventDefault();
-    if (creatingUser) return;
-    if (!userEmail.trim() || !userName.trim() || !userPassword) return;
-    setCreatingUser(true);
-    setCreatedUserNote(null);
-    try {
-      const { user } = await gatewayApi.createManagedUser({
-        email: userEmail.trim(),
-        name: userName.trim(),
-        role: userRole,
-        password: userPassword,
-      });
-      setUserEmail("");
-      setUserName("");
-      setUserPassword("");
-      setUserRole("user");
-      setCreatedUserNote(`已创建账号 ${user.email}`);
-      await loadUsers();
-    } catch (createError) {
-      onError(errorMessage(createError));
-    } finally {
-      setCreatingUser(false);
-    }
-  }
-
-  async function deleteUser(userId: number) {
-    setDeletingUser((current) => new Set(current).add(userId));
-    try {
-      await gatewayApi.deleteManagedUser(userId);
-      setUsers((current) => current.filter((item) => item.id !== userId));
-    } catch (deleteError) {
-      onError(errorMessage(deleteError));
-    } finally {
-      setDeletingUser((current) => {
-        const next = new Set(current);
-        next.delete(userId);
-        return next;
-      });
-    }
-  }
 
   React.useEffect(() => {
-    void loadUsers();
     void gatewayApi
       .codexClientVersion()
       .then((value) => {
@@ -3312,21 +3171,7 @@ function AdminSettingsPage({
         setVersion(value.override_version ?? "");
       })
       .catch((loadError) => onError(errorMessage(loadError)));
-    void gatewayApi
-      .securitySettings()
-      .then((value) => {
-        setSecurity(value);
-        setFeishuAppId(value.feishu_app_id);
-        setAuthRequired(value.auth_required);
-      })
-      .catch((loadError) => onError(errorMessage(loadError)));
   }, [onError]);
-
-  React.useEffect(() => () => {
-    if (credentialSaveTimer.current !== null) {
-      window.clearTimeout(credentialSaveTimer.current);
-    }
-  }, []);
 
   async function save(event: React.FormEvent) {
     event.preventDefault();
@@ -3336,142 +3181,10 @@ function AdminSettingsPage({
       const value = await gatewayApi.setCodexClientVersion(version.trim());
       setSetting(value);
       setVersion(value.override_version ?? "");
-      await onChanged();
     } catch (saveError) {
       onError(errorMessage(saveError));
     } finally {
       setSubmitting(false);
-    }
-  }
-
-  function clearCredentialSaveTimer() {
-    if (credentialSaveTimer.current !== null) {
-      window.clearTimeout(credentialSaveTimer.current);
-      credentialSaveTimer.current = null;
-    }
-  }
-
-  function hasFeishuCredentials() {
-    return Boolean(
-      feishuAppId.trim()
-      && (feishuAppSecret.trim() || security?.feishu_app_secret_configured),
-    );
-  }
-
-  async function saveFeishuCredentials() {
-    if (
-      !security
-      || securitySavingRef.current
-      || !hasFeishuCredentials()
-      || (
-        feishuAppId.trim() === security.feishu_app_id
-        && !feishuAppSecret.trim()
-      )
-    ) {
-      return;
-    }
-
-    securitySavingRef.current = true;
-    setSecuritySaving(true);
-    setSecuritySaved(false);
-    try {
-      const value = await gatewayApi.setSecuritySettings({
-        feishu_app_id: feishuAppId.trim(),
-        feishu_app_secret: feishuAppSecret.trim() || undefined,
-        auth_required: authRequired,
-      });
-      setSecurity(value);
-      setFeishuAppSecret("");
-      setFeishuAppSecretVisible(false);
-      setFeishuAppId(value.feishu_app_id);
-      setAuthRequired(value.auth_required);
-      setSecuritySaved(true);
-      await onChanged();
-    } catch (saveError) {
-      setSecuritySaved(false);
-      onError(errorMessage(saveError));
-    } finally {
-      securitySavingRef.current = false;
-      setSecuritySaving(false);
-    }
-  }
-
-  function scheduleFeishuCredentialsSave() {
-    clearCredentialSaveTimer();
-    credentialSaveTimer.current = window.setTimeout(() => {
-      credentialSaveTimer.current = null;
-      void saveFeishuCredentials();
-    }, 150);
-  }
-
-  async function saveAuthRequired(nextAuthRequired: boolean) {
-    clearCredentialSaveTimer();
-    if (!security || securitySavingRef.current) return;
-    if (!hasFeishuCredentials()) {
-      onError(`${GATEWAY_ERROR_PREFIX}请先填写飞书 App ID 和飞书 App Secret，再切换账户登录模式`);
-      return;
-    }
-
-    const previousAuthRequired = authRequired;
-    securitySavingRef.current = true;
-    setSecuritySaving(true);
-    setSecuritySaved(false);
-    setAuthRequired(nextAuthRequired);
-    try {
-      const value = await gatewayApi.setSecuritySettings({
-        feishu_app_id: feishuAppId.trim(),
-        feishu_app_secret: feishuAppSecret.trim() || undefined,
-        auth_required: nextAuthRequired,
-      });
-      setSecurity(value);
-      setFeishuAppSecret("");
-      setFeishuAppSecretVisible(false);
-      setFeishuAppId(value.feishu_app_id);
-      setAuthRequired(value.auth_required);
-      await onChanged();
-      window.location.reload();
-    } catch (saveError) {
-      setAuthRequired(previousAuthRequired);
-      onError(errorMessage(saveError));
-    } finally {
-      securitySavingRef.current = false;
-      setSecuritySaving(false);
-    }
-  }
-
-  async function toggleFeishuAppSecretVisibility() {
-    if (feishuAppSecretVisible) {
-      setFeishuAppSecretVisible(false);
-      return;
-    }
-    if (feishuAppSecret.trim() || !security?.feishu_app_secret_configured) {
-      setFeishuAppSecretVisible(true);
-      return;
-    }
-
-    setRevealingFeishuAppSecret(true);
-    try {
-      const value = await gatewayApi.feishuAppSecret();
-      setFeishuAppSecret(value.feishu_app_secret);
-      setFeishuAppSecretVisible(true);
-    } catch (revealError) {
-      onError(errorMessage(revealError));
-    } finally {
-      setRevealingFeishuAppSecret(false);
-    }
-  }
-
-  async function regenerateEncryptionKey() {
-    setRegeneratingKey(true);
-    try {
-      const value = await gatewayApi.regenerateDatabaseEncryptionKey();
-      setSecurity(value);
-      setShowKeyConfirmation(false);
-      await onChanged();
-    } catch (regenerateError) {
-      onError(errorMessage(regenerateError));
-    } finally {
-      setRegeneratingKey(false);
     }
   }
 
@@ -3481,7 +3194,6 @@ function AdminSettingsPage({
       const value = await gatewayApi.clearCodexClientVersion();
       setSetting(value);
       setVersion("");
-      await onChanged();
     } catch (restoreError) {
       onError(errorMessage(restoreError));
     } finally {
@@ -3490,267 +3202,27 @@ function AdminSettingsPage({
   }
 
   return (
-    <SettingsPageFrame
-      title="管理员设置"
-      description="集中管理网关配置。后续管理员设置会继续添加到此标签页。"
-      tabs={["安全与登录", "Codex 版本", "用户管理"]}
-    >
-      <section className="mb-10">
+    <section className="glass-panel mx-auto max-w-3xl rounded-[26px] p-5 sm:p-7">
+      <div className="border-b border-slate-200/70 pb-5 dark:border-white/10">
+        <h1 className="text-xl font-bold tracking-[-0.025em]">本地设置</h1>
+        <p className="mt-1.5 text-xs leading-5 text-slate-500 dark:text-slate-400">
+          这里只配置本机 Gateway。账号、群组和共享授权由无界面的中心控制服务管理。
+        </p>
+      </div>
+
+      <div className="pt-6">
         <div className="mb-4">
-          <h2 className="text-base font-bold">安全与账户登录</h2>
+          <h2 className="text-base font-bold">Codex 客户端版本</h2>
           <p className="mt-1 text-xs leading-5 text-slate-400">
-            配置保存在 SQLite。更换数据库加密密钥时，已保存的凭据会在同一事务中使用新密钥重新加密。
+            配置本机 Gateway 向 ChatGPT Codex 模型接口发送的客户端版本号。
           </p>
         </div>
-        {!security ? (
-          <div className="flex min-h-24 items-center justify-center">
-            <LoaderCircle className="size-5 animate-spin text-slate-400" />
+
+        {!setting ? (
+          <div className="flex min-h-40 items-center justify-center">
+            <LoaderCircle className="size-6 animate-spin text-slate-400" />
           </div>
         ) : (
-          <div className="space-y-4">
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div>
-                <div className="mb-2 text-[11px] font-bold text-slate-500 dark:text-slate-400">数据库加密密钥</div>
-                <div className="flex min-h-11 items-center justify-between gap-3 rounded-xl border border-white/65 bg-white/45 px-3 dark:border-white/8 dark:bg-white/[0.035]">
-                  <div className="flex min-w-0 items-center gap-2">
-                    <KeyRound className="size-4 shrink-0 text-emerald-500" />
-                    <span className="truncate text-xs font-semibold">
-                      {security.encryption_key_configured ? "已自动生成并安全保存" : "尚未生成"}
-                    </span>
-                  </div>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    disabled={securitySaving || regeneratingKey}
-                    onClick={() => setShowKeyConfirmation(true)}
-                  >
-                    <RefreshCw className="size-4" />
-                    {security.encryption_key_configured ? "重新生成" : "立即生成"}
-                  </Button>
-                </div>
-                <p className="mt-2 text-[11px] leading-5 text-slate-400">
-                  密钥只能由系统随机生成，不支持手动输入。重新生成后会立即替换密钥并重新加密已有凭据。
-                </p>
-              </div>
-            </div>
-            <FormField label="飞书 App ID">
-              <input
-                className="field w-full font-mono text-sm"
-                value={feishuAppId}
-                placeholder="cli_..."
-                disabled={securitySaving}
-                onChange={(event) => {
-                  clearCredentialSaveTimer();
-                  setSecuritySaved(false);
-                  setFeishuAppId(event.target.value);
-                }}
-                onBlur={scheduleFeishuCredentialsSave}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") event.currentTarget.blur();
-                }}
-              />
-            </FormField>
-            <FormField label={`飞书 App Secret${security.feishu_app_secret_configured ? "（已设置；留空不变）" : ""}`}>
-              <div className="flex gap-2">
-                <input
-                  className="field min-w-0 flex-1 font-mono text-sm"
-                  type={feishuAppSecretVisible ? "text" : "password"}
-                  value={feishuAppSecret}
-                  placeholder={security.feishu_app_secret_configured ? "********" : "App Secret"}
-                  disabled={securitySaving || revealingFeishuAppSecret}
-                  onChange={(event) => {
-                    clearCredentialSaveTimer();
-                    setSecuritySaved(false);
-                    setFeishuAppSecret(event.target.value);
-                  }}
-                  onBlur={scheduleFeishuCredentialsSave}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") event.currentTarget.blur();
-                  }}
-                />
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="icon"
-                  disabled={securitySaving || revealingFeishuAppSecret}
-                  aria-label={feishuAppSecretVisible ? "隐藏飞书 App Secret" : "显示飞书 App Secret"}
-                  onClick={() => void toggleFeishuAppSecretVisibility()}
-                >
-                  {revealingFeishuAppSecret ? (
-                    <LoaderCircle className="size-4 animate-spin" />
-                  ) : feishuAppSecretVisible ? (
-                    <EyeOff className="size-4" />
-                  ) : (
-                    <Eye className="size-4" />
-                  )}
-                </Button>
-              </div>
-            </FormField>
-            <label className="flex items-center justify-between gap-4 rounded-2xl border border-white/65 bg-white/45 p-4 dark:border-white/8 dark:bg-white/[0.035]">
-              <span>
-                <span className="block text-sm font-semibold">账户登录模式</span>
-                <span className="mt-1 block text-xs text-slate-400">开启后管理端需通过飞书登录，网关请求需使用用户 API Key。</span>
-              </span>
-              <input
-                type="checkbox"
-                className="size-4"
-                checked={authRequired}
-                disabled={securitySaving}
-                onChange={(event) => void saveAuthRequired(event.target.checked)}
-              />
-            </label>
-            <div
-              className="flex min-h-5 items-center justify-end gap-1.5 text-[11px] text-slate-400"
-              aria-live="polite"
-            >
-              {securitySaving ? (
-                <>
-                  <LoaderCircle className="size-3.5 animate-spin" />
-                  正在自动保存
-                </>
-              ) : securitySaved ? (
-                <>
-                  <CheckCircle2 className="size-3.5 text-emerald-500" />
-                  已自动保存
-                </>
-              ) : (
-                "飞书凭据填写完成后会自动保存"
-              )}
-            </div>
-          </div>
-        )}
-      </section>
-      <section className="mb-10">
-        <div className="mb-4">
-          <h2 className="text-base font-bold">用户管理</h2>
-          <p className="mt-1 text-xs leading-5 text-slate-400">
-            管理员可手动创建账号（邮箱 + 密码）用于调试，或为没有飞书的成员开通登录。
-          </p>
-        </div>
-
-        <form onSubmit={createUser} className="rounded-2xl border border-white/65 bg-white/45 p-4 dark:border-white/8 dark:bg-white/[0.035]">
-          <div className="grid gap-3 sm:grid-cols-2">
-            <FormField label="邮箱">
-              <input
-                className="field w-full text-sm"
-                type="email"
-                value={userEmail}
-                placeholder="name@example.com"
-                autoComplete="off"
-                disabled={creatingUser}
-                onChange={(event) => setUserEmail(event.target.value)}
-              />
-            </FormField>
-            <FormField label="姓名">
-              <input
-                className="field w-full text-sm"
-                value={userName}
-                placeholder="显示名称"
-                autoComplete="off"
-                disabled={creatingUser}
-                onChange={(event) => setUserName(event.target.value)}
-              />
-            </FormField>
-            <FormField label="角色">
-              <select
-                className="field w-full text-sm"
-                value={userRole}
-                disabled={creatingUser}
-                onChange={(event) => setUserRole(event.target.value === "admin" ? "admin" : "user")}
-              >
-                <option value="user">成员（user）</option>
-                <option value="admin">管理员（admin）</option>
-              </select>
-            </FormField>
-            <FormField label="密码（至少 6 个字符）">
-              <input
-                className="field w-full text-sm"
-                type="password"
-                value={userPassword}
-                placeholder="初始密码"
-                autoComplete="off"
-                disabled={creatingUser}
-                onChange={(event) => setUserPassword(event.target.value)}
-              />
-            </FormField>
-          </div>
-          {createdUserNote ? (
-            <div className="mt-3 flex items-center gap-1.5 text-[11px] text-emerald-600 dark:text-emerald-300">
-              <CheckCircle2 className="size-3.5" />
-              {createdUserNote}
-            </div>
-          ) : null}
-          <div className="mt-4 flex flex-wrap justify-end gap-2">
-            <Button
-              type="submit"
-              disabled={creatingUser || !userEmail.trim() || !userName.trim() || !userPassword}
-            >
-              {creatingUser ? <LoaderCircle className="size-4 animate-spin" /> : <UserPlus className="size-4" />}
-              {creatingUser ? "正在创建" : "创建用户"}
-            </Button>
-          </div>
-        </form>
-
-        <div className="mt-4">
-          <div className="mb-1 text-[11px] font-bold text-slate-500 dark:text-slate-400">已有账号</div>
-          {users.length === 0 ? (
-            <div className="rounded-xl border border-white/65 bg-white/45 px-4 py-3 text-xs text-slate-400 dark:border-white/8 dark:bg-white/[0.035]">
-              暂无其他账号。
-            </div>
-          ) : (
-            <ul className="divide-y divide-slate-200/70 rounded-2xl border border-white/65 bg-white/45 dark:divide-white/8 dark:border-white/8 dark:bg-white/[0.035]">
-              {users.map((item) => (
-                <li key={item.id} className="flex items-center gap-3 px-4 py-3">
-                  <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-slate-900 text-xs font-bold text-white dark:bg-white dark:text-slate-950">
-                    {item.name.slice(0, 1).toUpperCase()}
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <span className="truncate text-sm font-semibold">{item.name}</span>
-                      <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${item.role === "admin" ? "bg-blue-500/10 text-blue-600 dark:text-blue-300" : "bg-slate-500/10 text-slate-500 dark:text-slate-300"}`}>
-                        {item.role === "admin" ? "管理员" : "成员"}
-                      </span>
-                      {!item.has_password ? (
-                        <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-bold text-amber-600 dark:text-amber-300">
-                          飞书账号
-                        </span>
-                      ) : (
-                        <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-bold text-emerald-600 dark:text-emerald-300">
-                          手动账号
-                        </span>
-                      )}
-                    </div>
-                    <div className="mt-0.5 truncate font-mono text-[11px] text-slate-400">{item.email}</div>
-                  </div>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    disabled={deletingUser.has(item.id)}
-                    aria-label={`删除 ${item.name}`}
-                    onClick={() => void deleteUser(item.id)}
-                  >
-                    {deletingUser.has(item.id) ? <LoaderCircle className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
-                  </Button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      </section>
-      <section>
-        <div className="mb-4">
-          <h2 className="text-base font-bold">Codex 版本</h2>
-          <p className="mt-1 text-xs leading-5 text-slate-400">
-            配置网关向 ChatGPT Codex 模型接口发送的客户端版本号。数据库配置优先于代码默认值。
-          </p>
-        </div>
-        {!setting ? (
-        <div className="flex min-h-40 items-center justify-center">
-          <LoaderCircle className="size-6 animate-spin text-slate-400" />
-        </div>
-      ) : (
-        <div>
           <form onSubmit={save}>
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="rounded-2xl border border-white/65 bg-white/45 p-4 dark:border-white/8 dark:bg-white/[0.035]">
@@ -3762,7 +3234,7 @@ function AdminSettingsPage({
                 <div className="mt-2 flex items-center gap-2 font-mono text-sm font-bold text-blue-600 dark:text-blue-300">
                   {setting.effective_version}
                   <span className="rounded-full bg-blue-500/10 px-2 py-0.5 font-sans text-[10px]">
-                    {setting.is_overridden ? "数据库覆盖" : "代码默认"}
+                    {setting.is_overridden ? "本地覆盖" : "代码默认"}
                   </span>
                 </div>
               </div>
@@ -3779,7 +3251,7 @@ function AdminSettingsPage({
                 />
               </FormField>
               <div className="mt-2 text-[11px] leading-5 text-slate-400">
-                保存后写入 SQLite，并自动清理 OpenAI 模型缓存。留空不会保存；需要取消覆盖时使用“恢复代码默认”。
+                保存后写入本机 SQLite，并自动清理 OpenAI 模型缓存。
               </div>
             </div>
 
@@ -3795,170 +3267,19 @@ function AdminSettingsPage({
               </Button>
               <Button
                 type="submit"
-                disabled={submitting || !version.trim() || version.trim() === setting.override_version}
+                disabled={
+                  submitting
+                  || !version.trim()
+                  || version.trim() === setting.override_version
+                }
               >
                 {submitting ? <LoaderCircle className="size-4 animate-spin" /> : <Check className="size-4" />}
                 {submitting ? "保存中" : "保存覆盖"}
               </Button>
             </div>
           </form>
-        </div>
-      )}
-      </section>
-      {showKeyConfirmation ? (
-        <RegenerateEncryptionKeyDialog
-          configured={security?.encryption_key_configured ?? false}
-          submitting={regeneratingKey}
-          onClose={() => setShowKeyConfirmation(false)}
-          onConfirm={() => void regenerateEncryptionKey()}
-        />
-      ) : null}
-    </SettingsPageFrame>
-  );
-}
-
-function AccountSettingsPage({
-  authMode,
-  onError,
-}: {
-  authMode: "disabled" | "required";
-  onError: (message: string) => void;
-}) {
-  const [token, setToken] = React.useState<string | null>(null);
-  const [creating, setCreating] = React.useState(false);
-  const [copied, setCopied] = React.useState(false);
-  const [visible, setVisible] = React.useState(false);
-
-  React.useEffect(() => {
-    if (authMode !== "required") {
-      setToken(null);
-      return;
-    }
-    void authApi.gatewayAccessToken()
-      .then((value) => setToken(value.access_token))
-      .catch((error) => onError(errorMessage(error)));
-  }, [authMode, onError]);
-
-  async function regenerateToken() {
-    setCreating(true);
-    try {
-      const value = await authApi.regenerateAccessToken();
-      setToken(value.access_token);
-      setVisible(false);
-      setCopied(false);
-    } catch (error) {
-      onError(errorMessage(error));
-    } finally {
-      setCreating(false);
-    }
-  }
-
-  return (
-    <SettingsPageFrame
-      title="账户设置"
-      description="管理用于访问 AI网关的个人 API Key。后续账户设置会继续添加到此标签页。"
-      tabs={["API Key"]}
-    >
-      <section>
-        <div className="mb-2">
-          <h3 className="text-sm font-bold">API Key</h3>
-          <p className="mt-1 text-[11px] leading-5 text-slate-400">
-            用于账户模式下的 <code>/openai/v1</code> 请求。系统仅保存当前用户的一把 Key，并以加密形式存储。
-          </p>
-        </div>
-        {authMode === "required" ? (
-          <>
-            <div className="rounded-2xl border border-amber-500/20 bg-amber-500/5 p-4 text-xs leading-5 text-amber-800 dark:text-amber-200">
-              重新生成会立即使旧 Key 失效。请同步更新已经写入 Codex 配置的 Key。
-            </div>
-            {token ? (
-              <div className="mt-4">
-                <FormField label="当前 API Key">
-                  <div className="flex gap-2">
-                    <input
-                      className="field min-w-0 flex-1 font-mono text-xs"
-                      readOnly
-                      value={visible ? token : "********"}
-                    />
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="icon"
-                      aria-label={visible ? "隐藏 API Key" : "显示 API Key"}
-                      onClick={() => setVisible((value) => !value)}
-                    >
-                      {visible ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      onClick={() => {
-                        void copyText(token);
-                        setCopied(true);
-                        window.setTimeout(() => setCopied(false), 1500);
-                      }}
-                    >
-                      {copied ? <Check className="size-4" /> : <Copy className="size-4" />}
-                      {copied ? "已复制" : "复制"}
-                    </Button>
-                  </div>
-                </FormField>
-              </div>
-            ) : (
-              <div className="mt-4 flex min-h-16 items-center justify-center">
-                <LoaderCircle className="size-5 animate-spin text-slate-400" />
-              </div>
-            )}
-          </>
-        ) : (
-          <div className="rounded-2xl border border-blue-500/15 bg-blue-500/5 p-4 text-xs leading-5 text-blue-700 dark:text-blue-300">
-            当前服务未启用登录验证，不需要配置个人 API Key。
-          </div>
         )}
-      </section>
-      <div className="mt-7 flex justify-end gap-2">
-        {authMode === "required" ? (
-          <Button type="button" disabled={creating || !token} onClick={() => void regenerateToken()}>
-            {creating ? <LoaderCircle className="size-4 animate-spin" /> : <KeyRound className="size-4" />}
-            {creating ? "生成中" : "重新生成"}
-          </Button>
-          ) : null}
       </div>
-    </SettingsPageFrame>
-  );
-}
-
-function SettingsPageFrame({
-  title,
-  description,
-  tabs,
-  children,
-}: {
-  title: string;
-  description: string;
-  tabs: string[];
-  children: React.ReactNode;
-}) {
-  return (
-    <section className="glass-panel mx-auto max-w-3xl rounded-[26px] p-5 sm:p-7">
-      <div className="border-b border-slate-200/70 pb-5 dark:border-white/10">
-        <h1 className="text-xl font-bold tracking-[-0.025em]">{title}</h1>
-        <p className="mt-1.5 text-xs leading-5 text-slate-500 dark:text-slate-400">{description}</p>
-      </div>
-      <div className="mt-5 border-b border-slate-200/70 dark:border-white/10" role="tablist">
-        {tabs.map((tab) => (
-          <button
-            key={tab}
-            type="button"
-            role="tab"
-            aria-selected="true"
-            className="-mb-px border-b-2 border-blue-600 px-1 pb-3 text-sm font-bold text-blue-600 dark:border-blue-400 dark:text-blue-300"
-          >
-            {tab}
-          </button>
-        ))}
-      </div>
-      <div className="pt-6">{children}</div>
     </section>
   );
 }
@@ -4082,7 +3403,7 @@ function LoadingState() {
     <div className="flex min-h-[420px] items-center justify-center">
       <div className="text-center">
         <LoaderCircle className="mx-auto size-7 animate-spin text-slate-400" />
-        <div className="mt-3 text-xs font-semibold text-slate-400">正在连接远程 Server</div>
+        <div className="mt-3 text-xs font-semibold text-slate-400">正在连接本机 Gateway</div>
       </div>
     </div>
   );

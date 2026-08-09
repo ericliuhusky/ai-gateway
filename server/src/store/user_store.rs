@@ -328,6 +328,33 @@ impl UserStore {
         .map_err(|error| format!("create managed user failed: {error}"))
     }
 
+    pub fn ensure_bootstrap_admin(
+        &self,
+        email: &str,
+        name: &str,
+        password: &str,
+    ) -> Result<(), String> {
+        let conn = self.sqlite.connect_for_auth()?;
+        let existing_id = conn
+            .query_row(
+                "SELECT id FROM gateway_users WHERE email = ?1 COLLATE NOCASE",
+                params![email.trim()],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(|error| format!("find bootstrap admin failed: {error}"))?;
+        if let Some(user_id) = existing_id {
+            conn.execute(
+                "UPDATE gateway_users SET role = 'admin' WHERE id = ?1",
+                params![user_id],
+            )
+            .map_err(|error| format!("promote bootstrap admin failed: {error}"))?;
+            return Ok(());
+        }
+        self.create_managed_user(email, name, UserRole::Admin, password)?;
+        Ok(())
+    }
+
     pub fn verify_login(
         &self,
         email: &str,
@@ -391,11 +418,12 @@ impl UserStore {
             .map_err(|error| format!("read managed users failed: {error}"))
     }
 
-    pub fn delete_user(&self, user_id: i64) -> Result<(), String> {
+    pub fn delete_user(&self, user_id: i64) -> Result<bool, String> {
         let conn = self.sqlite.connect_for_auth()?;
-        conn.execute("DELETE FROM gateway_users WHERE id = ?1", params![user_id])
+        let deleted = conn
+            .execute("DELETE FROM gateway_users WHERE id = ?1", params![user_id])
             .map_err(|error| format!("delete managed user failed: {error}"))?;
-        Ok(())
+        Ok(deleted > 0)
     }
 }
 
@@ -476,7 +504,7 @@ mod tests {
     }
 
     #[test]
-    fn creates_verifies_lists_and_deletes_managed_users() {
+    fn creates_and_verifies_managed_users() {
         let db_path = unique_db_path();
         let sqlite = SqliteStore::for_test(db_path.clone()).expect("create sqlite");
         sqlite
@@ -522,8 +550,11 @@ mod tests {
         assert_eq!(users[0].email, "dev@example.com");
         assert!(users[0].has_password);
 
-        store.delete_user(user.id).expect("delete user");
-        assert_eq!(store.list_all_users().expect("list").len(), 0);
+        store
+            .ensure_bootstrap_admin("dev@example.com", "开发调试", "secret123")
+            .expect("existing bootstrap admin remains valid");
+        assert!(store.delete_user(user.id).expect("delete user"));
+        assert!(store.list_all_users().expect("list users").is_empty());
     }
 
     #[test]
