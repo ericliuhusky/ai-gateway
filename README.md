@@ -9,7 +9,7 @@ AI Gateway 已拆分为 **Tauri 本地客户端 + 无界面中心控制服务**�
 `client` 包含全部桌面界面和本地数据面：
 
 - `client/src-tauri`：Tauri 桌面壳、启动本机 Gateway、中心账号登录桥接和共享授权同步。
-- `client/local-core`：供应商、API Key、OpenAI/ChatGPT 账号、模型、路由、推理转发、流式响应、用量、日志、诊断和 Codex 脚本。
+- `client/local-core`：供应商、API Key、OpenAI/ChatGPT 账号、模型、路由、推理转发、流式响应、用量、日志、诊断，以及默认 Codex 的 Rust 配置集成。
 - `client/web`：桌面客户端的全部 Web UI，包括本地功能及群组共享页面；由 Tauri 打包，不由中心服务托管。
 
 本机 Gateway 固定监听：
@@ -110,7 +110,9 @@ cargo build -p ai-gateway-client
 
 Tauri 构建脚本会自动在 `client/web` 中执行 Web 构建。
 
-启动后点击顶部“群组”即可配置中心服务地址并登录。除该页面及共享同步外，
+启动时客户端会自动将默认 Codex 配置为使用本机 Gateway；配置发生变化时会尝试重启 Codex 以加载新设置。默认 AI 网关卡片中的播放 / 停止按钮可随时停止或恢复该集成：停止会还原 AI Gateway 接管前的默认 Codex 模型供应商并移除写入的 Provider 配置。命名实例卡片只提供播放按钮：首次启动会创建隔离的 `CODEX_HOME` 和 Electron 数据目录（不会复制默认 `auth.json`），之后会直接打开已有实例；删除实例会同时删除其路由配置及全部实例文件。
+
+点击顶部“群组”即可配置中心服务地址并登录。除该页面及共享同步外，
 本地供应商、路由、推理、用量和诊断功能不依赖中心登录。
 
 本机数据目录：
@@ -260,10 +262,6 @@ GET    /openai/v1/models
 POST   /openai/v1/responses
 GET    /instances/:instance_id/openai/v1/models
 POST   /instances/:instance_id/openai/v1/responses
-
-GET    /codex/setup.sh
-GET    /codex/restore.sh
-GET    /codex/instances.sh
 ```
 
 本机 Gateway 不暴露 `/auth` 或 `/groups`。

@@ -22,6 +22,8 @@ import type {
   CenterGroupDetail,
   CenterUser,
   LocalGatewayStatus,
+  DefaultCodexStatus,
+  CodexConfigurationResult,
   ManagedCenterUser,
   SharedSyncStatus,
 } from "./types";
@@ -286,6 +288,26 @@ async function centerRequest<T>(
 export const centerApi = {
   gatewayStatus() {
     return invoke<LocalGatewayStatus>("gateway_status");
+  },
+
+  codexGatewayStatus() {
+    return invoke<DefaultCodexStatus>("codex_gateway_status");
+  },
+
+  startCodexGateway() {
+    return invoke<CodexConfigurationResult>("start_codex_gateway");
+  },
+
+  stopCodexGateway() {
+    return invoke<CodexConfigurationResult>("stop_codex_gateway");
+  },
+
+  startCodexInstance(instanceId: string) {
+    return invoke<void>("start_codex_instance", { instanceId });
+  },
+
+  deleteCodexInstance(instanceId: string) {
+    return invoke<void>("delete_codex_instance", { instanceId });
   },
 
   login(input: { url: string; email: string; password: string }) {

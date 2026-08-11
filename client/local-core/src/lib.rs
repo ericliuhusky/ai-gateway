@@ -1,6 +1,6 @@
 mod adapters;
 mod api;
-mod codex_scripts;
+mod codex_config;
 mod config;
 mod crypto;
 mod models;
@@ -25,6 +25,10 @@ use store::{
 };
 use upstream::UpstreamClient;
 
+pub use codex_config::{
+    CodexConfigurationResult, CodexInstancePaths, DefaultCodexStatus, default_codex_status,
+    delete_codex_instance, prepare_codex_instance, start_default_codex, stop_default_codex,
+};
 pub use models::{ProviderCompatibilityProfile, ProviderUpstreamProtocol};
 
 pub const LOCAL_GATEWAY_URL: &str = "http://127.0.0.1:4242/openai/v1";

@@ -8,7 +8,6 @@ import {
   ChevronDown,
   CircleAlert,
   Cloud,
-  Code2,
   Copy,
   Gauge,
   KeyRound,
@@ -26,11 +25,13 @@ import {
   Users,
   LogIn,
   LogOut,
+  Play,
+  Square,
   Share2,
   X,
 } from "lucide-react";
 
-import { LOCAL_API_ROOT, centerApi, gatewayApi } from "./api";
+import { centerApi, gatewayApi } from "./api";
 import { Button } from "./components/ui/button";
 import { cn } from "./lib/utils";
 import type {
@@ -61,7 +62,7 @@ import type {
 const GATEWAY_ERROR_PREFIX = "AI网关错误：";
 const UPSTREAM_ERROR_PREFIX = "上游服务错误：";
 
-type Dialog = "provider" | "instances" | "scripts" | null;
+type Dialog = "provider" | "instances" | null;
 type Page = "overview" | "groups" | "usage" | "benchmark" | "routing" | "issues" | "settings";
 
 const ROUTE_TO_PAGE: Record<string, Page> = {
@@ -182,9 +183,6 @@ function copyText(text: string) {
   return navigator.clipboard.writeText(text);
 }
 
-function shellQuote(text: string) {
-  return `'${text.replace(/'/g, `'\"'\"'`)}'`;
-}
 
 function formatTokenCount(value: number) {
   return new Intl.NumberFormat("zh-CN", {
@@ -204,7 +202,6 @@ export function GatewayDashboard() {
     enabled: false,
   });
   const [instanceToEdit, setInstanceToEdit] = React.useState<string | null>(null);
-  const [scriptInstanceId, setScriptInstanceId] = React.useState<string | null>(null);
   const [selected, setSelected] = React.useState<SelectedProvider>({ updated_at: 0 });
   const [turnLogs, setTurnLogs] = React.useState<TurnRouteLog[]>([]);
   const [gatewayIssues, setGatewayIssues] = React.useState<GatewayIssue[]>([]);
@@ -455,10 +452,6 @@ export function GatewayDashboard() {
                   automatic_routing: defaultAutomaticRouting,
                 }]}
                 providers={providers}
-                onShowScripts={(instanceId) => {
-                  setScriptInstanceId(instanceId);
-                  setDialog("scripts");
-                }}
                 onConfigure={(instanceId) => {
                 if (instanceId === "default") {
                   setInstanceToEdit(instanceId);
@@ -476,10 +469,6 @@ export function GatewayDashboard() {
                   title="实例"
                   instances={instances}
                   providers={providers}
-                  onShowScripts={(instanceId) => {
-                    setScriptInstanceId(instanceId);
-                    setDialog("scripts");
-                  }}
                   onConfigure={(instanceId) => {
                     setInstanceToEdit(instanceId);
                     setDialog("instances");
@@ -532,26 +521,13 @@ export function GatewayDashboard() {
             setDialog(null);
           }}
           onChanged={refresh}
-          onCreated={(instanceId) => {
-            setInstanceToEdit(null);
-            setScriptInstanceId(instanceId);
-            setDialog("scripts");
-          }}
           onError={setError}
-        />
-      ) : null}
-      {dialog === "scripts" && scriptInstanceId ? (
-        <CodexScriptsDialog
-          instanceId={scriptInstanceId}
-          onClose={() => {
-            setScriptInstanceId(null);
-            setDialog(null);
-          }}
         />
       ) : null}
     </div>
   );
 }
+
 
 
 function NavTabs({
@@ -1154,7 +1130,6 @@ function InstanceSection({
   showHeader = true,
   instances,
   providers,
-  onShowScripts,
   onConfigure,
   onChanged,
   onError,
@@ -1163,7 +1138,6 @@ function InstanceSection({
   showHeader?: boolean;
   instances: InstanceRoutingConfig[];
   providers: GatewayProvider[];
-  onShowScripts: (instanceId: string) => void;
   onConfigure: (instanceId: string) => void;
   onChanged: () => Promise<void>;
   onError: (message: string) => void;
@@ -1287,7 +1261,12 @@ function InstanceSection({
     if (!instancePendingDeletion) return;
     const instance = instancePendingDeletion;
     setInstancePendingDeletion(null);
-    void run(instance.instance_id, () => gatewayApi.deleteInstance(instance.instance_id));
+    void run(instance.instance_id, () =>
+      Promise.all([
+        gatewayApi.deleteInstance(instance.instance_id),
+        centerApi.deleteCodexInstance(instance.instance_id),
+      ]),
+    );
   }
 
   return (
@@ -1312,7 +1291,7 @@ function InstanceSection({
             onReasoningChange={(effort) => updateReasoning(instance, effort)}
             onToggleAutomatic={() => toggleAutomaticRouting(instance)}
             onConfigureAutomatic={() => onConfigure(instance.instance_id)}
-            onCodexScripts={() => onShowScripts(instance.instance_id)}
+            onError={onError}
             onDelete={instance.instance_id === "default" ? undefined : () => deleteInstance(instance)}
           />
         ))}
@@ -1329,6 +1308,85 @@ function InstanceSection({
   );
 }
 
+function DefaultCodexGatewayControl({ onError }: { onError: (message: string) => void }) {
+  const [started, setStarted] = React.useState(false);
+  const [loading, setLoading] = React.useState(true);
+  const [busy, setBusy] = React.useState(false);
+
+  React.useEffect(() => {
+    void centerApi.codexGatewayStatus()
+      .then((status) => setStarted(status.started))
+      .catch((statusError) => onError(errorMessage(statusError)))
+      .finally(() => setLoading(false));
+  }, [onError]);
+
+  async function toggle() {
+    if (busy || loading) return;
+    setBusy(true);
+    try {
+      const result = started
+        ? await centerApi.stopCodexGateway()
+        : await centerApi.startCodexGateway();
+      setStarted((current) => !current);
+      if (result.warnings.length) onError(result.warnings.join("\n"));
+    } catch (toggleError) {
+      onError(errorMessage(toggleError));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Button
+      type="button"
+      variant="outline"
+      size="icon"
+      disabled={loading || busy}
+      title={started ? "停止并恢复默认 Codex 配置" : "启动默认 Codex 网关"}
+      aria-label={started ? "停止默认 Codex 网关" : "启动默认 Codex 网关"}
+      onClick={() => void toggle()}
+    >
+      {loading || busy ? <LoaderCircle className="size-4 animate-spin" /> : started ? <Square className="size-3.5 fill-current" /> : <Play className="size-4 fill-current" />}
+    </Button>
+  );
+}
+
+function CodexInstanceStartControl({
+  instanceId,
+  onError,
+}: {
+  instanceId: string;
+  onError: (message: string) => void;
+}) {
+  const [busy, setBusy] = React.useState(false);
+
+  async function start() {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await centerApi.startCodexInstance(instanceId);
+    } catch (startError) {
+      onError(errorMessage(startError));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Button
+      type="button"
+      variant="outline"
+      size="icon"
+      disabled={busy}
+      title={`启动 Codex 实例：${instanceId}`}
+      aria-label={`启动 Codex 实例：${instanceId}`}
+      onClick={() => void start()}
+    >
+      {busy ? <LoaderCircle className="size-4 animate-spin" /> : <Play className="size-4 fill-current" />}
+    </Button>
+  );
+}
+
 function InstanceCard({
   instance,
   providers,
@@ -1340,7 +1398,7 @@ function InstanceCard({
   onReasoningChange,
   onToggleAutomatic,
   onConfigureAutomatic,
-  onCodexScripts,
+  onError,
   onDelete,
 }: {
   instance: InstanceRoutingConfig;
@@ -1353,7 +1411,7 @@ function InstanceCard({
   onReasoningChange: (effort: ReasoningEffort | "") => void;
   onToggleAutomatic: () => void;
   onConfigureAutomatic: () => void;
-  onCodexScripts: () => void;
+  onError: (message: string) => void;
   onDelete?: () => void;
 }) {
   const isDefault = instance.instance_id === "default";
@@ -1372,6 +1430,14 @@ function InstanceCard({
         <div className="mt-1.5 truncate font-mono text-[11px] text-slate-400" title={isDefault ? "/openai/v1" : `/instances/${instance.instance_id}/openai/v1`}>
           {isDefault ? "/openai/v1" : `/instances/${instance.instance_id}/openai/v1`}
         </div>
+      </div>
+
+      <div className="flex shrink-0 items-center">
+        {isDefault ? (
+          <DefaultCodexGatewayControl onError={onError} />
+        ) : (
+          <CodexInstanceStartControl instanceId={instance.instance_id} onError={onError} />
+        )}
       </div>
 
       <div className="hidden h-8 w-px bg-slate-200/70 lg:block dark:bg-white/10" />
@@ -1440,10 +1506,6 @@ function InstanceCard({
         </button>
         <Button type="button" variant="outline" size="sm" onClick={onConfigureAutomatic}>
           路由配置
-        </Button>
-        <Button type="button" variant="outline" size="sm" onClick={onCodexScripts}>
-          <Code2 className="size-3.5" />
-          Codex 脚本
         </Button>
         {onDelete ? (
           <Button type="button" variant="outline" size="icon" title="删除实例" disabled={saving} onClick={onDelete}>
@@ -2837,14 +2899,12 @@ function CodexInstancesDialog({
   initialInstanceId,
   onClose,
   onChanged,
-  onCreated,
   onError,
 }: {
   providers: GatewayProvider[];
   initialInstanceId?: string;
   onClose: () => void;
   onChanged: () => Promise<void>;
-  onCreated: (instanceId: string) => void;
   onError: (message: string) => void;
 }) {
   const [instanceIds, setInstanceIds] = React.useState<string[]>([]);
@@ -2924,7 +2984,6 @@ function CodexInstancesDialog({
   );
   async function save() {
     if (!canSave) return;
-    const creatingInstance = isCreating;
     setSaving(true);
     try {
       const config: Omit<InstanceRoutingConfig, "instance_id" | "updated_at"> = {
@@ -2937,10 +2996,6 @@ function CodexInstancesDialog({
       setInstanceId(saved.instance_id);
       setAutomaticRouting(saved.automatic_routing);
       await Promise.all([refreshInstances(), onChanged()]);
-      if (creatingInstance) {
-        onCreated(saved.instance_id);
-        return;
-      }
       setIsCreating(false);
       onClose();
     } catch (saveError) {
@@ -3023,34 +3078,16 @@ function DeleteInstanceDialog({
   onClose: () => void;
   onConfirm: () => void;
 }) {
-  const [copied, setCopied] = React.useState(false);
-  const instancesScriptUrl = `${LOCAL_API_ROOT}/codex/instances.sh`;
-  const deleteCommand = `curl -fsSL ${shellQuote(instancesScriptUrl)} | sh -s -- delete ${shellQuote(instanceId)}`;
-
-  function copyDeleteCommand() {
-    void copyText(deleteCommand);
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1500);
-  }
-
   return (
     <DialogFrame
       title={`删除实例：${instanceId}`}
-      description="删除前请按需保存该 Codex 实例的本地清理命令。"
+      description="删除该实例的网关路由配置及本机 Codex 实例文件。"
       onClose={onClose}
     >
       <div className="space-y-5">
         <div className="rounded-2xl border border-amber-500/20 bg-amber-500/5 p-4 text-xs leading-5 text-amber-700 dark:text-amber-300">
-          确认删除只会删除网关中的实例路由配置。下方命令会删除本机的 Codex 实例文件夹，包括独立配置、登录信息、会话和 Electron 数据。
+          此操作会删除 AI 网关中的实例路由配置，以及该实例独立的 Codex 配置、登录信息、会话和 Electron 数据。
         </div>
-        <FormField label="清理 / 删除 Codex 实例">
-          <CommandBlock
-            command={deleteCommand}
-            copied={copied}
-            copyLabel="复制 Codex 实例删除命令"
-            onCopy={copyDeleteCommand}
-          />
-        </FormField>
         <div className="flex flex-wrap justify-end gap-2">
           <Button type="button" variant="outline" disabled={deleting} onClick={onClose}>取消</Button>
           <Button type="button" disabled={deleting} onClick={onConfirm} className="bg-red-600 text-white hover:bg-red-700">
@@ -3060,97 +3097,6 @@ function DeleteInstanceDialog({
         </div>
       </div>
     </DialogFrame>
-  );
-}
-
-function CodexScriptsDialog({
-  instanceId,
-  onClose,
-}: {
-  instanceId: string;
-  onClose: () => void;
-}) {
-  const [copied, setCopied] = React.useState<"setup" | "cleanup" | null>(null);
-  const isDefault = instanceId === "default";
-  const setupScriptUrl = `${LOCAL_API_ROOT}/codex/setup.sh`;
-  const cleanupScriptUrl = `${LOCAL_API_ROOT}/codex/restore.sh`;
-  const instancesScriptUrl = `${LOCAL_API_ROOT}/codex/instances.sh`;
-  const gatewayUrl = isDefault
-    ? `${LOCAL_API_ROOT}/openai/v1`
-    : `${LOCAL_API_ROOT}/instances/${encodeURIComponent(instanceId)}/openai/v1`;
-
-  const setupCommand = isDefault
-    ? `curl -fsSL ${shellQuote(setupScriptUrl)} | sh -s -- ${shellQuote(gatewayUrl)}`
-    : `curl -fsSL ${shellQuote(instancesScriptUrl)} | sh -s -- create ${shellQuote(instanceId)} ${shellQuote(gatewayUrl)}`;
-  const cleanupCommand = isDefault
-    ? `curl -fsSL ${shellQuote(cleanupScriptUrl)} | sh`
-    : `curl -fsSL ${shellQuote(instancesScriptUrl)} | sh -s -- delete ${shellQuote(instanceId)}`;
-
-  function copyCommand(kind: "setup" | "cleanup", command: string) {
-    void copyText(command);
-    setCopied(kind);
-    window.setTimeout(() => setCopied(null), 1500);
-  }
-
-  return (
-    <DialogFrame
-      title={isDefault ? "默认 Codex 脚本" : `Codex 实例脚本：${instanceId}`}
-      description={isDefault ? "设置默认 Codex，或清理 AI Gateway 写入的默认实例配置。" : "创建独立的 Codex 窗口，或删除该窗口的全部本地实例文件。"}
-      onClose={onClose}
-    >
-      <div className="space-y-5">
-        <div className="rounded-2xl border border-blue-500/15 bg-blue-500/5 p-4 text-xs leading-5 text-blue-700 dark:text-blue-300">
-          {isDefault
-            ? <>设置脚本会比较并更新 <code>~/.codex/config.toml</code> 和账户模式凭据，设置变化后会自动完全重启 Codex；清理脚本会还原原模型供应商，并移除 AI Gateway 写入的配置。</>
-            : <>新建脚本会创建独立的 <code>CODEX_HOME</code> 和 Electron 数据目录，请在新窗口中单独登录账号。清理脚本会删除该实例文件夹及其中的登录信息、会话和 Electron 数据。</>}
-        </div>
-        <FormField label={isDefault ? "设置默认 Codex" : "新建 Codex 实例（macOS）"}>
-          <CommandBlock
-            command={setupCommand}
-            copied={copied === "setup"}
-            copyLabel={isDefault ? "复制默认 Codex 设置命令" : "复制新建 Codex 实例命令"}
-            onCopy={() => copyCommand("setup", setupCommand)}
-          />
-        </FormField>
-        <FormField label={isDefault ? "清理默认 Codex 设置" : "清理 / 删除 Codex 实例"}>
-          <CommandBlock
-            command={cleanupCommand}
-            copied={copied === "cleanup"}
-            copyLabel={isDefault ? "复制默认 Codex 清理命令" : "复制 Codex 实例删除命令"}
-            onCopy={() => copyCommand("cleanup", cleanupCommand)}
-          />
-        </FormField>
-        <div className="flex justify-end">
-          <Button onClick={onClose}>完成</Button>
-        </div>
-      </div>
-    </DialogFrame>
-  );
-}
-
-function CommandBlock({
-  command,
-  copied,
-  copyLabel,
-  onCopy,
-}: {
-  command: string;
-  copied: boolean;
-  copyLabel: string;
-  onCopy: () => void;
-}) {
-  return (
-    <div className="relative">
-      <pre className="overflow-x-auto rounded-2xl bg-slate-950 p-4 pr-12 text-[11px] leading-5 text-slate-200">{command}</pre>
-      <button
-        className="absolute right-3 top-3 flex size-8 items-center justify-center rounded-lg bg-white/10 text-white hover:bg-white/15"
-        type="button"
-        aria-label={copyLabel}
-        onClick={onCopy}
-      >
-        {copied ? <Check className="size-4" /> : <Copy className="size-4" />}
-      </button>
-    </div>
   );
 }
 
@@ -3366,6 +3312,7 @@ function RouteTargetSelect({
     </div>
   );
 }
+
 
 function FormField({ label, children }: { label: string; children: React.ReactNode }) {
   return (

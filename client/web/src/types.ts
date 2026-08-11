@@ -78,6 +78,15 @@ export interface LocalGatewayStatus {
   sharing_configured: boolean;
 }
 
+export interface DefaultCodexStatus {
+  started: boolean;
+}
+
+export interface CodexConfigurationResult {
+  changed: boolean;
+  warnings: string[];
+}
+
 export interface SharedSyncStatus {
   provider_count: number;
   renewed_count: number;

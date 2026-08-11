@@ -12,7 +12,6 @@ use crate::{
         set_codex_client_version, set_instance_routing_config, set_route, set_selected_model,
         set_selected_reasoning_effort, start_openai_device_login,
     },
-    codex_scripts,
 };
 use axum::{
     Router,
@@ -99,9 +98,6 @@ pub fn build_router(state: AppState) -> Router {
 
     Router::new()
         .route("/healthz", get(healthz))
-        .route("/codex/setup.sh", get(codex_scripts::setup_script))
-        .route("/codex/restore.sh", get(codex_scripts::restore_script))
-        .route("/codex/instances.sh", get(codex_scripts::instances_script))
         .merge(management)
         .merge(gateway)
         .layer(
