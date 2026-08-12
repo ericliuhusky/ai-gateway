@@ -1,4 +1,4 @@
 [workspace]
-members = ["server", "client/local-core", "client/src-tauri"]
+members = ["server", "client", "share-group/server"]
 default-members = ["server"]
 resolver = "2"

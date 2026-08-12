@@ -1,31 +1,22 @@
 [package]
-name = "ai-gateway-server"
+name = "ai-gateway-share-group-server"
 version = "0.1.0"
 edition = "2024"
-description = "AI Gateway persistent local service"
 
 [dependencies]
 aes-gcm = "0.11"
-async-stream = "0.3"
+argon2 = { version = "0.5", features = ["password-hash"] }
 axum = { version = "0.7", features = ["macros"] }
 base64 = "0.22"
-chrono = "0.4"
-futures-util = "0.3"
 getrandom = "0.4"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }
-tower-http = { version = "0.6", features = ["cors", "fs"] }
 url = "2"
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
-http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
-
-[[bin]]
-name = "ai-gateway-server"
-path = "src/main.rs"

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Builds and deploys the headless control-plane service. The Tauri UI is a
-# separate local-client artifact and is never uploaded to the center service.
+# Builds and deploys the share-group center service. Gateway Server, Web and Client
+# are separate artifacts and are never uploaded to the share-group service.
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SERVER_PKG="${SERVER_PKG:-ai-gateway}"
+SERVER_PKG="${SERVER_PKG:-ai-gateway-share-group-server}"
 ARTIFACT_DIR="${ARTIFACT_DIR:-}"
 
 # Override these when deploying to a different host.
@@ -26,7 +26,7 @@ usage() {
   ./deploy.sh [--skip-build]
 
 说明:
-  本地构建 ai-gateway 中心控制服务，只将二进制同步至远端
+  本地构建 ai-gateway-share-group-server 共享群组服务，只将二进制同步至远端
   ~/.ai-gateway/bin，随后安装/更新 LaunchAgent 并重启服务。
   远端已有的 SQLite 数据库、日志和其他持久化文件不会被删除。
 
@@ -94,7 +94,7 @@ REMOTE_TARGET="${DEPLOY_USER}@${DEPLOY_HOST}"
 build_local() {
   require_cmd cargo
 
-  log "构建中心控制服务: $SERVER_PKG"
+  log "构建共享群组服务: $SERVER_PKG"
   (
     cd "$ROOT_DIR"
     cargo build --release -p "$SERVER_PKG"

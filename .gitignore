@@ -1,5 +1,5 @@
 .DS_Store
 target/
-client/web/node_modules/
-client/web/dist/
-client/src-tauri/gen/
+web/node_modules/
+web/dist/
+client/gen/

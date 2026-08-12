@@ -71,7 +71,7 @@ impl FieldEncryptor {
         let encoded_value = encrypted_value
             .strip_prefix(ENCRYPTED_VALUE_PREFIX)
             .ok_or_else(|| {
-                "local database credential is not encrypted; re-import the credential into the desktop client"
+                "control-plane database credential is not encrypted; re-import it through the control API"
                     .to_string()
             })?;
         let (encoded_nonce, encoded_ciphertext) = encoded_value
