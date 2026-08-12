@@ -21,7 +21,7 @@ AI Gateway 由四个可独立部署的部分组成：
 
 ### 远程控制：`server + web`
 
-在装有 Gateway 的 Mac 上运行 Server，并将 `web/dist` 作为 Server 静态资源托管。控制端通过浏览器访问该 Mac 的 Web 控制台即可管理网关；不需要安装 Tauri Client。
+在装有 Gateway 的 Mac 上运行 Server，并将 Web 静态资源托管在 `~/.ai-gateway/web`。控制端通过浏览器访问该 Mac 的 Web 控制台即可管理网关；不需要安装 Tauri Client。
 
 > 当前 Server 默认仅绑定 `127.0.0.1:4242`，避免未认证的管理接口被直接暴露。若要跨机器访问，请通过带认证与 TLS 的反向代理或安全隧道转发，而不是直接公开端口。
 
@@ -31,17 +31,16 @@ AI Gateway 由四个可独立部署的部分组成：
 
 ## Gateway Server
 
-开发运行：
+开发运行（会自动在仓库 `web/` 执行 `bun install`、`bun run build`，并同步到 `~/.ai-gateway/web`）：
 
 ```bash
-cargo run -p ai-gateway-server -- serve --web-dir web/dist
+cargo run -p server -- serve
 ```
 
-安装为当前 macOS 用户的 LaunchAgent：
+安装为当前 macOS 用户的 LaunchAgent（同样默认构建并安装到 `~/.ai-gateway/web`）：
 
 ```bash
-cargo build --release -p ai-gateway-server
-./target/release/ai-gateway-server install --web-dir "$(pwd)/web/dist"
+cargo run -p server -- install
 ```
 
 管理命令：
@@ -56,13 +55,16 @@ ai-gateway-server uninstall
 安装目录、日志和控制面凭据位于：
 
 ```text
-~/.ai-gateway/server/
+~/.ai-gateway/
 ├── bin/ai-gateway-server
 ├── log/
-├── config.json
-├── credentials.json.enc
-├── credentials.key
-└── gateway/db.sqlite
+├── web/
+├── config/
+│   ├── config.json
+│   ├── credentials.json.enc
+│   └── credentials.key
+└── data/
+    └── db.sqlite
 ```
 
 LaunchAgent 文件为：
@@ -81,7 +83,7 @@ bun install
 bun run build
 ```
 
-默认情况下 Web 在浏览器中使用当前页面的 origin；在 Tauri WebView 中自动使用 `http://127.0.0.1:4242`。静态托管时将构建产物传给 `--web-dir`。
+默认情况下 Web 在浏览器中使用当前页面的 origin；在 Tauri WebView 中自动使用 `http://127.0.0.1:4242`。Server 默认托管 `~/.ai-gateway/web`；需要覆盖时再传 `--web-dir`。
 
 ## Client
 

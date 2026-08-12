@@ -81,30 +81,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ai-gateway-server"
-version = "0.1.0"
-dependencies = [
- "aes-gcm",
- "async-stream",
- "axum",
- "base64 0.22.1",
- "chrono",
- "futures-util",
- "getrandom 0.4.2",
- "http-body-util",
- "reqwest 0.12.28",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2",
- "tokio",
- "tower",
- "tower-http",
- "url",
- "uuid",
-]
-
-[[package]]
 name = "ai-gateway-share-group-server"
 version = "0.1.0"
 dependencies = [
@@ -3405,6 +3381,30 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "server"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "async-stream",
+ "axum",
+ "base64 0.22.1",
+ "chrono",
+ "futures-util",
+ "getrandom 0.4.2",
+ "http-body-util",
+ "reqwest 0.12.28",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "tower",
+ "tower-http",
+ "url",
+ "uuid",
 ]
 
 [[package]]

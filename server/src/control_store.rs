@@ -50,13 +50,13 @@ struct StoreState {
 impl LocalStore {
     pub fn open() -> Result<Self, String> {
         let home = env::var_os("HOME").ok_or_else(|| "未设置 HOME 环境变量".to_string())?;
-        let root = PathBuf::from(home).join(".ai-gateway").join("server");
+        let root = PathBuf::from(home).join(".ai-gateway").join("config");
         Self::open_at(root, true)
     }
 
     pub(crate) fn open_at(root: PathBuf, apply_environment: bool) -> Result<Self, String> {
         fs::create_dir_all(&root)
-            .map_err(|error| format!("创建本地 Gateway 数据目录失败：{error}"))?;
+            .map_err(|error| format!("创建本地 Gateway 配置目录失败：{error}"))?;
 
         let config_path = root.join(CONFIG_FILE);
         let config = if config_path.exists() {
