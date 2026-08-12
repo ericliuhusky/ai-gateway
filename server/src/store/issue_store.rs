@@ -108,10 +108,8 @@ mod tests {
             failure_kind: "upstream_http_error".to_string(),
             status_code: Some(500),
             error_message: "failed".to_string(),
-            request_body: "{}".to_string(),
-            response_body: Some("{\"error\":\"failed\"}".to_string()),
-            request_truncated: false,
-            response_truncated: false,
+            upstream_response: "{\"error\":\"failed\"}".to_string(),
+            upstream_response_truncated: false,
             created_at,
         }
     }

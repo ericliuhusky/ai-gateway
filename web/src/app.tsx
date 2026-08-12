@@ -2031,15 +2031,11 @@ function GatewayIssueSection({
                     </div>
                     <details className="mt-3 rounded-xl bg-slate-900/[0.035] px-3 py-2 text-[10px] dark:bg-white/[0.05]">
                       <summary className="cursor-pointer font-semibold text-slate-500 dark:text-slate-400">
-                        查看上游原始请求 / 响应
+                        查看上游原始返回
                       </summary>
                       <IssuePayload
-                        label={`请求${issue.request_truncated ? "（已截断）" : ""}`}
-                        value={issue.request_body}
-                      />
-                      <IssuePayload
-                        label={`响应${issue.response_truncated ? "（已截断）" : ""}`}
-                        value={issue.response_body ?? "（无响应体）"}
+                        label={`上游原始返回${issue.upstream_response_truncated ? "（已截断）" : ""}`}
+                        value={issue.upstream_response || "（上游返回空响应体）"}
                       />
                     </details>
                   </div>

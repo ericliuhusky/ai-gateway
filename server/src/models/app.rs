@@ -303,11 +303,8 @@ pub struct GatewayIssue {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status_code: Option<u16>,
     pub error_message: String,
-    pub request_body: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub response_body: Option<String>,
-    pub request_truncated: bool,
-    pub response_truncated: bool,
+    pub upstream_response: String,
+    pub upstream_response_truncated: bool,
     pub created_at: i64,
 }
 
@@ -323,10 +320,8 @@ pub struct GatewayIssueRecord {
     pub failure_kind: String,
     pub status_code: Option<u16>,
     pub error_message: String,
-    pub request_body: String,
-    pub response_body: Option<String>,
-    pub request_truncated: bool,
-    pub response_truncated: bool,
+    pub upstream_response: String,
+    pub upstream_response_truncated: bool,
     pub created_at: i64,
 }
 

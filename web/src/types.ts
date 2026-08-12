@@ -183,10 +183,8 @@ export interface GatewayIssue {
   failure_kind: string;
   status_code?: number;
   error_message: string;
-  request_body: string;
-  response_body?: string;
-  request_truncated: boolean;
-  response_truncated: boolean;
+  upstream_response: string;
+  upstream_response_truncated: boolean;
   created_at: number;
 }
 

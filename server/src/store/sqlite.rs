@@ -695,8 +695,8 @@ impl SqliteStore {
                 "INSERT INTO gateway_issues (
                     id, owner_user_id, instance_id, provider_id, provider_name, model,
                     upstream_url, failure_kind, status_code, error_message,
-                    request_body, response_body, request_truncated, response_truncated, created_at
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                    upstream_response, upstream_response_truncated, created_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                 params![
                     issue.id,
                     owner_user_id,
@@ -708,10 +708,8 @@ impl SqliteStore {
                     issue.failure_kind,
                     issue.status_code,
                     issue.error_message,
-                    issue.request_body,
-                    issue.response_body,
-                    i64::from(issue.request_truncated),
-                    i64::from(issue.response_truncated),
+                    issue.upstream_response,
+                    i64::from(issue.upstream_response_truncated),
                     issue.created_at,
                 ],
             )
@@ -742,8 +740,8 @@ impl SqliteStore {
         let mut statement = conn
             .prepare(
                 "SELECT id, instance_id, provider_id, provider_name, model, upstream_url,
-                        failure_kind, status_code, error_message, request_body, response_body,
-                        request_truncated, response_truncated, created_at
+                        failure_kind, status_code, error_message, upstream_response,
+                        upstream_response_truncated, created_at
                  FROM gateway_issues
                  WHERE owner_user_id = ?1
                  ORDER BY created_at DESC, rowid DESC
@@ -768,8 +766,8 @@ impl SqliteStore {
         let conn = self.connect()?;
         conn.query_row(
             "SELECT id, instance_id, provider_id, provider_name, model, upstream_url,
-                    failure_kind, status_code, error_message, request_body, response_body,
-                    request_truncated, response_truncated, created_at
+                    failure_kind, status_code, error_message, upstream_response,
+                    upstream_response_truncated, created_at
              FROM gateway_issues
              WHERE owner_user_id = ?1 AND id = ?2",
             params![owner_user_id.unwrap_or(0), issue_id],
@@ -1122,10 +1120,8 @@ impl SqliteStore {
                 failure_kind TEXT NOT NULL,
                 status_code INTEGER,
                 error_message TEXT NOT NULL,
-                request_body TEXT NOT NULL,
-                response_body TEXT,
-                request_truncated INTEGER NOT NULL DEFAULT 0,
-                response_truncated INTEGER NOT NULL DEFAULT 0,
+                upstream_response TEXT NOT NULL,
+                upstream_response_truncated INTEGER NOT NULL DEFAULT 0,
                 created_at INTEGER NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_gateway_issues_owner_created
@@ -1151,6 +1147,7 @@ impl SqliteStore {
             .map_err(|err| format!("initialize database encryption key failed: {err}"))?;
         }
         add_column_if_missing(&conn, "providers", "owner_user_id INTEGER")?;
+        migrate_gateway_issue_payloads(&conn)?;
         conn.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_accounts_owner_user_id ON accounts(owner_user_id);
              CREATE INDEX IF NOT EXISTS idx_providers_owner_user_id ON providers(owner_user_id);",
@@ -1286,6 +1283,59 @@ fn add_column_if_missing(conn: &Connection, table: &str, definition: &str) -> Re
     }
 }
 
+fn migrate_gateway_issue_payloads(conn: &Connection) -> Result<(), String> {
+    if table_has_column(conn, "gateway_issues", "upstream_response")? {
+        return Ok(());
+    }
+
+    conn.execute_batch(
+        "BEGIN;
+         CREATE TABLE gateway_issues_new (
+            id TEXT PRIMARY KEY,
+            owner_user_id INTEGER NOT NULL DEFAULT 0,
+            instance_id TEXT,
+            provider_id TEXT NOT NULL,
+            provider_name TEXT NOT NULL,
+            model TEXT NOT NULL,
+            upstream_url TEXT NOT NULL,
+            failure_kind TEXT NOT NULL,
+            status_code INTEGER,
+            error_message TEXT NOT NULL,
+            upstream_response TEXT NOT NULL,
+            upstream_response_truncated INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL
+         );
+         INSERT INTO gateway_issues_new (
+            id, owner_user_id, instance_id, provider_id, provider_name, model,
+            upstream_url, failure_kind, status_code, error_message,
+            upstream_response, upstream_response_truncated, created_at
+         )
+         SELECT
+            id, owner_user_id, instance_id, provider_id, provider_name, model,
+            upstream_url, failure_kind, status_code, error_message,
+            COALESCE(response_body, ''), response_truncated, created_at
+         FROM gateway_issues;
+         DROP TABLE gateway_issues;
+         ALTER TABLE gateway_issues_new RENAME TO gateway_issues;
+         CREATE INDEX IF NOT EXISTS idx_gateway_issues_owner_created
+            ON gateway_issues(owner_user_id, created_at DESC);
+         COMMIT;",
+    )
+    .map_err(|err| format!("migrate gateway issue payloads failed: {err}"))
+}
+
+fn table_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool, String> {
+    let mut statement = conn
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .map_err(|err| format!("inspect `{table}` columns failed: {err}"))?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|err| format!("query `{table}` columns failed: {err}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| format!("read `{table}` columns failed: {err}"))?;
+    Ok(columns.iter().any(|name| name == column))
+}
+
 fn turn_route_log_from_row(row: &rusqlite::Row<'_>) -> Result<TurnRouteLog, rusqlite::Error> {
     Ok(TurnRouteLog {
         turn_id: row.get(0)?,
@@ -1319,11 +1369,9 @@ fn gateway_issue_from_row(row: &rusqlite::Row<'_>) -> Result<GatewayIssue, rusql
         failure_kind: row.get(6)?,
         status_code: row.get(7)?,
         error_message: row.get(8)?,
-        request_body: row.get(9)?,
-        response_body: row.get(10)?,
-        request_truncated: row.get::<_, i64>(11)? != 0,
-        response_truncated: row.get::<_, i64>(12)? != 0,
-        created_at: row.get(13)?,
+        upstream_response: row.get(9)?,
+        upstream_response_truncated: row.get::<_, i64>(10)? != 0,
+        created_at: row.get(11)?,
     })
 }
 
@@ -1724,6 +1772,68 @@ mod tests {
             .expect("load security settings");
         assert!(!settings.encryption_key.is_empty());
         assert!(FieldEncryptor::from_base64_key(&settings.encryption_key).is_ok());
+
+        let _ = fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn migrates_gateway_issues_to_drop_request_payloads() {
+        let db_path = unique_test_db_path("gateway-issue-payloads");
+        let conn = Connection::open(&db_path).expect("create legacy database");
+        conn.execute_batch(
+            "CREATE TABLE gateway_issues (
+                id TEXT PRIMARY KEY,
+                owner_user_id INTEGER NOT NULL DEFAULT 0,
+                instance_id TEXT,
+                provider_id TEXT NOT NULL,
+                provider_name TEXT NOT NULL,
+                model TEXT NOT NULL,
+                upstream_url TEXT NOT NULL,
+                failure_kind TEXT NOT NULL,
+                status_code INTEGER,
+                error_message TEXT NOT NULL,
+                request_body TEXT NOT NULL,
+                response_body TEXT,
+                request_truncated INTEGER NOT NULL DEFAULT 0,
+                response_truncated INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL
+             );
+             INSERT INTO gateway_issues (
+                id, owner_user_id, instance_id, provider_id, provider_name, model,
+                upstream_url, failure_kind, status_code, error_message,
+                request_body, response_body, request_truncated, response_truncated, created_at
+             ) VALUES (
+                'legacy', 0, NULL, 'provider', 'Provider', 'model',
+                'https://example.com/v1/responses', 'upstream_http_error', 500, 'failed',
+                '{\"input\":\"secret\"}', '{\"error\":\"failed\"}', 0, 1, 1
+             );",
+        )
+        .expect("create legacy gateway issues");
+        drop(conn);
+
+        let store = SqliteStore {
+            db_path: db_path.clone(),
+        };
+        store.init().expect("migrate legacy database");
+
+        let conn = Connection::open(&db_path).expect("open migrated database");
+        let columns: Vec<String> = conn
+            .prepare("PRAGMA table_info(gateway_issues)")
+            .expect("prepare column query")
+            .query_map([], |row| row.get(1))
+            .expect("query columns")
+            .collect::<Result<_, _>>()
+            .expect("read columns");
+        assert!(!columns.iter().any(|column| column == "request_body"));
+        assert!(!columns.iter().any(|column| column == "response_body"));
+        assert!(columns.iter().any(|column| column == "upstream_response"));
+
+        let issue = store
+            .load_gateway_issue(None, "legacy")
+            .expect("load migrated issue")
+            .expect("migrated issue exists");
+        assert_eq!(issue.upstream_response, "{\"error\":\"failed\"}");
+        assert!(issue.upstream_response_truncated);
 
         let _ = fs::remove_file(db_path);
     }
