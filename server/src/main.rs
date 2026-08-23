@@ -6,7 +6,6 @@ use std::{
 
 const SERVICE_LABEL: &str = "com.ai-gateway.server";
 const SERVICE_BINARY: &str = "ai-gateway-server";
-const DEFAULT_WEB_DIR: &str = "web";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -16,11 +15,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match command.as_str() {
         "serve" => {
             let web_dir = prepare_serve_web_dir(web_dir_arg)?;
-            server::serve_gateway(web_dir)
-                .await
-                .map_err(Into::into)
+            server::serve_gateway(web_dir).await.map_err(Into::into)
         }
-        "install" => install_service(web_dir_arg.into_explicit_path()).map_err(Into::into),
+        "install" => {
+            let web_dir = match web_dir_arg {
+                WebDirArg::FromCli(path) => Some(path),
+                WebDirArg::FromEnv(_) | WebDirArg::Unspecified => None,
+            };
+            install_service(web_dir).map_err(Into::into)
+        }
         "start" => start_service().map_err(Into::into),
         "stop" => stop_service().map_err(Into::into),
         "status" => service_status().map_err(Into::into),
@@ -38,15 +41,6 @@ enum WebDirArg {
     Unspecified,
     FromEnv(PathBuf),
     FromCli(PathBuf),
-}
-
-impl WebDirArg {
-    fn into_explicit_path(self) -> Option<PathBuf> {
-        match self {
-            Self::Unspecified => None,
-            Self::FromEnv(path) | Self::FromCli(path) => Some(path),
-        }
-    }
 }
 
 fn parse_web_dir(arguments: Vec<String>) -> Result<WebDirArg, String> {
@@ -67,68 +61,16 @@ fn parse_web_dir(arguments: Vec<String>) -> Result<WebDirArg, String> {
 }
 
 fn prepare_serve_web_dir(web_dir_arg: WebDirArg) -> Result<Option<PathBuf>, String> {
-    if let WebDirArg::FromCli(path) = web_dir_arg {
-        return Ok(Some(path));
+    match web_dir_arg {
+        WebDirArg::Unspecified => Ok(None),
+        WebDirArg::FromEnv(path) | WebDirArg::FromCli(path) => {
+            if path.is_dir() {
+                Ok(Some(path))
+            } else {
+                Err("Web 目录不存在或不是目录".to_string())
+            }
+        }
     }
-
-    let layout = ServiceLayout::load()?;
-    let destination = layout.web_dir();
-    if running_from_cargo() {
-        let web_source = project_web_dir().ok_or_else(|| {
-            "未找到项目 web 目录；cargo run 时请在仓库根目录对应的 target 产物下运行".to_string()
-        })?;
-        build_web_assets(&web_source)?;
-        install_web_assets(&destination, &web_source.join("dist"))?;
-        println!("Web 资源已构建并同步到 {}", destination.display());
-        return Ok(Some(destination));
-    }
-
-    if let WebDirArg::FromEnv(path) = web_dir_arg {
-        return Ok(Some(path));
-    }
-
-    if destination.is_dir() {
-        Ok(Some(destination))
-    } else {
-        Err(format!(
-            "Web 目录不存在：{}；请先 cargo run 构建，或执行 install --web-dir <目录>",
-            destination.display()
-        ))
-    }
-}
-
-fn build_web_assets(web_dir: &Path) -> Result<(), String> {
-    run_bun(web_dir, &["install"])?;
-    run_bun(web_dir, &["run", "build"])?;
-    Ok(())
-}
-
-fn run_bun(web_dir: &Path, args: &[&str]) -> Result<(), String> {
-    println!("在 {} 执行：bun {}", web_dir.display(), args.join(" "));
-    let status = Command::new("bun")
-        .args(args)
-        .current_dir(web_dir)
-        .status()
-        .map_err(|error| format!("执行 bun 失败：{error}"))?;
-    if !status.success() {
-        return Err(format!("bun {} 失败", args.join(" ")));
-    }
-    Ok(())
-}
-
-fn running_from_cargo() -> bool {
-    let Ok(executable) = env::current_exe() else {
-        return false;
-    };
-    let path = executable.to_string_lossy();
-    path.contains("/target/debug/") || path.contains("/target/release/")
-}
-
-fn project_web_dir() -> Option<PathBuf> {
-    let executable = env::current_exe().ok()?;
-    let workspace = executable.parent()?.parent()?.parent()?;
-    let web = workspace.join(DEFAULT_WEB_DIR);
-    web.join("package.json").is_file().then_some(web)
 }
 
 fn install_web_assets(destination: &Path, source: &Path) -> Result<PathBuf, String> {
@@ -136,8 +78,7 @@ fn install_web_assets(destination: &Path, source: &Path) -> Result<PathBuf, Stri
         return Err(format!("Web 构建产物不存在：{}", source.display()));
     }
     if destination.exists() {
-        fs::remove_dir_all(destination)
-            .map_err(|error| format!("清理旧 Web 资源失败：{error}"))?;
+        fs::remove_dir_all(destination).map_err(|error| format!("清理旧 Web 资源失败：{error}"))?;
     }
     copy_directory(source, destination)?;
     Ok(destination.to_path_buf())
@@ -164,26 +105,8 @@ fn copy_directory(source: &Path, destination: &Path) -> Result<(), String> {
 }
 
 fn resolve_install_web_source(web_dir: Option<PathBuf>) -> Result<Option<PathBuf>, String> {
-    if let Some(path) = web_dir {
-        return fs::canonicalize(&path)
-            .map(Some)
-            .map_err(|error| format!("解析 Web 目录失败：{error}"));
-    }
-    if running_from_cargo() {
-        let web_source = project_web_dir().ok_or_else(|| {
-            "未找到项目 web 目录；install 时请传入 --web-dir，或从仓库 cargo 产物运行".to_string()
-        })?;
-        build_web_assets(&web_source)?;
-        return fs::canonicalize(web_source.join("dist"))
-            .map(Some)
-            .map_err(|error| format!("解析 Web 构建产物失败：{error}"));
-    }
-    project_web_dir()
-        .map(|web| web.join("dist"))
-        .filter(|path| path.is_dir())
-        .map(|path| {
-            fs::canonicalize(&path).map_err(|error| format!("解析 Web 目录失败：{error}"))
-        })
+    web_dir
+        .map(|path| fs::canonicalize(&path).map_err(|error| format!("解析 Web 目录失败：{error}")))
         .transpose()
 }
 

@@ -1,3 +1,4 @@
+import { apiRoot, invokeTauri, isTauriHost } from "./lib/connection";
 import type {
   CodexAuthPayload,
   AutoRoutingSettings,
@@ -26,16 +27,8 @@ import type {
   SharedSyncStatus,
 } from "./types";
 
-export const LOCAL_API_ROOT = (() => {
-  const configured = (globalThis as typeof globalThis & { __AI_GATEWAY_URL__?: string }).__AI_GATEWAY_URL__?.trim().replace(/\/$/, "");
-  if (configured) return configured;
-  return window.location.protocol === "http:" || window.location.protocol === "https:"
-    ? window.location.origin
-    : "http://127.0.0.1:4242";
-})();
-
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${LOCAL_API_ROOT}${path}`, {
+  const response = await fetch(`${apiRoot()}${path}`, {
     credentials: "same-origin",
     ...init,
     headers: {
@@ -116,7 +109,10 @@ export const gatewayApi = {
     });
   },
 
-  deleteInstance(instanceId: string) {
+  async deleteInstance(instanceId: string) {
+    if (isTauriHost()) {
+      await invokeTauri<boolean>("delete_codex_instance", { instanceId });
+    }
     return request<{ deleted_instance: string }>(`/instances/${encodeURIComponent(instanceId)}`, {
       method: "DELETE",
     });
@@ -288,11 +284,11 @@ async function centerRequest<T>(
 
 export const centerApi = {
   gatewayStatus: () => request<LocalGatewayStatus>("/control/status"),
-  codexGatewayStatus: () => request<DefaultCodexStatus>("/control/codex"),
-  startCodexGateway: () => request<CodexConfigurationResult>("/control/codex/start", { method: "POST" }),
-  stopCodexGateway: () => request<CodexConfigurationResult>("/control/codex/stop", { method: "POST" }),
+  codexGatewayStatus: () => invokeTauri<DefaultCodexStatus>("get_codex_gateway_status"),
+  startCodexGateway: () => invokeTauri<CodexConfigurationResult>("start_codex_gateway"),
+  stopCodexGateway: () => invokeTauri<CodexConfigurationResult>("stop_codex_gateway"),
   startCodexInstance: (instanceId: string) =>
-    request<{ started_instance: string }>(`/control/instances/${encodeURIComponent(instanceId)}/start`, { method: "POST" }),
+    invokeTauri<string>("start_codex_instance", { instanceId }),
   login: (input: { url: string; email: string; password: string }) =>
     request<{ user: CenterUser; control_plane_url: string }>("/control/control-plane/login", {
       method: "POST", body: JSON.stringify(input),

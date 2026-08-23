@@ -59,6 +59,11 @@ fn prepare_codex_instance_at(
         }
         fs::create_dir_all(&paths.electron_home)
             .map_err(|error| format!("创建 Codex 实例数据目录失败：{error}"))?;
+        let config_path = paths.codex_home.join("config.toml");
+        let source = read_optional(&config_path)?;
+        let (config, _) =
+            configure_gateway_config_for_home(&source, &gateway_base_url, Some(&paths.codex_home));
+        write_if_changed(&config_path, config.as_bytes())?;
         return Ok(paths);
     }
 
@@ -868,17 +873,23 @@ mod tests {
                 .is_symlink()
         );
 
-        fs::write(paths.codex_home.join("config.toml"), "sentinel")
-            .expect("change configured instance");
         prepare_codex_instance_at(
             &template,
             &instance_root,
-            "http://127.0.0.1:4242/instances/account-a/openai/v1",
+            "http://example.invalid/instances/account-a/openai/v1",
         )
-        .expect("reuse configured instance");
-        assert_eq!(
-            fs::read_to_string(paths.codex_home.join("config.toml")).expect("read sentinel"),
-            "sentinel"
+        .expect("retarget configured instance");
+        let retargeted =
+            fs::read_to_string(paths.codex_home.join("config.toml")).expect("read retargeted");
+        assert!(
+            retargeted
+                .contains("base_url = \"http://example.invalid/instances/account-a/openai/v1\"")
+        );
+        assert!(
+            fs::symlink_metadata(paths.codex_home.join("skills"))
+                .expect("read skills link after retarget")
+                .file_type()
+                .is_symlink()
         );
         assert!(delete_codex_instance_at(&instance_root).expect("delete instance"));
         assert!(!instance_root.exists());

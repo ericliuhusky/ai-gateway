@@ -68,16 +68,11 @@ dependencies = [
 name = "ai-gateway-client"
 version = "0.1.0"
 dependencies = [
- "aes-gcm",
- "base64 0.22.1",
- "getrandom 0.4.2",
+ "codex-adapter",
  "reqwest 0.12.28",
- "serde",
- "serde_json",
+ "server",
  "tauri",
  "tauri-build",
- "tokio",
- "uuid",
 ]
 
 [[package]]
@@ -564,6 +559,16 @@ name = "cmov"
 version = "0.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c9ea0ac24bc397ab3c98583a3c9ba74fa56b09a4449bbe172b9b1ddb016027a"
+
+[[package]]
+name = "codex-adapter"
+version = "0.1.0"
+dependencies = [
+ "rusqlite",
+ "serde",
+ "url",
+ "uuid",
+]
 
 [[package]]
 name = "combine"

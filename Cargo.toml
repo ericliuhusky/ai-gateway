@@ -1,4 +1,4 @@
 [workspace]
-members = ["server", "client", "share-group/server"]
+members = ["server", "client", "codex-adapter", "share-group/server"]
 default-members = ["server"]
 resolver = "2"

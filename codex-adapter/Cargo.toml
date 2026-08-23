@@ -1,0 +1,11 @@
+[package]
+name = "codex-adapter"
+version = "0.1.0"
+edition = "2024"
+description = "Local-machine Codex adapter used by the AI Gateway client"
+
+[dependencies]
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+url = "2"
+uuid = { version = "1", features = ["v4"] }

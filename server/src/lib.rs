@@ -1,6 +1,5 @@
 mod adapters;
 mod api;
-mod codex_config;
 mod config;
 mod control;
 mod control_plane;
@@ -29,14 +28,7 @@ use store::{
 };
 use upstream::UpstreamClient;
 
-pub use codex_config::{
-    CodexConfigurationResult, CodexInstancePaths, DefaultCodexStatus, default_codex_status,
-    delete_codex_instance, prepare_codex_instance, start_default_codex, stop_default_codex,
-};
-pub use control::{
-    GatewayRuntime, delete_codex_instance_files, start_codex_gateway, start_codex_instance,
-    stop_codex_gateway,
-};
+pub use control::GatewayRuntime;
 pub use control_plane::{
     ControlLoginInput, ControlLoginResult, ControlRequestInput, SharedSyncStatus,
     login_control_plane, publish_shared_connection, request_control_plane, sync_shared_providers,
@@ -180,9 +172,6 @@ pub async fn start_local_gateway() -> Result<LocalGatewayHandle, String> {
 
 pub async fn serve_gateway(web_dir: Option<PathBuf>) -> Result<(), String> {
     let (state, _) = initialize_local_gateway().await?;
-    if let Err(error) = start_codex_gateway() {
-        eprintln!("Gateway Server 自动配置默认 Codex 失败：{error}");
-    }
     let listener = tokio::net::TcpListener::bind("127.0.0.1:4242")
         .await
         .map_err(|error| format!("无法启动 Gateway 服务 (127.0.0.1:4242)：{error}"))?;

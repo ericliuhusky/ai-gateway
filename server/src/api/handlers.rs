@@ -11,7 +11,6 @@ use crate::{
         sync_shared_providers,
     },
     control_store::LocalGatewayStatus,
-    delete_codex_instance_files,
     models::openai::responses::{
         CodexUsageCredits, CodexUsageRateLimit, CodexUsageRateLimitWindow, CodexUsageResponse,
     },
@@ -38,7 +37,6 @@ use crate::{
         user_input_preview,
     },
     shared_leases::SharedLeaseStore,
-    start_codex_gateway, start_codex_instance, stop_codex_gateway,
     store::{
         AccountStore, IssueStore, ModelStore, ProviderStore, RouteStore, SettingsStore,
         TurnLogStore, UsagePeriod, UsageStore, issue_store::truncate_issue_body,
@@ -149,49 +147,6 @@ pub async fn gateway_status(
         .status(crate::LOCAL_GATEWAY_URL)
         .map(Json)
         .map_err(AppError::internal)
-}
-
-pub async fn get_codex_gateway_status(
-    State(state): State<AppState>,
-) -> Result<Json<crate::DefaultCodexStatus>, AppError> {
-    Ok(Json(state.gateway_runtime.status()))
-}
-
-pub async fn start_default_codex_gateway(
-    State(state): State<AppState>,
-) -> Result<Json<crate::CodexConfigurationResult>, AppError> {
-    let result = tokio::task::spawn_blocking(start_codex_gateway)
-        .await
-        .map_err(|error| AppError::internal(format!("启动 Codex 网关任务失败：{error}")))?
-        .map_err(AppError::internal)?;
-    state.gateway_runtime.set_enabled(true);
-    Ok(Json(result))
-}
-
-pub async fn stop_default_codex_gateway(
-    State(state): State<AppState>,
-) -> Result<Json<crate::CodexConfigurationResult>, AppError> {
-    let result = tokio::task::spawn_blocking(stop_codex_gateway)
-        .await
-        .map_err(|error| AppError::internal(format!("停止 Codex 网关任务失败：{error}")))?
-        .map_err(AppError::internal)?;
-    state.gateway_runtime.set_enabled(false);
-    Ok(Json(result))
-}
-
-pub async fn start_named_codex_instance(
-    AxumPath(instance_id): AxumPath<String>,
-) -> Result<Json<Value>, AppError> {
-    let instance_id = normalize_instance_id(&instance_id)?;
-    if instance_id == "default" {
-        return Err(AppError::bad_request("默认实例请使用 AI 网关播放按钮"));
-    }
-    let instance_to_start = instance_id.clone();
-    tokio::task::spawn_blocking(move || start_codex_instance(&instance_to_start))
-        .await
-        .map_err(|error| AppError::internal(format!("启动 Codex 实例任务失败：{error}")))?
-        .map_err(AppError::internal)?;
-    Ok(Json(json!({ "started_instance": instance_id })))
 }
 
 pub async fn configure_control_plane(
@@ -1448,7 +1403,8 @@ pub async fn delete_instance(
     if !deleted {
         return Err(AppError::bad_request(format!("未知实例: {instance_id}")));
     }
-    delete_codex_instance_files(&instance_id).map_err(AppError::internal)?;
+    // Codex instance files live on the machine running ChatGPT.app and are
+    // deleted by the Tauri client. A remote mini must not rewrite ~/.codex.
     Ok(Json(json!({ "deleted_instance": instance_id })))
 }
 

@@ -5,15 +5,14 @@ use crate::{
         clear_gateway_issues, clear_selected_model, clear_selected_reasoning_effort,
         configure_control_plane, delete_instance, delete_provider, disconnect_control_plane,
         gateway_status, get_auto_routing_settings, get_codex_client_version,
-        get_codex_gateway_status, get_gateway_issue_repair_prompt, get_instance_routing_config,
-        get_provider_quota, get_route, get_selected_model, get_selected_reasoning_effort, healthz,
-        import_openai_token, list_daily_usage, list_gateway_issues, list_instance_routing_configs,
-        list_models, list_models_for_instance, list_providers, list_turn_logs, list_usage_summary,
-        login_center, poll_openai_device_login, responses, responses_for_instance,
-        run_model_benchmark, set_auto_routing_settings, set_codex_client_version,
-        set_instance_routing_config, set_route, set_selected_model, set_selected_reasoning_effort,
-        share_local_provider, start_default_codex_gateway, start_named_codex_instance,
-        start_openai_device_login, stop_default_codex_gateway, sync_shared_connections,
+        get_gateway_issue_repair_prompt, get_instance_routing_config, get_provider_quota,
+        get_route, get_selected_model, get_selected_reasoning_effort, healthz, import_openai_token,
+        list_daily_usage, list_gateway_issues, list_instance_routing_configs, list_models,
+        list_models_for_instance, list_providers, list_turn_logs, list_usage_summary, login_center,
+        poll_openai_device_login, responses, responses_for_instance, run_model_benchmark,
+        set_auto_routing_settings, set_codex_client_version, set_instance_routing_config,
+        set_route, set_selected_model, set_selected_reasoning_effort, share_local_provider,
+        start_openai_device_login, sync_shared_connections,
     },
 };
 use axum::{
@@ -37,15 +36,11 @@ pub fn build_router(state: AppState) -> Router {
 }
 
 pub fn build_router_with_web(state: AppState, web_dir: Option<PathBuf>) -> Router {
+    // Codex ~/.codex rewrite, history sync, and ChatGPT.app restart live in
+    // the Tauri client (codex-adapter). These server routes used to mutate
+    // Codex on the Gateway machine; a laptop Play must never retarget a remote mini.
     let management = Router::new()
         .route("/control/status", get(gateway_status))
-        .route("/control/codex", get(get_codex_gateway_status))
-        .route("/control/codex/start", post(start_default_codex_gateway))
-        .route("/control/codex/stop", post(stop_default_codex_gateway))
-        .route(
-            "/control/instances/:instance_id/start",
-            post(start_named_codex_instance),
-        )
         .route(
             "/control/control-plane",
             post(configure_control_plane).delete(disconnect_control_plane),
@@ -159,10 +154,7 @@ async fn management_runtime_scope(
     next: Next,
 ) -> Response {
     let path = request.uri().path();
-    let allowed_while_stopped = matches!(
-        path,
-        "/control/status" | "/control/codex" | "/control/codex/start" | "/control/codex/stop"
-    );
+    let allowed_while_stopped = matches!(path, "/control/status");
     if state.gateway_runtime.enabled() || allowed_while_stopped {
         next.run(request).await
     } else {
