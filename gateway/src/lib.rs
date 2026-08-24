@@ -137,8 +137,8 @@ impl GatewayDaemonClient {
 const SERVICE_LABEL: &str = "com.ai-gateway.server";
 
 /// Installs (or updates) a per-user LaunchAgent that runs the supplied program
-/// as the persistent gateway daemon. The program may be the standalone Gateway
-/// binary or the desktop executable in daemon mode.
+/// as the persistent gateway daemon. The program is the desktop executable in
+/// daemon mode.
 pub fn install_gateway_daemon(program: &Path) -> Result<(), String> {
     if !program.is_file() {
         return Err(format!("Gateway 服务程序不存在：{}", program.display()));
@@ -164,14 +164,23 @@ pub fn install_gateway_daemon(program: &Path) -> Result<(), String> {
 
     let target = format!("gui/{}/{}", current_uid(), SERVICE_LABEL);
     run_launchctl(&["bootout", &target], true)?;
-    run_launchctl(
+    if let Err(bootstrap_error) = run_launchctl(
         &[
             "bootstrap",
             &format!("gui/{}", current_uid()),
             path_str(&plist_path)?,
         ],
         false,
-    )?;
+    ) {
+        // launchd can keep a just-booted-out job registered briefly. In that
+        // case bootstrapping the same label returns EIO, while kickstart can
+        // still restart the already registered job using the updated plist.
+        run_launchctl(&["kickstart", "-k", &target], false).map_err(|restart_error| {
+            format!(
+                "启动 Gateway LaunchAgent 失败：{bootstrap_error}；尝试重启已注册服务也失败：{restart_error}"
+            )
+        })?;
+    }
     run_launchctl(&["enable", &target], true)?;
     run_launchctl(&["kickstart", "-k", &target], false)?;
     Ok(())

@@ -4,14 +4,14 @@ use crate::{
     api::handlers::{
         add_provider, cancel_openai_device_login, clear_codex_client_version, clear_gateway_issues,
         clear_selected_model, clear_selected_reasoning_effort, delete_instance, delete_provider,
-        get_auto_routing_settings, get_codex_client_version, get_gateway_issue_repair_prompt,
-        get_instance_routing_config, get_provider_quota, get_route, get_selected_model,
-        get_selected_reasoning_effort, healthz, import_openai_token, list_daily_usage,
-        list_gateway_issues, list_instance_routing_configs, list_models, list_models_for_instance,
-        list_providers, list_turn_logs, list_usage_summary, poll_openai_device_login, responses,
-        responses_for_instance, run_model_benchmark, set_auto_routing_settings,
-        set_codex_client_version, set_instance_routing_config, set_route, set_selected_model,
-        set_selected_reasoning_effort, start_openai_device_login,
+        gateway_status, get_auto_routing_settings, get_codex_client_version,
+        get_gateway_issue_repair_prompt, get_instance_routing_config, get_provider_quota,
+        get_route, get_selected_model, get_selected_reasoning_effort, healthz, import_openai_token,
+        list_daily_usage, list_gateway_issues, list_instance_routing_configs, list_models,
+        list_models_for_instance, list_providers, list_turn_logs, list_usage_summary,
+        poll_openai_device_login, responses, responses_for_instance, run_model_benchmark,
+        set_auto_routing_settings, set_codex_client_version, set_instance_routing_config,
+        set_route, set_selected_model, set_selected_reasoning_effort, start_openai_device_login,
     },
 };
 use axum::{
@@ -37,6 +37,7 @@ pub fn build_router(state: AppState) -> Router {
 /// serves it through a user-owned Unix domain socket.
 pub fn build_management_router(state: AppState) -> Router {
     Router::new()
+        .route("/control/status", get(gateway_status))
         .route("/accounts/openai/import-token", post(import_openai_token))
         .route(
             "/accounts/openai/login/device",
@@ -246,6 +247,13 @@ mod tests {
             .await
             .expect("list providers over private management router");
         assert_eq!(providers_response.status(), StatusCode::OK);
+
+        let readiness_response = management_router
+            .clone()
+            .oneshot(request(Method::GET, "/control/status", Body::empty()))
+            .await
+            .expect("daemon readiness response");
+        assert_eq!(readiness_response.status(), StatusCode::OK);
 
         let response = router
             .clone()
