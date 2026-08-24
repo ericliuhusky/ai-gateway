@@ -38,9 +38,9 @@ pub fn run() {
         .unwrap_or_else(|error| panic!("运行 Tauri 客户端失败：{error}"));
 }
 
-async fn ensure_gateway_daemon() -> Result<server::GatewayDaemonClient, String> {
-    let gateway = server::GatewayDaemonClient::local()?;
-    if gateway.is_ready().await && server::local_gateway_is_healthy().await {
+async fn ensure_gateway_daemon() -> Result<gateway::GatewayDaemonClient, String> {
+    let gateway = gateway::GatewayDaemonClient::local()?;
+    if gateway.is_ready().await && gateway::local_gateway_is_healthy().await {
         return Ok(gateway);
     }
 
@@ -48,7 +48,7 @@ async fn ensure_gateway_daemon() -> Result<server::GatewayDaemonClient, String> 
     let attempts =
         (DAEMON_READY_TIMEOUT.as_millis() / DAEMON_READY_POLL_INTERVAL.as_millis()) as u32;
     for _ in 0..attempts {
-        if gateway.is_ready().await && server::local_gateway_is_healthy().await {
+        if gateway.is_ready().await && gateway::local_gateway_is_healthy().await {
             return Ok(gateway);
         }
         thread::sleep(DAEMON_READY_POLL_INTERVAL);
@@ -62,14 +62,14 @@ async fn ensure_gateway_daemon() -> Result<server::GatewayDaemonClient, String> 
 
 fn install_and_start_gateway_daemon() -> Result<(), String> {
     let executable = env::current_exe().map_err(|error| format!("读取客户端路径失败：{error}"))?;
-    server::install_gateway_daemon(&executable)
+    gateway::install_gateway_daemon(&executable)
 }
 
 /// The WebView invokes this command. Rust then talks to the persistent daemon
 /// through its private Unix socket; no management HTTP endpoint is exposed.
 #[tauri::command]
 async fn gateway_request(
-    gateway: State<'_, server::GatewayDaemonClient>,
+    gateway: State<'_, gateway::GatewayDaemonClient>,
     method: String,
     path: String,
     body: Option<Value>,

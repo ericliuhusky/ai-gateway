@@ -137,7 +137,7 @@ impl GatewayDaemonClient {
 const SERVICE_LABEL: &str = "com.ai-gateway.server";
 
 /// Installs (or updates) a per-user LaunchAgent that runs the supplied program
-/// as the persistent gateway daemon. The program may be the standalone server
+/// as the persistent gateway daemon. The program may be the standalone Gateway
 /// binary or the desktop executable in daemon mode.
 pub fn install_gateway_daemon(program: &Path) -> Result<(), String> {
     if !program.is_file() {

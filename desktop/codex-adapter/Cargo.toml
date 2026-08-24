@@ -2,7 +2,7 @@
 name = "codex-adapter"
 version = "0.1.0"
 edition = "2024"
-description = "Local-machine Codex adapter used by the AI Gateway client"
+description = "Local-machine Codex adapter used by the AI Gateway desktop"
 
 [dependencies]
 rusqlite = { version = "0.32", features = ["bundled"] }

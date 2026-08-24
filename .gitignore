@@ -1,5 +1,5 @@
 .DS_Store
 target/
-client/web/node_modules/
-client/web/dist/
-client/gen/
+desktop/web/node_modules/
+desktop/web/dist/
+desktop/gen/

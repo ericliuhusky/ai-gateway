@@ -5,17 +5,17 @@ use std::{
 };
 
 const SERVICE_LABEL: &str = "com.ai-gateway.server";
-const SERVICE_BINARY: &str = "ai-gateway-server";
+const SERVICE_BINARY: &str = "ai-gateway-gateway";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut arguments = env::args().skip(1);
     let command = arguments.next().unwrap_or_else(|| "serve".to_string());
     if arguments.next().is_some() {
-        return Err("用法：ai-gateway-server <serve|install|start|stop|status|uninstall>".into());
+        return Err("用法：ai-gateway-gateway <serve|install|start|stop|status|uninstall>".into());
     }
     match command.as_str() {
-        "serve" => server::serve_gateway().await.map_err(Into::into),
+        "serve" => gateway::serve_gateway().await.map_err(Into::into),
         "install" => install_service().map_err(Into::into),
         "start" => start_service().map_err(Into::into),
         "stop" => stop_service().map_err(Into::into),
@@ -39,19 +39,19 @@ fn install_service() -> Result<(), String> {
     let current = env::current_exe().map_err(|error| format!("读取当前服务程序失败：{error}"))?;
     if current != layout.binary_path {
         fs::copy(&current, &layout.binary_path)
-            .map_err(|error| format!("安装 Gateway Server 二进制失败：{error}"))?;
+            .map_err(|error| format!("安装 Gateway 二进制失败：{error}"))?;
         make_executable(&layout.binary_path)?;
     }
 
-    server::install_gateway_daemon(&layout.binary_path)?;
-    println!("Gateway Server 已安装并启动：{}", layout.target());
+    gateway::install_gateway_daemon(&layout.binary_path)?;
+    println!("Gateway 已安装并启动：{}", layout.target());
     Ok(())
 }
 
 fn start_service() -> Result<(), String> {
     let layout = ServiceLayout::load()?;
     if !layout.plist_path.is_file() {
-        return Err("Gateway Server 尚未安装；请先运行 ai-gateway-server install".to_string());
+        return Err("Gateway 尚未安装；请先运行 ai-gateway-gateway install".to_string());
     }
     run_launchctl(
         &["bootstrap", &layout.domain(), path_str(&layout.plist_path)?],
@@ -59,14 +59,14 @@ fn start_service() -> Result<(), String> {
     )?;
     run_launchctl(&["enable", &layout.target()], true)?;
     run_launchctl(&["kickstart", "-k", &layout.target()], false)?;
-    println!("Gateway Server 已启动");
+    println!("Gateway 已启动");
     Ok(())
 }
 
 fn stop_service() -> Result<(), String> {
     let layout = ServiceLayout::load()?;
     run_launchctl(&["bootout", &layout.target()], true)?;
-    println!("Gateway Server 已停止");
+    println!("Gateway 已停止");
     Ok(())
 }
 
@@ -74,7 +74,7 @@ fn service_status() -> Result<(), String> {
     let layout = ServiceLayout::load()?;
     let output = run_launchctl(&["print", &layout.target()], true)?;
     if output.is_empty() {
-        println!("Gateway Server 未运行");
+        println!("Gateway 未运行");
     } else {
         println!("{output}");
     }
@@ -88,7 +88,7 @@ fn uninstall_service() -> Result<(), String> {
         fs::remove_file(&layout.plist_path)
             .map_err(|error| format!("删除 LaunchAgent 配置失败：{error}"))?;
     }
-    println!("Gateway Server LaunchAgent 已卸载；数据文件未删除");
+    println!("Gateway LaunchAgent 已卸载；数据文件未删除");
     Ok(())
 }
 
@@ -172,5 +172,5 @@ fn make_executable(path: &Path) -> Result<(), String> {
 }
 
 fn print_usage() {
-    println!("ai-gateway-server <serve|install|start|stop|status|uninstall>");
+    println!("ai-gateway-gateway <serve|install|start|stop|status|uninstall>");
 }

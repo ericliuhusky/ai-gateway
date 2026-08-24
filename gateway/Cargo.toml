@@ -1,5 +1,5 @@
 [package]
-name = "server"
+name = "gateway"
 version = "0.1.0"
 edition = "2024"
 description = "AI Gateway persistent local service"
@@ -27,5 +27,5 @@ http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
 
 [[bin]]
-name = "ai-gateway-server"
+name = "ai-gateway-gateway"
 path = "src/main.rs"

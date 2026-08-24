@@ -65,12 +65,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "ai-gateway-client"
+name = "ai-gateway-desktop"
 version = "0.1.0"
 dependencies = [
  "codex-adapter",
+ "gateway",
  "serde_json",
- "server",
  "tauri",
  "tauri-build",
 ]
@@ -1140,6 +1140,30 @@ dependencies = [
  "memchr",
  "pin-project-lite",
  "slab",
+]
+
+[[package]]
+name = "gateway"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "async-stream",
+ "axum",
+ "base64 0.22.1",
+ "chrono",
+ "futures-util",
+ "getrandom 0.4.2",
+ "http-body-util",
+ "hyper-util",
+ "reqwest 0.12.28",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "tower",
+ "url",
+ "uuid",
 ]
 
 [[package]]
@@ -3325,30 +3349,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
-]
-
-[[package]]
-name = "server"
-version = "0.1.0"
-dependencies = [
- "aes-gcm",
- "async-stream",
- "axum",
- "base64 0.22.1",
- "chrono",
- "futures-util",
- "getrandom 0.4.2",
- "http-body-util",
- "hyper-util",
- "reqwest 0.12.28",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2",
- "tokio",
- "tower",
- "url",
- "uuid",
 ]
 
 [[package]]
