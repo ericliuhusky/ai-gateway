@@ -3,3 +3,4 @@ target/
 desktop/web/node_modules/
 desktop/web/dist/
 desktop/gen/
+desktop/binaries/

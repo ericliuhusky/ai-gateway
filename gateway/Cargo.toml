@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2024"
 description = "AI Gateway persistent local service"
 
+[[bin]]
+name = "ai-gateway-daemon"
+path = "src/main.rs"
+
 [dependencies]
 aes-gcm = "0.11"
 async-stream = "0.3"

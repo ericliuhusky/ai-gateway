@@ -136,9 +136,30 @@ impl GatewayDaemonClient {
 
 const SERVICE_LABEL: &str = "com.ai-gateway.server";
 
-/// Installs (or updates) a per-user LaunchAgent that runs the supplied program
-/// as the persistent gateway daemon. The program is the desktop executable in
-/// daemon mode.
+/// Returns whether the current user's LaunchAgent already points to this
+/// Gateway daemon executable with the expected service configuration.
+pub fn gateway_daemon_is_installed(program: &Path) -> Result<bool, String> {
+    if !program.is_file() {
+        return Ok(false);
+    }
+    let home = env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or_else(|| "未设置 HOME 环境变量".to_string())?;
+    let root = home.join(".ai-gateway");
+    let log_dir = root.join("log");
+    let plist_path = home
+        .join("Library/LaunchAgents")
+        .join(format!("{SERVICE_LABEL}.plist"));
+    let expected = gateway_launchd_plist(program, &root, &home, &log_dir);
+    match fs::read_to_string(plist_path) {
+        Ok(actual) => Ok(actual == expected),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!("读取 Gateway LaunchAgent 配置失败：{error}")),
+    }
+}
+
+/// Installs (or updates) a per-user LaunchAgent that runs the supplied
+/// Gateway daemon executable.
 pub fn install_gateway_daemon(program: &Path) -> Result<(), String> {
     if !program.is_file() {
         return Err(format!("Gateway 服务程序不存在：{}", program.display()));
@@ -196,7 +217,6 @@ fn gateway_launchd_plist(program: &Path, root: &Path, home: &Path, log_dir: &Pat
   <key>WorkingDirectory</key><string>{}</string>
   <key>EnvironmentVariables</key><dict>
     <key>HOME</key><string>{}</string>
-    <key>AI_GATEWAY_DAEMON</key><string>1</string>
   </dict>
   <key>StandardOutPath</key><string>{}/service.out.log</string>
   <key>StandardErrorPath</key><string>{}/service.err.log</string>
@@ -366,14 +386,14 @@ mod daemon_tests {
     use std::path::Path;
 
     #[test]
-    fn launch_agent_runs_the_program_in_daemon_mode() {
+    fn launch_agent_runs_the_gateway_daemon_binary() {
         let plist = gateway_launchd_plist(
-            Path::new("/Applications/AI Gateway.app/Contents/MacOS/AI Gateway"),
+            Path::new("/Applications/AI Gateway.app/Contents/MacOS/ai-gateway-daemon"),
             Path::new("/Users/test/.ai-gateway"),
             Path::new("/Users/test"),
             Path::new("/Users/test/.ai-gateway/log"),
         );
-        assert!(plist.contains("AI_GATEWAY_DAEMON</key><string>1"));
-        assert!(plist.contains("/Applications/AI Gateway.app/Contents/MacOS/AI Gateway"));
+        assert!(!plist.contains("AI_GATEWAY_DAEMON"));
+        assert!(plist.contains("/Applications/AI Gateway.app/Contents/MacOS/ai-gateway-daemon"));
     }
 }

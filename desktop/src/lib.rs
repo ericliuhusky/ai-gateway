@@ -5,11 +5,17 @@ use codex_adapter::{
     stop_codex_gateway as restore_codex_gateway,
 };
 use serde_json::Value;
-use std::{env, thread, time::Duration};
+use std::{
+    env,
+    path::{Path, PathBuf},
+    thread,
+    time::Duration,
+};
 use tauri::State;
 
 const LOCAL_API_ROOT: &str = "http://127.0.0.1:4242";
 const LOCAL_GATEWAY_URL: &str = "http://127.0.0.1:4242/openai/v1";
+const GATEWAY_DAEMON_BINARY: &str = "ai-gateway-daemon";
 const DAEMON_READY_TIMEOUT: Duration = Duration::from_secs(8);
 const DAEMON_READY_POLL_INTERVAL: Duration = Duration::from_millis(200);
 
@@ -40,11 +46,15 @@ pub fn run() {
 
 async fn ensure_gateway_daemon() -> Result<gateway::GatewayDaemonClient, String> {
     let gateway = gateway::GatewayDaemonClient::local()?;
-    if gateway.is_ready().await && gateway::local_gateway_is_healthy().await {
+    let daemon = gateway_daemon_path()?;
+    if gateway.is_ready().await
+        && gateway::local_gateway_is_healthy().await
+        && gateway::gateway_daemon_is_installed(&daemon)?
+    {
         return Ok(gateway);
     }
 
-    install_and_start_gateway_daemon()?;
+    install_and_start_gateway_daemon(&daemon)?;
     let attempts =
         (DAEMON_READY_TIMEOUT.as_millis() / DAEMON_READY_POLL_INTERVAL.as_millis()) as u32;
     for _ in 0..attempts {
@@ -60,9 +70,27 @@ async fn ensure_gateway_daemon() -> Result<gateway::GatewayDaemonClient, String>
     ))
 }
 
-fn install_and_start_gateway_daemon() -> Result<(), String> {
-    let executable = env::current_exe().map_err(|error| format!("读取客户端路径失败：{error}"))?;
-    gateway::install_gateway_daemon(&executable)
+fn install_and_start_gateway_daemon(daemon: &Path) -> Result<(), String> {
+    gateway::install_gateway_daemon(daemon)
+}
+
+/// Tauri copies `bundle.externalBin` next to the desktop executable both in
+/// Cargo's development output and in the macOS application bundle.
+fn gateway_daemon_path() -> Result<PathBuf, String> {
+    let desktop = env::current_exe().map_err(|error| format!("读取客户端路径失败：{error}"))?;
+    gateway_daemon_path_from_desktop(&desktop)
+}
+
+fn gateway_daemon_path_from_desktop(desktop: &Path) -> Result<PathBuf, String> {
+    let directory = desktop
+        .parent()
+        .ok_or_else(|| format!("客户端路径无效：{}", desktop.display()))?;
+    let daemon = directory.join(GATEWAY_DAEMON_BINARY);
+    if daemon.is_file() {
+        Ok(daemon)
+    } else {
+        Err(format!("内置 Gateway 服务程序不存在：{}", daemon.display()))
+    }
 }
 
 /// The WebView invokes this command. Rust then talks to the persistent daemon
@@ -101,4 +129,31 @@ fn start_codex_instance(instance_id: String) -> Result<String, String> {
 #[tauri::command]
 fn delete_codex_instance(instance_id: String) -> Result<bool, String> {
     remove_codex_instance_files(&instance_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{GATEWAY_DAEMON_BINARY, gateway_daemon_path_from_desktop};
+    use std::{
+        fs,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    #[test]
+    fn finds_the_sidecar_next_to_the_desktop_executable() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("ai-gateway-desktop-test-{nonce}"));
+        fs::create_dir_all(&root).unwrap();
+        let desktop = root.join("ai-gateway-desktop");
+        let daemon = root.join(GATEWAY_DAEMON_BINARY);
+        fs::write(&desktop, []).unwrap();
+        fs::write(&daemon, []).unwrap();
+
+        assert_eq!(gateway_daemon_path_from_desktop(&desktop).unwrap(), daemon);
+
+        fs::remove_dir_all(root).unwrap();
+    }
 }

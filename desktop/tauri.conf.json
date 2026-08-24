@@ -6,6 +6,11 @@
   "build": {
     "frontendDist": "web/dist"
   },
+  "bundle": {
+    "externalBin": [
+      "binaries/ai-gateway-daemon"
+    ]
+  },
   "app": {
     "withGlobalTauri": true,
     "windows": [

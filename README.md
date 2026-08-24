@@ -9,7 +9,7 @@ AI Gateway 是仅支持 macOS 的**本机桌面客户端**。用户只需安装�
 ├── desktop/                # 唯一面向用户的 Tauri 桌面客户端
 │   ├── web/                # 仅供桌面端使用的 UI 源码
 │   └── codex-adapter/      # 桌面端管理本机 Codex 配置与实例
-└── gateway/                # 桌面端内嵌使用的本机 Gateway API
+└── gateway/                # 本机 Gateway 服务与共享 API crate
 ```
 
 ## 使用客户端
@@ -30,7 +30,9 @@ cargo build
 
 ## 开发组件
 
-`gateway/` 是桌面端内嵌使用的本机 API crate，不提供独立命令行入口。它对 TCP 只暴露 `/healthz`、`/openai/v1/*` 和实例对应的 OpenAI 兼容接口；供应商、路由、账号、用量等管理操作只在当前用户可访问的 Unix Socket 上提供，并由 Tauri `invoke` 间接调用，不构建或托管 Web UI。
+`gateway/` 既提供共享 API crate，也构建为内部使用的 `ai-gateway-daemon` 二进制。开发时，执行 `cargo run` 会自动构建并携带该二进制；发布时，Tauri 会将它作为 sidecar 打包进客户端。客户端会将该二进制注册为 LaunchAgent 并自动启动，用户不需要手动运行任何 Gateway 命令。
+
+Gateway 对 TCP 只暴露 `/healthz`、`/openai/v1/*` 和实例对应的 OpenAI 兼容接口；供应商、路由、账号、用量等管理操作只在当前用户可访问的 Unix Socket 上提供，并由 Tauri `invoke` 间接调用，不构建或托管 Web UI。
 
 ## 验证
 
