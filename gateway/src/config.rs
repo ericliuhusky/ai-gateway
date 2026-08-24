@@ -5,6 +5,7 @@ pub const DEFAULT_CODEX_CLIENT_VERSION: &str = "0.146.0";
 #[derive(Clone)]
 pub struct Config {
     data_dir: PathBuf,
+    control_dir: PathBuf,
 }
 
 impl Config {
@@ -12,8 +13,15 @@ impl Config {
         let home = env::var("HOME")
             .map(PathBuf::from)
             .map_err(|_| "未设置 HOME 环境变量".to_string())?;
-        let data_dir = home.join(".ai-gateway").join("data");
-        Ok(Self { data_dir })
+        let data_dir = home
+            .join("Library")
+            .join("Application Support")
+            .join("AI Gateway");
+        let control_dir = home.join(".ai-gateway").join("control");
+        Ok(Self {
+            data_dir,
+            control_dir,
+        })
     }
 
     pub fn data_dir(&self) -> PathBuf {
@@ -25,15 +33,14 @@ impl Config {
     }
 
     pub fn control_socket_path(&self) -> PathBuf {
-        self.data_dir
-            .parent()
-            .expect("local data directory has a parent")
-            .join("control")
-            .join("gateway.sock")
+        self.control_dir.join("gateway.sock")
     }
 
     #[cfg(test)]
     pub fn for_test(data_dir: PathBuf) -> Self {
-        Self { data_dir }
+        Self {
+            control_dir: data_dir.join("control"),
+            data_dir,
+        }
     }
 }
