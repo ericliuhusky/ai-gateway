@@ -1,3 +1,4 @@
+use super::AppState;
 use crate::{
     api::RequestScope,
     api::handlers::{
@@ -23,23 +24,21 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{delete, get, post},
 };
-use std::path::PathBuf;
-use tower_http::{
-    cors::{Any, CorsLayer},
-    services::ServeDir,
-};
 
-use super::AppState;
-
+/// HTTP routes that must remain reachable by local Codex instances.
+///
+/// The desktop management API deliberately does not live here: it is exposed
+/// only through Tauri IPC via [`build_management_router`].
 pub fn build_router(state: AppState) -> Router {
-    build_router_with_web(state, None)
+    Router::new()
+        .route("/healthz", get(healthz))
+        .merge(gateway_router(state))
 }
 
-pub fn build_router_with_web(state: AppState, web_dir: Option<PathBuf>) -> Router {
-    // Codex ~/.codex rewrite, history sync, and ChatGPT.app restart live in
-    // the Tauri client (codex-adapter). These server routes used to mutate
-    // Codex on the Gateway machine; a laptop Play must never retarget a remote mini.
-    let management = Router::new()
+/// Private management router. It is never bound to a TCP listener; the Tauri
+/// client dispatches to it in-process after an `invoke` call.
+pub fn build_management_router(state: AppState) -> Router {
+    Router::new()
         .route("/control/status", get(gateway_status))
         .route(
             "/control/control-plane",
@@ -105,14 +104,19 @@ pub fn build_router_with_web(state: AppState, web_dir: Option<PathBuf>) -> Route
             "/instances/:instance_id/config",
             get(get_instance_routing_config).put(set_instance_routing_config),
         )
+        // The UI needs model discovery too; its HTTP endpoint remains available
+        // in `gateway_router` for Codex compatibility.
+        .route("/openai/v1/models", get(list_models))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             management_runtime_scope,
         ))
         .route_layer(middleware::from_fn(local_scope))
-        .with_state(state.clone());
+        .with_state(state)
+}
 
-    let gateway = Router::new()
+fn gateway_router(state: AppState) -> Router {
+    Router::new()
         .route("/openai/v1/models", get(list_models))
         .route("/openai/v1/responses", post(responses))
         .route(
@@ -128,24 +132,7 @@ pub fn build_router_with_web(state: AppState, web_dir: Option<PathBuf>) -> Route
             gateway_runtime_scope,
         ))
         .route_layer(middleware::from_fn(local_scope))
-        .with_state(state);
-
-    let router = Router::new()
-        .route("/healthz", get(healthz))
-        .merge(management)
-        .merge(gateway)
-        .layer(
-            CorsLayer::new()
-                .allow_origin(Any)
-                .allow_headers(Any)
-                .allow_methods(Any),
-        );
-    match web_dir {
-        Some(web_dir) => {
-            router.fallback_service(ServeDir::new(web_dir).append_index_html_on_directories(true))
-        }
-        None => router,
-    }
+        .with_state(state)
 }
 
 async fn management_runtime_scope(
@@ -183,7 +170,7 @@ async fn local_scope(mut request: Request, next: Next) -> Response {
 
 #[cfg(test)]
 mod tests {
-    use super::build_router;
+    use super::{build_management_router, build_router};
     use crate::{
         api::AppState,
         config::Config,
@@ -258,13 +245,24 @@ mod tests {
             .set_provider(Some(provider.id.clone()))
             .await
             .expect("select local provider");
+        let management_router = build_management_router(state.clone());
         let router = build_router(state);
 
-        let providers_response = router
+        let externally_visible_management_response = router
             .clone()
             .oneshot(request(Method::GET, "/providers", Body::empty()))
             .await
-            .expect("list local providers");
+            .expect("external management response");
+        assert_eq!(
+            externally_visible_management_response.status(),
+            StatusCode::NOT_FOUND
+        );
+
+        let providers_response = management_router
+            .clone()
+            .oneshot(request(Method::GET, "/providers", Body::empty()))
+            .await
+            .expect("list providers over private management router");
         assert_eq!(providers_response.status(), StatusCode::OK);
 
         let group_response = router
@@ -327,7 +325,7 @@ mod tests {
             )
             .await
             .expect("persist shared provider");
-        let rejected = router
+        let rejected = management_router
             .clone()
             .oneshot(request(
                 Method::PUT,
@@ -341,7 +339,7 @@ mod tests {
         shared_leases
             .authorize("shared_center-provider", i64::MAX)
             .expect("authorize shared provider");
-        let accepted = router
+        let accepted = management_router
             .clone()
             .oneshot(request(
                 Method::PUT,

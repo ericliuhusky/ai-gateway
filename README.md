@@ -24,7 +24,7 @@ cargo build -p ai-gateway-client
 启动客户端后：
 
 - Gateway 只监听 `127.0.0.1:4242`；
-- UI 只请求本机 Gateway；
+- UI 通过 Tauri `invoke` 调用进程内 Rust 管理层；
 - 默认 Codex 和命名实例的配置、会话与 Electron 数据均保留在当前 Mac；
 - 退出客户端会同时结束其内嵌的 Gateway。
 
@@ -32,13 +32,13 @@ cargo build -p ai-gateway-client
 
 ## 开发组件
 
-`server/` 是客户端使用的本机 API crate，也可在开发时单独运行：
+`server/` 是客户端使用的本机 API crate，也可在开发时单独运行 OpenAI 兼容网关：
 
 ```bash
 cargo run -p server -- serve
 ```
 
-它默认只提供 API，不构建或托管 Web UI。`share-group/server` 是独立的共享群组中心服务：
+它只暴露 `/healthz`、`/openai/v1/*` 和实例对应的 OpenAI 兼容接口；供应商、路由、账号、用量、群组等管理操作只能通过 Tauri `invoke` 在进程内调用，不构建或托管 Web UI。`share-group/server` 是独立的共享群组中心服务：
 
 ```bash
 cargo run -p ai-gateway-share-group-server

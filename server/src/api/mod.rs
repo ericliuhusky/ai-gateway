@@ -2,7 +2,7 @@ pub mod handlers;
 pub mod routes;
 
 pub use handlers::AppState;
-pub use routes::{build_router, build_router_with_web};
+pub use routes::{build_management_router, build_router};
 
 #[derive(Clone, Copy, Debug)]
 pub struct RequestScope {

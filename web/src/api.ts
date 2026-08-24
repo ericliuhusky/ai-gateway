@@ -1,4 +1,4 @@
-import { apiRoot, invokeTauri, isTauriHost } from "./lib/connection";
+import { invokeTauri } from "./lib/connection";
 import type {
   CodexAuthPayload,
   AutoRoutingSettings,
@@ -27,144 +27,103 @@ import type {
   SharedSyncStatus,
 } from "./types";
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${apiRoot()}${path}`, {
-    credentials: "same-origin",
-    ...init,
-    headers: {
-      Accept: "application/json",
-      ...(init?.body ? { "Content-Type": "application/json" } : {}),
-      ...init?.headers,
-    },
+/**
+ * All management operations cross the WebView/Rust boundary via Tauri invoke.
+ * They are dispatched in-process and are intentionally not HTTP endpoints.
+ */
+function gatewayRequest<T>(
+  method: "GET" | "POST" | "PUT" | "DELETE",
+  path: string,
+  body?: unknown,
+): Promise<T> {
+  return invokeTauri<T>("gateway_request", {
+    method,
+    path,
+    ...(body === undefined ? {} : { body }),
   });
-
-  if (!response.ok) {
-    const text = await response.text();
-    let message = text || `HTTP ${response.status}`;
-    try {
-      const payload = JSON.parse(text) as { error?: string | { message?: string } };
-      message =
-        typeof payload.error === "string"
-          ? payload.error
-          : payload.error?.message ?? message;
-    } catch {
-      // Keep the text response.
-    }
-    throw new Error(message);
-  }
-
-  const contentType = response.headers.get("content-type") ?? "";
-  if (!contentType.includes("application/json")) {
-    return (await response.text()) as T;
-  }
-  return (await response.json()) as T;
 }
 
 export const gatewayApi = {
-  health: () => request<string>("/healthz"),
-
   codexClientVersion: () =>
-    request<CodexClientVersionSetting>("/settings/codex-client-version"),
+    gatewayRequest<CodexClientVersionSetting>("GET", "/settings/codex-client-version"),
 
   setCodexClientVersion(version: string) {
-    return request<CodexClientVersionSetting>("/settings/codex-client-version", {
-      method: "PUT",
-      body: JSON.stringify({ version }),
-    });
+    return gatewayRequest<CodexClientVersionSetting>("PUT", "/settings/codex-client-version", { version });
   },
 
   clearCodexClientVersion() {
-    return request<CodexClientVersionSetting>("/settings/codex-client-version", {
-      method: "DELETE",
-    });
+    return gatewayRequest<CodexClientVersionSetting>("DELETE", "/settings/codex-client-version");
   },
 
   automaticRouting() {
-    return request<AutoRoutingSettings>("/settings/automatic-routing");
+    return gatewayRequest<AutoRoutingSettings>("GET", "/settings/automatic-routing");
   },
 
   setAutomaticRouting(settings: AutoRoutingSettings) {
-    return request<AutoRoutingSettings>("/settings/automatic-routing", {
-      method: "PUT",
-      body: JSON.stringify(settings),
-    });
+    return gatewayRequest<AutoRoutingSettings>("PUT", "/settings/automatic-routing", settings);
   },
 
   async instances() {
-    const payload = await request<{ instances: InstanceRoutingConfig[] }>("/instances");
+    const payload = await gatewayRequest<{ instances: InstanceRoutingConfig[] }>("GET", "/instances");
     return payload.instances;
   },
 
   instanceConfig(instanceId: string) {
-    return request<InstanceRoutingConfig>(`/instances/${encodeURIComponent(instanceId)}/config`);
+    return gatewayRequest<InstanceRoutingConfig>("GET", `/instances/${encodeURIComponent(instanceId)}/config`);
   },
 
   setInstanceConfig(
     instanceId: string,
     config: Omit<InstanceRoutingConfig, "instance_id" | "updated_at">,
   ) {
-    return request<InstanceRoutingConfig>(`/instances/${encodeURIComponent(instanceId)}/config`, {
-      method: "PUT",
-      body: JSON.stringify(config),
-    });
+    return gatewayRequest<InstanceRoutingConfig>("PUT", `/instances/${encodeURIComponent(instanceId)}/config`, config);
   },
 
   async deleteInstance(instanceId: string) {
-    if (isTauriHost()) {
-      await invokeTauri<boolean>("delete_codex_instance", { instanceId });
-    }
-    return request<{ deleted_instance: string }>(`/instances/${encodeURIComponent(instanceId)}`, {
-      method: "DELETE",
-    });
+    await invokeTauri<boolean>("delete_codex_instance", { instanceId });
+    return gatewayRequest<{ deleted_instance: string }>("DELETE", `/instances/${encodeURIComponent(instanceId)}`);
   },
 
   async routingTurns(limit = 50) {
-    const query = new URLSearchParams({ limit: String(limit) });
-    const payload = await request<{ turns: TurnRouteLog[] }>(`/routing/turns?${query.toString()}`);
+    const payload = await gatewayRequest<{ turns: TurnRouteLog[] }>("GET", `/routing/turns?limit=${limit}`);
     return payload.turns;
   },
 
   async gatewayIssues(limit = 200) {
-    const query = new URLSearchParams({ limit: String(limit) });
-    const payload = await request<{ issues: GatewayIssue[] }>(`/gateway/issues?${query.toString()}`);
+    const payload = await gatewayRequest<{ issues: GatewayIssue[] }>("GET", `/gateway/issues?limit=${limit}`);
     return payload.issues;
   },
 
   gatewayIssueRepairPrompt(issueId: string) {
-    return request<{ prompt: string }>(
-      `/gateway/issues/${encodeURIComponent(issueId)}/repair-prompt`,
-    );
+    return gatewayRequest<{ prompt: string }>("GET", `/gateway/issues/${encodeURIComponent(issueId)}/repair-prompt`);
   },
 
   clearGatewayIssues() {
-    return request<{ deleted: number }>("/gateway/issues", { method: "DELETE" });
+    return gatewayRequest<{ deleted: number }>("DELETE", "/gateway/issues");
   },
 
   usageSummary(period: "total" | "today" | "week", providerId?: string) {
     const query = new URLSearchParams({ period });
     if (providerId) query.set("provider_id", providerId);
-    return request<UsageSummary[]>(`/usage/summary?${query.toString()}`);
+    return gatewayRequest<UsageSummary[]>("GET", `/usage/summary?${query.toString()}`);
   },
 
   usageDaily(days = 30) {
-    return request<DailyUsageSummary[]>(`/usage/daily?days=${days}`);
+    return gatewayRequest<DailyUsageSummary[]>("GET", `/usage/daily?days=${days}`);
   },
 
   async providers() {
-    const payload = await request<{ providers: GatewayProvider[] }>("/providers");
+    const payload = await gatewayRequest<{ providers: GatewayProvider[] }>("GET", "/providers");
     return payload.providers;
   },
 
   async selectedProvider() {
-    const payload = await request<{ selected_provider: SelectedProvider }>("/selected-provider");
+    const payload = await gatewayRequest<{ selected_provider: SelectedProvider }>("GET", "/selected-provider");
     return payload.selected_provider;
   },
 
   async selectProvider(providerId: string) {
-    const payload = await request<{ selected_provider: SelectedProvider }>("/selected-provider", {
-      method: "PUT",
-      body: JSON.stringify({ provider_id: providerId }),
-    });
+    const payload = await gatewayRequest<{ selected_provider: SelectedProvider }>("PUT", "/selected-provider", { provider_id: providerId });
     return payload.selected_provider;
   },
 
@@ -172,43 +131,27 @@ export const gatewayApi = {
     const query = new URLSearchParams();
     if (providerId) query.set("provider_id", providerId);
     if (force) query.set("force", "true");
-    const payload = await request<{ data: GatewayModel[] }>(
-      `/openai/v1/models${query.size ? `?${query.toString()}` : ""}`,
-    );
+    const payload = await gatewayRequest<{ data: GatewayModel[] }>("GET", `/openai/v1/models${query.size ? `?${query.toString()}` : ""}`);
     return payload.data;
   },
 
   async selectModel(model: string) {
-    const payload = await request<{ selected_model: SelectedProvider }>("/selected-model", {
-      method: "PUT",
-      body: JSON.stringify({ model }),
-    });
+    const payload = await gatewayRequest<{ selected_model: SelectedProvider }>("PUT", "/selected-model", { model });
     return payload.selected_model;
   },
 
   async clearSelectedModel() {
-    const payload = await request<{ selected_model: SelectedProvider }>("/selected-model", {
-      method: "DELETE",
-    });
+    const payload = await gatewayRequest<{ selected_model: SelectedProvider }>("DELETE", "/selected-model");
     return payload.selected_model;
   },
 
   async selectReasoningEffort(effort: ReasoningEffort) {
-    const payload = await request<{ selected_reasoning_effort: SelectedProvider }>(
-      "/selected-reasoning-effort",
-      {
-        method: "PUT",
-        body: JSON.stringify({ effort }),
-      },
-    );
+    const payload = await gatewayRequest<{ selected_reasoning_effort: SelectedProvider }>("PUT", "/selected-reasoning-effort", { effort });
     return payload.selected_reasoning_effort;
   },
 
   async clearSelectedReasoningEffort() {
-    const payload = await request<{ selected_reasoning_effort: SelectedProvider }>(
-      "/selected-reasoning-effort",
-      { method: "DELETE" },
-    );
+    const payload = await gatewayRequest<{ selected_reasoning_effort: SelectedProvider }>("DELETE", "/selected-reasoning-effort");
     return payload.selected_reasoning_effort;
   },
 
@@ -218,17 +161,15 @@ export const gatewayApi = {
     api_key: string;
     compatibility_profile: GatewayCompatibilityProfile;
   }) {
-    return request("/providers", { method: "POST", body: JSON.stringify(input) });
+    return gatewayRequest("POST", "/providers", input);
   },
 
   deleteProvider(providerId: string) {
-    return request(`/providers/${encodeURIComponent(providerId)}`, { method: "DELETE" });
+    return gatewayRequest("DELETE", `/providers/${encodeURIComponent(providerId)}`);
   },
 
   async quota(providerId: string) {
-    const payload = await request<{ quota: ProviderQuotaSummary }>(
-      `/providers/${encodeURIComponent(providerId)}/quota`,
-    );
+    const payload = await gatewayRequest<{ quota: ProviderQuotaSummary }>("GET", `/providers/${encodeURIComponent(providerId)}/quota`);
     return payload.quota;
   },
 
@@ -238,63 +179,48 @@ export const gatewayApi = {
     runs?: number;
     account_usage_confirmed?: boolean;
   }) {
-    return request<ModelBenchmarkResult>("/benchmarks/models", {
-      method: "POST",
-      body: JSON.stringify(input),
-    });
+    return gatewayRequest<ModelBenchmarkResult>("POST", "/benchmarks/models", input);
   },
 
   importAccount(payload: CodexAuthPayload) {
-    return request("/accounts/openai/import-token", {
-      method: "POST",
-      body: JSON.stringify(payload),
-    });
+    return gatewayRequest("POST", "/accounts/openai/import-token", payload);
   },
 
   startOpenAiDeviceLogin() {
-    return request<OpenAiDeviceLoginStart>("/accounts/openai/login/device", {
-      method: "POST",
-    });
+    return gatewayRequest<OpenAiDeviceLoginStart>("POST", "/accounts/openai/login/device");
   },
 
   pollOpenAiDeviceLogin(loginId: string) {
-    return request<OpenAiDeviceLoginStatus>(
-      `/accounts/openai/login/device/${encodeURIComponent(loginId)}`,
-    );
+    return gatewayRequest<OpenAiDeviceLoginStatus>("GET", `/accounts/openai/login/device/${encodeURIComponent(loginId)}`);
   },
 
   cancelOpenAiDeviceLogin(loginId: string) {
-    return request<{ cancelled: boolean }>(
-      `/accounts/openai/login/device/${encodeURIComponent(loginId)}`,
-      { method: "DELETE" },
-    );
+    return gatewayRequest<{ cancelled: boolean }>("DELETE", `/accounts/openai/login/device/${encodeURIComponent(loginId)}`);
   },
 };
 
-async function centerRequest<T>(
+function centerRequest<T>(
   method: "GET" | "POST" | "PUT" | "DELETE",
   path: string,
   body?: unknown,
 ): Promise<T> {
-  return request<T>("/control/control-plane/request", {
-    method: "POST",
-    body: JSON.stringify({ method, path, ...(body === undefined ? {} : { body }) }),
+  return gatewayRequest<T>("POST", "/control/control-plane/request", {
+    method,
+    path,
+    ...(body === undefined ? {} : { body }),
   });
 }
 
 export const centerApi = {
-  gatewayStatus: () => request<LocalGatewayStatus>("/control/status"),
+  gatewayStatus: () => gatewayRequest<LocalGatewayStatus>("GET", "/control/status"),
   codexGatewayStatus: () => invokeTauri<DefaultCodexStatus>("get_codex_gateway_status"),
   startCodexGateway: () => invokeTauri<CodexConfigurationResult>("start_codex_gateway"),
   stopCodexGateway: () => invokeTauri<CodexConfigurationResult>("stop_codex_gateway"),
-  startCodexInstance: (instanceId: string) =>
-    invokeTauri<string>("start_codex_instance", { instanceId }),
+  startCodexInstance: (instanceId: string) => invokeTauri<string>("start_codex_instance", { instanceId }),
   login: (input: { url: string; email: string; password: string }) =>
-    request<{ user: CenterUser; control_plane_url: string }>("/control/control-plane/login", {
-      method: "POST", body: JSON.stringify(input),
-    }),
-  disconnect: () => request<{ disconnected: boolean }>("/control/control-plane", { method: "DELETE" }),
-  sync: () => request<SharedSyncStatus>("/control/control-plane/sync", { method: "POST" }),
+    gatewayRequest<{ user: CenterUser; control_plane_url: string }>("POST", "/control/control-plane/login", input),
+  disconnect: () => gatewayRequest<{ disconnected: boolean }>("DELETE", "/control/control-plane"),
+  sync: () => gatewayRequest<SharedSyncStatus>("POST", "/control/control-plane/sync"),
   async me() {
     return (await centerRequest<{ user: CenterUser }>("GET", "/client/v1/me")).user;
   },
@@ -304,19 +230,14 @@ export const centerApi = {
   group: (groupId: number) => centerRequest<CenterGroupDetail>("GET", `/groups/${groupId}`),
   createGroup: (name: string) => centerRequest<CenterGroup>("POST", "/groups", { name }),
   searchUsers: (query: string) => centerRequest<{ users: CenterUser[] }>("GET", `/users/search?q=${encodeURIComponent(query)}`),
-  addGroupMember: (groupId: number, userId: number) =>
-    centerRequest<{ ok: true }>("POST", `/groups/${groupId}/members`, { user_id: userId }),
-  removeGroupMember: (groupId: number, userId: number) =>
-    centerRequest<{ ok: true }>("DELETE", `/groups/${groupId}/members/${userId}`),
+  addGroupMember: (groupId: number, userId: number) => centerRequest<{ ok: true }>("POST", `/groups/${groupId}/members`, { user_id: userId }),
+  removeGroupMember: (groupId: number, userId: number) => centerRequest<{ ok: true }>("DELETE", `/groups/${groupId}/members/${userId}`),
   async shareLocalProvider(groupId: number, localProviderId: string) {
-    const payload = await request<{ provider_id: string }>("/control/control-plane/share-provider", {
-      method: "POST", body: JSON.stringify({ provider_id: localProviderId }),
-    });
+    const payload = await gatewayRequest<{ provider_id: string }>("POST", "/control/control-plane/share-provider", { provider_id: localProviderId });
     await centerRequest<{ ok: true }>("POST", `/groups/${groupId}/providers`, { provider_id: payload.provider_id });
     return payload.provider_id;
   },
-  unshareProvider: (groupId: number, providerId: string) =>
-    centerRequest<{ ok: true }>("DELETE", `/groups/${groupId}/providers/${encodeURIComponent(providerId)}`),
+  unshareProvider: (groupId: number, providerId: string) => centerRequest<{ ok: true }>("DELETE", `/groups/${groupId}/providers/${encodeURIComponent(providerId)}`),
   async users() {
     return (await centerRequest<{ users: ManagedCenterUser[] }>("GET", "/users")).users;
   },

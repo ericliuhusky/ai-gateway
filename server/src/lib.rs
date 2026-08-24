@@ -14,18 +14,29 @@ mod store;
 mod support;
 mod upstream;
 
-use api::{AppState, build_router, build_router_with_web};
+use api::{AppState, build_management_router, build_router};
 use config::Config;
 use control_plane::spawn_periodic_shared_sync;
 use openai_device_login::OpenAiDeviceLoginService;
 use openai_tokens::OpenAiTokenService;
 use reqwest::Client;
 use shared_leases::{SharedLeaseStore, local_shared_provider_id};
-use std::{path::PathBuf, sync::Arc};
+use std::sync::Arc;
+
+use axum::{
+    Router,
+    body::{Body, to_bytes},
+    http::{
+        Method, Request,
+        header::{ACCEPT, CONTENT_TYPE},
+    },
+};
+use serde_json::Value;
 use store::{
     AccountStore, IssueStore, ModelStore, ProviderStore, RouteStore, SettingsStore, TurnLogStore,
     UsageStore,
 };
+use tower::ServiceExt;
 use upstream::UpstreamClient;
 
 pub use control::GatewayRuntime;
@@ -54,6 +65,82 @@ pub struct ShareableProviderSource {
     pub base_url: String,
     pub api_key: String,
     pub compatibility_profile: ProviderCompatibilityProfile,
+}
+
+/// In-process management surface for the Tauri desktop client.
+///
+/// Management requests are dispatched to an Axum router without binding them
+/// to a socket. The only TCP API remains the OpenAI-compatible gateway.
+#[derive(Clone)]
+pub struct DesktopGateway {
+    management_router: Router,
+}
+
+impl DesktopGateway {
+    async fn invoke(&self, method: &str, path: &str, body: Option<Value>) -> Result<Value, String> {
+        let method = Method::from_bytes(method.trim().as_bytes())
+            .map_err(|_| "不支持的本机请求方法".to_string())?;
+        if !matches!(
+            method,
+            Method::GET | Method::POST | Method::PUT | Method::DELETE
+        ) {
+            return Err("本机请求只支持 GET、POST、PUT 和 DELETE".to_string());
+        }
+        if !path.starts_with('/') || path.starts_with("//") || path.contains("://") {
+            return Err("本机请求路径无效".to_string());
+        }
+
+        let request_body = match body {
+            Some(value) => serde_json::to_vec(&value)
+                .map(Body::from)
+                .map_err(|error| format!("序列化本机请求失败：{error}"))?,
+            None => Body::empty(),
+        };
+        let request = Request::builder()
+            .method(method)
+            .uri(path)
+            .header(ACCEPT, "application/json")
+            .header(CONTENT_TYPE, "application/json")
+            .body(request_body)
+            .map_err(|error| format!("构造本机请求失败：{error}"))?;
+        let response = self
+            .management_router
+            .clone()
+            .oneshot(request)
+            .await
+            .map_err(|error| format!("执行本机请求失败：{error}"))?;
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), 8 * 1024 * 1024)
+            .await
+            .map_err(|error| format!("读取本机响应失败：{error}"))?;
+        let response_value = if bytes.is_empty() {
+            Value::Null
+        } else {
+            serde_json::from_slice(&bytes)
+                .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into_owned()))
+        };
+        if status.is_success() {
+            Ok(response_value)
+        } else {
+            let message = response_value
+                .pointer("/error/message")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .or_else(|| response_value.as_str().map(str::to_string))
+                .unwrap_or_else(|| format!("HTTP {status}"));
+            Err(message)
+        }
+    }
+
+    /// Invoke a private management endpoint from the desktop process.
+    pub async fn request(
+        &self,
+        method: String,
+        path: String,
+        body: Option<Value>,
+    ) -> Result<Value, String> {
+        self.invoke(&method, &path, body).await
+    }
 }
 
 #[derive(Clone)]
@@ -159,6 +246,22 @@ pub(crate) fn local_gateway_handle(
 
 pub async fn start_local_gateway() -> Result<LocalGatewayHandle, String> {
     let (state, handle) = initialize_local_gateway().await?;
+    start_gateway_listener(state).await?;
+    Ok(handle)
+}
+
+/// Starts the OpenAI-compatible HTTP gateway and returns the private desktop
+/// management surface. This is the entry point used by the Tauri client.
+pub async fn start_desktop_gateway() -> Result<DesktopGateway, String> {
+    let (state, _) = initialize_local_gateway().await?;
+    let desktop_gateway = DesktopGateway {
+        management_router: build_management_router(state.clone()),
+    };
+    start_gateway_listener(state).await?;
+    Ok(desktop_gateway)
+}
+
+async fn start_gateway_listener(state: AppState) -> Result<(), String> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:4242")
         .await
         .map_err(|error| format!("无法启动本地 Gateway (127.0.0.1:4242)：{error}"))?;
@@ -167,15 +270,17 @@ pub async fn start_local_gateway() -> Result<LocalGatewayHandle, String> {
             eprintln!("本地 Gateway 已停止：{error}");
         }
     });
-    Ok(handle)
+    Ok(())
 }
 
-pub async fn serve_gateway(web_dir: Option<PathBuf>) -> Result<(), String> {
+/// Serves only the OpenAI-compatible HTTP gateway. Management is available
+/// exclusively through the desktop client's in-process invoke bridge.
+pub async fn serve_gateway() -> Result<(), String> {
     let (state, _) = initialize_local_gateway().await?;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:4242")
         .await
         .map_err(|error| format!("无法启动 Gateway 服务 (127.0.0.1:4242)：{error}"))?;
-    axum::serve(listener, build_router_with_web(state, web_dir))
+    axum::serve(listener, build_router(state))
         .await
         .map_err(|error| format!("Gateway 服务已停止：{error}"))
 }
