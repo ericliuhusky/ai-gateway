@@ -2,18 +2,16 @@ use super::AppState;
 use crate::{
     api::RequestScope,
     api::handlers::{
-        add_provider, cancel_openai_device_login, center_request, clear_codex_client_version,
-        clear_gateway_issues, clear_selected_model, clear_selected_reasoning_effort,
-        configure_control_plane, delete_instance, delete_provider, disconnect_control_plane,
-        gateway_status, get_auto_routing_settings, get_codex_client_version,
-        get_gateway_issue_repair_prompt, get_instance_routing_config, get_provider_quota,
-        get_route, get_selected_model, get_selected_reasoning_effort, healthz, import_openai_token,
-        list_daily_usage, list_gateway_issues, list_instance_routing_configs, list_models,
-        list_models_for_instance, list_providers, list_turn_logs, list_usage_summary, login_center,
-        poll_openai_device_login, responses, responses_for_instance, run_model_benchmark,
-        set_auto_routing_settings, set_codex_client_version, set_instance_routing_config,
-        set_route, set_selected_model, set_selected_reasoning_effort, share_local_provider,
-        start_openai_device_login, sync_shared_connections,
+        add_provider, cancel_openai_device_login, clear_codex_client_version, clear_gateway_issues,
+        clear_selected_model, clear_selected_reasoning_effort, delete_instance, delete_provider,
+        get_auto_routing_settings, get_codex_client_version, get_gateway_issue_repair_prompt,
+        get_instance_routing_config, get_provider_quota, get_route, get_selected_model,
+        get_selected_reasoning_effort, healthz, import_openai_token, list_daily_usage,
+        list_gateway_issues, list_instance_routing_configs, list_models, list_models_for_instance,
+        list_providers, list_turn_logs, list_usage_summary, poll_openai_device_login, responses,
+        responses_for_instance, run_model_benchmark, set_auto_routing_settings,
+        set_codex_client_version, set_instance_routing_config, set_route, set_selected_model,
+        set_selected_reasoning_effort, start_openai_device_login,
     },
 };
 use axum::{
@@ -39,18 +37,6 @@ pub fn build_router(state: AppState) -> Router {
 /// serves it through a user-owned Unix domain socket.
 pub fn build_management_router(state: AppState) -> Router {
     Router::new()
-        .route("/control/status", get(gateway_status))
-        .route(
-            "/control/control-plane",
-            post(configure_control_plane).delete(disconnect_control_plane),
-        )
-        .route("/control/control-plane/login", post(login_center))
-        .route("/control/control-plane/sync", post(sync_shared_connections))
-        .route("/control/control-plane/request", post(center_request))
-        .route(
-            "/control/control-plane/share-provider",
-            post(share_local_provider),
-        )
         .route("/accounts/openai/import-token", post(import_openai_token))
         .route(
             "/accounts/openai/login/device",
@@ -174,13 +160,9 @@ mod tests {
     use crate::{
         api::AppState,
         config::Config,
-        control_store::LocalStore,
-        local_gateway_handle,
         models::CreateApiProviderRequest,
-        models::{ProviderCompatibilityProfile, ProviderUpstreamProtocol},
         openai_device_login::OpenAiDeviceLoginService,
         openai_tokens::OpenAiTokenService,
-        shared_leases::SharedLeaseStore,
         store::{
             AccountStore, IssueStore, ModelStore, ProviderStore, RouteStore, SettingsStore,
             TurnLogStore, UsageStore,
@@ -228,7 +210,7 @@ mod tests {
         });
 
         let data_dir = unique_test_data_dir("local-routes");
-        let (state, providers, routes, shared_leases) = test_state(data_dir.clone()).await;
+        let (state, providers, routes) = test_state(data_dir.clone()).await;
         let provider = providers
             .upsert_for_owner(
                 None,
@@ -264,13 +246,6 @@ mod tests {
             .await
             .expect("list providers over private management router");
         assert_eq!(providers_response.status(), StatusCode::OK);
-
-        let group_response = router
-            .clone()
-            .oneshot(request(Method::GET, "/groups", Body::empty()))
-            .await
-            .expect("group route response");
-        assert_eq!(group_response.status(), StatusCode::NOT_FOUND);
 
         let response = router
             .clone()
@@ -314,55 +289,6 @@ mod tests {
             );
         }
 
-        providers
-            .upsert_shared_lease(
-                "shared_center-provider",
-                "Shared Provider",
-                &format!("http://{upstream_addr}/v1"),
-                "sk-shared",
-                ProviderUpstreamProtocol::OpenAiResponses,
-                ProviderCompatibilityProfile::GenericOpenAi,
-            )
-            .await
-            .expect("persist shared provider");
-        let rejected = management_router
-            .clone()
-            .oneshot(request(
-                Method::PUT,
-                "/selected-provider",
-                Body::from(r#"{"provider_id":"shared_center-provider"}"#),
-            ))
-            .await
-            .expect("unauthorized shared selection");
-        assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
-
-        shared_leases
-            .authorize("shared_center-provider", i64::MAX)
-            .expect("authorize shared provider");
-        let accepted = management_router
-            .clone()
-            .oneshot(request(
-                Method::PUT,
-                "/selected-provider",
-                Body::from(r#"{"provider_id":"shared_center-provider"}"#),
-            ))
-            .await
-            .expect("authorized shared selection");
-        assert_eq!(accepted.status(), StatusCode::OK);
-
-        shared_leases
-            .authorize("shared_center-provider", 0)
-            .expect("expire shared provider");
-        let expired = router
-            .oneshot(request(
-                Method::POST,
-                "/openai/v1/responses",
-                Body::from(r#"{"model":"mock-model","input":"must-not-leave","stream":false}"#),
-            ))
-            .await
-            .expect("expired shared response");
-        assert_eq!(expired.status(), StatusCode::BAD_REQUEST);
-
         let _ = fs::remove_dir_all(data_dir);
     }
 
@@ -397,9 +323,7 @@ mod tests {
         }))
     }
 
-    async fn test_state(
-        data_dir: PathBuf,
-    ) -> (AppState, ProviderStore, RouteStore, SharedLeaseStore) {
+    async fn test_state(data_dir: PathBuf) -> (AppState, ProviderStore, RouteStore) {
         let config = Arc::new(Config::for_test(data_dir.clone()));
         let accounts = AccountStore::new(config.clone()).expect("create accounts");
         accounts.load().await.expect("load accounts");
@@ -407,18 +331,8 @@ mod tests {
         providers.load().await.expect("load providers");
         let routes = RouteStore::new(config.clone()).expect("create routes");
         routes.load().await.expect("load routes");
-        let shared_leases = SharedLeaseStore::default();
         let models = ModelStore::new(config.clone()).expect("create models");
         let settings = SettingsStore::new(config.clone()).expect("create settings");
-        let gateway = local_gateway_handle(
-            providers.clone(),
-            routes.clone(),
-            models.clone(),
-            settings.clone(),
-            shared_leases.clone(),
-        );
-        let control_store =
-            LocalStore::open_at(data_dir.join("control"), false).expect("create control store");
         let state = AppState {
             _client: Client::new(),
             _config: config.clone(),
@@ -433,12 +347,9 @@ mod tests {
             issues: IssueStore::new(config.clone()).expect("create issues"),
             usage: UsageStore::new(config).expect("create usage"),
             upstream: UpstreamClient::new(),
-            shared_leases: shared_leases.clone(),
-            control_store,
-            gateway,
             gateway_runtime: crate::GatewayRuntime::new(true),
         };
-        (state, providers, routes, shared_leases)
+        (state, providers, routes)
     }
 
     fn request(method: Method, path: &str, body: Body) -> Request<Body> {

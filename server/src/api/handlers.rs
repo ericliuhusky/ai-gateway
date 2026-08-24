@@ -5,12 +5,6 @@ use crate::{
     },
     api::RequestScope,
     config::{Config, DEFAULT_CODEX_CLIENT_VERSION},
-    control_plane::{
-        ControlLoginInput, ControlLoginResult, ControlRequestInput, SharedSyncStatus,
-        login_control_plane, publish_shared_connection, request_control_plane,
-        sync_shared_providers,
-    },
-    control_store::LocalGatewayStatus,
     models::openai::responses::{
         CodexUsageCredits, CodexUsageRateLimit, CodexUsageRateLimitWindow, CodexUsageResponse,
     },
@@ -36,7 +30,6 @@ use crate::{
         decision_from_classifier_output, diagnostic_preview, is_tool_round, summarize_request,
         user_input_preview,
     },
-    shared_leases::SharedLeaseStore,
     store::{
         AccountStore, IssueStore, ModelStore, ProviderStore, RouteStore, SettingsStore,
         TurnLogStore, UsagePeriod, UsageStore, issue_store::truncate_issue_body,
@@ -81,9 +74,6 @@ pub struct AppState {
     pub issues: IssueStore,
     pub usage: UsageStore,
     pub upstream: UpstreamClient,
-    pub shared_leases: SharedLeaseStore,
-    pub control_store: crate::LocalStore,
-    pub gateway: crate::LocalGatewayHandle,
     pub gateway_runtime: crate::GatewayRuntime,
 }
 
@@ -126,99 +116,6 @@ pub struct GatewayIssueRepairPromptResponse {
 
 fn default_usage_days() -> u32 {
     30
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ConfigureControlPlaneInput {
-    pub url: String,
-    pub access_token: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ShareLocalProviderInput {
-    pub provider_id: String,
-}
-
-pub async fn gateway_status(
-    State(state): State<AppState>,
-) -> Result<Json<LocalGatewayStatus>, AppError> {
-    state
-        .control_store
-        .status(crate::LOCAL_GATEWAY_URL)
-        .map(Json)
-        .map_err(AppError::internal)
-}
-
-pub async fn configure_control_plane(
-    State(state): State<AppState>,
-    Json(input): Json<ConfigureControlPlaneInput>,
-) -> Result<Json<Value>, AppError> {
-    state
-        .control_store
-        .configure_control_plane(input.url, input.access_token)
-        .map_err(AppError::bad_request)?;
-    Ok(Json(json!({ "configured": true })))
-}
-
-pub async fn disconnect_control_plane(
-    State(state): State<AppState>,
-) -> Result<Json<Value>, AppError> {
-    let shared_ids = state.gateway.shared_provider_ids().await;
-    for provider_id in shared_ids {
-        state
-            .gateway
-            .revoke_shared_provider(&provider_id)
-            .await
-            .map_err(AppError::internal)?;
-    }
-    state
-        .control_store
-        .clear_control_plane()
-        .map_err(AppError::internal)?;
-    Ok(Json(json!({ "disconnected": true })))
-}
-
-pub async fn sync_shared_connections(
-    State(state): State<AppState>,
-) -> Result<Json<SharedSyncStatus>, AppError> {
-    sync_shared_providers(state.control_store.clone(), state.gateway.clone())
-        .await
-        .map(Json)
-        .map_err(AppError::bad_request)
-}
-
-pub async fn login_center(
-    State(state): State<AppState>,
-    Json(input): Json<ControlLoginInput>,
-) -> Result<Json<ControlLoginResult>, AppError> {
-    login_control_plane(state.control_store.clone(), input)
-        .await
-        .map(Json)
-        .map_err(AppError::bad_request)
-}
-
-pub async fn center_request(
-    State(state): State<AppState>,
-    Json(input): Json<ControlRequestInput>,
-) -> Result<Json<Value>, AppError> {
-    request_control_plane(state.control_store.clone(), input)
-        .await
-        .map(Json)
-        .map_err(AppError::bad_request)
-}
-
-pub async fn share_local_provider(
-    State(state): State<AppState>,
-    Json(input): Json<ShareLocalProviderInput>,
-) -> Result<Json<Value>, AppError> {
-    let provider_id = publish_shared_connection(
-        state.control_store.clone(),
-        state.gateway.clone(),
-        input.provider_id,
-    )
-    .await
-    .map_err(AppError::bad_request)?;
-    Ok(Json(json!({ "provider_id": provider_id })))
 }
 
 pub async fn healthz() -> &'static str {
@@ -3261,10 +3158,6 @@ async fn resolve_provider_by_id_for_owner(
     _owner_user_id: Option<i64>,
     provider_id: &str,
 ) -> Result<ResolvedProvider, AppError> {
-    state
-        .shared_leases
-        .ensure_active(provider_id)
-        .map_err(AppError::bad_request)?;
     let record = state
         .providers
         .find_by_id_for_owner(None, provider_id)
@@ -3348,7 +3241,6 @@ async fn provider_summary_for_resolved_for_owner(
         account_email: None,
         upstream_protocol: record.upstream_protocol.clone(),
         compatibility_profile: record.compatibility_profile.clone(),
-        shared: record.id.starts_with("shared_"),
     };
     hydrate_provider_summary_for_owner(state, owner_user_id, &mut summary).await;
     Ok(summary)
@@ -3574,15 +3466,12 @@ mod tests {
     use crate::{
         api::RequestScope,
         config::Config,
-        control_store::LocalStore,
-        local_gateway_handle,
         models::{
             ApiProviderRecord, GatewayIssue, ProviderAuthMode, ProviderCompatibilityProfile,
             ProviderUpstreamProtocol, RoutingModelTarget,
         },
         openai_device_login::OpenAiDeviceLoginService,
         openai_tokens::{ImportedOpenAIAuth, OpenAiTokenService},
-        shared_leases::SharedLeaseStore,
         store::{
             AccountStore, IssueStore, ModelStore, ProviderStore, RouteStore, SettingsStore,
             TurnLogStore, UsageStore,
@@ -3721,16 +3610,6 @@ data: {"error":{"message":"rate limit exceeded"}}
             .expect("save account provider");
         let models = ModelStore::new(config.clone()).expect("create model store");
         let settings = SettingsStore::new(config.clone()).expect("create settings store");
-        let shared_leases = SharedLeaseStore::default();
-        let gateway = local_gateway_handle(
-            providers.clone(),
-            routes.clone(),
-            models.clone(),
-            settings.clone(),
-            shared_leases.clone(),
-        );
-        let control_store =
-            LocalStore::open_at(data_dir.join("control"), false).expect("create control store");
         let state = AppState {
             _client: Client::new(),
             _config: config.clone(),
@@ -3745,9 +3624,6 @@ data: {"error":{"message":"rate limit exceeded"}}
             issues: IssueStore::new(config.clone()).expect("create issue store"),
             usage: UsageStore::new(config.clone()).expect("create usage store"),
             upstream: UpstreamClient::new(),
-            shared_leases,
-            control_store,
-            gateway,
             gateway_runtime: crate::GatewayRuntime::new(true),
         };
 

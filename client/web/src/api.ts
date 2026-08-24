@@ -17,14 +17,8 @@ import type {
   DailyUsageSummary,
   OpenAiDeviceLoginStart,
   OpenAiDeviceLoginStatus,
-  CenterGroup,
-  CenterGroupDetail,
-  CenterUser,
-  LocalGatewayStatus,
   DefaultCodexStatus,
   CodexConfigurationResult,
-  ManagedCenterUser,
-  SharedSyncStatus,
 } from "./types";
 
 /**
@@ -197,48 +191,10 @@ export const gatewayApi = {
   cancelOpenAiDeviceLogin(loginId: string) {
     return gatewayRequest<{ cancelled: boolean }>("DELETE", `/accounts/openai/login/device/${encodeURIComponent(loginId)}`);
   },
-};
 
-function centerRequest<T>(
-  method: "GET" | "POST" | "PUT" | "DELETE",
-  path: string,
-  body?: unknown,
-): Promise<T> {
-  return gatewayRequest<T>("POST", "/control/control-plane/request", {
-    method,
-    path,
-    ...(body === undefined ? {} : { body }),
-  });
-}
-
-export const centerApi = {
-  gatewayStatus: () => gatewayRequest<LocalGatewayStatus>("GET", "/control/status"),
   codexGatewayStatus: () => invokeTauri<DefaultCodexStatus>("get_codex_gateway_status"),
   startCodexGateway: () => invokeTauri<CodexConfigurationResult>("start_codex_gateway"),
   stopCodexGateway: () => invokeTauri<CodexConfigurationResult>("stop_codex_gateway"),
-  startCodexInstance: (instanceId: string) => invokeTauri<string>("start_codex_instance", { instanceId }),
-  login: (input: { url: string; email: string; password: string }) =>
-    gatewayRequest<{ user: CenterUser; control_plane_url: string }>("POST", "/control/control-plane/login", input),
-  disconnect: () => gatewayRequest<{ disconnected: boolean }>("DELETE", "/control/control-plane"),
-  sync: () => gatewayRequest<SharedSyncStatus>("POST", "/control/control-plane/sync"),
-  async me() {
-    return (await centerRequest<{ user: CenterUser }>("GET", "/client/v1/me")).user;
-  },
-  async groups() {
-    return (await centerRequest<{ groups: CenterGroup[] }>("GET", "/groups")).groups;
-  },
-  group: (groupId: number) => centerRequest<CenterGroupDetail>("GET", `/groups/${groupId}`),
-  createGroup: (name: string) => centerRequest<CenterGroup>("POST", "/groups", { name }),
-  searchUsers: (query: string) => centerRequest<{ users: CenterUser[] }>("GET", `/users/search?q=${encodeURIComponent(query)}`),
-  addGroupMember: (groupId: number, userId: number) => centerRequest<{ ok: true }>("POST", `/groups/${groupId}/members`, { user_id: userId }),
-  removeGroupMember: (groupId: number, userId: number) => centerRequest<{ ok: true }>("DELETE", `/groups/${groupId}/members/${userId}`),
-  async shareLocalProvider(groupId: number, localProviderId: string) {
-    const payload = await gatewayRequest<{ provider_id: string }>("POST", "/control/control-plane/share-provider", { provider_id: localProviderId });
-    await centerRequest<{ ok: true }>("POST", `/groups/${groupId}/providers`, { provider_id: payload.provider_id });
-    return payload.provider_id;
-  },
-  unshareProvider: (groupId: number, providerId: string) => centerRequest<{ ok: true }>("DELETE", `/groups/${groupId}/providers/${encodeURIComponent(providerId)}`),
-  async users() {
-    return (await centerRequest<{ users: ManagedCenterUser[] }>("GET", "/users")).users;
-  },
+  startCodexInstance: (instanceId: string) =>
+    invokeTauri<string>("start_codex_instance", { instanceId }),
 };

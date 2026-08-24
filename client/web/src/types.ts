@@ -14,68 +14,6 @@ export interface GatewayProvider {
   account_email?: string;
   upstream_protocol: GatewayUpstreamProtocol;
   compatibility_profile: GatewayCompatibilityProfile;
-  shared?: boolean;
-}
-
-export interface CenterUser {
-  id: number;
-  name: string;
-  avatar_url: string;
-  role: "admin" | "user";
-}
-
-export interface ManagedCenterUser extends CenterUser {
-  email: string;
-  has_password: boolean;
-}
-
-export interface CenterGroup {
-  id: number;
-  name: string;
-  owner_user_id: number;
-  owner_name: string;
-  role: "owner" | "member";
-  member_count: number;
-  provider_count: number;
-  created_at: number;
-}
-
-export interface CenterGroupMember {
-  user_id: number;
-  name: string;
-  avatar_url: string;
-  role: "owner" | "member";
-}
-
-export interface CenterSharedConnection {
-  id: string;
-  name: string;
-  auth_mode: "api_key";
-  base_url: string;
-  upstream_protocol: GatewayUpstreamProtocol;
-  compatibility_profile: Exclude<GatewayCompatibilityProfile, "openai_codex">;
-  shared: boolean;
-}
-
-export interface CenterGroupProvider {
-  provider: CenterSharedConnection;
-  shared_by_user_id: number;
-  shared_by_name: string;
-  shared_at: number;
-  can_remove: boolean;
-}
-
-export interface CenterGroupDetail {
-  group: CenterGroup;
-  members: CenterGroupMember[];
-  providers: CenterGroupProvider[];
-}
-
-export interface LocalGatewayStatus {
-  local_gateway_url: string;
-  control_plane_url?: string;
-  device_id: string;
-  sharing_configured: boolean;
 }
 
 export interface DefaultCodexStatus {
@@ -85,11 +23,6 @@ export interface DefaultCodexStatus {
 export interface CodexConfigurationResult {
   changed: boolean;
   warnings: string[];
-}
-
-export interface SharedSyncStatus {
-  provider_count: number;
-  renewed_count: number;
 }
 
 export interface SelectedProvider {

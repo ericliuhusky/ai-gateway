@@ -29,6 +29,15 @@ impl ProviderStore {
 
     pub async fn load(&self) -> Result<(), String> {
         let mut loaded = self.sqlite.load_providers()?;
+        let removed_shared_ids = loaded
+            .iter()
+            .filter(|provider| provider.id.starts_with("shared_"))
+            .map(|provider| provider.id.clone())
+            .collect::<Vec<_>>();
+        for provider_id in &removed_shared_ids {
+            self.sqlite.delete_provider(provider_id)?;
+        }
+        loaded.retain(|provider| !provider.id.starts_with("shared_"));
         for provider in &mut loaded {
             if provider.auth_mode == ProviderAuthMode::Account
                 && provider.name == PROVIDER_OPENAI_PROXY
@@ -56,20 +65,7 @@ impl ProviderStore {
                 account_email: None,
                 upstream_protocol: provider.upstream_protocol.clone(),
                 compatibility_profile: provider.compatibility_profile.clone(),
-                shared: provider.id.starts_with("shared_"),
             })
-            .collect()
-    }
-
-    pub async fn list_shared_lease_ids(&self) -> Vec<String> {
-        self.providers
-            .lock()
-            .await
-            .iter()
-            .filter(|provider| {
-                provider.owner_user_id.is_none() && provider.id.starts_with("shared_")
-            })
-            .map(|provider| provider.id.clone())
             .collect()
     }
 
@@ -188,76 +184,6 @@ impl ProviderStore {
         let provider = providers.remove(index);
         self.sqlite.delete_provider(id)?;
         Ok(provider)
-    }
-
-    pub async fn upsert_shared_lease(
-        &self,
-        id: &str,
-        name: &str,
-        base_url: &str,
-        api_key: &str,
-        upstream_protocol: ProviderUpstreamProtocol,
-        compatibility_profile: ProviderCompatibilityProfile,
-    ) -> Result<(), String> {
-        if !id.starts_with("shared_") {
-            return Err("共享供应商标识必须使用 shared_ 前缀".to_string());
-        }
-        let name = name.trim();
-        let base_url = base_url.trim();
-        let api_key = api_key.trim();
-        if name.is_empty() {
-            return Err("共享供应商名称不能为空".to_string());
-        }
-        if base_url.is_empty() {
-            return Err("共享供应商 base_url 不能为空".to_string());
-        }
-        if api_key.is_empty() {
-            return Err("共享供应商 api_key 不能为空".to_string());
-        }
-        if compatibility_profile == ProviderCompatibilityProfile::OpenAiCodex {
-            return Err("共享供应商不能使用账户专用的 openai_codex 兼容配置".to_string());
-        }
-
-        let provider = ApiProviderRecord {
-            id: id.to_string(),
-            name: name.to_string(),
-            auth_mode: ProviderAuthMode::ApiKey,
-            base_url: base_url.to_string(),
-            api_key: api_key.to_string(),
-            account_id: None,
-            upstream_protocol,
-            compatibility_profile,
-            owner_user_id: None,
-        };
-
-        let mut providers = self.providers.lock().await;
-        if let Some(existing) = providers.iter_mut().find(|existing| existing.id == id) {
-            if existing.owner_user_id.is_some() || !existing.id.starts_with("shared_") {
-                return Err("共享供应商标识与本地供应商冲突".to_string());
-            }
-            self.persist_provider(&provider)?;
-            *existing = provider;
-            return Ok(());
-        }
-
-        self.persist_provider(&provider)?;
-        providers.push(provider);
-        Ok(())
-    }
-
-    pub async fn delete_shared_lease(&self, id: &str) -> Result<(), String> {
-        if !id.starts_with("shared_") {
-            return Err("只能删除共享供应商租约".to_string());
-        }
-        let mut providers = self.providers.lock().await;
-        if let Some(index) = providers.iter().position(|provider| {
-            provider.id == id
-                && provider.owner_user_id.is_none()
-                && provider.id.starts_with("shared_")
-        }) {
-            providers.remove(index);
-        }
-        self.sqlite.delete_provider(id)
     }
 
     fn persist_provider(&self, provider: &ApiProviderRecord) -> Result<(), String> {
@@ -379,40 +305,6 @@ mod tests {
         assert_eq!(
             provider.compatibility_profile,
             ProviderCompatibilityProfile::OfficialOpenAi
-        );
-    }
-
-    #[tokio::test]
-    async fn shared_lease_preserves_center_compatibility_profile() {
-        let sqlite = test_sqlite_store("shared-provider-profile");
-        let store = ProviderStore {
-            sqlite,
-            providers: Arc::new(Mutex::new(Vec::new())),
-        };
-
-        store
-            .upsert_shared_lease(
-                "shared_provider-1",
-                "Shared",
-                "https://compatible.example/v1",
-                "sk-shared",
-                ProviderUpstreamProtocol::OpenAiResponses,
-                ProviderCompatibilityProfile::OfficialOpenAi,
-            )
-            .await
-            .expect("store shared provider");
-
-        let provider = store
-            .find_by_id_for_owner(None, "shared_provider-1")
-            .await
-            .expect("load shared provider");
-        assert_eq!(
-            provider.compatibility_profile,
-            ProviderCompatibilityProfile::OfficialOpenAi
-        );
-        assert_eq!(
-            provider.upstream_protocol,
-            ProviderUpstreamProtocol::OpenAiResponses
         );
     }
 

@@ -21,17 +21,12 @@ import {
   Trash2,
   Wrench,
   UserRound,
-  UserPlus,
-  Users,
-  LogIn,
-  LogOut,
   Play,
   Square,
-  Share2,
   X,
 } from "lucide-react";
 
-import { centerApi, gatewayApi } from "./api";
+import { gatewayApi } from "./api";
 import { Button } from "./components/ui/button";
 import { cn } from "./lib/utils";
 import type {
@@ -53,21 +48,16 @@ import type {
   InstanceRoutingConfig,
   ModelBenchmarkResult,
   OpenAiDeviceLoginStart,
-  CenterGroup,
-  CenterGroupDetail,
-  CenterUser,
-  LocalGatewayStatus,
 } from "./types";
 
 const GATEWAY_ERROR_PREFIX = "AI网关错误：";
 const UPSTREAM_ERROR_PREFIX = "上游服务错误：";
 
 type Dialog = "provider" | "instances" | null;
-type Page = "overview" | "groups" | "usage" | "benchmark" | "routing" | "issues" | "settings";
+type Page = "overview" | "usage" | "benchmark" | "routing" | "issues" | "settings";
 
 const ROUTE_TO_PAGE: Record<string, Page> = {
   "/": "overview",
-  "/groups": "groups",
   "/usage": "usage",
   "/benchmark": "benchmark",
   "/routing": "routing",
@@ -77,7 +67,6 @@ const ROUTE_TO_PAGE: Record<string, Page> = {
 
 const PAGE_TO_ROUTE: Record<Page, string> = {
   overview: "/",
-  groups: "/groups",
   usage: "/usage",
   benchmark: "/benchmark",
   routing: "/routing",
@@ -95,7 +84,6 @@ const NAV_TABS: {
   icon: React.ComponentType<{ className?: string }>;
 }[] = [
   { id: "overview", label: "概览", icon: LayoutDashboard },
-  { id: "groups", label: "群组", icon: Users },
   { id: "usage", label: "Token 用量", icon: BarChart3 },
   { id: "benchmark", label: "吞吐测试", icon: Gauge },
   { id: "routing", label: "路由日志", icon: Route },
@@ -385,12 +373,6 @@ export function GatewayDashboard() {
           <LocalSettingsPage onError={setError} />
         ) : loading ? (
           <LoadingState />
-        ) : activePage === "groups" ? (
-          <CenterGroupsPage
-            providers={providers}
-            onLocalChanged={refresh}
-            onError={setError}
-          />
         ) : activePage === "usage" ? (
           <UsageSection
             providers={providers}
@@ -560,568 +542,6 @@ function NavTabs({
         );
       })}
     </nav>
-  );
-}
-
-function CenterGroupsPage({
-  providers,
-  onLocalChanged,
-  onError,
-}: {
-  providers: GatewayProvider[];
-  onLocalChanged: () => Promise<void>;
-  onError: (message: string) => void;
-}) {
-  const [status, setStatus] = React.useState<LocalGatewayStatus | null>(null);
-  const [user, setUser] = React.useState<CenterUser | null>(null);
-  const [groups, setGroups] = React.useState<CenterGroup[]>([]);
-  const [checking, setChecking] = React.useState(true);
-  const [busy, setBusy] = React.useState(false);
-  const [loginError, setLoginError] = React.useState<string | null>(null);
-  const [url, setUrl] = React.useState("");
-  const [email, setEmail] = React.useState("");
-  const [password, setPassword] = React.useState("");
-
-  const refreshGroups = React.useCallback(async () => {
-    const next = await centerApi.groups();
-    setGroups(next);
-  }, []);
-
-  React.useEffect(() => {
-    let cancelled = false;
-    void centerApi.gatewayStatus()
-      .then(async (nextStatus) => {
-        if (cancelled) return;
-        setStatus(nextStatus);
-        setUrl(nextStatus.control_plane_url ?? "");
-        if (!nextStatus.sharing_configured) return;
-        try {
-          const [nextUser, nextGroups] = await Promise.all([
-            centerApi.me(),
-            centerApi.groups(),
-          ]);
-          if (!cancelled) {
-            setUser(nextUser);
-            setGroups(nextGroups);
-          }
-        } catch (loadError) {
-          if (!cancelled) {
-            setLoginError(`中心登录已失效：${errorMessage(loadError)}`);
-          }
-        }
-      })
-      .catch((loadError) => {
-        if (!cancelled) onError(errorMessage(loadError));
-      })
-      .finally(() => {
-        if (!cancelled) setChecking(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [onError]);
-
-  async function login(event: React.FormEvent) {
-    event.preventDefault();
-    if (busy || !url.trim() || !email.trim() || !password) return;
-    setBusy(true);
-    setLoginError(null);
-    try {
-      const result = await centerApi.login({
-        url: url.trim(),
-        email: email.trim(),
-        password,
-      });
-      setUser(result.user);
-      setPassword("");
-      setStatus(await centerApi.gatewayStatus());
-      await refreshGroups();
-      try {
-        await centerApi.sync();
-        await onLocalChanged();
-      } catch (syncError) {
-        onError(`已登录中心，但同步共享供应商失败：${errorMessage(syncError)}`);
-      }
-    } catch (authError) {
-      setLoginError(errorMessage(authError));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function disconnect() {
-    if (busy) return;
-    setBusy(true);
-    try {
-      await centerApi.disconnect();
-      setUser(null);
-      setGroups([]);
-      setLoginError(null);
-      setStatus(await centerApi.gatewayStatus());
-      await onLocalChanged();
-    } catch (disconnectError) {
-      onError(errorMessage(disconnectError));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function sync() {
-    if (busy) return;
-    setBusy(true);
-    try {
-      const result = await centerApi.sync();
-      await Promise.all([refreshGroups(), onLocalChanged()]);
-      if (result.provider_count === 0) {
-        onError("共享同步完成：当前账号没有可用的群组共享供应商。");
-      }
-    } catch (syncError) {
-      onError(errorMessage(syncError));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  if (checking) {
-    return <LoadingState />;
-  }
-
-  if (!user) {
-    return (
-      <div className="mx-auto max-w-xl">
-        <section className="glass-panel rounded-[28px] p-6 sm:p-8">
-          <div className="flex size-12 items-center justify-center rounded-2xl bg-blue-500/10 text-blue-600 dark:text-blue-300">
-            <Users className="size-6" />
-          </div>
-          <h1 className="mt-5 text-2xl font-bold tracking-[-0.035em]">连接群组共享服务</h1>
-          <p className="mt-2 text-sm leading-6 text-slate-500 dark:text-slate-400">
-            本地供应商和推理功能不需要登录。只有群组、成员和供应商共享会连接中心服务；
-            中心服务本身不承载 Web 页面。
-          </p>
-
-          <form className="mt-6 space-y-3" onSubmit={(event) => void login(event)}>
-            <FormField label="中心服务地址">
-              <input
-                className="field w-full text-sm"
-                type="url"
-                value={url}
-                placeholder="https://gateway.example.com"
-                disabled={busy}
-                onChange={(event) => setUrl(event.target.value)}
-              />
-            </FormField>
-            <FormField label="中心账号">
-              <input
-                className="field w-full text-sm"
-                type="email"
-                value={email}
-                placeholder="name@example.com"
-                autoComplete="email"
-                disabled={busy}
-                onChange={(event) => setEmail(event.target.value)}
-              />
-            </FormField>
-            <FormField label="密码">
-              <input
-                className="field w-full text-sm"
-                type="password"
-                value={password}
-                placeholder="密码"
-                autoComplete="current-password"
-                disabled={busy}
-                onChange={(event) => setPassword(event.target.value)}
-              />
-            </FormField>
-            {loginError ? (
-              <div className="rounded-xl bg-rose-500/10 px-4 py-3 text-sm leading-6 text-rose-600 dark:text-rose-300">
-                {loginError}
-              </div>
-            ) : null}
-            <Button
-              type="submit"
-              className="w-full"
-              disabled={busy || !url.trim() || !email.trim() || !password}
-            >
-              {busy ? <LoaderCircle className="size-4 animate-spin" /> : <LogIn className="size-4" />}
-              {busy ? "正在登录" : "登录中心服务"}
-            </Button>
-          </form>
-
-          {status?.sharing_configured ? (
-            <button
-              type="button"
-              className="mt-4 w-full text-center text-xs font-semibold text-slate-400 hover:text-rose-500"
-              disabled={busy}
-              onClick={() => void disconnect()}
-            >
-              清除已失效的中心登录信息
-            </button>
-          ) : null}
-        </section>
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <div className="eyebrow">中心协作</div>
-          <h1 className="mt-1 text-2xl font-bold tracking-[-0.03em]">群组共享</h1>
-          <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-            已登录 {user.name} · {status?.control_plane_url}
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <Button size="sm" variant="outline" disabled={busy} onClick={() => void sync()}>
-            <RefreshCw className={cn("size-3.5", busy && "animate-spin")} />
-            同步共享
-          </Button>
-          <Button size="sm" variant="outline" disabled={busy} onClick={() => void disconnect()}>
-            <LogOut className="size-3.5" />
-            退出中心
-          </Button>
-        </div>
-      </div>
-
-      <GroupsWorkspace
-        groups={groups}
-        providers={providers}
-        onChanged={refreshGroups}
-        onLocalChanged={onLocalChanged}
-        onError={onError}
-      />
-    </div>
-  );
-}
-
-function GroupsWorkspace({
-  groups,
-  providers,
-  onChanged,
-  onLocalChanged,
-  onError,
-}: {
-  groups: CenterGroup[];
-  providers: GatewayProvider[];
-  onChanged: () => Promise<void>;
-  onLocalChanged: () => Promise<void>;
-  onError: (message: string) => void;
-}) {
-  const [selectedGroupId, setSelectedGroupId] = React.useState<number | null>(
-    groups[0]?.id ?? null,
-  );
-  const [detail, setDetail] = React.useState<CenterGroupDetail | null>(null);
-  const [groupName, setGroupName] = React.useState("");
-  const [search, setSearch] = React.useState("");
-  const [searchResults, setSearchResults] = React.useState<CenterUser[]>([]);
-  const [busy, setBusy] = React.useState(false);
-
-  React.useEffect(() => {
-    if (selectedGroupId === null && groups[0]) setSelectedGroupId(groups[0].id);
-    if (selectedGroupId !== null && !groups.some((group) => group.id === selectedGroupId)) {
-      setSelectedGroupId(groups[0]?.id ?? null);
-    }
-  }, [groups, selectedGroupId]);
-
-  const loadDetail = React.useCallback(async () => {
-    if (selectedGroupId === null) {
-      setDetail(null);
-      return;
-    }
-    try {
-      setDetail(await centerApi.group(selectedGroupId));
-    } catch (loadError) {
-      onError(errorMessage(loadError));
-    }
-  }, [onError, selectedGroupId]);
-
-  React.useEffect(() => {
-    void loadDetail();
-  }, [loadDetail]);
-
-  React.useEffect(() => {
-    if (!search.trim()) {
-      setSearchResults([]);
-      return;
-    }
-    const timer = window.setTimeout(() => {
-      void centerApi
-        .searchUsers(search.trim())
-        .then((payload) => setSearchResults(payload.users))
-        .catch((searchError) => onError(errorMessage(searchError)));
-    }, 250);
-    return () => window.clearTimeout(timer);
-  }, [onError, search]);
-
-  async function run(action: () => Promise<unknown>, refreshLocal = false) {
-    setBusy(true);
-    try {
-      await action();
-      await onChanged();
-      await loadDetail();
-      if (refreshLocal) {
-        await centerApi.sync();
-        await onLocalChanged();
-      }
-    } catch (actionError) {
-      onError(errorMessage(actionError));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function createGroup(event: React.FormEvent) {
-    event.preventDefault();
-    if (!groupName.trim()) return;
-    setBusy(true);
-    try {
-      const created = await centerApi.createGroup(groupName.trim());
-      setGroupName("");
-      setSelectedGroupId(created.id);
-      await onChanged();
-    } catch (createError) {
-      onError(errorMessage(createError));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  const selectedGroup = detail?.group ?? groups.find((group) => group.id === selectedGroupId);
-  const canManageMembers = selectedGroup?.role === "owner";
-  const ownProviders = providers.filter(
-    (provider) =>
-      provider.auth_mode === "api_key" &&
-      !provider.shared &&
-      provider.compatibility_profile !== "openai_codex",
-  );
-  const sharedNames = new Set(detail?.providers.map((item) => item.provider.name) ?? []);
-
-  return (
-    <div className="space-y-5">
-      <form className="flex flex-wrap justify-end gap-2" onSubmit={(event) => void createGroup(event)}>
-        <input
-          className="field h-9 w-52 text-xs"
-          value={groupName}
-          onChange={(event) => setGroupName(event.target.value)}
-          placeholder="新群组名称"
-        />
-        <Button size="sm" type="submit" disabled={busy || !groupName.trim()}>
-          <Plus className="size-3.5" />
-          新建群组
-        </Button>
-      </form>
-
-      {!groups.length ? (
-        <div className="glass-panel rounded-[26px] p-10 text-center">
-          <Users className="mx-auto size-10 text-slate-300" />
-          <h2 className="mt-4 text-lg font-bold">还没有群组</h2>
-          <p className="mt-1 text-sm text-slate-500">创建群组并邀请成员后即可共享本机供应商。</p>
-        </div>
-      ) : (
-        <div className="grid gap-5 lg:grid-cols-[280px_1fr]">
-          <div className="space-y-2">
-            {groups.map((group) => (
-              <button
-                key={group.id}
-                type="button"
-                onClick={() => setSelectedGroupId(group.id)}
-                className={cn(
-                  "glass-panel w-full rounded-2xl p-4 text-left transition",
-                  selectedGroupId === group.id && "ring-2 ring-blue-500/40",
-                )}
-              >
-                <div className="flex items-center gap-3">
-                  <span className="flex size-9 items-center justify-center rounded-xl bg-blue-500/10 text-blue-600">
-                    <Users className="size-4" />
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-sm font-bold">{group.name}</span>
-                    <span className="mt-1 block text-[11px] text-slate-400">
-                      {group.member_count} 位成员 · {group.provider_count} 个供应商
-                    </span>
-                  </span>
-                </div>
-              </button>
-            ))}
-          </div>
-
-          {selectedGroup && detail ? (
-            <section className="glass-panel rounded-[26px] p-5 sm:p-6">
-              <div className="flex items-center gap-2">
-                <h2 className="text-xl font-bold">{detail.group.name}</h2>
-                <Badge tone={detail.group.role === "owner" ? "blue" : "slate"}>
-                  {detail.group.role === "owner" ? "创建者" : "成员"}
-                </Badge>
-              </div>
-              <p className="mt-1 text-xs text-slate-400">创建者：{detail.group.owner_name}</p>
-
-              <div className="mt-6 grid gap-6 xl:grid-cols-2">
-                <div>
-                  <div className="mb-3 flex items-center justify-between">
-                    <h3 className="text-sm font-bold">群组成员</h3>
-                    <span className="text-xs text-slate-400">{detail.members.length} 人</span>
-                  </div>
-                  {canManageMembers ? (
-                    <div className="relative mb-3">
-                      <div className="flex items-center gap-2">
-                        <UserPlus className="size-4 text-slate-400" />
-                        <input
-                          className="field h-9 text-xs"
-                          value={search}
-                          onChange={(event) => setSearch(event.target.value)}
-                          placeholder="搜索姓名或邮箱，添加成员"
-                        />
-                      </div>
-                      {searchResults.length ? (
-                        <div className="absolute left-6 right-0 top-11 z-10 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl dark:border-slate-700 dark:bg-slate-900">
-                          {searchResults.map((result) => (
-                            <button
-                              key={result.id}
-                              type="button"
-                              className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs hover:bg-slate-100 dark:hover:bg-white/10"
-                              onClick={() =>
-                                void run(async () => {
-                                  await centerApi.addGroupMember(detail.group.id, result.id);
-                                  setSearch("");
-                                  setSearchResults([]);
-                                })
-                              }
-                            >
-                              <span className="flex size-6 items-center justify-center rounded-full bg-slate-200 text-[10px] font-bold text-slate-700">
-                                {result.name.slice(0, 1)}
-                              </span>
-                              <span>{result.name}</span>
-                            </button>
-                          ))}
-                        </div>
-                      ) : null}
-                    </div>
-                  ) : null}
-                  <div className="space-y-2">
-                    {detail.members.map((member) => (
-                      <div
-                        key={member.user_id}
-                        className="flex items-center gap-2 rounded-xl bg-slate-500/5 px-3 py-2"
-                      >
-                        <span className="flex size-7 items-center justify-center rounded-full bg-slate-200 text-[10px] font-bold text-slate-700">
-                          {member.name.slice(0, 1)}
-                        </span>
-                        <span className="min-w-0 flex-1 truncate text-xs font-semibold">
-                          {member.name}
-                        </span>
-                        <Badge tone={member.role === "owner" ? "blue" : "slate"}>
-                          {member.role === "owner" ? "创建者" : "成员"}
-                        </Badge>
-                        {canManageMembers && member.role !== "owner" ? (
-                          <button
-                            type="button"
-                            className="text-[11px] text-red-500"
-                            disabled={busy}
-                            onClick={() =>
-                              void run(() =>
-                                centerApi.removeGroupMember(detail.group.id, member.user_id),
-                              )
-                            }
-                          >
-                            移除
-                          </button>
-                        ) : null}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                <div>
-                  <div className="mb-3 flex items-center justify-between">
-                    <h3 className="text-sm font-bold">共享供应商</h3>
-                    <span className="text-xs text-slate-400">{detail.providers.length} 个</span>
-                  </div>
-                  <div className="mb-3 flex gap-2">
-                    <select
-                      className="field h-9 min-w-0 flex-1 text-xs"
-                      defaultValue=""
-                      disabled={busy || ownProviders.length === 0}
-                      onChange={(event) => {
-                        const providerId = event.target.value;
-                        event.target.value = "";
-                        if (providerId) {
-                          void run(
-                            () => centerApi.shareLocalProvider(detail.group.id, providerId),
-                            false,
-                          );
-                        }
-                      }}
-                    >
-                      <option value="">
-                        {ownProviders.length ? "选择本机 API Key 供应商并共享" : "没有可共享的本机供应商"}
-                      </option>
-                      {ownProviders
-                        .filter((provider) => !sharedNames.has(provider.name))
-                        .map((provider) => (
-                          <option key={provider.id} value={provider.id}>
-                            {provider.name}
-                          </option>
-                        ))}
-                    </select>
-                    <Share2 className="mt-2.5 size-4 shrink-0 text-slate-400" />
-                  </div>
-                  <p className="mb-3 text-[11px] leading-5 text-slate-400">
-                    选择后由 Tauri 从本机加密库读取凭据并上传到中心，Web 页面不会获得明文 Key。
-                  </p>
-                  <div className="space-y-2">
-                    {detail.providers.map((item) => (
-                      <div
-                        key={item.provider.id}
-                        className="flex items-center gap-2 rounded-xl bg-slate-500/5 px-3 py-2"
-                      >
-                        <Server className="size-4 text-blue-500" />
-                        <span className="min-w-0 flex-1">
-                          <span className="block truncate text-xs font-semibold">
-                            {item.provider.name}
-                          </span>
-                          <span className="block truncate text-[10px] text-slate-400">
-                            由 {item.shared_by_name} 共享
-                          </span>
-                        </span>
-                        {item.can_remove ? (
-                          <button
-                            type="button"
-                            className="text-[11px] text-red-500"
-                            disabled={busy}
-                            onClick={() =>
-                              void run(
-                                () =>
-                                  centerApi.unshareProvider(
-                                    detail.group.id,
-                                    item.provider.id,
-                                  ),
-                                true,
-                              )
-                            }
-                          >
-                            取消共享
-                          </button>
-                        ) : null}
-                      </div>
-                    ))}
-                    {!detail.providers.length ? (
-                      <div className="rounded-xl border border-dashed border-slate-300/70 p-5 text-center text-xs text-slate-400 dark:border-slate-700">
-                        还没有共享供应商
-                      </div>
-                    ) : null}
-                  </div>
-                </div>
-              </div>
-            </section>
-          ) : (
-            <div className="glass-panel rounded-[26px] p-8 text-sm text-slate-400">
-              加载群组详情…
-            </div>
-          )}
-        </div>
-      )}
-    </div>
   );
 }
 
@@ -1311,7 +731,7 @@ function DefaultCodexGatewayControl({ onError }: { onError: (message: string) =>
   const [busy, setBusy] = React.useState(false);
 
   React.useEffect(() => {
-    void centerApi.codexGatewayStatus()
+    void gatewayApi.codexGatewayStatus()
       .then((status) => setStarted(status.started))
       .catch((statusError) => onError(errorMessage(statusError)))
       .finally(() => setLoading(false));
@@ -1322,8 +742,8 @@ function DefaultCodexGatewayControl({ onError }: { onError: (message: string) =>
     setBusy(true);
     try {
       const result = started
-        ? await centerApi.stopCodexGateway()
-        : await centerApi.startCodexGateway();
+        ? await gatewayApi.stopCodexGateway()
+        : await gatewayApi.startCodexGateway();
       setStarted((current) => !current);
       if (result.warnings.length) onError(result.warnings.join("\n"));
     } catch (toggleError) {
@@ -1361,7 +781,7 @@ function CodexInstanceStartControl({
     if (busy) return;
     setBusy(true);
     try {
-      await centerApi.startCodexInstance(instanceId);
+      await gatewayApi.startCodexInstance(instanceId);
     } catch (startError) {
       onError(errorMessage(startError));
     } finally {
@@ -2310,10 +1730,9 @@ function ProviderCard({
                   ? "Codex 账户"
                   : "兼容接口"}
             </Badge>
-            {provider.shared ? <Badge tone="purple"><Share2 className="mr-1 inline size-3" />群组共享</Badge> : null}
           </div>
         </div>
-        {!provider.shared && selected ? (
+        {selected ? (
           <div className="relative size-5 shrink-0">
             <CheckCircle2 className="size-5 text-blue-500" />
             {deleting ? (
@@ -2332,9 +1751,9 @@ function ProviderCard({
               </button>
             )}
           </div>
-        ) : !provider.shared && deleting ? (
+        ) : deleting ? (
           <LoaderCircle className="size-5 shrink-0 animate-spin text-slate-400" />
-        ) : !provider.shared ? (
+        ) : (
           <button
             className="flex size-8 shrink-0 items-center justify-center rounded-xl text-slate-400 opacity-0 transition hover:bg-black/5 hover:text-red-500 group-hover:opacity-100 focus-visible:opacity-100 dark:hover:bg-white/8"
             type="button"
@@ -2346,7 +1765,7 @@ function ProviderCard({
           >
             <Trash2 className="size-3.5" />
           </button>
-        ) : null}
+        )}
       </div>
 
       {provider.auth_mode !== "account" ? (
@@ -3145,7 +2564,7 @@ function LocalSettingsPage({
       <div className="border-b border-slate-200/70 pb-5 dark:border-white/10">
         <h1 className="text-xl font-bold tracking-[-0.025em]">本地设置</h1>
         <p className="mt-1.5 text-xs leading-5 text-slate-500 dark:text-slate-400">
-          这里只配置本机 Gateway。账号、群组和共享授权由无界面的中心控制服务管理。
+          此处的设置仅作用于当前 Mac 上的本机 Gateway。
         </p>
       </div>
 

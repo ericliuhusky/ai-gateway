@@ -81,8 +81,6 @@ pub struct ApiProviderSummary {
     pub account_email: Option<String>,
     pub upstream_protocol: ProviderUpstreamProtocol,
     pub compatibility_profile: ProviderCompatibilityProfile,
-    #[serde(default)]
-    pub shared: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]

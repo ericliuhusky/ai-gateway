@@ -10,8 +10,6 @@ AI Gateway 是仅支持 macOS 的**本机桌面客户端**。用户只需安装�
 │   └── web/                # 仅供该 Client 使用的 UI 源码
 ├── server/                 # 客户端内嵌使用的本机 Gateway API
 ├── codex-adapter/          # 客户端管理本机 Codex 配置与实例
-└── share-group/
-    └── server/             # 可选的共享群组中心服务
 ```
 
 ## 使用客户端
@@ -38,11 +36,7 @@ cargo build -p ai-gateway-client
 cargo run -p server -- serve
 ```
 
-它对 TCP 只暴露 `/healthz`、`/openai/v1/*` 和实例对应的 OpenAI 兼容接口；供应商、路由、账号、用量、群组等管理操作只在当前用户可访问的 Unix Socket 上提供，并由 Tauri `invoke` 间接调用，不构建或托管 Web UI。`share-group/server` 是独立的共享群组中心服务：
-
-```bash
-cargo run -p ai-gateway-share-group-server
-```
+它对 TCP 只暴露 `/healthz`、`/openai/v1/*` 和实例对应的 OpenAI 兼容接口；供应商、路由、账号、用量等管理操作只在当前用户可访问的 Unix Socket 上提供，并由 Tauri `invoke` 间接调用，不构建或托管 Web UI。
 
 ## 验证
 
