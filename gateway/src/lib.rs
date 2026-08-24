@@ -146,11 +146,10 @@ pub fn gateway_daemon_is_installed(program: &Path) -> Result<bool, String> {
         .map(PathBuf::from)
         .ok_or_else(|| "未设置 HOME 环境变量".to_string())?;
     let root = home.join(".ai-gateway");
-    let log_dir = root.join("log");
     let plist_path = home
         .join("Library/LaunchAgents")
         .join(format!("{SERVICE_LABEL}.plist"));
-    let expected = gateway_launchd_plist(program, &root, &home, &log_dir);
+    let expected = gateway_launchd_plist(program, &root, &home);
     match fs::read_to_string(plist_path) {
         Ok(actual) => Ok(actual == expected),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
@@ -168,20 +167,15 @@ pub fn install_gateway_daemon(program: &Path) -> Result<(), String> {
         .map(PathBuf::from)
         .ok_or_else(|| "未设置 HOME 环境变量".to_string())?;
     let root = home.join(".ai-gateway");
-    let log_dir = root.join("log");
     let plist_path = home
         .join("Library/LaunchAgents")
         .join(format!("{SERVICE_LABEL}.plist"));
     let plist_dir = plist_path
         .parent()
         .ok_or_else(|| "LaunchAgent 路径无效".to_string())?;
-    fs::create_dir_all(&log_dir).map_err(|error| format!("创建 Gateway 日志目录失败：{error}"))?;
     fs::create_dir_all(plist_dir).map_err(|error| format!("创建 LaunchAgent 目录失败：{error}"))?;
-    fs::write(
-        &plist_path,
-        gateway_launchd_plist(program, &root, &home, &log_dir),
-    )
-    .map_err(|error| format!("写入 Gateway LaunchAgent 配置失败：{error}"))?;
+    fs::write(&plist_path, gateway_launchd_plist(program, &root, &home))
+        .map_err(|error| format!("写入 Gateway LaunchAgent 配置失败：{error}"))?;
 
     let target = format!("gui/{}/{}", current_uid(), SERVICE_LABEL);
     run_launchctl(&["bootout", &target], true)?;
@@ -207,7 +201,7 @@ pub fn install_gateway_daemon(program: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn gateway_launchd_plist(program: &Path, root: &Path, home: &Path, log_dir: &Path) -> String {
+fn gateway_launchd_plist(program: &Path, root: &Path, home: &Path) -> String {
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -218,15 +212,11 @@ fn gateway_launchd_plist(program: &Path, root: &Path, home: &Path, log_dir: &Pat
   <key>EnvironmentVariables</key><dict>
     <key>HOME</key><string>{}</string>
   </dict>
-  <key>StandardOutPath</key><string>{}/service.out.log</string>
-  <key>StandardErrorPath</key><string>{}/service.err.log</string>
   <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
 </dict></plist>"#,
         xml_escape(&program.display().to_string()),
         xml_escape(&root.display().to_string()),
         xml_escape(&home.display().to_string()),
-        xml_escape(&log_dir.display().to_string()),
-        xml_escape(&log_dir.display().to_string()),
     )
 }
 
@@ -391,9 +381,10 @@ mod daemon_tests {
             Path::new("/Applications/AI Gateway.app/Contents/MacOS/ai-gateway-daemon"),
             Path::new("/Users/test/.ai-gateway"),
             Path::new("/Users/test"),
-            Path::new("/Users/test/.ai-gateway/log"),
         );
         assert!(!plist.contains("AI_GATEWAY_DAEMON"));
+        assert!(!plist.contains("StandardOutPath"));
+        assert!(!plist.contains("StandardErrorPath"));
         assert!(plist.contains("/Applications/AI Gateway.app/Contents/MacOS/ai-gateway-daemon"));
     }
 }
