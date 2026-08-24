@@ -24,6 +24,7 @@ cargo build
 - Gateway 只监听 `127.0.0.1:4242`；
 - UI 通过 Tauri `invoke` 调用 Rust，再经私有 Unix Socket 管理后台 Gateway；
 - 运行数据保存在 `~/Library/Application Support/AI Gateway/db.sqlite`；
+- 私有控制 Socket 位于 `~/Library/Application Support/AI Gateway/control/gateway.sock`；
 - 默认 Codex 和命名实例的配置、会话与 Electron 数据均保留在当前 Mac；
 - 退出客户端不会停止 Gateway；Codex 可继续使用本机网关。
 

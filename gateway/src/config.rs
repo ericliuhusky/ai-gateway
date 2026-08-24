@@ -17,7 +17,7 @@ impl Config {
             .join("Library")
             .join("Application Support")
             .join("AI Gateway");
-        let control_dir = home.join(".ai-gateway").join("control");
+        let control_dir = data_dir.join("control");
         Ok(Self {
             data_dir,
             control_dir,
@@ -42,5 +42,20 @@ impl Config {
             control_dir: data_dir.join("control"),
             data_dir,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Config;
+    use std::path::PathBuf;
+
+    #[test]
+    fn control_socket_is_stored_with_application_data() {
+        let config = Config::for_test(PathBuf::from("/tmp/AI Gateway"));
+        assert_eq!(
+            config.control_socket_path(),
+            PathBuf::from("/tmp/AI Gateway/control/gateway.sock")
+        );
     }
 }

@@ -145,11 +145,11 @@ pub fn gateway_daemon_is_installed(program: &Path) -> Result<bool, String> {
     let home = env::var_os("HOME")
         .map(PathBuf::from)
         .ok_or_else(|| "未设置 HOME 环境变量".to_string())?;
-    let root = home.join(".ai-gateway");
+    let working_dir = Config::local()?.data_dir();
     let plist_path = home
         .join("Library/LaunchAgents")
         .join(format!("{SERVICE_LABEL}.plist"));
-    let expected = gateway_launchd_plist(program, &root, &home);
+    let expected = gateway_launchd_plist(program, &working_dir, &home);
     match fs::read_to_string(plist_path) {
         Ok(actual) => Ok(actual == expected),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
@@ -166,16 +166,21 @@ pub fn install_gateway_daemon(program: &Path) -> Result<(), String> {
     let home = env::var_os("HOME")
         .map(PathBuf::from)
         .ok_or_else(|| "未设置 HOME 环境变量".to_string())?;
-    let root = home.join(".ai-gateway");
+    let working_dir = Config::local()?.data_dir();
     let plist_path = home
         .join("Library/LaunchAgents")
         .join(format!("{SERVICE_LABEL}.plist"));
     let plist_dir = plist_path
         .parent()
         .ok_or_else(|| "LaunchAgent 路径无效".to_string())?;
+    fs::create_dir_all(&working_dir)
+        .map_err(|error| format!("创建 Gateway 数据目录失败：{error}"))?;
     fs::create_dir_all(plist_dir).map_err(|error| format!("创建 LaunchAgent 目录失败：{error}"))?;
-    fs::write(&plist_path, gateway_launchd_plist(program, &root, &home))
-        .map_err(|error| format!("写入 Gateway LaunchAgent 配置失败：{error}"))?;
+    fs::write(
+        &plist_path,
+        gateway_launchd_plist(program, &working_dir, &home),
+    )
+    .map_err(|error| format!("写入 Gateway LaunchAgent 配置失败：{error}"))?;
 
     let target = format!("gui/{}/{}", current_uid(), SERVICE_LABEL);
     run_launchctl(&["bootout", &target], true)?;
@@ -379,12 +384,13 @@ mod daemon_tests {
     fn launch_agent_runs_the_gateway_daemon_binary() {
         let plist = gateway_launchd_plist(
             Path::new("/Applications/AI Gateway.app/Contents/MacOS/ai-gateway-daemon"),
-            Path::new("/Users/test/.ai-gateway"),
+            Path::new("/Users/test/Library/Application Support/AI Gateway"),
             Path::new("/Users/test"),
         );
         assert!(!plist.contains("AI_GATEWAY_DAEMON"));
         assert!(!plist.contains("StandardOutPath"));
         assert!(!plist.contains("StandardErrorPath"));
         assert!(plist.contains("/Applications/AI Gateway.app/Contents/MacOS/ai-gateway-daemon"));
+        assert!(plist.contains("/Users/test/Library/Application Support/AI Gateway"));
     }
 }
