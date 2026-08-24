@@ -2,7 +2,7 @@ use std::{env, path::PathBuf, process::Command};
 
 fn main() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("missing manifest dir"));
-    let web_dir = manifest_dir.join("../web");
+    let web_dir = manifest_dir.join("web");
     for path in [
         "package.json",
         "bun.lock",

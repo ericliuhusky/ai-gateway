@@ -3,7 +3,7 @@
   "configVersion": 0,
   "workspaces": {
     "": {
-      "name": "@ai-gateway/web",
+      "name": "@ai-gateway/client-ui",
       "dependencies": {
         "@radix-ui/react-slot": "latest",
         "@tailwindcss/cli": "latest",

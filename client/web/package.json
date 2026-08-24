@@ -1,5 +1,5 @@
 {
-  "name": "@ai-gateway/web",
+  "name": "@ai-gateway/client-ui",
   "private": true,
   "type": "module",
   "scripts": {

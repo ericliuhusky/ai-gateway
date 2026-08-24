@@ -7,9 +7,9 @@ AI Gateway 是仅支持 macOS 的**本机桌面客户端**。用户只需安装�
 ```text
 .
 ├── client/                 # 唯一面向用户的 Tauri 桌面客户端
+│   └── web/                # 仅供该 Client 使用的 UI 源码
 ├── server/                 # 客户端内嵌使用的本机 Gateway API
 ├── codex-adapter/          # 客户端管理本机 Codex 配置与实例
-├── web/                    # 打包进 Tauri Client 的 UI 源码
 └── share-group/
     └── server/             # 可选的共享群组中心服务
 ```
@@ -49,5 +49,5 @@ cargo run -p ai-gateway-share-group-server
 ```bash
 cargo test --workspace -- --test-threads=1
 cargo check --workspace
-cd web && bun run typecheck && bun run build
+cd client/web && bun run typecheck && bun run build
 ```
