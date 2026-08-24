@@ -7,6 +7,9 @@
     "frontendDist": "web/dist"
   },
   "bundle": {
+    "icon": [
+      "icons/icon.icns"
+    ],
     "externalBin": [
       "binaries/ai-gateway-daemon"
     ]
