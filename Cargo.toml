@@ -1,4 +1,4 @@
 [workspace]
 members = ["gateway", "desktop", "desktop/codex-adapter"]
-default-members = ["gateway"]
+default-members = ["desktop"]
 resolver = "2"
