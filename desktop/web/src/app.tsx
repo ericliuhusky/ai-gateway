@@ -342,25 +342,25 @@ export function GatewayDashboard() {
   }
 
   return (
-    <div className="min-h-screen">
+    <div className="min-h-screen min-w-0">
       <header className="relative z-50 border-b border-white/50 bg-white/55 backdrop-blur-xl dark:border-white/8 dark:bg-slate-950/55">
-        <div className="mx-auto flex h-16 max-w-[1480px] items-center gap-3 px-5 sm:px-8">
+        <div className="mx-auto flex min-h-14 max-w-[1480px] items-center gap-2 px-3 py-2 sm:h-16 sm:gap-3 sm:px-8 sm:py-0">
           <button
             type="button"
-            className="flex items-center gap-3 rounded-xl text-left outline-none transition-opacity hover:opacity-80 focus-visible:ring-2 focus-visible:ring-blue-500"
+            className="flex shrink-0 items-center gap-2 rounded-xl text-left outline-none transition-opacity hover:opacity-80 focus-visible:ring-2 focus-visible:ring-blue-500 sm:gap-3"
             aria-label="返回首页"
             onClick={() => setActivePage("overview")}
           >
             <span className="flex size-9 items-center justify-center rounded-xl bg-slate-900 text-white shadow-lg shadow-slate-900/15 dark:bg-white dark:text-slate-950">
               <Cloud className="size-[18px]" />
             </span>
-            <span className="text-[15px] font-bold tracking-[-0.02em]">AI网关</span>
+            <span className="hidden text-[15px] font-bold tracking-[-0.02em] min-[440px]:inline">AI网关</span>
           </button>
           <NavTabs
             active={activePage}
             onSelect={setActivePage}
           />
-          <div className="ml-auto flex items-center gap-2">
+          <div className="ml-auto hidden shrink-0 items-center gap-2 xl:flex">
             <span className="rounded-full bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold text-emerald-700 dark:text-emerald-300">
               本地功能无需登录
             </span>
@@ -368,7 +368,7 @@ export function GatewayDashboard() {
         </div>
       </header>
 
-      <main className="mx-auto max-w-[1480px] px-5 py-6 sm:px-8 sm:py-8">
+      <main className="mx-auto max-w-[1480px] px-3 py-4 sm:px-8 sm:py-8">
         {activePage === "settings" ? (
           <LocalSettingsPage onError={setError} />
         ) : loading ? (
@@ -405,10 +405,11 @@ export function GatewayDashboard() {
                 <h2 className="text-xs font-bold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">
                   AI 网关
                 </h2>
-                <div className="ml-auto flex items-center gap-2">
+                <div className="flex w-full items-center gap-2 sm:ml-auto sm:w-auto">
                   <Button
                     variant="outline"
                     size="sm"
+                    className="flex-1 sm:flex-none"
                     onClick={() => {
                       setInstanceToEdit(null);
                       setDialog("instances");
@@ -417,7 +418,7 @@ export function GatewayDashboard() {
                     <Plus className="size-3.5" />
                     新建实例
                   </Button>
-                  <Button variant="outline" size="sm" onClick={() => setDialog("provider")}>
+                  <Button className="flex-1 sm:flex-none" variant="outline" size="sm" onClick={() => setDialog("provider")}>
                     <Plus className="size-3.5" />
                     添加供应商
                   </Button>
@@ -520,24 +521,25 @@ function NavTabs({
   onSelect: (page: Page) => void;
 }) {
   return (
-    <nav className="ml-2 flex min-w-0 items-center gap-1 overflow-x-auto whitespace-nowrap md:ml-6" aria-label="主导航">
+    <nav className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:ml-2 md:ml-6" aria-label="主导航">
       {NAV_TABS.map(({ id, label, icon: Icon }) => {
         const isActive = active === id;
         return (
           <button
             key={id}
             type="button"
+            title={label}
             aria-current={isActive ? "page" : undefined}
             onClick={() => onSelect(id)}
             className={cn(
-              "inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-semibold transition-colors",
+              "inline-flex shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-sm font-semibold transition-colors sm:px-3",
               isActive
                 ? "bg-slate-900 text-white shadow-sm dark:bg-white dark:text-slate-950"
                 : "text-slate-500 hover:bg-slate-900/5 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-white/10 dark:hover:text-white",
             )}
           >
             <Icon className="size-4" />
-            {label}
+            <span className="max-[520px]:sr-only">{label}</span>
           </button>
         );
       })}
@@ -841,7 +843,7 @@ function InstanceCard({
   const controlsDisabled = saving || instance.automatic_routing.enabled;
 
   return (
-    <article className="glass-panel flex flex-col gap-4 rounded-[22px] p-4 lg:flex-row lg:items-center lg:gap-5">
+    <article className="glass-panel flex flex-col gap-4 rounded-[22px] p-3.5 sm:p-4 lg:flex-row lg:items-center lg:gap-5">
       <div className="min-w-0 flex-1">
         <h3 className="truncate text-lg font-bold tracking-[-0.025em]">{isDefault ? "AI网关" : instance.instance_id}</h3>
         <div className="mt-1.5 truncate font-mono text-[11px] text-slate-400" title={isDefault ? "/openai/v1" : `/instances/${instance.instance_id}/openai/v1`}>
@@ -859,7 +861,7 @@ function InstanceCard({
 
       <div className="hidden h-8 w-px bg-slate-200/70 lg:block dark:bg-white/10" />
 
-      <div className="flex min-w-0 flex-1 items-center gap-3">
+      <div className="flex min-w-0 flex-col gap-1.5 sm:flex-row sm:items-center sm:gap-3">
         <span className="eyebrow shrink-0">供应商</span>
         <div className="relative min-w-0 flex-1">
           <select className="field h-9 w-full appearance-none pr-9 text-xs font-semibold" value={instance.provider_id ?? ""} disabled={controlsDisabled} onChange={(event) => onProviderChange(event.target.value)}>
@@ -872,7 +874,7 @@ function InstanceCard({
 
       <div className="hidden h-8 w-px bg-slate-200/70 lg:block dark:bg-white/10" />
 
-      <div className="flex min-w-0 flex-1 items-center gap-3">
+      <div className="flex min-w-0 flex-col gap-1.5 sm:flex-row sm:items-center sm:gap-3">
         <span className="eyebrow shrink-0">模型</span>
         <div className="relative min-w-0 flex-1">
           <select className="field h-9 w-full appearance-none pr-9 font-mono text-xs font-semibold" value={instance.selected_model ?? ""} disabled={controlsDisabled || loadingModels || !instance.provider_id} onChange={(event) => onModelChange(event.target.value)}>
@@ -885,7 +887,7 @@ function InstanceCard({
 
       <div className="hidden h-8 w-px bg-slate-200/70 lg:block dark:bg-white/10" />
 
-      <div className="flex min-w-0 flex-1 items-center gap-3">
+      <div className="flex min-w-0 flex-col gap-1.5 sm:flex-row sm:items-center sm:gap-3">
         <span className="eyebrow shrink-0">推理强度</span>
         <div className="relative min-w-0 flex-1">
           <select className="field h-9 w-full appearance-none pr-9 text-xs font-semibold" value={instance.selected_reasoning_effort ?? ""} disabled={controlsDisabled || !instance.provider_id} onChange={(event) => onReasoningChange(event.target.value as ReasoningEffort | "")}>
@@ -901,7 +903,7 @@ function InstanceCard({
 
       <div className="hidden h-8 w-px bg-slate-200/70 lg:block dark:bg-white/10" />
 
-      <div className="flex shrink-0 items-center justify-between gap-3 lg:justify-end">
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 lg:justify-end">
         <button
           type="button"
           role="switch"
@@ -949,7 +951,7 @@ function ProviderSection(props: {
   if (!props.providers.length) return null;
   return (
     <section>
-      <div className="mb-3 flex items-center gap-3 px-1">
+      <div className="mb-3 flex flex-wrap items-center gap-2 px-1 sm:gap-3">
         <h2 className="text-xs font-bold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">
           {props.title}
         </h2>
@@ -1150,7 +1152,7 @@ function UsageSection({
 
   return (
     <section>
-      <div className="mb-3 flex items-center gap-2 px-1">
+      <div className="mb-3 flex flex-wrap items-center gap-2 px-1">
         <BarChart3 className="size-4 text-blue-600 dark:text-blue-400" />
         <h2 className="text-sm font-bold">Token 用量</h2>
         <span className="text-xs text-slate-400">按实际的上游响应累计</span>
@@ -1164,7 +1166,7 @@ function UsageSection({
       <UsageDailyChart providers={providers} rows={dailyUsage} />
 
       <div className="glass-panel mt-3 overflow-hidden rounded-2xl">
-        <div className="flex items-center justify-between border-b border-slate-900/6 px-5 py-3 dark:border-white/8">
+        <div className="flex items-start justify-between gap-3 border-b border-slate-900/6 px-4 py-3 sm:items-center sm:px-5 dark:border-white/8">
           <div>
             <div className="text-sm font-bold">今日按供应商 / 模型</div>
             <div className="mt-0.5 text-[11px] text-slate-400">包含输入、输出、缓存与推理 token。</div>
@@ -1247,13 +1249,13 @@ function UsageDailyChart({
   const max = Math.max(...totals, 1);
 
   return (
-    <div className="glass-panel mt-3 rounded-2xl p-5">
-      <div className="flex items-start justify-between gap-3">
+    <div className="glass-panel mt-3 rounded-2xl p-4 sm:p-5">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <div className="text-sm font-bold">近 30 天每日消耗</div>
           <div className="mt-0.5 text-[11px] text-slate-400">按供应商 / 模型堆叠显示总 token。</div>
         </div>
-        <div className="flex max-w-[60%] flex-wrap justify-end gap-x-3 gap-y-1">
+        <div className="flex flex-wrap gap-x-3 gap-y-1 sm:max-w-[60%] sm:justify-end">
           {series.map((key, index) => {
             const [providerId, model] = key.split("::");
             return (
@@ -1428,7 +1430,7 @@ function GatewayIssueSection({
         ) : (
           <div className="divide-y divide-slate-100/80 dark:divide-white/[0.055]">
             {issues.map((issue) => (
-              <article key={issue.id} className="p-5">
+              <article key={issue.id} className="p-4 sm:p-5">
                 <div className="flex flex-col gap-4 lg:flex-row lg:items-start">
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
@@ -1706,7 +1708,7 @@ function ProviderCard({
   return (
     <article
       className={cn(
-        "provider-card group relative flex h-[252px] cursor-pointer flex-col rounded-[24px] p-5",
+        "provider-card group relative flex min-h-[220px] cursor-pointer flex-col rounded-[24px] p-4 sm:h-[252px] sm:p-5",
         selected && "selected",
         deleting && "pointer-events-none opacity-60",
       )}
@@ -1739,7 +1741,7 @@ function ProviderCard({
               <LoaderCircle className="absolute right-0 top-6 size-5 animate-spin text-slate-400" />
             ) : (
               <button
-                className="absolute -right-1.5 top-6 flex size-8 items-center justify-center rounded-xl text-slate-400 opacity-0 transition hover:bg-black/5 hover:text-red-500 group-hover:opacity-100 focus-visible:opacity-100 dark:hover:bg-white/8"
+                className="absolute -right-1.5 top-6 flex size-8 items-center justify-center rounded-xl text-slate-400 opacity-100 transition hover:bg-black/5 hover:text-red-500 sm:opacity-0 sm:group-hover:opacity-100 focus-visible:opacity-100 dark:hover:bg-white/8"
                 type="button"
                 title="删除供应商"
                 onClick={(event) => {
@@ -1755,7 +1757,7 @@ function ProviderCard({
           <LoaderCircle className="size-5 shrink-0 animate-spin text-slate-400" />
         ) : (
           <button
-            className="flex size-8 shrink-0 items-center justify-center rounded-xl text-slate-400 opacity-0 transition hover:bg-black/5 hover:text-red-500 group-hover:opacity-100 focus-visible:opacity-100 dark:hover:bg-white/8"
+            className="flex size-8 shrink-0 items-center justify-center rounded-xl text-slate-400 opacity-100 transition hover:bg-black/5 hover:text-red-500 sm:opacity-0 sm:group-hover:opacity-100 focus-visible:opacity-100 dark:hover:bg-white/8"
             type="button"
             title="删除供应商"
             onClick={(event) => {
@@ -1943,15 +1945,15 @@ function DialogFrame({
   }, [onClose]);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/30 p-4 backdrop-blur-sm" onMouseDown={onClose}>
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/30 p-2 sm:items-center sm:p-4 backdrop-blur-sm" onMouseDown={onClose}>
       <div
         className={cn(
-          "dialog-panel max-h-[calc(100vh-2rem)] w-full overflow-y-auto rounded-[26px] p-6 sm:p-7",
+          "dialog-panel max-h-[calc(100dvh-1rem)] w-full overflow-y-auto rounded-[22px] p-4 sm:max-h-[calc(100vh-2rem)] sm:rounded-[26px] sm:p-7",
           wide ? "max-w-4xl" : "max-w-xl",
         )}
         onMouseDown={(event) => event.stopPropagation()}
       >
-        <div className="mb-6 flex items-start gap-4">
+        <div className="mb-5 flex items-start gap-3 sm:mb-6 sm:gap-4">
           <div className="min-w-0 flex-1">
             <h2 className="text-xl font-bold tracking-[-0.025em]">{title}</h2>
             <p className="mt-1 text-xs leading-5 text-slate-500 dark:text-slate-400">{description}</p>
@@ -2267,7 +2269,7 @@ function AccountProviderForm({
               </p>
               <div className="rounded-2xl border border-blue-200/70 bg-blue-50/70 p-4 dark:border-blue-400/15 dark:bg-blue-500/[0.07]">
                 <div className="text-[11px] font-bold uppercase tracking-[0.12em] text-blue-600 dark:text-blue-300">设备代码</div>
-                <div className="mt-2 flex items-center gap-3">
+                <div className="mt-2 flex flex-wrap items-center gap-3">
                   <code className="text-xl font-bold tracking-[0.14em] text-slate-900 dark:text-white">{deviceLogin.user_code}</code>
                   <Button variant="outline" size="sm" onClick={() => void copyText(deviceLogin.user_code)}>复制</Button>
                 </div>
@@ -2662,7 +2664,7 @@ function RouteTargetSelect({
     provider.account_email ? `${provider.name} (${provider.account_email})` : provider.name;
 
   return (
-    <div className="grid grid-cols-1 gap-2.5 rounded-[18px] bg-white/60 p-3 sm:grid-cols-2 lg:grid-cols-[5.5rem_minmax(0,1.15fr)_minmax(0,1.15fr)_8rem] lg:items-center lg:gap-3 dark:bg-white/[0.035]">
+    <div className="grid grid-cols-1 gap-2.5 rounded-[18px] bg-white/60 p-3 md:grid-cols-2 lg:grid-cols-[5.5rem_minmax(0,1.15fr)_minmax(0,1.15fr)_8rem] lg:items-center lg:gap-3 dark:bg-white/[0.035]">
       <span className="px-1 text-xs font-bold text-slate-600 dark:text-slate-300">{label}</span>
       <label className="min-w-0">
         <span className="mb-1 block px-1 text-[10px] font-bold text-slate-400 lg:hidden">供应商</span>
@@ -2747,9 +2749,9 @@ function DialogActions({
   label: string;
 }) {
   return (
-    <div className="mt-7 flex justify-end gap-2">
-      <Button type="button" variant="outline" onClick={onClose}>取消</Button>
-      <Button type="submit" disabled={disabled}>
+    <div className="mt-7 flex flex-col-reverse justify-end gap-2 sm:flex-row">
+      <Button className="w-full sm:w-auto" type="button" variant="outline" onClick={onClose}>取消</Button>
+      <Button className="w-full sm:w-auto" type="submit" disabled={disabled}>
         {submitting ? <LoaderCircle className="size-4 animate-spin" /> : <Plus className="size-4" />}
         {submitting ? "处理中" : label}
       </Button>

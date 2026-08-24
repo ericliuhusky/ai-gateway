@@ -19,6 +19,7 @@
     margin: 0;
     min-width: 320px;
     min-height: 100vh;
+    overflow-x: hidden;
     color: rgb(15 23 42);
     background:
       radial-gradient(circle at 10% 0%, rgb(219 234 254 / 0.7), transparent 32rem),
@@ -37,6 +38,13 @@
 
   button {
     cursor: pointer;
+  }
+
+  button,
+  input,
+  select,
+  textarea {
+    min-width: 0;
   }
 
   code,
@@ -124,6 +132,18 @@
   .field:disabled {
     cursor: not-allowed;
     opacity: 0.55;
+  }
+
+  @media (max-width: 639px) {
+    .field {
+      min-height: 2.5rem;
+      padding-inline: 0.7rem;
+    }
+
+    .provider-card:hover,
+    .provider-card.selected {
+      transform: none;
+    }
   }
 
   .eyebrow {
