@@ -24,6 +24,14 @@ impl Config {
         self.data_dir.join("db.sqlite")
     }
 
+    pub fn control_socket_path(&self) -> PathBuf {
+        self.data_dir
+            .parent()
+            .expect("local data directory has a parent")
+            .join("control")
+            .join("gateway.sock")
+    }
+
     #[cfg(test)]
     pub fn for_test(data_dir: PathBuf) -> Self {
         Self { data_dir }

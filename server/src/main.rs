@@ -43,15 +43,7 @@ fn install_service() -> Result<(), String> {
         make_executable(&layout.binary_path)?;
     }
 
-    fs::write(&layout.plist_path, launchd_plist(&layout))
-        .map_err(|error| format!("写入 LaunchAgent 配置失败：{error}"))?;
-    run_launchctl(&["bootout", &layout.target()], true)?;
-    run_launchctl(
-        &["bootstrap", &layout.domain(), path_str(&layout.plist_path)?],
-        false,
-    )?;
-    run_launchctl(&["enable", &layout.target()], true)?;
-    run_launchctl(&["kickstart", "-k", &layout.target()], false)?;
+    server::install_gateway_daemon(&layout.binary_path)?;
     println!("Gateway Server 已安装并启动：{}", layout.target());
     Ok(())
 }
@@ -101,7 +93,6 @@ fn uninstall_service() -> Result<(), String> {
 }
 
 struct ServiceLayout {
-    root: PathBuf,
     bin_dir: PathBuf,
     log_dir: PathBuf,
     plist_dir: PathBuf,
@@ -119,7 +110,6 @@ impl ServiceLayout {
             log_dir: root.join("log"),
             binary_path: bin_dir.join(SERVICE_BINARY),
             plist_path: plist_dir.join(format!("{SERVICE_LABEL}.plist")),
-            root,
             bin_dir,
             plist_dir,
         })
@@ -170,35 +160,6 @@ fn run_launchctl(arguments: &[&str], allow_failure: bool) -> Result<String, Stri
     })
 }
 
-fn launchd_plist(layout: &ServiceLayout) -> String {
-    format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-  <key>Label</key><string>{SERVICE_LABEL}</string>
-  <key>ProgramArguments</key><array><string>{}</string><string>serve</string></array>
-  <key>WorkingDirectory</key><string>{}</string>
-  <key>EnvironmentVariables</key><dict>
-    <key>HOME</key><string>{}</string>
-  </dict>
-  <key>StandardOutPath</key><string>{}/service.out.log</string>
-  <key>StandardErrorPath</key><string>{}/service.err.log</string>
-  <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
-</dict></plist>"#,
-        xml_escape(&layout.binary_path.display().to_string()),
-        xml_escape(&layout.root.display().to_string()),
-        xml_escape(&env::var("HOME").unwrap_or_default()),
-        xml_escape(&layout.log_dir.display().to_string()),
-        xml_escape(&layout.log_dir.display().to_string()),
-    )
-}
-
-fn xml_escape(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-}
 fn path_str(path: &Path) -> Result<&str, String> {
     path.to_str()
         .ok_or_else(|| "路径不是有效 UTF-8".to_string())

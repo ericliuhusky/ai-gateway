@@ -28,15 +28,15 @@ use axum::{
 /// HTTP routes that must remain reachable by local Codex instances.
 ///
 /// The desktop management API deliberately does not live here: it is exposed
-/// only through Tauri IPC via [`build_management_router`].
+/// only over the daemon's private Unix socket via [`build_management_router`].
 pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
         .merge(gateway_router(state))
 }
 
-/// Private management router. It is never bound to a TCP listener; the Tauri
-/// client dispatches to it in-process after an `invoke` call.
+/// Private management router. It is never bound to a TCP listener; the daemon
+/// serves it through a user-owned Unix domain socket.
 pub fn build_management_router(state: AppState) -> Router {
     Router::new()
         .route("/control/status", get(gateway_status))

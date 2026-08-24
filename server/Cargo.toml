@@ -17,8 +17,8 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }
-tower = { version = "0.5", features = ["util"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "time"] }
+hyper-util = { version = "0.1", features = ["server-auto", "service", "tokio"] }
 url = "2"
 uuid = { version = "1", features = ["v4"] }
 

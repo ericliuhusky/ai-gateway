@@ -21,22 +21,28 @@ use openai_device_login::OpenAiDeviceLoginService;
 use openai_tokens::OpenAiTokenService;
 use reqwest::Client;
 use shared_leases::{SharedLeaseStore, local_shared_provider_id};
-use std::sync::Arc;
+use std::{
+    env, fs,
+    os::unix::fs::PermissionsExt,
+    path::{Path, PathBuf},
+    process::Command,
+    sync::Arc,
+};
 
 use axum::{
     Router,
-    body::{Body, to_bytes},
-    http::{
-        Method, Request,
-        header::{ACCEPT, CONTENT_TYPE},
-    },
+    http::{Method, header::ACCEPT},
+};
+use hyper_util::{
+    rt::{TokioExecutor, TokioIo},
+    server::conn::auto::Builder as HyperServerBuilder,
+    service::TowerToHyperService,
 };
 use serde_json::Value;
 use store::{
     AccountStore, IssueStore, ModelStore, ProviderStore, RouteStore, SettingsStore, TurnLogStore,
     UsageStore,
 };
-use tower::ServiceExt;
 use upstream::UpstreamClient;
 
 pub use control::GatewayRuntime;
@@ -67,17 +73,40 @@ pub struct ShareableProviderSource {
     pub compatibility_profile: ProviderCompatibilityProfile,
 }
 
-/// In-process management surface for the Tauri desktop client.
+/// Client for the daemon's private Unix-domain-socket control API.
 ///
-/// Management requests are dispatched to an Axum router without binding them
-/// to a socket. The only TCP API remains the OpenAI-compatible gateway.
+/// This client is owned by the desktop process and is reached through Tauri
+/// `invoke`; the WebView never receives a TCP management endpoint.
 #[derive(Clone)]
-pub struct DesktopGateway {
-    management_router: Router,
+pub struct GatewayDaemonClient {
+    control_socket: std::path::PathBuf,
+    client: Client,
 }
 
-impl DesktopGateway {
-    async fn invoke(&self, method: &str, path: &str, body: Option<Value>) -> Result<Value, String> {
+impl GatewayDaemonClient {
+    pub fn local() -> Result<Self, String> {
+        let config = Config::local()?;
+        let control_socket = config.control_socket_path();
+        let client = Client::builder()
+            .unix_socket(control_socket.clone())
+            .build()
+            .map_err(|error| format!("创建本机控制连接失败：{error}"))?;
+        Ok(Self {
+            control_socket,
+            client,
+        })
+    }
+
+    pub fn control_socket_path(&self) -> &std::path::Path {
+        &self.control_socket
+    }
+
+    pub async fn request(
+        &self,
+        method: String,
+        path: String,
+        body: Option<Value>,
+    ) -> Result<Value, String> {
         let method = Method::from_bytes(method.trim().as_bytes())
             .map_err(|_| "不支持的本机请求方法".to_string())?;
         if !matches!(
@@ -90,57 +119,161 @@ impl DesktopGateway {
             return Err("本机请求路径无效".to_string());
         }
 
-        let request_body = match body {
-            Some(value) => serde_json::to_vec(&value)
-                .map(Body::from)
-                .map_err(|error| format!("序列化本机请求失败：{error}"))?,
-            None => Body::empty(),
-        };
-        let request = Request::builder()
-            .method(method)
-            .uri(path)
-            .header(ACCEPT, "application/json")
-            .header(CONTENT_TYPE, "application/json")
-            .body(request_body)
-            .map_err(|error| format!("构造本机请求失败：{error}"))?;
-        let response = self
-            .management_router
-            .clone()
-            .oneshot(request)
+        let url = format!("http://localhost{path}");
+        let mut request = self
+            .client
+            .request(method, url)
+            .header(ACCEPT, "application/json");
+        if let Some(body) = body {
+            request = request.json(&body);
+        }
+        let response = request
+            .send()
             .await
-            .map_err(|error| format!("执行本机请求失败：{error}"))?;
+            .map_err(|error| format!("连接本机 Gateway 控制服务失败：{error}"))?;
         let status = response.status();
-        let bytes = to_bytes(response.into_body(), 8 * 1024 * 1024)
+        let text = response
+            .text()
             .await
-            .map_err(|error| format!("读取本机响应失败：{error}"))?;
-        let response_value = if bytes.is_empty() {
+            .map_err(|error| format!("读取本机 Gateway 控制响应失败：{error}"))?;
+        let value = if text.is_empty() {
             Value::Null
         } else {
-            serde_json::from_slice(&bytes)
-                .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into_owned()))
+            serde_json::from_str(&text).unwrap_or(Value::String(text))
         };
         if status.is_success() {
-            Ok(response_value)
+            Ok(value)
         } else {
-            let message = response_value
+            let message = value
                 .pointer("/error/message")
                 .and_then(Value::as_str)
                 .map(str::to_string)
-                .or_else(|| response_value.as_str().map(str::to_string))
+                .or_else(|| value.as_str().map(str::to_string))
                 .unwrap_or_else(|| format!("HTTP {status}"));
             Err(message)
         }
     }
 
-    /// Invoke a private management endpoint from the desktop process.
-    pub async fn request(
-        &self,
-        method: String,
-        path: String,
-        body: Option<Value>,
-    ) -> Result<Value, String> {
-        self.invoke(&method, &path, body).await
+    pub async fn is_ready(&self) -> bool {
+        self.request("GET".to_string(), "/control/status".to_string(), None)
+            .await
+            .is_ok()
     }
+}
+
+const SERVICE_LABEL: &str = "com.ai-gateway.server";
+
+/// Installs (or updates) a per-user LaunchAgent that runs the supplied program
+/// as the persistent gateway daemon. The program may be the standalone server
+/// binary or the desktop executable in daemon mode.
+pub fn install_gateway_daemon(program: &Path) -> Result<(), String> {
+    if !program.is_file() {
+        return Err(format!("Gateway 服务程序不存在：{}", program.display()));
+    }
+    let home = env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or_else(|| "未设置 HOME 环境变量".to_string())?;
+    let root = home.join(".ai-gateway");
+    let log_dir = root.join("log");
+    let plist_path = home
+        .join("Library/LaunchAgents")
+        .join(format!("{SERVICE_LABEL}.plist"));
+    let plist_dir = plist_path
+        .parent()
+        .ok_or_else(|| "LaunchAgent 路径无效".to_string())?;
+    fs::create_dir_all(&log_dir).map_err(|error| format!("创建 Gateway 日志目录失败：{error}"))?;
+    fs::create_dir_all(plist_dir).map_err(|error| format!("创建 LaunchAgent 目录失败：{error}"))?;
+    fs::write(
+        &plist_path,
+        gateway_launchd_plist(program, &root, &home, &log_dir),
+    )
+    .map_err(|error| format!("写入 Gateway LaunchAgent 配置失败：{error}"))?;
+
+    let target = format!("gui/{}/{}", current_uid(), SERVICE_LABEL);
+    run_launchctl(&["bootout", &target], true)?;
+    run_launchctl(
+        &[
+            "bootstrap",
+            &format!("gui/{}", current_uid()),
+            path_str(&plist_path)?,
+        ],
+        false,
+    )?;
+    run_launchctl(&["enable", &target], true)?;
+    run_launchctl(&["kickstart", "-k", &target], false)?;
+    Ok(())
+}
+
+fn gateway_launchd_plist(program: &Path, root: &Path, home: &Path, log_dir: &Path) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>{SERVICE_LABEL}</string>
+  <key>ProgramArguments</key><array><string>{}</string></array>
+  <key>WorkingDirectory</key><string>{}</string>
+  <key>EnvironmentVariables</key><dict>
+    <key>HOME</key><string>{}</string>
+    <key>AI_GATEWAY_DAEMON</key><string>1</string>
+  </dict>
+  <key>StandardOutPath</key><string>{}/service.out.log</string>
+  <key>StandardErrorPath</key><string>{}/service.err.log</string>
+  <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
+</dict></plist>"#,
+        xml_escape(&program.display().to_string()),
+        xml_escape(&root.display().to_string()),
+        xml_escape(&home.display().to_string()),
+        xml_escape(&log_dir.display().to_string()),
+        xml_escape(&log_dir.display().to_string()),
+    )
+}
+
+fn current_uid() -> u32 {
+    Command::new("id")
+        .arg("-u")
+        .output()
+        .ok()
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .and_then(|value| value.trim().parse().ok())
+        .unwrap_or(0)
+}
+
+fn run_launchctl(arguments: &[&str], allow_failure: bool) -> Result<String, String> {
+    let output = Command::new("/bin/launchctl")
+        .args(arguments)
+        .output()
+        .map_err(|error| format!("执行 launchctl 失败：{error}"))?;
+    let message = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    )
+    .trim()
+    .to_string();
+    if !allow_failure && !output.status.success() {
+        return Err(format!("launchctl {} 失败：{message}", arguments.join(" ")));
+    }
+    Ok(message)
+}
+
+fn xml_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+fn path_str(path: &Path) -> Result<&str, String> {
+    path.to_str()
+        .ok_or_else(|| "路径不是有效 UTF-8".to_string())
+}
+
+pub async fn local_gateway_is_healthy() -> bool {
+    Client::new()
+        .get(format!("{LOCAL_API_ROOT}/healthz"))
+        .send()
+        .await
+        .is_ok_and(|response| response.status().is_success())
 }
 
 #[derive(Clone)]
@@ -244,45 +377,76 @@ pub(crate) fn local_gateway_handle(
     }
 }
 
-pub async fn start_local_gateway() -> Result<LocalGatewayHandle, String> {
-    let (state, handle) = initialize_local_gateway().await?;
-    start_gateway_listener(state).await?;
-    Ok(handle)
-}
-
-/// Starts the OpenAI-compatible HTTP gateway and returns the private desktop
-/// management surface. This is the entry point used by the Tauri client.
-pub async fn start_desktop_gateway() -> Result<DesktopGateway, String> {
-    let (state, _) = initialize_local_gateway().await?;
-    let desktop_gateway = DesktopGateway {
-        management_router: build_management_router(state.clone()),
-    };
-    start_gateway_listener(state).await?;
-    Ok(desktop_gateway)
-}
-
-async fn start_gateway_listener(state: AppState) -> Result<(), String> {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:4242")
-        .await
-        .map_err(|error| format!("无法启动本地 Gateway (127.0.0.1:4242)：{error}"))?;
-    tokio::spawn(async move {
-        if let Err(error) = axum::serve(listener, build_router(state)).await {
-            eprintln!("本地 Gateway 已停止：{error}");
-        }
-    });
-    Ok(())
-}
-
-/// Serves only the OpenAI-compatible HTTP gateway. Management is available
-/// exclusively through the desktop client's in-process invoke bridge.
+/// Runs the persistent local daemon. The OpenAI-compatible data plane is
+/// bound to loopback TCP, while management is served only over a user-owned
+/// Unix domain socket.
 pub async fn serve_gateway() -> Result<(), String> {
     let (state, _) = initialize_local_gateway().await?;
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:4242")
+    let listen_addr = gateway_listen_addr();
+    let tcp_listener = tokio::net::TcpListener::bind(&listen_addr)
         .await
-        .map_err(|error| format!("无法启动 Gateway 服务 (127.0.0.1:4242)：{error}"))?;
-    axum::serve(listener, build_router(state))
-        .await
-        .map_err(|error| format!("Gateway 服务已停止：{error}"))
+        .map_err(|error| format!("无法启动 Gateway 服务 ({listen_addr})：{error}"))?;
+    let control_socket = control_socket_path()?;
+    let unix_listener = bind_control_socket(&control_socket).await?;
+
+    let gateway = axum::serve(tcp_listener, build_router(state.clone()));
+    let management = serve_control_socket(unix_listener, build_management_router(state));
+    let result = tokio::try_join!(
+        async {
+            gateway
+                .await
+                .map_err(|error| format!("Gateway 服务已停止：{error}"))
+        },
+        management,
+    );
+    let _ = fs::remove_file(&control_socket);
+    result.map(|_| ())
+}
+
+fn gateway_listen_addr() -> String {
+    env::var("AI_GATEWAY_LISTEN_ADDR").unwrap_or_else(|_| "127.0.0.1:4242".to_string())
+}
+
+pub fn control_socket_path() -> Result<PathBuf, String> {
+    Ok(Config::local()?.control_socket_path())
+}
+
+async fn serve_control_socket(
+    listener: tokio::net::UnixListener,
+    router: Router,
+) -> Result<(), String> {
+    loop {
+        let (stream, _) = listener
+            .accept()
+            .await
+            .map_err(|error| format!("接受本机 Gateway 控制连接失败：{error}"))?;
+        let service = TowerToHyperService::new(router.clone());
+        tokio::spawn(async move {
+            let result = HyperServerBuilder::new(TokioExecutor::new())
+                .serve_connection(TokioIo::new(stream), service)
+                .await;
+            if let Err(error) = result {
+                eprintln!("本机 Gateway 控制连接已停止：{error}");
+            }
+        });
+    }
+}
+
+async fn bind_control_socket(path: &std::path::Path) -> Result<tokio::net::UnixListener, String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| "本机控制 Socket 路径无效".to_string())?;
+    fs::create_dir_all(parent).map_err(|error| format!("创建本机控制目录失败：{error}"))?;
+    match fs::remove_file(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("清理旧本机控制 Socket 失败：{error}")),
+    }
+    let listener = tokio::net::UnixListener::bind(path)
+        .map_err(|error| format!("无法启动本机 Gateway 控制服务：{error}"))?;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+        .map_err(|error| format!("设置本机控制 Socket 权限失败：{error}"))?;
+    Ok(listener)
 }
 
 async fn initialize_local_gateway() -> Result<(AppState, LocalGatewayHandle), String> {
@@ -326,4 +490,22 @@ async fn initialize_local_gateway() -> Result<(AppState, LocalGatewayHandle), St
     };
     spawn_periodic_shared_sync(control_store, handle.clone());
     Ok((state, handle))
+}
+
+#[cfg(test)]
+mod daemon_tests {
+    use super::gateway_launchd_plist;
+    use std::path::Path;
+
+    #[test]
+    fn launch_agent_runs_the_program_in_daemon_mode() {
+        let plist = gateway_launchd_plist(
+            Path::new("/Applications/AI Gateway.app/Contents/MacOS/AI Gateway"),
+            Path::new("/Users/test/.ai-gateway"),
+            Path::new("/Users/test"),
+            Path::new("/Users/test/.ai-gateway/log"),
+        );
+        assert!(plist.contains("AI_GATEWAY_DAEMON</key><string>1"));
+        assert!(plist.contains("/Applications/AI Gateway.app/Contents/MacOS/AI Gateway"));
+    }
 }
