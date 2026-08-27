@@ -7,6 +7,7 @@ export type GatewayCompatibilityProfile =
 
 export interface GatewayProvider {
   id: string;
+  usage_id: string;
   name: string;
   auth_mode: GatewayAuthMode;
   base_url: string;

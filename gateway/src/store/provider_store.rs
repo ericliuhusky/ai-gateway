@@ -58,6 +58,7 @@ impl ProviderStore {
             .filter(|provider| provider.owner_user_id == owner_user_id)
             .map(|provider| ApiProviderSummary {
                 id: provider.id.clone(),
+                usage_id: provider.id.clone(),
                 name: provider.name.clone(),
                 auth_mode: provider.auth_mode.clone(),
                 base_url: provider.base_url.clone(),

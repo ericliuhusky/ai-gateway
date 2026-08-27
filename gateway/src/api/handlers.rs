@@ -1552,13 +1552,17 @@ async fn responses_inner_for_instance(
         request_stream,
     )
     .map_err(adapter_error_to_app_error)?;
-    let usage_attribution = UsageAttribution::new(owner_user_id, &routed_provider, &request_json);
-
     let response = match prepared {
         PreparedResponsesUpstream::OpenAiAccountResponsesPassthrough(prepared) => {
             let account =
                 resolve_account_for_provider_for_owner(&state, owner_user_id, &routed_provider)
                     .await?;
+            let usage_attribution = UsageAttribution::new(
+                owner_user_id,
+                &routed_provider,
+                &request_json,
+                account.upstream_account_id(),
+            );
             let private_responses = PrivateOpenAiRequestBuilder {
                 base_url: OPENAI_CODEX_BASE_URL,
                 access_token: account.access_token(),
@@ -1583,6 +1587,8 @@ async fn responses_inner_for_instance(
             .await?
         }
         PreparedResponsesUpstream::ApiResponsesPassthrough(prepared) => {
+            let usage_attribution =
+                UsageAttribution::new(owner_user_id, &routed_provider, &request_json, None);
             let public_responses = PublicOpenAiRequestBuilder {
                 base_url: prepared.provider.base_url.as_str(),
                 api_key: prepared.provider.api_key.as_str(),
@@ -1877,19 +1883,36 @@ struct UsageAttribution {
 }
 
 impl UsageAttribution {
-    fn new(owner_user_id: Option<i64>, provider: &ResolvedProvider, request: &Value) -> Self {
+    fn new(
+        owner_user_id: Option<i64>,
+        provider: &ResolvedProvider,
+        request: &Value,
+        upstream_account_id: Option<&str>,
+    ) -> Self {
         Self {
             owner_user_id,
-            provider_id: provider
-                .record
-                .as_ref()
-                .map(|record| record.id.clone())
-                .unwrap_or_else(|| "未知".to_string()),
+            provider_id: usage_id_for_provider(provider, upstream_account_id),
             model: responses_request_model(request)
                 .and_then(safe_model_name)
                 .unwrap_or_else(|| "未知".to_string()),
         }
     }
+}
+
+fn usage_id_for_provider(provider: &ResolvedProvider, upstream_account_id: Option<&str>) -> String {
+    if provider.auth_mode == ProviderAuthMode::Account
+        && let Some(upstream_account_id) = upstream_account_id
+            .map(str::trim)
+            .filter(|account_id| !account_id.is_empty())
+    {
+        return crate::models::openai_account_usage_id(upstream_account_id);
+    }
+
+    provider
+        .record
+        .as_ref()
+        .map(|record| record.id.clone())
+        .unwrap_or_else(|| "未知".to_string())
 }
 
 #[derive(Default)]
@@ -3242,6 +3265,7 @@ async fn provider_summary_for_resolved_for_owner(
         .ok_or_else(|| AppError::bad_request(format!("未知供应商: {}", provider.name)))?;
     let mut summary = ApiProviderSummary {
         id: record.id.clone(),
+        usage_id: record.id.clone(),
         name: record.name.clone(),
         auth_mode: record.auth_mode.clone(),
         base_url: record.base_url.clone(),
@@ -3262,11 +3286,19 @@ async fn hydrate_provider_summary_for_owner(
     if provider.auth_mode == ProviderAuthMode::Account
         && let Some(account_id) = provider.account_id.as_deref()
     {
-        provider.account_email = state
+        let account = state
             .accounts
             .find_by_id_for_owner(owner_user_id, account_id)
-            .await
-            .map(|account| account.email);
+            .await;
+        provider.account_email = account.as_ref().map(|account| account.email.clone());
+        if let Some(upstream_account_id) = account
+            .as_ref()
+            .and_then(|account| account.upstream_account_id())
+            .map(str::trim)
+            .filter(|account_id| !account_id.is_empty())
+        {
+            provider.usage_id = crate::models::openai_account_usage_id(upstream_account_id);
+        }
     }
 }
 

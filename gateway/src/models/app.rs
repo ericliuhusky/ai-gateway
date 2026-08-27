@@ -3,6 +3,11 @@ use serde_json::Value;
 
 pub const PROVIDER_OPENAI_PROXY: &str = "openai-proxy";
 pub const OPENAI_ACCOUNT_PROVIDER_NAME: &str = "GPT账户";
+const OPENAI_ACCOUNT_USAGE_ID_PREFIX: &str = "openai_account:";
+
+pub fn openai_account_usage_id(upstream_account_id: &str) -> String {
+    format!("{OPENAI_ACCOUNT_USAGE_ID_PREFIX}{upstream_account_id}")
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -72,6 +77,10 @@ pub struct ApiProviderRecord {
 #[derive(Debug, Clone, Serialize)]
 pub struct ApiProviderSummary {
     pub id: String,
+    /// Stable key used by token-usage rollups. For imported OpenAI accounts
+    /// this is derived from the upstream account ID rather than the local,
+    /// replaceable provider record ID.
+    pub usage_id: String,
     pub name: String,
     pub auth_mode: ProviderAuthMode,
     pub base_url: String,

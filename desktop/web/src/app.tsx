@@ -1162,7 +1162,13 @@ function UsageSection({
   dailyUsage: DailyUsageSummary[];
 }) {
   const providerNames = React.useMemo(
-    () => new Map(providers.map((provider) => [provider.id, provider.name])),
+    () =>
+      new Map(
+        providers.flatMap((provider) => [
+          [provider.id, provider.name],
+          [provider.usage_id, provider.name],
+        ]),
+      ),
     [providers],
   );
   const providerRows = usageByPeriod.today.filter((row) => !row.model);
@@ -1261,7 +1267,12 @@ function UsageDailyChart({
   providers: GatewayProvider[];
   rows: DailyUsageSummary[];
 }) {
-  const providerNames = new Map(providers.map((provider) => [provider.id, provider.name]));
+  const providerNames = new Map(
+    providers.flatMap((provider) => [
+      [provider.id, provider.name],
+      [provider.usage_id, provider.name],
+    ]),
+  );
   const series = Array.from(new Set(rows.map((row) => `${row.provider_id}::${row.model}`)));
   const colors = ["bg-blue-500", "bg-emerald-500", "bg-violet-500", "bg-amber-500", "bg-rose-500", "bg-cyan-500"];
   const byDate = new Map<string, DailyUsageSummary[]>();
