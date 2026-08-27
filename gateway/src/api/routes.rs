@@ -300,6 +300,64 @@ mod tests {
         let _ = fs::remove_dir_all(data_dir);
     }
 
+    #[tokio::test]
+    async fn records_upstream_connection_failures() {
+        let dead_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("reserve local address");
+        let upstream_addr = dead_listener.local_addr().expect("read local address");
+        drop(dead_listener);
+
+        let data_dir = unique_test_data_dir("connection-failure-issues");
+        let (state, providers, routes) = test_state(data_dir.clone()).await;
+        let provider = providers
+            .upsert_for_owner(
+                None,
+                CreateApiProviderRequest {
+                    name: "Unavailable Provider".to_string(),
+                    base_url: Some(format!("http://{upstream_addr}/v1")),
+                    api_key: Some("sk-local-only".to_string()),
+                    compatibility_profile: None,
+                },
+            )
+            .await
+            .expect("add unavailable provider");
+        routes
+            .set_provider(Some(provider.id.clone()))
+            .await
+            .expect("select unavailable provider");
+        let issues = state.issues.clone();
+        let router = build_router(state);
+
+        let response = router
+            .oneshot(request(
+                Method::POST,
+                "/openai/v1/responses",
+                Body::from(
+                    json!({
+                        "model": "test-model",
+                        "input": "connection-failure-sentinel",
+                        "stream": false
+                    })
+                    .to_string(),
+                ),
+            ))
+            .await
+            .expect("gateway response");
+
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let recorded = issues
+            .list_for_owner(None, 50)
+            .expect("list gateway issues");
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].failure_kind, "upstream_connect_error");
+        assert_eq!(recorded[0].provider_id, provider.id);
+        assert!(recorded[0].status_code.is_none());
+        assert!(recorded[0].upstream_response.is_empty());
+
+        let _ = fs::remove_dir_all(data_dir);
+    }
+
     async fn mock_responses(
         State(captured): State<Arc<Mutex<Vec<CapturedUpstreamRequest>>>>,
         headers: HeaderMap,

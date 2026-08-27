@@ -1638,7 +1638,18 @@ where
         .await
     {
         Ok(response) => response,
-        Err(error) => return Err(AppError::upstream_message(error)),
+        Err(error) => {
+            record_gateway_issue(
+                &state.issues,
+                &failure_context,
+                "upstream_connect_error",
+                None,
+                &error,
+                "",
+                false,
+            );
+            return Err(AppError::upstream_message(error));
+        }
     };
     let upstream_status = upstream.status();
     let upstream_headers = upstream.headers().clone();
@@ -1650,7 +1661,18 @@ where
     if !response_is_stream {
         let response_bytes = match upstream.bytes().await {
             Ok(bytes) => bytes,
-            Err(error) => return Err(AppError::upstream(error)),
+            Err(error) => {
+                record_gateway_issue(
+                    &state.issues,
+                    &failure_context,
+                    "response_read_error",
+                    Some(upstream_status.as_u16()),
+                    &error.to_string(),
+                    "",
+                    false,
+                );
+                return Err(AppError::upstream(error));
+            }
         };
         record_upstream_http_issue_if_failed(
             &state.issues,
@@ -1673,7 +1695,21 @@ where
     }
 
     if !upstream_status.is_success() {
-        let response_bytes = upstream.bytes().await.map_err(AppError::upstream)?;
+        let response_bytes = match upstream.bytes().await {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                record_gateway_issue(
+                    &state.issues,
+                    &failure_context,
+                    "response_read_error",
+                    Some(upstream_status.as_u16()),
+                    &error.to_string(),
+                    "",
+                    false,
+                );
+                return Err(AppError::upstream(error));
+            }
+        };
         record_upstream_http_issue_if_failed(
             &state.issues,
             &failure_context,
@@ -1710,17 +1746,15 @@ where
                 }
                 Err(err) => {
                     let captured_response = String::from_utf8_lossy(&captured_response);
-                    if !captured_response.is_empty() {
-                        record_gateway_issue(
-                            &issue_store,
-                            &failure_context,
-                            "stream_interrupted",
-                            Some(status_code),
-                            &err.to_string(),
-                            captured_response.as_ref(),
-                            response_truncated,
-                        );
-                    }
+                    record_gateway_issue(
+                        &issue_store,
+                        &failure_context,
+                        "stream_interrupted",
+                        Some(status_code),
+                        &err.to_string(),
+                        captured_response.as_ref(),
+                        response_truncated,
+                    );
                     yield Err(std::io::Error::other(err));
                     return;
                 }
@@ -3500,7 +3534,8 @@ mod tests {
         gateway_issue_repair_prompt, opaque_turn_id, openai_models_response,
         private_classifier_request_body, provider_uses_openai_account,
         public_benchmark_request_body, quota_from_openai_usage, reasoning_effort_for_routing,
-        record_upstream_http_issue_if_failed, token_usage_from_response, turn_context_from_request,
+        record_gateway_issue, record_upstream_http_issue_if_failed, token_usage_from_response,
+        turn_context_from_request,
     };
     use super::{CodexAuthFile, import_tokens_from_value};
     use crate::{
@@ -3616,6 +3651,44 @@ data: {"error":{"message":"rate limit exceeded"}}
         );
 
         assert!(issues.list_for_owner(None, 50).unwrap().is_empty());
+        let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[test]
+    fn upstream_connection_failures_are_written_to_gateway_issue_database() {
+        let data_dir = unique_test_data_dir("upstream-connection-issues");
+        let config = Arc::new(Config::for_test(data_dir.clone()));
+        let issues = IssueStore::new(config).expect("create issue store");
+        let context = GatewayFailureContext {
+            owner_user_id: None,
+            instance_id: None,
+            provider_id: "provider".to_string(),
+            provider_name: "Provider".to_string(),
+            model: "model".to_string(),
+            upstream_url: "https://example.com/v1/responses".to_string(),
+        };
+
+        record_gateway_issue(
+            &issues,
+            &context,
+            "upstream_connect_error",
+            None,
+            "OpenAI 请求失败: connection refused",
+            "",
+            false,
+        );
+
+        let recorded = issues
+            .list_for_owner(None, 50)
+            .expect("list gateway issues");
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].failure_kind, "upstream_connect_error");
+        assert_eq!(recorded[0].status_code, None);
+        assert_eq!(
+            recorded[0].error_message,
+            "OpenAI 请求失败: connection refused"
+        );
+        assert!(recorded[0].upstream_response.is_empty());
         let _ = fs::remove_dir_all(data_dir);
     }
 
