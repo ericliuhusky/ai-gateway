@@ -1078,7 +1078,6 @@ pub async fn add_provider(
             "base_url": provider.base_url,
             "api_key": provider.api_key,
             "account_id": provider.account_id,
-            "upstream_protocol": provider.upstream_protocol,
             "compatibility_profile": provider.compatibility_profile,
         }
     })))
@@ -3305,7 +3304,6 @@ async fn provider_summary_for_resolved_for_owner(
         base_url: record.base_url.clone(),
         account_id: record.account_id.clone(),
         account_email: None,
-        upstream_protocol: record.upstream_protocol.clone(),
         compatibility_profile: record.compatibility_profile.clone(),
     };
     hydrate_provider_summary_for_owner(state, owner_user_id, &mut summary).await;
@@ -3543,7 +3541,7 @@ mod tests {
         config::Config,
         models::{
             ApiProviderRecord, GatewayIssue, ProviderAuthMode, ProviderCompatibilityProfile,
-            ProviderUpstreamProtocol, RoutingModelTarget,
+            RoutingModelTarget,
         },
         openai_device_login::OpenAiDeviceLoginService,
         openai_tokens::{ImportedOpenAIAuth, OpenAiTokenService},
@@ -4316,7 +4314,6 @@ data: {"error":{"message":"rate limit exceeded"}}
                 base_url: String::new(),
                 api_key: String::new(),
                 account_id: Some("account-123".to_string()),
-                upstream_protocol: ProviderUpstreamProtocol::OpenAiResponses,
                 compatibility_profile: ProviderCompatibilityProfile::OpenAiCodex,
                 owner_user_id: None,
             }),

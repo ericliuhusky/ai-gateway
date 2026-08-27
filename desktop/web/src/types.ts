@@ -1,5 +1,4 @@
 export type GatewayAuthMode = "api_key" | "account";
-export type GatewayUpstreamProtocol = "openai_responses";
 export type GatewayCompatibilityProfile =
   | "official_openai"
   | "generic_openai"
@@ -13,7 +12,6 @@ export interface GatewayProvider {
   base_url: string;
   account_id?: string;
   account_email?: string;
-  upstream_protocol: GatewayUpstreamProtocol;
   compatibility_profile: GatewayCompatibilityProfile;
 }
 

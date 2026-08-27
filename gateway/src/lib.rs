@@ -41,7 +41,7 @@ use store::{
 use upstream::UpstreamClient;
 
 pub use control::GatewayRuntime;
-pub use models::{ProviderCompatibilityProfile, ProviderUpstreamProtocol};
+pub use models::ProviderCompatibilityProfile;
 
 pub const LOCAL_GATEWAY_URL: &str = "http://127.0.0.1:4242/openai/v1";
 pub const LOCAL_API_ROOT: &str = "http://127.0.0.1:4242";

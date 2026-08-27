@@ -108,8 +108,7 @@ mod tests {
     use super::RouteStore;
     use crate::{
         models::{
-            ApiProviderRecord, ProviderAuthMode, ProviderCompatibilityProfile,
-            ProviderUpstreamProtocol, SelectedRoute,
+            ApiProviderRecord, ProviderAuthMode, ProviderCompatibilityProfile, SelectedRoute,
         },
         store::sqlite::SqliteStore,
     };
@@ -253,7 +252,6 @@ mod tests {
             base_url: "https://example.com/v1".to_string(),
             api_key: "sk-test".to_string(),
             account_id: None,
-            upstream_protocol: ProviderUpstreamProtocol::OpenAiResponses,
             compatibility_profile: ProviderCompatibilityProfile::GenericOpenAi,
             owner_user_id: None,
         }

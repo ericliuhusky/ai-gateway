@@ -18,13 +18,6 @@ pub enum ProviderAuthMode {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-pub enum ProviderUpstreamProtocol {
-    #[default]
-    #[serde(rename = "openai_responses")]
-    OpenAiResponses,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub enum ProviderCompatibilityProfile {
     #[serde(rename = "official_openai")]
     OfficialOpenAi,
@@ -67,8 +60,6 @@ pub struct ApiProviderRecord {
     #[serde(default)]
     pub account_id: Option<String>,
     #[serde(default)]
-    pub upstream_protocol: ProviderUpstreamProtocol,
-    #[serde(default)]
     pub compatibility_profile: ProviderCompatibilityProfile,
     #[serde(skip_serializing)]
     pub owner_user_id: Option<i64>,
@@ -88,7 +79,6 @@ pub struct ApiProviderSummary {
     pub account_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub account_email: Option<String>,
-    pub upstream_protocol: ProviderUpstreamProtocol,
     pub compatibility_profile: ProviderCompatibilityProfile,
 }
 
@@ -503,15 +493,10 @@ impl AccountRecord {
 
 #[cfg(test)]
 mod tests {
-    use super::{CreateApiProviderRequest, ProviderCompatibilityProfile, ProviderUpstreamProtocol};
-    use serde_json::json;
+    use super::ProviderCompatibilityProfile;
 
     #[test]
-    fn provider_protocol_and_profile_use_stable_api_names() {
-        assert_eq!(
-            serde_json::to_value(ProviderUpstreamProtocol::OpenAiResponses).unwrap(),
-            "openai_responses"
-        );
+    fn provider_compatibility_profiles_use_stable_api_names() {
         assert_eq!(
             serde_json::to_value(ProviderCompatibilityProfile::OfficialOpenAi).unwrap(),
             "official_openai"
@@ -524,17 +509,5 @@ mod tests {
             serde_json::to_value(ProviderCompatibilityProfile::OpenAiCodex).unwrap(),
             "openai_codex"
         );
-    }
-
-    #[test]
-    fn create_provider_rejects_upstream_protocol_selection() {
-        let request = json!({
-            "name": "legacy-chat-provider",
-            "base_url": "https://example.com/v1",
-            "api_key": "sk-test",
-            "upstream_protocol": "openai_chat_completions"
-        });
-
-        assert!(serde_json::from_value::<CreateApiProviderRequest>(request).is_err());
     }
 }

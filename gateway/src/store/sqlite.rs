@@ -4,9 +4,8 @@ use crate::{
     models::{
         AccountRecord, AccountType, ApiProviderRecord, AutoRoutingSettings, CachedProviderModels,
         DailyUsageSummary, GatewayIssue, GatewayIssueRecord, ProviderAuthMode,
-        ProviderCompatibilityProfile, ProviderUpstreamProtocol, ROUTING_LOW_CONFIDENCE_THRESHOLD,
-        RoutingModelTarget, SelectedRoute, TurnRouteLog, TurnRouteLogUpdate, UsageIncrement,
-        UsageSummary,
+        ProviderCompatibilityProfile, ROUTING_LOW_CONFIDENCE_THRESHOLD, RoutingModelTarget,
+        SelectedRoute, TurnRouteLog, TurnRouteLogUpdate, UsageIncrement, UsageSummary,
     },
 };
 use chrono::{Datelike, FixedOffset, TimeZone};
@@ -124,7 +123,7 @@ impl SqliteStore {
         let mut stmt = conn
             .prepare(
                 "SELECT id, name, auth_mode, COALESCE(base_url, ''), COALESCE(api_key, ''), account_id,
-                        upstream_protocol, compatibility_profile, owner_user_id
+                        compatibility_profile, owner_user_id
                  FROM providers
                  ORDER BY rowid ASC",
             )
@@ -153,13 +152,11 @@ impl SqliteStore {
                         }
                     },
                     account_id: row.get(5)?,
-                    upstream_protocol: upstream_protocol_from_str(&row.get::<_, String>(6)?)
-                        .map_err(rusqlite::Error::ToSqlConversionFailure)?,
                     compatibility_profile: compatibility_profile_from_str(
-                        &row.get::<_, String>(7)?,
+                        &row.get::<_, String>(6)?,
                     )
                     .map_err(rusqlite::Error::ToSqlConversionFailure)?,
-                    owner_user_id: row.get(8)?,
+                    owner_user_id: row.get(7)?,
                 })
             })
             .map_err(|err| format!("query providers failed: {err}"))?;
@@ -1011,9 +1008,6 @@ impl SqliteStore {
                 base_url TEXT,
                 api_key TEXT,
                 account_id TEXT,
-                upstream_protocol TEXT NOT NULL CHECK (
-                    upstream_protocol = 'openai_responses'
-                ),
                 compatibility_profile TEXT NOT NULL CHECK (
                     compatibility_profile IN ('official_openai', 'generic_openai', 'openai_codex')
                 ),
@@ -1442,15 +1436,14 @@ fn upsert_provider_record(
     conn.execute(
         "INSERT INTO providers (
             id, name, auth_mode, base_url, api_key, account_id,
-            upstream_protocol, compatibility_profile, owner_user_id
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            compatibility_profile, owner_user_id
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
          ON CONFLICT(id) DO UPDATE SET
             name = excluded.name,
             auth_mode = excluded.auth_mode,
             base_url = excluded.base_url,
             api_key = excluded.api_key,
             account_id = excluded.account_id,
-            upstream_protocol = excluded.upstream_protocol,
             compatibility_profile = excluded.compatibility_profile,
             owner_user_id = excluded.owner_user_id",
         params![
@@ -1460,7 +1453,6 @@ fn upsert_provider_record(
             base_url,
             api_key,
             provider.account_id.as_deref(),
-            upstream_protocol_to_str(&provider.upstream_protocol),
             compatibility_profile_to_str(&provider.compatibility_profile),
             provider.owner_user_id
         ],
@@ -1501,21 +1493,6 @@ fn provider_auth_mode_from_str(
     }
 }
 
-fn upstream_protocol_to_str(value: &ProviderUpstreamProtocol) -> &'static str {
-    match value {
-        ProviderUpstreamProtocol::OpenAiResponses => "openai_responses",
-    }
-}
-
-fn upstream_protocol_from_str(
-    value: &str,
-) -> Result<ProviderUpstreamProtocol, Box<dyn std::error::Error + Send + Sync>> {
-    match value {
-        "openai_responses" => Ok(ProviderUpstreamProtocol::OpenAiResponses),
-        other => Err(format!("unknown upstream_protocol: {other}").into()),
-    }
-}
-
 fn compatibility_profile_to_str(value: &ProviderCompatibilityProfile) -> &'static str {
     match value {
         ProviderCompatibilityProfile::OfficialOpenAi => "official_openai",
@@ -1546,7 +1523,7 @@ mod tests {
         crypto::FieldEncryptor,
         models::{
             AccountRecord, AccountType, ApiProviderRecord, CachedProviderModels, ProviderAuthMode,
-            ProviderCompatibilityProfile, ProviderUpstreamProtocol, SelectedRoute,
+            ProviderCompatibilityProfile, SelectedRoute,
         },
     };
     use rusqlite::Connection;
@@ -1619,7 +1596,6 @@ mod tests {
             base_url: String::new(),
             api_key: String::new(),
             account_id: Some(account.id.clone()),
-            upstream_protocol: ProviderUpstreamProtocol::OpenAiResponses,
             compatibility_profile: ProviderCompatibilityProfile::OpenAiCodex,
             owner_user_id: None,
         };
@@ -1846,7 +1822,6 @@ mod tests {
             base_url: "https://example.com/v1".to_string(),
             api_key: "sk-test".to_string(),
             account_id: None,
-            upstream_protocol: ProviderUpstreamProtocol::OpenAiResponses,
             compatibility_profile: ProviderCompatibilityProfile::GenericOpenAi,
             owner_user_id: None,
         }

@@ -3,7 +3,7 @@ use crate::{
     models::{
         ApiProviderRecord, ApiProviderSummary, CreateApiProviderRequest,
         OPENAI_ACCOUNT_PROVIDER_NAME, PROVIDER_OPENAI_PROXY, ProviderAuthMode,
-        ProviderCompatibilityProfile, ProviderUpstreamProtocol,
+        ProviderCompatibilityProfile,
     },
     store::sqlite::SqliteStore,
 };
@@ -64,7 +64,6 @@ impl ProviderStore {
                 base_url: provider.base_url.clone(),
                 account_id: provider.account_id.clone(),
                 account_email: None,
-                upstream_protocol: provider.upstream_protocol.clone(),
                 compatibility_profile: provider.compatibility_profile.clone(),
             })
             .collect()
@@ -110,7 +109,6 @@ impl ProviderStore {
             base_url,
             api_key,
             account_id: None,
-            upstream_protocol: ProviderUpstreamProtocol::OpenAiResponses,
             compatibility_profile,
             owner_user_id,
         };
@@ -163,7 +161,6 @@ impl ProviderStore {
             base_url: String::new(),
             api_key: String::new(),
             account_id: Some(account_id.to_string()),
-            upstream_protocol: ProviderUpstreamProtocol::OpenAiResponses,
             compatibility_profile: ProviderCompatibilityProfile::OpenAiCodex,
             owner_user_id,
         };
@@ -210,7 +207,7 @@ mod tests {
     use crate::{
         models::{
             AccountRecord, AccountType, CreateApiProviderRequest, OPENAI_ACCOUNT_PROVIDER_NAME,
-            ProviderCompatibilityProfile, ProviderUpstreamProtocol,
+            ProviderCompatibilityProfile,
         },
         store::sqlite::SqliteStore,
     };
@@ -262,10 +259,6 @@ mod tests {
             first.compatibility_profile,
             ProviderCompatibilityProfile::OpenAiCodex
         );
-        assert_eq!(
-            first.upstream_protocol,
-            ProviderUpstreamProtocol::OpenAiResponses
-        );
 
         let providers = store.list_for_owner(None).await;
         assert_eq!(providers.len(), 2);
@@ -279,7 +272,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn creates_api_key_provider_with_responses_protocol() {
+    async fn creates_api_key_provider_with_compatible_profile() {
         let sqlite = test_sqlite_store("legacy-create-provider");
         let store = ProviderStore {
             sqlite,
@@ -299,10 +292,6 @@ mod tests {
             .await
             .expect("create legacy provider");
 
-        assert_eq!(
-            provider.upstream_protocol,
-            ProviderUpstreamProtocol::OpenAiResponses
-        );
         assert_eq!(
             provider.compatibility_profile,
             ProviderCompatibilityProfile::OfficialOpenAi

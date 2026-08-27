@@ -82,9 +82,7 @@ pub fn prepare_responses_upstream(
 #[cfg(test)]
 mod tests {
     use super::{PreparedResponsesUpstream, ResponsesAdapterProvider, prepare_responses_upstream};
-    use crate::models::{
-        ApiProviderRecord, ProviderAuthMode, ProviderCompatibilityProfile, ProviderUpstreamProtocol,
-    };
+    use crate::models::{ApiProviderRecord, ProviderAuthMode, ProviderCompatibilityProfile};
     use serde_json::json;
 
     fn api_provider(
@@ -98,7 +96,6 @@ mod tests {
             base_url: base_url.to_string(),
             api_key: "sk-test".to_string(),
             account_id: None,
-            upstream_protocol: ProviderUpstreamProtocol::OpenAiResponses,
             compatibility_profile,
             owner_user_id: None,
         }
