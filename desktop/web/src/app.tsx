@@ -53,7 +53,7 @@ import type {
 const GATEWAY_ERROR_PREFIX = "AI网关错误：";
 const UPSTREAM_ERROR_PREFIX = "上游服务错误：";
 
-type Dialog = "provider" | "instances" | null;
+type Dialog = "provider" | "instances" | "delete-provider" | null;
 type Page = "overview" | "usage" | "benchmark" | "routing" | "issues" | "settings";
 
 const ROUTE_TO_PAGE: Record<string, Page> = {
@@ -204,6 +204,7 @@ export function GatewayDashboard() {
   const [loadingQuotas, setLoadingQuotas] = React.useState<Set<string>>(new Set());
   const [loading, setLoading] = React.useState(true);
   const [dialog, setDialog] = React.useState<Dialog>(null);
+  const [providerToDelete, setProviderToDelete] = React.useState<GatewayProvider | null>(null);
   const [activePage, setActivePageState] = React.useState<Page>(() => pageFromPath(window.location.pathname));
   const [error, setError] = React.useState<string | null>(null);
   const [deleting, setDeleting] = React.useState<Set<string>>(new Set());
@@ -320,11 +321,20 @@ export function GatewayDashboard() {
     }
   }
 
-  async function deleteProvider(provider: GatewayProvider) {
-    if (!window.confirm(`确定要删除供应商“${provider.name}”吗？`)) return;
+  function requestDeleteProvider(provider: GatewayProvider) {
+    if (deleting.has(provider.id)) return;
+    setProviderToDelete(provider);
+    setDialog("delete-provider");
+  }
+
+  async function confirmDeleteProvider() {
+    const provider = providerToDelete;
+    if (!provider || deleting.has(provider.id)) return;
     setDeleting((current) => new Set(current).add(provider.id));
     try {
       await gatewayApi.deleteProvider(provider.id);
+      setProviderToDelete(null);
+      setDialog(null);
       await refresh();
     } catch (deleteError) {
       setError(errorMessage(deleteError));
@@ -475,7 +485,7 @@ export function GatewayDashboard() {
                   loadingQuotas={loadingQuotas}
                   deleting={deleting}
                   onSelect={selectProvider}
-                  onDelete={deleteProvider}
+                  onDelete={requestDeleteProvider}
                   onRefreshQuota={refreshQuota}
                 />
               </div>
@@ -505,6 +515,18 @@ export function GatewayDashboard() {
           }}
           onChanged={refresh}
           onError={setError}
+        />
+      ) : null}
+      {dialog === "delete-provider" && providerToDelete ? (
+        <DeleteProviderDialog
+          provider={providerToDelete}
+          deleting={deleting.has(providerToDelete.id)}
+          onClose={() => {
+            if (deleting.has(providerToDelete.id)) return;
+            setProviderToDelete(null);
+            setDialog(null);
+          }}
+          onConfirm={() => void confirmDeleteProvider()}
         />
       ) : null}
     </div>
@@ -2507,6 +2529,45 @@ function DeleteInstanceDialog({
           <Button type="button" disabled={deleting} onClick={onConfirm} className="bg-red-600 text-white hover:bg-red-700">
             {deleting ? <LoaderCircle className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
             {deleting ? "删除中" : "确认删除实例"}
+          </Button>
+        </div>
+      </div>
+    </DialogFrame>
+  );
+}
+
+function DeleteProviderDialog({
+  provider,
+  deleting,
+  onClose,
+  onConfirm,
+}: {
+  provider: GatewayProvider;
+  deleting: boolean;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  const providerName = provider.auth_mode === "account"
+    ? (provider.account_email ?? provider.name)
+    : provider.name;
+
+  return (
+    <DialogFrame
+      title={`删除供应商：${providerName}`}
+      description="删除后将清除该供应商的模型缓存及关联路由配置。"
+      onClose={onClose}
+    >
+      <div className="space-y-5">
+        <div className="rounded-2xl border border-amber-500/20 bg-amber-500/5 p-4 text-xs leading-5 text-amber-700 dark:text-amber-300">
+          {provider.auth_mode === "account"
+            ? "该账户不再被其他供应商使用时，其本机登录信息也会一并删除。"
+            : "此操作不可撤销；需要时可重新添加该供应商。"}
+        </div>
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button type="button" variant="outline" disabled={deleting} onClick={onClose}>取消</Button>
+          <Button type="button" disabled={deleting} onClick={onConfirm} className="bg-red-600 text-white hover:bg-red-700">
+            {deleting ? <LoaderCircle className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
+            {deleting ? "删除中" : "确认删除供应商"}
           </Button>
         </div>
       </div>
