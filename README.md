@@ -1,6 +1,6 @@
 # AI Gateway
 
-AI Gateway 是仅支持 macOS 的**本机桌面客户端**。用户只需安装并启动 Tauri Client；客户端会确保本机 Rust Gateway 后台服务（LaunchAgent）运行、加载内置 Web UI，并将本机 Codex 配置为使用 `http://127.0.0.1:4242/openai/v1`。
+AI Gateway 是仅支持 macOS 的**本机桌面客户端**。用户只需安装并启动 Tauri Client；客户端会确保本机 Rust Gateway 后台服务（LaunchAgent）运行、加载内置 Web UI，并将本机 Codex 配置为使用 `http://127.0.0.1:42401/openai/v1`。
 
 不支持远程 Gateway 连接，也不提供通过浏览器托管的管理控制台。
 
@@ -21,7 +21,7 @@ cargo build
 
 启动客户端后：
 
-- Gateway 只监听 `127.0.0.1:4242`；
+- Gateway 只监听 `127.0.0.1:42401`；
 - UI 通过 Tauri `invoke` 调用 Rust，再经私有 Unix Socket 管理后台 Gateway；
 - 运行数据保存在 `~/Library/Application Support/AI Gateway/db.sqlite`；
 - 私有控制 Socket 位于 `~/Library/Application Support/AI Gateway/control/gateway.sock`；

@@ -755,7 +755,7 @@ mod tests {
     fn setup_and_restore_preserve_root_configuration() {
         let source = "model_provider = \"openai\"\nmodel = \"gpt-5\"\n[features]\nweb_search_request = true\n";
         let (configured, previous) =
-            configure_gateway_config(&Some(source.to_string()), "http://127.0.0.1:4242/openai/v1");
+            configure_gateway_config(&Some(source.to_string()), "http://127.0.0.1:42401/openai/v1");
         assert_eq!(previous, "openai");
         assert!(is_gateway_configured(&configured));
         assert!(configured.contains("wire_api = \"responses\""));
@@ -764,9 +764,9 @@ mod tests {
     }
     #[test]
     fn setup_is_idempotent() {
-        let (first, _) = configure_gateway_config(&None, "http://127.0.0.1:4242/openai/v1");
+        let (first, _) = configure_gateway_config(&None, "http://127.0.0.1:42401/openai/v1");
         let (second, _) =
-            configure_gateway_config(&Some(first.clone()), "http://127.0.0.1:4242/openai/v1");
+            configure_gateway_config(&Some(first.clone()), "http://127.0.0.1:42401/openai/v1");
         assert_eq!(first, second);
     }
 
@@ -855,14 +855,14 @@ mod tests {
         let paths = prepare_codex_instance_at(
             &template,
             &instance_root,
-            "http://127.0.0.1:4242/instances/account-a/openai/v1",
+            "http://127.0.0.1:42401/instances/account-a/openai/v1",
         )
         .expect("prepare instance");
         let config =
             fs::read_to_string(paths.codex_home.join("config.toml")).expect("read instance config");
         assert!(config.contains("model_provider = \"ai-gateway\""));
         assert!(
-            config.contains("base_url = \"http://127.0.0.1:4242/instances/account-a/openai/v1\"")
+            config.contains("base_url = \"http://127.0.0.1:42401/instances/account-a/openai/v1\"")
         );
         assert!(config.contains(&format!("CODEX_HOME = \"{}\"", paths.codex_home.display())));
         assert!(!paths.codex_home.join("auth.json").exists());

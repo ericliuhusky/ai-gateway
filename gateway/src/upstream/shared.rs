@@ -123,7 +123,7 @@ mod tests {
 
         assert_eq!(
             select_proxy(
-                &Url::parse("http://127.0.0.1:4242/openai/v1/responses").expect("valid url"),
+                &Url::parse("http://127.0.0.1:42401/openai/v1/responses").expect("valid url"),
                 &http_proxy,
                 &https_proxy
             ),

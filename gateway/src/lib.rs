@@ -43,8 +43,8 @@ use upstream::UpstreamClient;
 pub use control::GatewayRuntime;
 pub use models::ProviderCompatibilityProfile;
 
-pub const LOCAL_GATEWAY_URL: &str = "http://127.0.0.1:4242/openai/v1";
-pub const LOCAL_API_ROOT: &str = "http://127.0.0.1:4242";
+pub const LOCAL_GATEWAY_URL: &str = "http://127.0.0.1:42401/openai/v1";
+pub const LOCAL_API_ROOT: &str = "http://127.0.0.1:42401";
 
 /// Client for the daemon's private Unix-domain-socket control API.
 ///
@@ -300,7 +300,7 @@ pub async fn serve_gateway() -> Result<(), String> {
 }
 
 fn gateway_listen_addr() -> String {
-    env::var("AI_GATEWAY_LISTEN_ADDR").unwrap_or_else(|_| "127.0.0.1:4242".to_string())
+    env::var("AI_GATEWAY_LISTEN_ADDR").unwrap_or_else(|_| "127.0.0.1:42401".to_string())
 }
 
 pub fn control_socket_path() -> Result<PathBuf, String> {
