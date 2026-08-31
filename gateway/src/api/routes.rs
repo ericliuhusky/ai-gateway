@@ -16,12 +16,16 @@ use crate::{
 };
 use axum::{
     Router,
-    extract::{Request, State},
+    extract::{DefaultBodyLimit, Request, State},
     http::StatusCode,
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{delete, get, post},
 };
+
+// Codex Responses requests can include lengthy conversation history and tool
+// definitions, which exceed Axum's 2 MiB default body limit.
+const RESPONSES_REQUEST_BODY_LIMIT: usize = 32 * 1024 * 1024;
 
 /// HTTP routes that must remain reachable by local Codex instances.
 ///
@@ -119,6 +123,7 @@ fn gateway_router(state: AppState) -> Router {
             gateway_runtime_scope,
         ))
         .route_layer(middleware::from_fn(local_scope))
+        .layer(DefaultBodyLimit::max(RESPONSES_REQUEST_BODY_LIMIT))
         .with_state(state)
 }
 
@@ -157,7 +162,7 @@ async fn local_scope(mut request: Request, next: Next) -> Response {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_management_router, build_router};
+    use super::{RESPONSES_REQUEST_BODY_LIMIT, build_management_router, build_router};
     use crate::{
         api::AppState,
         config::Config,
@@ -173,7 +178,7 @@ mod tests {
     use axum::{
         Json, Router,
         body::{Body, Bytes},
-        extract::State,
+        extract::{DefaultBodyLimit, State},
         http::{HeaderMap, Method, Request, StatusCode},
         routing::post,
     };
@@ -195,10 +200,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_gateway_needs_no_login_and_sends_inference_directly_upstream() {
+    async fn local_gateway_accepts_large_responses_requests_without_recording_an_issue() {
         let captured = Arc::new(Mutex::new(Vec::<CapturedUpstreamRequest>::new()));
         let mock = Router::new()
             .route("/v1/responses", post(mock_responses))
+            .layer(DefaultBodyLimit::max(RESPONSES_REQUEST_BODY_LIMIT))
             .with_state(captured.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -212,6 +218,7 @@ mod tests {
 
         let data_dir = unique_test_data_dir("local-routes");
         let (state, providers, routes) = test_state(data_dir.clone()).await;
+        let issues = state.issues.clone();
         let provider = providers
             .upsert_for_owner(
                 None,
@@ -263,7 +270,7 @@ mod tests {
                 Body::from(
                     json!({
                         "model": "mock-model",
-                        "input": "local-direct-sentinel",
+                        "input": "x".repeat(2 * 1024 * 1024),
                         "stream": false
                     })
                     .to_string(),
@@ -292,10 +299,21 @@ mod tests {
                 Some("Bearer sk-local-only")
             );
             assert_eq!(
-                requests[0].body.get("input").and_then(Value::as_str),
-                Some("local-direct-sentinel")
+                requests[0]
+                    .body
+                    .get("input")
+                    .and_then(Value::as_str)
+                    .map(str::len),
+                Some(2 * 1024 * 1024)
             );
         }
+        assert!(
+            issues
+                .list_for_owner(None, 50)
+                .expect("list gateway issues")
+                .is_empty(),
+            "successful requests must not be recorded as gateway issues"
+        );
 
         let _ = fs::remove_dir_all(data_dir);
     }
