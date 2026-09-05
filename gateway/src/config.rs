@@ -1,6 +1,6 @@
 use std::{env, path::PathBuf};
 
-pub const DEFAULT_CODEX_CLIENT_VERSION: &str = "0.146.0";
+pub const DEFAULT_CODEX_CLIENT_VERSION: &str = "0.153.4";
 
 #[derive(Clone)]
 pub struct Config {
