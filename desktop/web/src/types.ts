@@ -1,8 +1,4 @@
 export type GatewayAuthMode = "api_key" | "account";
-export type GatewayCompatibilityProfile =
-  | "official_openai"
-  | "generic_openai"
-  | "openai_codex";
 
 export interface GatewayProvider {
   id: string;
@@ -11,7 +7,6 @@ export interface GatewayProvider {
   base_url: string;
   account_id?: string;
   account_email?: string;
-  compatibility_profile: GatewayCompatibilityProfile;
 }
 
 export interface DefaultCodexStatus {

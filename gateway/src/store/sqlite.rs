@@ -3,7 +3,7 @@ use crate::{
     crypto::FieldEncryptor,
     models::{
         AccountRecord, AccountType, ApiProviderRecord, CachedProviderModels, GatewayIssue,
-        GatewayIssueRecord, ProviderAuthMode, ProviderCompatibilityProfile, SelectedRoute,
+        GatewayIssueRecord, ProviderAuthMode, SelectedRoute,
     },
 };
 use rusqlite::{Connection, OptionalExtension, params};
@@ -120,7 +120,7 @@ impl SqliteStore {
         let mut stmt = conn
             .prepare(
                 "SELECT id, name, auth_mode, COALESCE(base_url, ''), COALESCE(api_key, ''), account_id,
-                        compatibility_profile, owner_user_id
+                        owner_user_id
                  FROM providers
                  ORDER BY rowid ASC",
             )
@@ -149,11 +149,7 @@ impl SqliteStore {
                         }
                     },
                     account_id: row.get(5)?,
-                    compatibility_profile: compatibility_profile_from_str(
-                        &row.get::<_, String>(6)?,
-                    )
-                    .map_err(rusqlite::Error::ToSqlConversionFailure)?,
-                    owner_user_id: row.get(7)?,
+                    owner_user_id: row.get(6)?,
                 })
             })
             .map_err(|err| format!("query providers failed: {err}"))?;
@@ -470,9 +466,6 @@ impl SqliteStore {
                 base_url TEXT,
                 api_key TEXT,
                 account_id TEXT,
-                compatibility_profile TEXT NOT NULL CHECK (
-                    compatibility_profile IN ('official_openai', 'generic_openai', 'openai_codex')
-                ),
                 preferred_model TEXT,
                 preferred_reasoning_effort TEXT,
                 owner_user_id INTEGER,
@@ -536,6 +529,7 @@ impl SqliteStore {
             .map_err(|err| format!("initialize database encryption key failed: {err}"))?;
         }
         add_column_if_missing(&conn, "providers", "owner_user_id INTEGER")?;
+        drop_provider_compatibility_profile(&conn)?;
         migrate_gateway_issue_payloads(&conn)?;
         conn.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_accounts_owner_user_id ON accounts(owner_user_id);
@@ -726,6 +720,18 @@ fn table_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool
     Ok(columns.iter().any(|name| name == column))
 }
 
+fn drop_provider_compatibility_profile(conn: &Connection) -> Result<(), String> {
+    if !table_has_column(conn, "providers", "compatibility_profile")? {
+        return Ok(());
+    }
+    conn.execute(
+        "ALTER TABLE providers DROP COLUMN compatibility_profile",
+        [],
+    )
+    .map_err(|err| format!("remove provider compatibility profile failed: {err}"))?;
+    Ok(())
+}
+
 fn gateway_issue_from_row(row: &rusqlite::Row<'_>) -> Result<GatewayIssue, rusqlite::Error> {
     Ok(GatewayIssue {
         id: row.get(0)?,
@@ -791,15 +797,14 @@ fn upsert_provider_record(
     conn.execute(
         "INSERT INTO providers (
             id, name, auth_mode, base_url, api_key, account_id,
-            compatibility_profile, owner_user_id
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            owner_user_id
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
          ON CONFLICT(id) DO UPDATE SET
             name = excluded.name,
             auth_mode = excluded.auth_mode,
             base_url = excluded.base_url,
             api_key = excluded.api_key,
             account_id = excluded.account_id,
-            compatibility_profile = excluded.compatibility_profile,
             owner_user_id = excluded.owner_user_id",
         params![
             provider.id,
@@ -808,7 +813,6 @@ fn upsert_provider_record(
             base_url,
             api_key,
             provider.account_id.as_deref(),
-            compatibility_profile_to_str(&provider.compatibility_profile),
             provider.owner_user_id
         ],
     )
@@ -848,25 +852,6 @@ fn provider_auth_mode_from_str(
     }
 }
 
-fn compatibility_profile_to_str(value: &ProviderCompatibilityProfile) -> &'static str {
-    match value {
-        ProviderCompatibilityProfile::OfficialOpenAi => "official_openai",
-        ProviderCompatibilityProfile::GenericOpenAi => "generic_openai",
-        ProviderCompatibilityProfile::OpenAiCodex => "openai_codex",
-    }
-}
-
-fn compatibility_profile_from_str(
-    value: &str,
-) -> Result<ProviderCompatibilityProfile, Box<dyn std::error::Error + Send + Sync>> {
-    match value {
-        "official_openai" => Ok(ProviderCompatibilityProfile::OfficialOpenAi),
-        "generic_openai" => Ok(ProviderCompatibilityProfile::GenericOpenAi),
-        "openai_codex" => Ok(ProviderCompatibilityProfile::OpenAiCodex),
-        other => Err(format!("unknown compatibility_profile: {other}").into()),
-    }
-}
-
 fn decrypt_conversion_error(error: String) -> rusqlite::Error {
     rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::other(error)))
 }
@@ -878,7 +863,7 @@ mod tests {
         crypto::FieldEncryptor,
         models::{
             AccountRecord, AccountType, ApiProviderRecord, CachedProviderModels, ProviderAuthMode,
-            ProviderCompatibilityProfile, SelectedRoute,
+            SelectedRoute,
         },
     };
     use rusqlite::Connection;
@@ -951,7 +936,6 @@ mod tests {
             base_url: String::new(),
             api_key: String::new(),
             account_id: Some(account.id.clone()),
-            compatibility_profile: ProviderCompatibilityProfile::OpenAiCodex,
             owner_user_id: None,
         };
         store.upsert_provider(&provider).expect("save provider");
@@ -1177,7 +1161,6 @@ mod tests {
             base_url: "https://example.com/v1".to_string(),
             api_key: "sk-test".to_string(),
             account_id: None,
-            compatibility_profile: ProviderCompatibilityProfile::GenericOpenAi,
             owner_user_id: None,
         }
     }

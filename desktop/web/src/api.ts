@@ -1,7 +1,6 @@
 import { invokeTauri } from "./lib/connection";
 import type {
   CodexAuthPayload,
-  GatewayCompatibilityProfile,
   GatewayIssue,
   GatewayModel,
   GatewayProvider,
@@ -51,7 +50,7 @@ export const gatewayApi = {
   async clearSelectedModel() { const payload = await gatewayRequest<{ selected_model: SelectedProvider }>("DELETE", "/management/selected-model"); return payload.selected_model; },
   async selectReasoningEffort(effort: ReasoningEffort) { const payload = await gatewayRequest<{ selected_reasoning_effort: SelectedProvider }>("PUT", "/management/selected-reasoning-effort", { effort }); return payload.selected_reasoning_effort; },
   async clearSelectedReasoningEffort() { const payload = await gatewayRequest<{ selected_reasoning_effort: SelectedProvider }>("DELETE", "/management/selected-reasoning-effort"); return payload.selected_reasoning_effort; },
-  createProvider(input: { name: string; base_url: string; api_key: string; compatibility_profile: GatewayCompatibilityProfile }) { return gatewayRequest("POST", "/management/providers", input); },
+  createProvider(input: { name: string; base_url: string; api_key: string }) { return gatewayRequest("POST", "/management/providers", input); },
   deleteProvider(providerId: string) { return gatewayRequest("DELETE", `/management/providers/${encodeURIComponent(providerId)}`); },
   async quota(providerId: string) { const payload = await gatewayRequest<{ quota: ProviderQuotaSummary }>("GET", `/management/providers/${encodeURIComponent(providerId)}/quota`); return payload.quota; },
   importAccount(payload: CodexAuthPayload) { return gatewayRequest("POST", "/management/accounts/openai/import-token", payload); },

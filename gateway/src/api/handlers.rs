@@ -11,11 +11,10 @@ use crate::{
     models::{
         AccountRecord, ApiProviderRecord, ApiProviderSummary, CreateApiProviderRequest,
         GatewayIssue, GatewayIssueRecord, ModelListItem, ModelListResponse,
-        OPENAI_ACCOUNT_PROVIDER_NAME, ProviderAuthMode, ProviderCompatibilityProfile,
-        ProviderQuotaCredits, ProviderQuotaResponse, ProviderQuotaSnapshot, ProviderQuotaSummary,
-        ProviderQuotaWindow, QuotaSource, QuotaSupportStatus, SelectedRoute,
-        UpdateSelectedModelRequest, UpdateSelectedProviderRequest,
-        UpdateSelectedReasoningEffortRequest,
+        OPENAI_ACCOUNT_PROVIDER_NAME, ProviderAuthMode, ProviderQuotaCredits,
+        ProviderQuotaResponse, ProviderQuotaSnapshot, ProviderQuotaSummary, ProviderQuotaWindow,
+        QuotaSource, QuotaSupportStatus, SelectedRoute, UpdateSelectedModelRequest,
+        UpdateSelectedProviderRequest, UpdateSelectedReasoningEffortRequest,
     },
     openai_device_login::{
         DeviceLoginCompletion, DeviceLoginPoll, DeviceLoginStart, OpenAiDeviceLoginService,
@@ -573,7 +572,6 @@ pub async fn add_provider(
             "base_url": provider.base_url,
             "api_key": provider.api_key,
             "account_id": provider.account_id,
-            "compatibility_profile": provider.compatibility_profile,
         }
     })))
 }
@@ -1369,29 +1367,20 @@ async fn fetch_provider_models(
     if provider.auth_mode == ProviderAuthMode::Account {
         let account =
             resolve_account_for_provider_for_owner(state, owner_user_id, provider).await?;
-        if provider.record.as_ref().is_some_and(|record| {
-            record.compatibility_profile == ProviderCompatibilityProfile::OpenAiCodex
-        }) {
-            let client_version = DEFAULT_CODEX_CLIENT_VERSION;
-            let private_models = PrivateOpenAiRequestBuilder {
-                base_url: OPENAI_CODEX_BASE_URL,
-                access_token: account.access_token(),
-                account_id: account.upstream_account_id(),
-                client_version: Some(client_version),
-            };
-            let upstream = state
-                .upstream
-                .openai_send(&private_models, OpenAiEndpoint::Models)
-                .await
-                .map_err(AppError::upstream_message)?;
-            let raw: Value = upstream.json().await.map_err(AppError::upstream)?;
-            return openai_models_response(&provider.name, &raw);
-        }
-
-        return Err(AppError::bad_request(format!(
-            "账户认证供应商 `{}` 暂不支持",
-            provider.name
-        )));
+        let client_version = DEFAULT_CODEX_CLIENT_VERSION;
+        let private_models = PrivateOpenAiRequestBuilder {
+            base_url: OPENAI_CODEX_BASE_URL,
+            access_token: account.access_token(),
+            account_id: account.upstream_account_id(),
+            client_version: Some(client_version),
+        };
+        let upstream = state
+            .upstream
+            .openai_send(&private_models, OpenAiEndpoint::Models)
+            .await
+            .map_err(AppError::upstream_message)?;
+        let raw: Value = upstream.json().await.map_err(AppError::upstream)?;
+        return openai_models_response(&provider.name, &raw);
     }
 
     let native_provider = provider
@@ -1705,7 +1694,6 @@ async fn provider_summary_for_resolved_for_owner(
         base_url: record.base_url.clone(),
         account_id: record.account_id.clone(),
         account_email: None,
-        compatibility_profile: record.compatibility_profile.clone(),
     };
     hydrate_provider_summary_for_owner(state, owner_user_id, &mut summary).await;
     Ok(summary)

@@ -35,7 +35,6 @@ import type {
   ProviderQuotaWindow,
   ReasoningEffort,
   SelectedProvider,
-  GatewayCompatibilityProfile,
   OpenAiDeviceLoginStart,
 } from "./types";
 
@@ -71,11 +70,7 @@ function parseCodexAuthPayload(value: unknown): CodexAuthPayload | null {
   });
   return supported ? value as CodexAuthPayload : null;
 }
-function suggestedCompatibilityProfile(baseUrl: string): GatewayCompatibilityProfile {
-  try { return new URL(baseUrl).hostname.toLowerCase() === "api.openai.com" ? "official_openai" : "generic_openai"; }
-  catch { return "generic_openai"; }
-}
-const NINEBOT_PRIVATE_DEPLOYMENT_PRESET = { name: "九号私有部署", baseUrl: "https://ai-service.segway-ninebot.com/v1", compatibilityProfile: "generic_openai" as const };
+const NINEBOT_PRIVATE_DEPLOYMENT_PRESET = { name: "九号私有部署", baseUrl: "https://ai-service.segway-ninebot.com/v1" };
 function remaining(window: ProviderQuotaWindow) { return Math.min(100, Math.max(0, 100 - window.used_percent)); }
 function quotaTone(value: number) { return value <= 15 ? "danger" : value <= 35 ? "warning" : "good"; }
 function resetLabel(window: ProviderQuotaWindow) {
@@ -459,13 +454,9 @@ function ProviderCard({
             <Badge tone={provider.auth_mode === "account" ? "green" : "blue"}>
               {provider.auth_mode === "account" ? "账户" : "API Key"}
             </Badge>
-            <Badge tone="slate">
-              {provider.compatibility_profile === "official_openai"
-                ? "OpenAI 官方"
-                : provider.compatibility_profile === "openai_codex"
-                  ? "Codex 账户"
-                  : "兼容接口"}
-            </Badge>
+            {provider.auth_mode === "account" ? (
+              <Badge tone="slate">Codex</Badge>
+            ) : null}
           </div>
         </div>
         {selected ? (
@@ -717,7 +708,7 @@ function ProviderDialog({
   return (
     <DialogFrame
       title="添加供应商"
-      description="选择使用 API Key 接入 OpenAI 兼容接口，或添加 ChatGPT 账户。"
+      description="选择使用 API Key 接入 Responses API，或添加 ChatGPT 账户。"
       onClose={onClose}
     >
       <div className="mb-5 flex rounded-xl bg-slate-100 p-1 text-xs font-semibold dark:bg-white/[0.06]">
@@ -775,8 +766,6 @@ function ApiProviderForm({
   const [name, setName] = React.useState("");
   const [baseUrl, setBaseUrl] = React.useState("");
   const [apiKey, setApiKey] = React.useState("");
-  const [compatibilityProfile, setCompatibilityProfile] =
-    React.useState<GatewayCompatibilityProfile>("generic_openai");
   const [submitting, setSubmitting] = React.useState(false);
   const valid = name.trim() && baseUrl.trim() && apiKey.trim();
 
@@ -789,7 +778,6 @@ function ApiProviderForm({
         name: name.trim(),
         base_url: baseUrl.trim(),
         api_key: apiKey.trim(),
-        compatibility_profile: compatibilityProfile,
       });
       await onCreated();
     } catch (submitError) {
@@ -801,9 +789,6 @@ function ApiProviderForm({
   function applyNinebotPrivateDeploymentPreset() {
     setName(NINEBOT_PRIVATE_DEPLOYMENT_PRESET.name);
     setBaseUrl(NINEBOT_PRIVATE_DEPLOYMENT_PRESET.baseUrl);
-    setCompatibilityProfile(
-      NINEBOT_PRIVATE_DEPLOYMENT_PRESET.compatibilityProfile,
-    );
   }
 
   return (
@@ -833,32 +818,13 @@ function ApiProviderForm({
           className="field font-mono text-xs"
           value={baseUrl}
           onChange={(event) => {
-            const value = event.target.value;
-            setBaseUrl(value);
-            setCompatibilityProfile(suggestedCompatibilityProfile(value));
+            setBaseUrl(event.target.value);
           }}
           placeholder="https://api.example.com/v1"
         />
       </FormField>
       <FormField label="API Key">
         <input className="field font-mono text-xs" type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder="sk-..." />
-      </FormField>
-      <FormField label="兼容 Profile">
-        <select
-          className="field text-xs"
-          value={compatibilityProfile}
-          onChange={(event) =>
-            setCompatibilityProfile(
-              event.target.value as GatewayCompatibilityProfile,
-            )
-          }
-        >
-          <option value="generic_openai">通用 OpenAI 兼容接口</option>
-          <option value="official_openai">OpenAI 官方 API</option>
-        </select>
-        <p className="mt-2 text-[11px] leading-5 text-slate-400">
-          通用 Profile 会移除已知不兼容的 Codex 客户端工具；官方 Profile 保持 Responses 请求 Body 原样。
-        </p>
       </FormField>
       <DialogActions onClose={onClose} disabled={!valid || submitting} submitting={submitting} label="创建供应商" />
     </form>

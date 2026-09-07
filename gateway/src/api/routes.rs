@@ -187,7 +187,6 @@ mod tests {
                     name: "Mock Provider".to_string(),
                     base_url: Some(format!("http://{upstream_addr}/v1")),
                     api_key: Some("sk-local-only".to_string()),
-                    compatibility_profile: None,
                 },
             )
             .await
@@ -299,7 +298,6 @@ mod tests {
                     name: "Unavailable Provider".to_string(),
                     base_url: Some(format!("http://{upstream_addr}/v1")),
                     api_key: Some("sk-local-only".to_string()),
-                    compatibility_profile: None,
                 },
             )
             .await

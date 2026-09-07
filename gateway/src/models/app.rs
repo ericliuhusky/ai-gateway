@@ -12,17 +12,6 @@ pub enum ProviderAuthMode {
     Account,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-pub enum ProviderCompatibilityProfile {
-    #[serde(rename = "official_openai")]
-    OfficialOpenAi,
-    #[default]
-    #[serde(rename = "generic_openai")]
-    GenericOpenAi,
-    #[serde(rename = "openai_codex")]
-    OpenAiCodex,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AccountType {
@@ -38,8 +27,6 @@ pub struct CreateApiProviderRequest {
     pub base_url: Option<String>,
     #[serde(default)]
     pub api_key: Option<String>,
-    #[serde(default)]
-    pub compatibility_profile: Option<ProviderCompatibilityProfile>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -54,8 +41,6 @@ pub struct ApiProviderRecord {
     pub api_key: String,
     #[serde(default)]
     pub account_id: Option<String>,
-    #[serde(default)]
-    pub compatibility_profile: ProviderCompatibilityProfile,
     #[serde(skip_serializing)]
     pub owner_user_id: Option<i64>,
 }
@@ -70,7 +55,6 @@ pub struct ApiProviderSummary {
     pub account_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub account_email: Option<String>,
-    pub compatibility_profile: ProviderCompatibilityProfile,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
@@ -262,26 +246,5 @@ impl AccountRecord {
 
     pub fn upstream_account_id(&self) -> Option<&str> {
         self.upstream_account_id.as_deref()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::ProviderCompatibilityProfile;
-
-    #[test]
-    fn provider_compatibility_profiles_use_stable_api_names() {
-        assert_eq!(
-            serde_json::to_value(ProviderCompatibilityProfile::OfficialOpenAi).unwrap(),
-            "official_openai"
-        );
-        assert_eq!(
-            serde_json::to_value(ProviderCompatibilityProfile::GenericOpenAi).unwrap(),
-            "generic_openai"
-        );
-        assert_eq!(
-            serde_json::to_value(ProviderCompatibilityProfile::OpenAiCodex).unwrap(),
-            "openai_codex"
-        );
     }
 }

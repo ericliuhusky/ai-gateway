@@ -1,7 +1,7 @@
 mod request_policy;
 
 use crate::models::{ApiProviderRecord, ProviderAuthMode};
-use request_policy::apply_responses_request_policy;
+use request_policy::sanitize_codex_request_body;
 
 #[derive(Debug)]
 pub enum ResponsesAdapterError {
@@ -41,11 +41,8 @@ pub fn prepare_responses_upstream(
     request_stream: bool,
 ) -> Result<PreparedResponsesUpstream, ResponsesAdapterError> {
     if provider.auth_mode == ProviderAuthMode::Account && provider.uses_openai_account {
-        let request_body = apply_responses_request_policy(
-            &crate::models::ProviderCompatibilityProfile::OpenAiCodex,
-            request_body,
-        )
-        .map_err(ResponsesAdapterError::BadRequest)?;
+        let request_body =
+            sanitize_codex_request_body(request_body).map_err(ResponsesAdapterError::BadRequest)?;
         return Ok(
             PreparedResponsesUpstream::OpenAiAccountResponsesPassthrough(
                 PreparedResponsesPassthrough {
@@ -67,14 +64,11 @@ pub fn prepare_responses_upstream(
         ResponsesAdapterError::BadRequest(format!("未知供应商: {}", provider.name))
     })?;
 
-    let transformed =
-        apply_responses_request_policy(&native_provider.compatibility_profile, request_body)
-            .map_err(ResponsesAdapterError::BadRequest)?;
     Ok(PreparedResponsesUpstream::ApiResponsesPassthrough(
         PreparedApiResponsesPassthrough {
             provider: native_provider,
             request_stream,
-            request_body: transformed,
+            request_body,
         },
     ))
 }
@@ -82,21 +76,17 @@ pub fn prepare_responses_upstream(
 #[cfg(test)]
 mod tests {
     use super::{PreparedResponsesUpstream, ResponsesAdapterProvider, prepare_responses_upstream};
-    use crate::models::{ApiProviderRecord, ProviderAuthMode, ProviderCompatibilityProfile};
+    use crate::models::{ApiProviderRecord, ProviderAuthMode};
     use serde_json::json;
 
-    fn api_provider(
-        base_url: &str,
-        compatibility_profile: ProviderCompatibilityProfile,
-    ) -> ApiProviderRecord {
+    fn api_provider(base_url: &str) -> ApiProviderRecord {
         ApiProviderRecord {
             id: "provider-123".to_string(),
-            name: "custom-compatible".to_string(),
+            name: "custom-provider".to_string(),
             auth_mode: ProviderAuthMode::ApiKey,
             base_url: base_url.to_string(),
             api_key: "sk-test".to_string(),
             account_id: None,
-            compatibility_profile,
             owner_user_id: None,
         }
     }
@@ -117,11 +107,8 @@ mod tests {
     }
 
     #[test]
-    fn api_provider_uses_responses_by_default_even_for_compatible_provider_name() {
-        let provider = api_provider(
-            "https://example.com/v1",
-            ProviderCompatibilityProfile::GenericOpenAi,
-        );
+    fn api_provider_passes_responses_body_through_unchanged() {
+        let provider = api_provider("https://example.com/v1");
         let prepared = prepare_responses_upstream(
             ResponsesAdapterProvider {
                 name: provider.name.clone(),
@@ -140,11 +127,8 @@ mod tests {
     }
 
     #[test]
-    fn filters_known_incompatible_response_tools_for_non_openai_provider() {
-        let provider = api_provider(
-            "https://example.com/v1",
-            ProviderCompatibilityProfile::GenericOpenAi,
-        );
+    fn api_provider_preserves_response_tools() {
+        let provider = api_provider("https://example.com/v1");
         let body = json!({
             "model": "external/gpt-5.5",
             "tools": [
@@ -198,51 +182,7 @@ mod tests {
         let PreparedResponsesUpstream::ApiResponsesPassthrough(prepared) = prepared else {
             panic!("expected responses passthrough");
         };
-        let adapted: serde_json::Value = serde_json::from_str(&prepared.request_body).unwrap();
-        let tools = adapted["tools"].as_array().unwrap();
-
-        assert_eq!(tools.len(), 2);
-        assert_eq!(tools[0]["name"], "exec_command");
-        assert_eq!(tools[1]["type"], "namespace");
-    }
-
-    #[test]
-    fn keeps_response_tools_for_official_openai_api_key_provider() {
-        let provider = api_provider(
-            "https://api.openai.com/v1",
-            ProviderCompatibilityProfile::OfficialOpenAi,
-        );
-        let body = json!({
-            "model": "gpt-5.4",
-            "tools": [
-                {
-                    "type": "function",
-                    "name": "list_available_plugins_to_install",
-                    "description": "# List plugin/connector install candidates",
-                    "parameters": {},
-                    "strict": false
-                }
-            ]
-        });
-
-        let prepared = prepare_responses_upstream(
-            ResponsesAdapterProvider {
-                name: provider.name.clone(),
-                auth_mode: provider.auth_mode.clone(),
-                record: Some(provider),
-                uses_openai_account: false,
-            },
-            body.to_string(),
-            false,
-        )
-        .unwrap();
-
-        let PreparedResponsesUpstream::ApiResponsesPassthrough(prepared) = prepared else {
-            panic!("expected responses passthrough");
-        };
-        let adapted: serde_json::Value = serde_json::from_str(&prepared.request_body).unwrap();
-
-        assert_eq!(adapted["tools"].as_array().unwrap().len(), 1);
+        assert_eq!(prepared.request_body, body.to_string());
     }
 
     #[test]

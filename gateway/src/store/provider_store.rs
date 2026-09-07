@@ -3,11 +3,9 @@ use crate::{
     models::{
         ApiProviderRecord, ApiProviderSummary, CreateApiProviderRequest,
         OPENAI_ACCOUNT_PROVIDER_NAME, PROVIDER_OPENAI_PROXY, ProviderAuthMode,
-        ProviderCompatibilityProfile,
     },
     store::sqlite::SqliteStore,
 };
-use reqwest::Url;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use uuid::Uuid;
@@ -63,7 +61,6 @@ impl ProviderStore {
                 base_url: provider.base_url.clone(),
                 account_id: provider.account_id.clone(),
                 account_email: None,
-                compatibility_profile: provider.compatibility_profile.clone(),
             })
             .collect()
     }
@@ -86,13 +83,6 @@ impl ProviderStore {
         if base_url.is_empty() {
             return Err("base_url 不能为空".to_string());
         }
-        let compatibility_profile = request
-            .compatibility_profile
-            .unwrap_or_else(|| compatibility_profile_for_base_url(&base_url));
-        if compatibility_profile == ProviderCompatibilityProfile::OpenAiCodex {
-            return Err("兼容性配置 `openai_codex` 仅用于导入的账户供应商".to_string());
-        }
-
         let mut providers = self.providers.lock().await;
         if providers
             .iter()
@@ -108,7 +98,6 @@ impl ProviderStore {
             base_url,
             api_key,
             account_id: None,
-            compatibility_profile,
             owner_user_id,
         };
         self.persist_provider(&provider)?;
@@ -160,7 +149,6 @@ impl ProviderStore {
             base_url: String::new(),
             api_key: String::new(),
             account_id: Some(account_id.to_string()),
-            compatibility_profile: ProviderCompatibilityProfile::OpenAiCodex,
             owner_user_id,
         };
         self.persist_provider(&provider)?;
@@ -188,25 +176,12 @@ impl ProviderStore {
     }
 }
 
-fn compatibility_profile_for_base_url(base_url: &str) -> ProviderCompatibilityProfile {
-    let is_official_openai = Url::parse(base_url.trim())
-        .ok()
-        .and_then(|url| url.host_str().map(str::to_string))
-        .is_some_and(|host| host.eq_ignore_ascii_case("api.openai.com"));
-    if is_official_openai {
-        ProviderCompatibilityProfile::OfficialOpenAi
-    } else {
-        ProviderCompatibilityProfile::GenericOpenAi
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::ProviderStore;
     use crate::{
         models::{
             AccountRecord, AccountType, CreateApiProviderRequest, OPENAI_ACCOUNT_PROVIDER_NAME,
-            ProviderCompatibilityProfile,
         },
         store::sqlite::SqliteStore,
     };
@@ -254,11 +229,6 @@ mod tests {
         assert_eq!(second.name, OPENAI_ACCOUNT_PROVIDER_NAME);
         assert_eq!(first.account_id.as_deref(), Some("account_1"));
         assert_eq!(second.account_id.as_deref(), Some("account_2"));
-        assert_eq!(
-            first.compatibility_profile,
-            ProviderCompatibilityProfile::OpenAiCodex
-        );
-
         let providers = store.list_for_owner(None).await;
         assert_eq!(providers.len(), 2);
         assert_eq!(
@@ -271,8 +241,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn creates_api_key_provider_with_compatible_profile() {
-        let sqlite = test_sqlite_store("legacy-create-provider");
+    async fn creates_api_key_provider_without_profile() {
+        let sqlite = test_sqlite_store("create-provider");
         let store = ProviderStore {
             sqlite,
             providers: Arc::new(Mutex::new(Vec::new())),
@@ -285,16 +255,11 @@ mod tests {
                     name: "official".to_string(),
                     base_url: Some("https://api.openai.com/v1".to_string()),
                     api_key: Some("sk-test".to_string()),
-                    compatibility_profile: None,
                 },
             )
             .await
             .expect("create legacy provider");
-
-        assert_eq!(
-            provider.compatibility_profile,
-            ProviderCompatibilityProfile::OfficialOpenAi
-        );
+        assert_eq!(provider.base_url, "https://api.openai.com/v1");
     }
 
     fn test_sqlite_store(prefix: &str) -> SqliteStore {

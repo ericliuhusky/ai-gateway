@@ -28,7 +28,6 @@ use store::{AccountStore, IssueStore, ModelStore, ProviderStore, RouteStore};
 use upstream::UpstreamClient;
 
 pub use control::GatewayRuntime;
-pub use models::ProviderCompatibilityProfile;
 
 pub const LOCAL_GATEWAY_URL: &str = "http://127.0.0.1:42401/v1";
 pub const LOCAL_API_ROOT: &str = "http://127.0.0.1:42401";
