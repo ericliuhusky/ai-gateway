@@ -1,8 +1,6 @@
 use codex_adapter::{
     CodexConfigurationResult, DefaultCodexStatus, default_codex_status,
-    delete_codex_instance as remove_codex_instance_files,
-    start_codex_gateway as patch_codex_gateway, start_codex_instance as launch_codex_instance,
-    stop_codex_gateway as restore_codex_gateway,
+    start_codex_gateway as patch_codex_gateway, stop_codex_gateway as restore_codex_gateway,
 };
 use serde_json::Value;
 use std::{
@@ -13,7 +11,6 @@ use std::{
 };
 use tauri::State;
 
-const LOCAL_API_ROOT: &str = "http://127.0.0.1:42401";
 const LOCAL_GATEWAY_URL: &str = "http://127.0.0.1:42401/openai/v1";
 const GATEWAY_DAEMON_BINARY: &str = "ai-gateway-daemon";
 const DAEMON_READY_TIMEOUT: Duration = Duration::from_secs(8);
@@ -36,9 +33,7 @@ pub fn run() {
             gateway_request,
             get_codex_gateway_status,
             start_codex_gateway,
-            stop_codex_gateway,
-            start_codex_instance,
-            delete_codex_instance
+            stop_codex_gateway
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|error| panic!("运行 Tauri 客户端失败：{error}"));
@@ -118,17 +113,6 @@ fn start_codex_gateway() -> Result<CodexConfigurationResult, String> {
 #[tauri::command]
 fn stop_codex_gateway() -> Result<CodexConfigurationResult, String> {
     restore_codex_gateway()
-}
-
-#[tauri::command]
-fn start_codex_instance(instance_id: String) -> Result<String, String> {
-    launch_codex_instance(&instance_id, LOCAL_API_ROOT)?;
-    Ok(instance_id)
-}
-
-#[tauri::command]
-fn delete_codex_instance(instance_id: String) -> Result<bool, String> {
-    remove_codex_instance_files(&instance_id)
 }
 
 #[cfg(test)]

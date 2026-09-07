@@ -3,11 +3,6 @@ use serde_json::Value;
 
 pub const PROVIDER_OPENAI_PROXY: &str = "openai-proxy";
 pub const OPENAI_ACCOUNT_PROVIDER_NAME: &str = "GPT账户";
-const OPENAI_ACCOUNT_USAGE_ID_PREFIX: &str = "openai_account:";
-
-pub fn openai_account_usage_id(upstream_account_id: &str) -> String {
-    format!("{OPENAI_ACCOUNT_USAGE_ID_PREFIX}{upstream_account_id}")
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -68,10 +63,6 @@ pub struct ApiProviderRecord {
 #[derive(Debug, Clone, Serialize)]
 pub struct ApiProviderSummary {
     pub id: String,
-    /// Stable key used by token-usage rollups. For imported OpenAI accounts
-    /// this is derived from the upstream account ID rather than the local,
-    /// replaceable provider record ID.
-    pub usage_id: String,
     pub name: String,
     pub auth_mode: ProviderAuthMode,
     pub base_url: String,
@@ -94,26 +85,6 @@ pub struct SelectedRoute {
     pub updated_at: i64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct InstanceRoutingConfig {
-    pub instance_id: String,
-    #[serde(flatten)]
-    pub route: SelectedRoute,
-    pub automatic_routing: AutoRoutingSettings,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct UpdateInstanceRoutingConfigRequest {
-    #[serde(default)]
-    pub provider_id: Option<String>,
-    #[serde(default)]
-    pub selected_model: Option<String>,
-    #[serde(default)]
-    pub selected_reasoning_effort: Option<String>,
-    #[serde(default)]
-    pub automatic_routing: Option<AutoRoutingSettings>,
-}
-
 #[derive(Debug, Clone, Deserialize)]
 pub struct UpdateSelectedProviderRequest {
     #[serde(default)]
@@ -130,168 +101,9 @@ pub struct UpdateSelectedReasoningEffortRequest {
     pub effort: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct RunModelBenchmarkRequest {
-    pub provider_id: String,
-    pub model: String,
-    #[serde(default = "default_benchmark_runs")]
-    pub runs: u8,
-    #[serde(default)]
-    pub account_usage_confirmed: bool,
-}
-
-fn default_benchmark_runs() -> u8 {
-    3
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ModelBenchmarkSample {
-    pub ttft_ms: u64,
-    pub total_ms: u64,
-    pub output_text: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub output_tokens: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub generation_tokens_per_second: Option<f64>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ModelBenchmarkResponse {
-    pub provider_id: String,
-    pub model: String,
-    pub prompt: String,
-    pub samples: Vec<ModelBenchmarkSample>,
-    pub median_ttft_ms: u64,
-    pub median_total_ms: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub median_generation_tokens_per_second: Option<f64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct CodexClientVersionSetting {
-    pub default_version: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub override_version: Option<String>,
-    pub effective_version: String,
-    pub is_overridden: bool,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct UpdateCodexClientVersionRequest {
-    pub version: String,
-}
-
-pub const ROUTING_LOW_CONFIDENCE_THRESHOLD: f64 = 0.7;
-
-fn default_low_confidence_threshold() -> f64 {
-    ROUTING_LOW_CONFIDENCE_THRESHOLD
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct RoutingModelTarget {
-    pub provider_id: String,
-    pub model: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reasoning_effort: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct AutoRoutingSettings {
-    #[serde(default)]
-    pub enabled: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub light: Option<RoutingModelTarget>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub standard: Option<RoutingModelTarget>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pro: Option<RoutingModelTarget>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max: Option<RoutingModelTarget>,
-    #[serde(default = "default_low_confidence_threshold")]
-    pub low_confidence_threshold: f64,
-}
-
-impl Default for AutoRoutingSettings {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            light: None,
-            standard: None,
-            pro: None,
-            max: None,
-            low_confidence_threshold: default_low_confidence_threshold(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct UpdateAutoRoutingSettingsRequest {
-    #[serde(default)]
-    pub enabled: bool,
-    #[serde(default)]
-    pub light: Option<RoutingModelTarget>,
-    #[serde(default)]
-    pub standard: Option<RoutingModelTarget>,
-    #[serde(default)]
-    pub pro: Option<RoutingModelTarget>,
-    #[serde(default)]
-    pub max: Option<RoutingModelTarget>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct TurnRouteLog {
-    /// Opaque, hashed identifier. Raw client IDs and request contents are never stored.
-    pub turn_id: String,
-    pub provider_id: String,
-    pub model: String,
-    pub routing_mode: String,
-    pub routing_reason: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub routing_detail: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub routing_tier: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub classifier_confidence: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub classifier_output: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub classifier_raw_input: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub classifier_raw_output: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reasoning_effort: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub user_input_preview: Option<String>,
-    pub started_at: i64,
-    pub updated_at: i64,
-    pub request_count: i64,
-    pub tool_round_count: i64,
-}
-
-#[derive(Debug, Clone)]
-pub struct TurnRouteLogUpdate {
-    pub turn_id: String,
-    pub provider_id: String,
-    pub model: String,
-    pub routing_mode: String,
-    pub routing_reason: String,
-    pub routing_detail: Option<String>,
-    pub routing_tier: Option<String>,
-    pub classifier_confidence: Option<f64>,
-    pub classifier_output: Option<String>,
-    pub classifier_raw_input: Option<String>,
-    pub classifier_raw_output: Option<String>,
-    pub reasoning_effort: Option<String>,
-    pub user_input_preview: Option<String>,
-    pub is_tool_round: bool,
-    pub timestamp: i64,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct GatewayIssue {
     pub id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub instance_id: Option<String>,
     pub provider_id: String,
     pub provider_name: String,
     pub model: String,
@@ -309,7 +121,6 @@ pub struct GatewayIssue {
 pub struct GatewayIssueRecord {
     pub id: String,
     pub owner_user_id: Option<i64>,
-    pub instance_id: Option<String>,
     pub provider_id: String,
     pub provider_name: String,
     pub model: String,
@@ -320,43 +131,6 @@ pub struct GatewayIssueRecord {
     pub upstream_response: String,
     pub upstream_response_truncated: bool,
     pub created_at: i64,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct TokenUsage {
-    pub input_tokens: u64,
-    pub output_tokens: u64,
-    pub cached_input_tokens: u64,
-    pub reasoning_tokens: u64,
-    pub total_tokens: u64,
-}
-
-#[derive(Debug, Clone)]
-pub struct UsageIncrement {
-    pub owner_user_id: Option<i64>,
-    pub provider_id: String,
-    pub model: String,
-    pub usage: TokenUsage,
-    pub timestamp: i64,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-pub struct UsageSummary {
-    pub provider_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-    pub request_count: u64,
-    #[serde(flatten)]
-    pub usage: TokenUsage,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-pub struct DailyUsageSummary {
-    pub date: String,
-    pub provider_id: String,
-    pub model: String,
-    pub request_count: u64,
-    pub total_tokens: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

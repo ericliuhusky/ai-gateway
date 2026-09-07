@@ -100,7 +100,6 @@ mod tests {
         GatewayIssueRecord {
             id: id.to_string(),
             owner_user_id,
-            instance_id: None,
             provider_id: "provider".to_string(),
             provider_name: "Provider".to_string(),
             model: "model".to_string(),

@@ -21,97 +21,6 @@ pub struct CodexConfigurationResult {
     pub warnings: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
-pub struct CodexInstancePaths {
-    pub codex_home: PathBuf,
-    pub electron_home: PathBuf,
-}
-
-pub fn prepare_codex_instance(
-    instance_id: &str,
-    gateway_base_url: &str,
-) -> Result<CodexInstancePaths, String> {
-    validate_instance_id(instance_id)?;
-    let template_home = codex_dir()?;
-    let root = instance_root(instance_id)?;
-    prepare_codex_instance_at(&template_home, &root, gateway_base_url)
-}
-
-pub fn delete_codex_instance(instance_id: &str) -> Result<bool, String> {
-    validate_instance_id(instance_id)?;
-    delete_codex_instance_at(&instance_root(instance_id)?)
-}
-
-fn prepare_codex_instance_at(
-    template_home: &Path,
-    root: &Path,
-    gateway_base_url: &str,
-) -> Result<CodexInstancePaths, String> {
-    let gateway_base_url = normalize_gateway_url(gateway_base_url)?;
-    let paths = CodexInstancePaths {
-        codex_home: root.join("codex-home"),
-        electron_home: root.join("electron"),
-    };
-
-    if root.exists() {
-        if !paths.codex_home.join("config.toml").is_file() {
-            return Err(format!("Codex 实例本地配置不完整：{}", root.display()));
-        }
-        fs::create_dir_all(&paths.electron_home)
-            .map_err(|error| format!("创建 Codex 实例数据目录失败：{error}"))?;
-        let config_path = paths.codex_home.join("config.toml");
-        let source = read_optional(&config_path)?;
-        let (config, _) =
-            configure_gateway_config_for_home(&source, &gateway_base_url, Some(&paths.codex_home));
-        write_if_changed(&config_path, config.as_bytes())?;
-        return Ok(paths);
-    }
-
-    fs::create_dir_all(&paths.codex_home)
-        .map_err(|error| format!("创建 Codex 实例配置目录失败：{error}"))?;
-    let create_result = (|| {
-        link_shared_path(
-            &template_home.join("skills"),
-            &paths.codex_home.join("skills"),
-        )?;
-        link_shared_path(
-            &template_home.join("rules"),
-            &paths.codex_home.join("rules"),
-        )?;
-        link_shared_path(
-            &template_home.join("AGENTS.md"),
-            &paths.codex_home.join("AGENTS.md"),
-        )?;
-        let config_path = paths.codex_home.join("config.toml");
-        let source = read_optional(&template_home.join("config.toml"))?;
-        let (config, _) =
-            configure_gateway_config_for_home(&source, &gateway_base_url, Some(&paths.codex_home));
-        write_if_changed(&config_path, config.as_bytes())?;
-        fs::create_dir_all(&paths.electron_home)
-            .map_err(|error| format!("创建 Codex 实例 Electron 数据目录失败：{error}"))?;
-        Ok::<(), String>(())
-    })();
-    if let Err(error) = create_result {
-        let _ = fs::remove_dir_all(root);
-        return Err(error);
-    }
-    Ok(paths)
-}
-
-fn delete_codex_instance_at(root: &Path) -> Result<bool, String> {
-    let metadata = match fs::symlink_metadata(root) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(format!("读取 Codex 实例目录失败：{error}")),
-    };
-    if metadata.file_type().is_dir() {
-        fs::remove_dir_all(root).map_err(|error| format!("删除 Codex 实例文件失败：{error}"))?;
-    } else {
-        fs::remove_file(root).map_err(|error| format!("删除 Codex 实例文件失败：{error}"))?;
-    }
-    Ok(true)
-}
-
 pub fn default_codex_status() -> Result<DefaultCodexStatus, String> {
     let config_path = codex_dir()?.join("config.toml");
     let content = match fs::read_to_string(config_path) {
@@ -166,64 +75,6 @@ fn codex_dir() -> Result<PathBuf, String> {
     Ok(PathBuf::from(home).join(".codex"))
 }
 
-fn instance_root(instance_id: &str) -> Result<PathBuf, String> {
-    let home = env::var_os("HOME").ok_or_else(|| "未设置 HOME 环境变量".to_string())?;
-    Ok(PathBuf::from(home)
-        .join(".ai-gateway")
-        .join("codex-instances")
-        .join(instance_id))
-}
-
-fn validate_instance_id(instance_id: &str) -> Result<(), String> {
-    if instance_id.is_empty()
-        || instance_id.starts_with('.')
-        || !instance_id
-            .chars()
-            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '-'))
-    {
-        return Err(format!(
-            "实例名称只能包含字母、数字、_ 或 -，且不能以 . 开头：{instance_id}"
-        ));
-    }
-    Ok(())
-}
-
-fn link_shared_path(source: &Path, target: &Path) -> Result<(), String> {
-    if !source.exists() || target.exists() {
-        return Ok(());
-    }
-    #[cfg(unix)]
-    {
-        std::os::unix::fs::symlink(source, target)
-            .map_err(|error| format!("链接共享 Codex 文件失败：{error}"))?;
-    }
-    #[cfg(not(unix))]
-    {
-        if source.is_dir() {
-            return Err("当前系统不支持创建 Codex 实例共享目录链接".to_string());
-        }
-        fs::copy(source, target).map_err(|error| format!("复制共享 Codex 文件失败：{error}"))?;
-    }
-    Ok(())
-}
-
-fn replace_codex_home(line: &str, codex_home: &Path) -> Option<String> {
-    let trimmed = line.trim_start();
-    let prefix_length = line.len() - trimmed.len();
-    let remainder = trimmed.strip_prefix("CODEX_HOME")?.trim_start();
-    remainder.strip_prefix('=')?;
-    let home = codex_home
-        .display()
-        .to_string()
-        .replace('\\', "\\\\")
-        .replace('"', "\\\"");
-    Some(format!(
-        "{}CODEX_HOME = \"{}\"",
-        &line[..prefix_length],
-        home
-    ))
-}
-
 fn normalize_gateway_url(value: &str) -> Result<String, String> {
     let value = value.trim().trim_end_matches('/');
     let url = Url::parse(value).map_err(|_| "Gateway 地址必须是有效的 http(s) URL".to_string())?;
@@ -261,14 +112,6 @@ fn root_model_provider(line: &str) -> Option<&str> {
 }
 
 fn configure_gateway_config(source: &Option<String>, gateway_base_url: &str) -> (String, String) {
-    configure_gateway_config_for_home(source, gateway_base_url, None)
-}
-
-fn configure_gateway_config_for_home(
-    source: &Option<String>,
-    gateway_base_url: &str,
-    codex_home: Option<&Path>,
-) -> (String, String) {
     let source = source.as_deref().unwrap_or_default();
     let previous_provider = detect_previous_provider(source);
     let mut root = Vec::new();
@@ -278,9 +121,7 @@ fn configure_gateway_config_for_home(
     let mut marker: Option<String> = None;
     let mut first_provider: Option<String> = None;
 
-    for source_line in source.lines() {
-        let rewritten_line = codex_home.and_then(|home| replace_codex_home(source_line, home));
-        let line = rewritten_line.as_deref().unwrap_or(source_line);
+    for line in source.lines() {
         if skipping_gateway {
             if is_root_table(line) {
                 skipping_gateway = false;
@@ -754,8 +595,10 @@ mod tests {
     #[test]
     fn setup_and_restore_preserve_root_configuration() {
         let source = "model_provider = \"openai\"\nmodel = \"gpt-5\"\n[features]\nweb_search_request = true\n";
-        let (configured, previous) =
-            configure_gateway_config(&Some(source.to_string()), "http://127.0.0.1:42401/openai/v1");
+        let (configured, previous) = configure_gateway_config(
+            &Some(source.to_string()),
+            "http://127.0.0.1:42401/openai/v1",
+        );
         assert_eq!(previous, "openai");
         assert!(is_gateway_configured(&configured));
         assert!(configured.contains("wire_api = \"responses\""));
@@ -834,65 +677,6 @@ mod tests {
                 .join(".ai-gateway-history/state_5.before-first-sync.sqlite")
                 .exists()
         );
-        fs::remove_dir_all(root).expect("remove test directory");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn prepares_opens_ready_instance_profile_without_copying_auth() {
-        let root = unique_test_dir();
-        let template = root.join("template");
-        let instance_root = root.join("instances/account-a");
-        fs::create_dir_all(template.join("skills")).expect("create template skills");
-        fs::write(
-            template.join("config.toml"),
-            "model_provider = \"openai\"\n[mcp_servers.node_repl.env]\nCODEX_HOME = \"/old/home\"\n",
-        )
-        .expect("write template config");
-        fs::write(template.join("auth.json"), "{\"tokens\":\"do-not-copy\"}")
-            .expect("write template auth");
-
-        let paths = prepare_codex_instance_at(
-            &template,
-            &instance_root,
-            "http://127.0.0.1:42401/instances/account-a/openai/v1",
-        )
-        .expect("prepare instance");
-        let config =
-            fs::read_to_string(paths.codex_home.join("config.toml")).expect("read instance config");
-        assert!(config.contains("model_provider = \"ai-gateway\""));
-        assert!(
-            config.contains("base_url = \"http://127.0.0.1:42401/instances/account-a/openai/v1\"")
-        );
-        assert!(config.contains(&format!("CODEX_HOME = \"{}\"", paths.codex_home.display())));
-        assert!(!paths.codex_home.join("auth.json").exists());
-        assert!(
-            fs::symlink_metadata(paths.codex_home.join("skills"))
-                .expect("read skills link")
-                .file_type()
-                .is_symlink()
-        );
-
-        prepare_codex_instance_at(
-            &template,
-            &instance_root,
-            "http://example.invalid/instances/account-a/openai/v1",
-        )
-        .expect("retarget configured instance");
-        let retargeted =
-            fs::read_to_string(paths.codex_home.join("config.toml")).expect("read retargeted");
-        assert!(
-            retargeted
-                .contains("base_url = \"http://example.invalid/instances/account-a/openai/v1\"")
-        );
-        assert!(
-            fs::symlink_metadata(paths.codex_home.join("skills"))
-                .expect("read skills link after retarget")
-                .file_type()
-                .is_symlink()
-        );
-        assert!(delete_codex_instance_at(&instance_root).expect("delete instance"));
-        assert!(!instance_root.exists());
         fs::remove_dir_all(root).expect("remove test directory");
     }
 

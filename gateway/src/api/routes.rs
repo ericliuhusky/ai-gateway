@@ -2,16 +2,12 @@ use super::AppState;
 use crate::{
     api::RequestScope,
     api::handlers::{
-        add_provider, cancel_openai_device_login, clear_codex_client_version, clear_gateway_issues,
-        clear_selected_model, clear_selected_reasoning_effort, delete_instance, delete_provider,
-        gateway_status, get_auto_routing_settings, get_codex_client_version,
-        get_gateway_issue_repair_prompt, get_instance_routing_config, get_provider_quota,
-        get_route, get_selected_model, get_selected_reasoning_effort, healthz, import_openai_token,
-        list_daily_usage, list_gateway_issues, list_instance_routing_configs, list_models,
-        list_models_for_instance, list_providers, list_turn_logs, list_usage_summary,
-        poll_openai_device_login, responses, responses_for_instance, run_model_benchmark,
-        set_auto_routing_settings, set_codex_client_version, set_instance_routing_config,
-        set_route, set_selected_model, set_selected_reasoning_effort, start_openai_device_login,
+        add_provider, cancel_openai_device_login, clear_gateway_issues, clear_selected_model,
+        clear_selected_reasoning_effort, delete_provider, gateway_status,
+        get_gateway_issue_repair_prompt, get_provider_quota, get_route, get_selected_model,
+        get_selected_reasoning_effort, healthz, import_openai_token, list_gateway_issues,
+        list_models, list_providers, poll_openai_device_login, responses, set_route,
+        set_selected_model, set_selected_reasoning_effort, start_openai_device_login,
     },
 };
 use axum::{
@@ -27,7 +23,7 @@ use axum::{
 // definitions, which exceed Axum's 2 MiB default body limit.
 const RESPONSES_REQUEST_BODY_LIMIT: usize = 32 * 1024 * 1024;
 
-/// HTTP routes that must remain reachable by local Codex instances.
+/// HTTP routes that must remain reachable by the local Codex client.
 ///
 /// The desktop management API deliberately does not live here: it is exposed
 /// only over the daemon's private Unix socket via [`build_management_router`].
@@ -54,18 +50,6 @@ pub fn build_management_router(state: AppState) -> Router {
         .route("/providers", get(list_providers).post(add_provider))
         .route("/providers/:provider_id", delete(delete_provider))
         .route("/providers/:provider_id/quota", get(get_provider_quota))
-        .route("/benchmarks/models", post(run_model_benchmark))
-        .route(
-            "/settings/codex-client-version",
-            get(get_codex_client_version)
-                .put(set_codex_client_version)
-                .delete(clear_codex_client_version),
-        )
-        .route(
-            "/settings/automatic-routing",
-            get(get_auto_routing_settings).put(set_auto_routing_settings),
-        )
-        .route("/routing/turns", get(list_turn_logs))
         .route(
             "/gateway/issues",
             get(list_gateway_issues).delete(clear_gateway_issues),
@@ -74,8 +58,6 @@ pub fn build_management_router(state: AppState) -> Router {
             "/gateway/issues/:issue_id/repair-prompt",
             get(get_gateway_issue_repair_prompt),
         )
-        .route("/usage/summary", get(list_usage_summary))
-        .route("/usage/daily", get(list_daily_usage))
         .route("/selected-provider", get(get_route).put(set_route))
         .route(
             "/selected-model",
@@ -88,12 +70,6 @@ pub fn build_management_router(state: AppState) -> Router {
             get(get_selected_reasoning_effort)
                 .put(set_selected_reasoning_effort)
                 .delete(clear_selected_reasoning_effort),
-        )
-        .route("/instances", get(list_instance_routing_configs))
-        .route("/instances/:instance_id", delete(delete_instance))
-        .route(
-            "/instances/:instance_id/config",
-            get(get_instance_routing_config).put(set_instance_routing_config),
         )
         // The UI needs model discovery too; its HTTP endpoint remains available
         // in `gateway_router` for Codex compatibility.
@@ -110,14 +86,6 @@ fn gateway_router(state: AppState) -> Router {
     Router::new()
         .route("/openai/v1/models", get(list_models))
         .route("/openai/v1/responses", post(responses))
-        .route(
-            "/instances/:instance_id/openai/v1/models",
-            get(list_models_for_instance),
-        )
-        .route(
-            "/instances/:instance_id/openai/v1/responses",
-            post(responses_for_instance),
-        )
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             gateway_runtime_scope,
@@ -169,10 +137,7 @@ mod tests {
         models::CreateApiProviderRequest,
         openai_device_login::OpenAiDeviceLoginService,
         openai_tokens::OpenAiTokenService,
-        store::{
-            AccountStore, IssueStore, ModelStore, ProviderStore, RouteStore, SettingsStore,
-            TurnLogStore, UsageStore,
-        },
+        store::{AccountStore, IssueStore, ModelStore, ProviderStore, RouteStore},
         upstream::UpstreamClient,
     };
     use axum::{
@@ -416,7 +381,6 @@ mod tests {
         let routes = RouteStore::new(config.clone()).expect("create routes");
         routes.load().await.expect("load routes");
         let models = ModelStore::new(config.clone()).expect("create models");
-        let settings = SettingsStore::new(config.clone()).expect("create settings");
         let state = AppState {
             _client: Client::new(),
             _config: config.clone(),
@@ -426,10 +390,7 @@ mod tests {
             providers: providers.clone(),
             routes: routes.clone(),
             models,
-            settings,
-            turn_logs: TurnLogStore::new(config.clone()).expect("create turn logs"),
             issues: IssueStore::new(config.clone()).expect("create issues"),
-            usage: UsageStore::new(config).expect("create usage"),
             upstream: UpstreamClient::new(),
             gateway_runtime: crate::GatewayRuntime::new(true),
         };

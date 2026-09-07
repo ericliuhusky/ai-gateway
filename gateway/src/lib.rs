@@ -6,7 +6,6 @@ mod crypto;
 mod models;
 mod openai_device_login;
 mod openai_tokens;
-mod routing;
 mod store;
 mod support;
 mod upstream;
@@ -34,10 +33,7 @@ use hyper_util::{
     service::TowerToHyperService,
 };
 use serde_json::Value;
-use store::{
-    AccountStore, IssueStore, ModelStore, ProviderStore, RouteStore, SettingsStore, TurnLogStore,
-    UsageStore,
-};
+use store::{AccountStore, IssueStore, ModelStore, ProviderStore, RouteStore};
 use upstream::UpstreamClient;
 
 pub use control::GatewayRuntime;
@@ -354,7 +350,6 @@ async fn initialize_local_gateway() -> Result<AppState, String> {
     let routes = RouteStore::new(config.clone())?;
     routes.load().await?;
     let models = ModelStore::new(config.clone())?;
-    let settings = SettingsStore::new(config.clone())?;
     let gateway_runtime = GatewayRuntime::new(true);
     let state = AppState {
         _client: Client::new(),
@@ -365,10 +360,7 @@ async fn initialize_local_gateway() -> Result<AppState, String> {
         providers,
         routes,
         models,
-        settings,
-        turn_logs: TurnLogStore::new(config.clone())?,
         issues: IssueStore::new(config.clone())?,
-        usage: UsageStore::new(config)?,
         upstream: UpstreamClient::new(),
         gateway_runtime,
     };
