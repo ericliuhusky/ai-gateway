@@ -1,4 +1,5 @@
-use crate::openai_tokens::{ImportedOpenAIAuth, OpenAiTokenService};
+use crate::models::AccountRecord;
+use crate::openai_tokens::OpenAiTokenService;
 use crate::support::time::now_unix;
 use crate::upstream::build_http_client;
 use reqwest::Client;
@@ -256,7 +257,7 @@ impl OpenAiDeviceLoginService {
         &self,
         authorization: &DeviceAuthorization,
         tokens: &OpenAiTokenService,
-    ) -> Result<ImportedOpenAIAuth, String> {
+    ) -> Result<AccountRecord, String> {
         let params = [
             ("grant_type", "authorization_code"),
             ("code", authorization.authorization_code.as_str()),

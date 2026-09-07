@@ -1,3 +1,4 @@
+use crate::models::AccountRecord;
 use crate::support::time::now_unix;
 use crate::upstream::build_http_client;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -19,16 +20,6 @@ struct TokenResponse {
     expires_in: i64,
     #[serde(default)]
     refresh_token: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-pub struct ImportedOpenAIAuth {
-    pub email: String,
-    pub access_token: String,
-    pub refresh_token: String,
-    pub expiry_timestamp: i64,
-    pub client_id: String,
-    pub account_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -88,22 +79,25 @@ impl OpenAiTokenService {
         access_token: String,
         refresh_token: String,
         account_id_hint: Option<String>,
-    ) -> Result<ImportedOpenAIAuth, String> {
+    ) -> Result<AccountRecord, String> {
         let access_claims = decode_openai_claims(&access_token)?;
         let email = openai_email_from_claims(&access_claims)
             .ok_or_else(|| "无法从粘贴的 Codex Token 中确定邮箱".to_string())?;
         let expiry_timestamp = access_claims
             .exp
             .ok_or_else(|| "OpenAI 访问 Token 缺少 exp 字段".to_string())?;
-        Ok(ImportedOpenAIAuth {
+        Ok(AccountRecord {
+            id: String::new(),
             email,
             access_token,
             refresh_token,
             expiry_timestamp,
-            client_id: access_claims
-                .client_id
-                .clone()
-                .unwrap_or_else(|| CODEX_CLIENT_ID.to_string()),
+            client_id: Some(
+                access_claims
+                    .client_id
+                    .clone()
+                    .unwrap_or_else(|| CODEX_CLIENT_ID.to_string()),
+            ),
             account_id: account_id_hint,
         })
     }

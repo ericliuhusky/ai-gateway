@@ -1,7 +1,7 @@
 use crate::{
     config::Config,
     models::{AccountRecord, PROVIDER_OPENAI_PROXY},
-    openai_tokens::{ImportedOpenAIAuth, OpenAiTokenService},
+    openai_tokens::OpenAiTokenService,
     store::sqlite::SqliteStore,
     support::time::now_unix,
 };
@@ -31,24 +31,16 @@ impl AccountStore {
 
     pub async fn add_openai_account(
         &self,
-        imported: ImportedOpenAIAuth,
+        mut account: AccountRecord,
     ) -> Result<AccountRecord, String> {
         let mut records = self.records.lock().await;
-        if records.iter().any(|account| {
-            account.email == imported.email && account.provider() == PROVIDER_OPENAI_PROXY
+        if records.iter().any(|existing| {
+            existing.email == account.email && existing.provider() == PROVIDER_OPENAI_PROXY
         }) {
-            return Err(format!("OpenAI 账号已经存在: {}", imported.email));
+            return Err(format!("OpenAI 账号已经存在: {}", account.email));
         }
 
-        let account = AccountRecord {
-            id: Uuid::new_v4().to_string(),
-            email: imported.email,
-            access_token: imported.access_token,
-            refresh_token: imported.refresh_token,
-            expiry_timestamp: imported.expiry_timestamp,
-            client_id: Some(imported.client_id),
-            account_id: imported.account_id,
-        };
+        account.id = Uuid::new_v4().to_string();
         self.persist_account(&account)?;
         records.push(account.clone());
         Ok(account)
