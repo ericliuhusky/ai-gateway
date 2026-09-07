@@ -11,7 +11,7 @@ use std::{
 };
 use tauri::State;
 
-const LOCAL_GATEWAY_URL: &str = "http://127.0.0.1:42401/openai/v1";
+const LOCAL_GATEWAY_URL: &str = "http://127.0.0.1:42401/v1";
 const GATEWAY_DAEMON_BINARY: &str = "ai-gateway-daemon";
 const DAEMON_READY_TIMEOUT: Duration = Duration::from_secs(8);
 const DAEMON_READY_POLL_INTERVAL: Duration = Duration::from_millis(200);

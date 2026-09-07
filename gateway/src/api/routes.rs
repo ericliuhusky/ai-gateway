@@ -73,7 +73,7 @@ pub fn build_management_router(state: AppState) -> Router {
         )
         // The UI needs model discovery too; its HTTP endpoint remains available
         // in `gateway_router` for Codex compatibility.
-        .route("/openai/v1/models", get(list_models))
+        .route("/v1/models", get(list_models))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             management_runtime_scope,
@@ -84,8 +84,8 @@ pub fn build_management_router(state: AppState) -> Router {
 
 fn gateway_router(state: AppState) -> Router {
     Router::new()
-        .route("/openai/v1/models", get(list_models))
-        .route("/openai/v1/responses", post(responses))
+        .route("/v1/models", get(list_models))
+        .route("/v1/responses", post(responses))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             gateway_runtime_scope,
@@ -231,7 +231,7 @@ mod tests {
             .clone()
             .oneshot(request(
                 Method::POST,
-                "/openai/v1/responses",
+                "/v1/responses",
                 Body::from(
                     json!({
                         "model": "mock-model",
@@ -315,7 +315,7 @@ mod tests {
         let response = router
             .oneshot(request(
                 Method::POST,
-                "/openai/v1/responses",
+                "/v1/responses",
                 Body::from(
                     json!({
                         "model": "test-model",

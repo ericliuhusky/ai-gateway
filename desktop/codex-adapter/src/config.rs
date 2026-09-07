@@ -595,10 +595,8 @@ mod tests {
     #[test]
     fn setup_and_restore_preserve_root_configuration() {
         let source = "model_provider = \"openai\"\nmodel = \"gpt-5\"\n[features]\nweb_search_request = true\n";
-        let (configured, previous) = configure_gateway_config(
-            &Some(source.to_string()),
-            "http://127.0.0.1:42401/openai/v1",
-        );
+        let (configured, previous) =
+            configure_gateway_config(&Some(source.to_string()), "http://127.0.0.1:42401/v1");
         assert_eq!(previous, "openai");
         assert!(is_gateway_configured(&configured));
         assert!(configured.contains("wire_api = \"responses\""));
@@ -607,9 +605,9 @@ mod tests {
     }
     #[test]
     fn setup_is_idempotent() {
-        let (first, _) = configure_gateway_config(&None, "http://127.0.0.1:42401/openai/v1");
+        let (first, _) = configure_gateway_config(&None, "http://127.0.0.1:42401/v1");
         let (second, _) =
-            configure_gateway_config(&Some(first.clone()), "http://127.0.0.1:42401/openai/v1");
+            configure_gateway_config(&Some(first.clone()), "http://127.0.0.1:42401/v1");
         assert_eq!(first, second);
     }
 
