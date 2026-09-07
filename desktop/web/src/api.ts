@@ -54,6 +54,7 @@ export const gatewayApi = {
   deleteProvider(providerId: string) { return gatewayRequest("DELETE", `/management/providers/${encodeURIComponent(providerId)}`); },
   async quota(providerId: string) { const payload = await gatewayRequest<{ quota: ProviderQuotaSummary }>("GET", `/management/providers/${encodeURIComponent(providerId)}/quota`); return payload.quota; },
   importAccount(payload: CodexAuthPayload) { return gatewayRequest("POST", "/management/accounts/openai/import-token", payload); },
+  refreshAccount(accountId: string) { return gatewayRequest<{ account_id: string; email: string; expiry_timestamp: number }>("POST", `/management/accounts/openai/${encodeURIComponent(accountId)}/refresh`); },
   startOpenAiDeviceLogin() { return gatewayRequest<OpenAiDeviceLoginStart>("POST", "/management/accounts/openai/login/device"); },
   pollOpenAiDeviceLogin(loginId: string) { return gatewayRequest<OpenAiDeviceLoginStatus>("GET", `/management/accounts/openai/login/device/${encodeURIComponent(loginId)}`); },
   cancelOpenAiDeviceLogin(loginId: string) { return gatewayRequest<{ cancelled: boolean }>("DELETE", `/management/accounts/openai/login/device/${encodeURIComponent(loginId)}`); },

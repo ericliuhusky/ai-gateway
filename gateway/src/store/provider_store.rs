@@ -61,6 +61,7 @@ impl ProviderStore {
                 base_url: provider.base_url.clone(),
                 account_id: provider.account_id.clone(),
                 account_email: None,
+                account_expires_at: None,
             })
             .collect()
     }

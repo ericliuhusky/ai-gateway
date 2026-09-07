@@ -6,8 +6,8 @@ use crate::{
         clear_selected_reasoning_effort, delete_provider, gateway_status,
         get_gateway_issue_repair_prompt, get_provider_quota, get_route, get_selected_model,
         get_selected_reasoning_effort, healthz, import_openai_token, list_gateway_issues,
-        list_models, list_providers, poll_openai_device_login, responses, set_route,
-        set_selected_model, set_selected_reasoning_effort, start_openai_device_login,
+        list_models, list_providers, poll_openai_device_login, refresh_openai_account, responses,
+        set_route, set_selected_model, set_selected_reasoning_effort, start_openai_device_login,
     },
 };
 use axum::{
@@ -36,6 +36,10 @@ pub fn build_management_router(state: AppState) -> Router {
         .route("/healthz", get(healthz))
         .route("/control/status", get(gateway_status))
         .route("/accounts/openai/import-token", post(import_openai_token))
+        .route(
+            "/accounts/openai/:account_id/refresh",
+            post(refresh_openai_account),
+        )
         .route(
             "/accounts/openai/login/device",
             post(start_openai_device_login),

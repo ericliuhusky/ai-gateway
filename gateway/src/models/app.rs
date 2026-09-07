@@ -50,6 +50,8 @@ pub struct ApiProviderSummary {
     pub account_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub account_email: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_expires_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]

@@ -7,6 +7,7 @@ export interface GatewayProvider {
   base_url: string;
   account_id?: string;
   account_email?: string;
+  account_expires_at?: number;
 }
 
 export interface DefaultCodexStatus {

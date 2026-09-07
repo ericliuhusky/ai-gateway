@@ -81,6 +81,19 @@ function resetLabel(window: ProviderQuotaWindow) {
   const weekdays = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
   return `${date.getMonth() + 1}月${date.getDate()}日 ${weekdays[date.getDay()]} ${time} 重置`;
 }
+function authExpiryLabel(timestamp?: number) {
+  if (!timestamp) return "未知";
+  const date = new Date(timestamp * 1000);
+  const expired = timestamp * 1000 <= Date.now();
+  return `${expired ? "已过期" : "到期"} ${date.toLocaleString("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  })}`;
+}
 function copyText(text: string) { return navigator.clipboard.writeText(text); }
 export function App() { return <GatewayDashboard />; }
 export function GatewayDashboard() {
@@ -96,6 +109,7 @@ export function GatewayDashboard() {
   const [activePage, setActivePageState] = React.useState<Page>(() => pageFromPath(window.location.pathname));
   const [error, setError] = React.useState<string | null>(null);
   const [deleting, setDeleting] = React.useState<Set<string>>(new Set());
+  const [refreshingAccounts, setRefreshingAccounts] = React.useState<Set<string>>(new Set());
   function setActivePage(page: Page) { const route = PAGE_TO_ROUTE[page]; if (window.location.pathname !== route) window.history.pushState(null, "", route); setActivePageState(page); }
   React.useEffect(() => { const onPopState = () => setActivePageState(pageFromPath(window.location.pathname)); window.addEventListener("popstate", onPopState); return () => window.removeEventListener("popstate", onPopState); }, []);
   const loadQuotas = React.useCallback(async (items: GatewayProvider[], visibleLoading = true) => {
@@ -124,6 +138,14 @@ export function GatewayDashboard() {
     try { setSelected(await gatewayApi.selectProvider(provider.id)); await loadQuotas([provider]); } catch (selectionError) { setError(errorMessage(selectionError)); await refresh(); }
   }
   function requestDeleteProvider(provider: GatewayProvider) { if (!deleting.has(provider.id)) { setProviderToDelete(provider); setDialog("delete-provider"); } }
+  async function refreshAccount(provider: GatewayProvider) {
+    const accountId = provider.account_id;
+    if (!accountId || refreshingAccounts.has(accountId)) return;
+    setRefreshingAccounts((current) => new Set(current).add(accountId));
+    try { await gatewayApi.refreshAccount(accountId); await refresh(); }
+    catch (refreshError) { setError(errorMessage(refreshError)); }
+    finally { setRefreshingAccounts((current) => { const next = new Set(current); next.delete(accountId); return next; }); }
+  }
   async function confirmDeleteProvider() {
     const provider = providerToDelete; if (!provider || deleting.has(provider.id)) return;
     setDeleting((current) => new Set(current).add(provider.id));
@@ -133,7 +155,7 @@ export function GatewayDashboard() {
   }
   return <div className="min-h-screen min-w-0">
     <header className="relative z-50 border-b border-white/50 bg-white/55 backdrop-blur-xl dark:border-white/8 dark:bg-slate-950/55"><div className="mx-auto flex min-h-14 max-w-[1480px] items-center gap-2 px-3 py-2 sm:h-16 sm:gap-3 sm:px-8 sm:py-0"><button type="button" className="flex shrink-0 items-center gap-2 rounded-xl text-left outline-none transition-opacity hover:opacity-80" aria-label="返回首页" onClick={() => setActivePage("overview")}><span className="flex size-9 items-center justify-center rounded-xl bg-slate-900 text-white shadow-lg dark:bg-white dark:text-slate-950"><Cloud className="size-[18px]" /></span><span className="hidden text-[15px] font-bold min-[440px]:inline">AI网关</span></button><NavTabs active={activePage} onSelect={setActivePage} /><span className="ml-auto hidden rounded-full bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold text-emerald-700 dark:text-emerald-300 xl:inline">本地功能无需登录</span></div></header>
-    <main className="mx-auto max-w-[1480px] px-3 py-4 sm:px-8 sm:py-8">{loading ? <LoadingState /> : activePage === "issues" ? <GatewayIssueSection issues={gatewayIssues} onChanged={async () => setGatewayIssues(await gatewayApi.gatewayIssues(200))} onError={setError} /> : <><section><div className="mb-3 flex flex-wrap items-center gap-3 px-1"><h2 className="text-xs font-bold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">AI 网关</h2><Button className="ml-auto" variant="outline" size="sm" onClick={() => setDialog("provider")}><Plus className="size-3.5" />添加供应商</Button></div><DefaultRouteSection providers={providers} selected={selected} onChanged={refresh} onError={setError} /></section>{providers.length === 0 ? <div className="mt-8"><EmptyState onAdd={() => setDialog("provider")} /></div> : <div className="mt-8"><ProviderSection title="供应商" providers={providers} selectedId={selected.provider_id} quotas={quotas} quotaErrors={quotaErrors} loadingQuotas={loadingQuotas} deleting={deleting} onSelect={selectProvider} onDelete={requestDeleteProvider} onRefreshQuota={(provider) => void loadQuotas([provider])} /></div>}</>}</main>
+    <main className="mx-auto max-w-[1480px] px-3 py-4 sm:px-8 sm:py-8">{loading ? <LoadingState /> : activePage === "issues" ? <GatewayIssueSection issues={gatewayIssues} onChanged={async () => setGatewayIssues(await gatewayApi.gatewayIssues(200))} onError={setError} /> : <><section><div className="mb-3 flex flex-wrap items-center gap-3 px-1"><h2 className="text-xs font-bold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">AI 网关</h2><Button className="ml-auto" variant="outline" size="sm" onClick={() => setDialog("provider")}><Plus className="size-3.5" />添加供应商</Button></div><DefaultRouteSection providers={providers} selected={selected} onChanged={refresh} onError={setError} /></section>{providers.length === 0 ? <div className="mt-8"><EmptyState onAdd={() => setDialog("provider")} /></div> : <div className="mt-8"><ProviderSection title="供应商" providers={providers} selectedId={selected.provider_id} quotas={quotas} quotaErrors={quotaErrors} loadingQuotas={loadingQuotas} deleting={deleting} refreshingAccounts={refreshingAccounts} onSelect={selectProvider} onDelete={requestDeleteProvider} onRefreshQuota={(provider) => void loadQuotas([provider])} onRefreshAccount={(provider) => void refreshAccount(provider)} /></div>}</>}</main>
     {error ? <ErrorToast message={error} onClose={() => setError(null)} /> : null}{dialog === "provider" ? <ProviderDialog onClose={() => setDialog(null)} onCreated={async () => { setDialog(null); await refresh(); }} onError={setError} /> : null}{dialog === "delete-provider" && providerToDelete ? <DeleteProviderDialog provider={providerToDelete} deleting={deleting.has(providerToDelete.id)} onClose={() => { if (!deleting.has(providerToDelete.id)) { setProviderToDelete(null); setDialog(null); } }} onConfirm={() => void confirmDeleteProvider()} /> : null}
   </div>;
 }
@@ -204,9 +226,11 @@ function ProviderSection(props: {
   quotaErrors: ErrorMap;
   loadingQuotas: Set<string>;
   deleting: Set<string>;
+  refreshingAccounts: Set<string>;
   onSelect: (provider: GatewayProvider) => void;
   onDelete: (provider: GatewayProvider) => void;
   onRefreshQuota: (provider: GatewayProvider) => void;
+  onRefreshAccount: (provider: GatewayProvider) => void;
 }) {
   if (!props.providers.length) return null;
   return (
@@ -229,9 +253,11 @@ function ProviderSection(props: {
             quotaError={props.quotaErrors[provider.id]}
             loadingQuota={props.loadingQuotas.has(provider.id)}
             deleting={props.deleting.has(provider.id)}
+            refreshingAccount={provider.account_id ? props.refreshingAccounts.has(provider.account_id) : false}
             onSelect={() => props.onSelect(provider)}
             onDelete={() => props.onDelete(provider)}
             onRefreshQuota={() => props.onRefreshQuota(provider)}
+            onRefreshAccount={() => props.onRefreshAccount(provider)}
           />
         ))}
       </div>
@@ -420,9 +446,11 @@ function ProviderCard({
   quotaError,
   loadingQuota,
   deleting,
+  refreshingAccount,
   onSelect,
   onDelete,
   onRefreshQuota,
+  onRefreshAccount,
 }: {
   provider: GatewayProvider;
   selected: boolean;
@@ -430,9 +458,11 @@ function ProviderCard({
   quotaError?: string;
   loadingQuota: boolean;
   deleting: boolean;
+  refreshingAccount: boolean;
   onSelect: () => void;
   onDelete: () => void;
   onRefreshQuota: () => void;
+  onRefreshAccount: () => void;
 }) {
   return (
     <article
@@ -505,12 +535,40 @@ function ProviderCard({
       ) : null}
 
       {provider.auth_mode === "account" ? (
-        <QuotaPanel
-          quota={quota}
-          error={quotaError}
-          loading={loadingQuota}
-          onRefresh={onRefreshQuota}
-        />
+        <div className="mt-auto">
+          <div className="mb-3 flex items-center justify-between gap-3 rounded-2xl border border-white/65 bg-white/45 px-3 py-2.5 dark:border-white/8 dark:bg-white/[0.035]">
+            <div className="min-w-0">
+              <div className="eyebrow">Auth 到期时间</div>
+              <div className={cn(
+                "mt-1 truncate text-[11px] font-semibold",
+                provider.account_expires_at && provider.account_expires_at * 1000 <= Date.now()
+                  ? "text-red-500"
+                  : "text-slate-600 dark:text-slate-300",
+              )}>
+                {authExpiryLabel(provider.account_expires_at)}
+              </div>
+            </div>
+            <button
+              type="button"
+              title="刷新授权"
+              className="inline-flex shrink-0 items-center gap-1.5 rounded-lg px-2 py-1.5 text-[11px] font-semibold text-slate-500 transition hover:bg-black/5 hover:text-slate-800 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-white/10 dark:hover:text-white"
+              disabled={refreshingAccount || !provider.account_id}
+              onClick={(event) => {
+                event.stopPropagation();
+                onRefreshAccount();
+              }}
+            >
+              {refreshingAccount ? <LoaderCircle className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}
+              刷新授权
+            </button>
+          </div>
+          <QuotaPanel
+            quota={quota}
+            error={quotaError}
+            loading={loadingQuota}
+            onRefresh={onRefreshQuota}
+          />
+        </div>
       ) : null}
     </article>
   );

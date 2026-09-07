@@ -56,6 +56,20 @@ impl AccountStore {
         self.prepare_account_for_use(account, token_service).await
     }
 
+    pub async fn refresh(
+        &self,
+        token_service: &OpenAiTokenService,
+        account_id: &str,
+    ) -> Result<ChatGPTAuthRecord, String> {
+        let account = self
+            .find_by_id(account_id)
+            .await
+            .ok_or_else(|| format!("账户不存在: {account_id}"))?;
+        let account = self.refresh_account(account, token_service).await?;
+        self.update_account(account.clone()).await?;
+        Ok(account)
+    }
+
     pub async fn find_by_id(&self, account_id: &str) -> Option<ChatGPTAuthRecord> {
         self.records
             .lock()
@@ -97,28 +111,31 @@ impl AccountStore {
         token_service: &OpenAiTokenService,
     ) -> Result<ChatGPTAuthRecord, String> {
         if token_service.refresh_needed(account.expiry_timestamp) {
-            let client_id = account
-                .client_id()
-                .ok_or_else(|| "openai account missing oauth client id".to_string())?;
-            let refreshed = token_service
-                .refresh_access_token(client_id, account.refresh_token())
-                .await;
-
-            match refreshed {
-                Ok(refreshed) => {
-                    *account.access_token_mut() = refreshed.access_token;
-                    account.set_expiry_timestamp(now_unix() as i64 + refreshed.expires_in);
-                    if let Some(refresh_token) = refreshed.refresh_token {
-                        *account.refresh_token_mut() = refresh_token;
-                    }
-                }
-                Err(err) => {
-                    return Err(format!("refresh failed for {}: {err}", account.email));
-                }
-            }
+            account = self.refresh_account(account, token_service).await?;
         }
 
         self.update_account(account.clone()).await?;
+        Ok(account)
+    }
+
+    async fn refresh_account(
+        &self,
+        mut account: ChatGPTAuthRecord,
+        token_service: &OpenAiTokenService,
+    ) -> Result<ChatGPTAuthRecord, String> {
+        let client_id = account
+            .client_id()
+            .ok_or_else(|| "openai account missing oauth client id".to_string())?;
+        let refreshed = token_service
+            .refresh_access_token(client_id, account.refresh_token())
+            .await
+            .map_err(|err| format!("refresh failed for {}: {err}", account.email))?;
+
+        *account.access_token_mut() = refreshed.access_token;
+        account.set_expiry_timestamp(now_unix() as i64 + refreshed.expires_in);
+        if let Some(refresh_token) = refreshed.refresh_token {
+            *account.refresh_token_mut() = refresh_token;
+        }
         Ok(account)
     }
 }

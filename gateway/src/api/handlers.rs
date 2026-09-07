@@ -202,6 +202,13 @@ pub struct ImportOpenAiFromLocalResponse {
 }
 
 #[derive(Debug, Serialize)]
+pub struct RefreshOpenAiAccountResponse {
+    account_id: String,
+    email: String,
+    expiry_timestamp: i64,
+}
+
+#[derive(Debug, Serialize)]
 pub struct OpenAiDeviceLoginStartResponse {
     login_id: String,
     user_code: String,
@@ -285,6 +292,23 @@ pub async fn import_openai_token(
         imported_count,
         email,
         account_id,
+    }))
+}
+
+pub async fn refresh_openai_account(
+    State(state): State<AppState>,
+    Extension(_scope): Extension<RequestScope>,
+    AxumPath(account_id): AxumPath<String>,
+) -> Result<Json<RefreshOpenAiAccountResponse>, AppError> {
+    let account = state
+        .accounts
+        .refresh(&state.openai_tokens, &account_id)
+        .await
+        .map_err(AppError::bad_request)?;
+    Ok(Json(RefreshOpenAiAccountResponse {
+        account_id: account.id,
+        email: account.email,
+        expiry_timestamp: account.expiry_timestamp,
     }))
 }
 
@@ -1651,6 +1675,7 @@ async fn provider_summary_for_resolved_for_owner(
         base_url: record.base_url.clone(),
         account_id: record.account_id.clone(),
         account_email: None,
+        account_expires_at: None,
     };
     hydrate_provider_summary_for_owner(state, &mut summary).await;
     Ok(summary)
@@ -1660,8 +1685,10 @@ async fn hydrate_provider_summary_for_owner(state: &AppState, provider: &mut Api
     if provider.auth_mode == ProviderAuthMode::Account
         && let Some(account_id) = provider.account_id.as_deref()
     {
-        let account = state.accounts.find_by_id(account_id).await;
-        provider.account_email = account.as_ref().map(|account| account.email.clone());
+        if let Some(account) = state.accounts.find_by_id(account_id).await {
+            provider.account_email = Some(account.email);
+            provider.account_expires_at = Some(account.expiry_timestamp);
+        }
     }
 }
 
