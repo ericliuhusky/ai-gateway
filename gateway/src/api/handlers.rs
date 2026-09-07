@@ -137,8 +137,6 @@ struct CodexAuthTokensFile {
     #[serde(default)]
     refresh_token: Option<String>,
     #[serde(default)]
-    id_token: Option<String>,
-    #[serde(default)]
     account_id: Option<String>,
 }
 
@@ -258,12 +256,7 @@ pub async fn import_openai_token(
             })?;
         let imported = state
             .openai_tokens
-            .import_codex_tokens(
-                tokens.access_token,
-                refresh_token,
-                tokens.id_token,
-                tokens.account_id,
-            )
+            .import_codex_tokens(tokens.access_token, refresh_token, tokens.account_id)
             .map_err(AppError::bad_request)?;
         let has_responses_write = imported
             .scopes
@@ -273,7 +266,7 @@ pub async fn import_openai_token(
 
         let account = state
             .accounts
-            .add_openai_account_for_owner(scope.owner_user_id, imported)
+            .add_openai_account(imported)
             .await
             .map_err(AppError::bad_request)?;
         state
@@ -360,7 +353,7 @@ pub async fn poll_openai_device_login(
                 let email = imported.email.clone();
                 let account = state
                     .accounts
-                    .add_openai_account_for_owner(scope.owner_user_id, imported)
+                    .add_openai_account(imported)
                     .await
                     .map_err(AppError::bad_request)?;
                 state
@@ -505,8 +498,7 @@ pub async fn get_provider_quota(
         provider_summary_for_resolved_for_owner(&state, scope.owner_user_id, &provider).await?;
 
     let quota = if provider.auth_mode == ProviderAuthMode::Account {
-        let account =
-            resolve_account_for_provider_for_owner(&state, scope.owner_user_id, &provider).await?;
+        let account = resolve_account_for_provider_for_owner(&state, &provider).await?;
         let private_usage = PrivateOpenAiRequestBuilder {
             base_url: OPENAI_CODEX_BASE_URL,
             access_token: account.access_token(),
@@ -597,7 +589,7 @@ pub async fn delete_provider(
     {
         state
             .accounts
-            .delete_for_owner(scope.owner_user_id, account_id)
+            .delete(account_id)
             .await
             .map_err(AppError::internal)?;
     }
@@ -820,8 +812,7 @@ async fn responses_inner(
                 routed_provider.name
             )));
         }
-        let account =
-            resolve_account_for_provider_for_owner(&state, owner_user_id, &routed_provider).await?;
+        let account = resolve_account_for_provider_for_owner(&state, &routed_provider).await?;
         let private_responses = PrivateOpenAiRequestBuilder {
             base_url: OPENAI_CODEX_BASE_URL,
             access_token: account.access_token(),
@@ -1351,12 +1342,11 @@ fn decorate_upstream_sse_frame(frame: &str) -> String {
 
 async fn fetch_provider_models(
     state: &AppState,
-    owner_user_id: Option<i64>,
+    _owner_user_id: Option<i64>,
     provider: &ResolvedProvider,
 ) -> Result<ModelListResponse, AppError> {
     if provider.auth_mode == ProviderAuthMode::Account {
-        let account =
-            resolve_account_for_provider_for_owner(state, owner_user_id, provider).await?;
+        let account = resolve_account_for_provider_for_owner(state, provider).await?;
         let client_version = DEFAULT_CODEX_CLIENT_VERSION;
         let private_models = PrivateOpenAiRequestBuilder {
             base_url: OPENAI_CODEX_BASE_URL,
@@ -1622,7 +1612,6 @@ fn resolved_provider_from_record(record: ApiProviderRecord) -> ResolvedProvider 
 
 async fn resolve_account_for_provider_for_owner(
     state: &AppState,
-    owner_user_id: Option<i64>,
     provider: &ResolvedProvider,
 ) -> Result<AccountRecord, AppError> {
     let account_id = provider
@@ -1637,14 +1626,9 @@ async fn resolve_account_for_provider_for_owner(
             ))
         })?;
 
-    let provider_owner_user_id = provider
-        .record
-        .as_ref()
-        .and_then(|record| record.owner_user_id)
-        .or(owner_user_id);
     state
         .accounts
-        .acquire_by_id_for_owner(provider_owner_user_id, &state.openai_tokens, account_id)
+        .acquire_by_id(&state.openai_tokens, account_id)
         .await
         .map_err(AppError::bad_request)
 }
@@ -1659,18 +1643,18 @@ pub(super) fn provider_uses_openai_account(provider: &ResolvedProvider) -> bool 
 
 async fn hydrated_provider_summaries_for_owner(
     state: &AppState,
-    owner_user_id: Option<i64>,
+    _owner_user_id: Option<i64>,
 ) -> Vec<ApiProviderSummary> {
     let mut providers = state.providers.list_for_owner(None).await;
     for provider in &mut providers {
-        hydrate_provider_summary_for_owner(state, owner_user_id, provider).await;
+        hydrate_provider_summary_for_owner(state, provider).await;
     }
     providers
 }
 
 async fn provider_summary_for_resolved_for_owner(
     state: &AppState,
-    owner_user_id: Option<i64>,
+    _owner_user_id: Option<i64>,
     provider: &ResolvedProvider,
 ) -> Result<ApiProviderSummary, AppError> {
     let record = provider
@@ -1685,22 +1669,15 @@ async fn provider_summary_for_resolved_for_owner(
         account_id: record.account_id.clone(),
         account_email: None,
     };
-    hydrate_provider_summary_for_owner(state, owner_user_id, &mut summary).await;
+    hydrate_provider_summary_for_owner(state, &mut summary).await;
     Ok(summary)
 }
 
-async fn hydrate_provider_summary_for_owner(
-    state: &AppState,
-    owner_user_id: Option<i64>,
-    provider: &mut ApiProviderSummary,
-) {
+async fn hydrate_provider_summary_for_owner(state: &AppState, provider: &mut ApiProviderSummary) {
     if provider.auth_mode == ProviderAuthMode::Account
         && let Some(account_id) = provider.account_id.as_deref()
     {
-        let account = state
-            .accounts
-            .find_by_id_for_owner(owner_user_id, account_id)
-            .await;
+        let account = state.accounts.find_by_id(account_id).await;
         provider.account_email = account.as_ref().map(|account| account.email.clone());
     }
 }

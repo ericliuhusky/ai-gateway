@@ -112,20 +112,15 @@ impl OpenAiTokenService {
         &self,
         access_token: String,
         refresh_token: String,
-        id_token: Option<String>,
         account_id_hint: Option<String>,
     ) -> Result<ImportedOpenAIAuth, String> {
         let access_claims = decode_openai_claims(&access_token)?;
-        let id_claims = id_token.as_deref().map(decode_openai_claims).transpose()?;
         let email = openai_email_from_claims(&access_claims)
-            .or_else(|| id_claims.as_ref().and_then(openai_email_from_claims))
             .ok_or_else(|| "无法从粘贴的 Codex Token 中确定邮箱".to_string())?;
         let expiry_timestamp = access_claims
             .exp
             .ok_or_else(|| "OpenAI 访问 Token 缺少 exp 字段".to_string())?;
-        let account_id = openai_account_id_from_claims(&access_claims)
-            .or_else(|| id_claims.as_ref().and_then(openai_account_id_from_claims))
-            .or(account_id_hint);
+        let account_id = openai_account_id_from_claims(&access_claims).or(account_id_hint);
 
         Ok(ImportedOpenAIAuth {
             email,

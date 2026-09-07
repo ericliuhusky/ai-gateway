@@ -1,6 +1,6 @@
 use crate::{
     config::Config,
-    models::{AccountRecord, AccountType, PROVIDER_OPENAI_PROXY},
+    models::{AccountRecord, PROVIDER_OPENAI_PROXY},
     openai_tokens::{ImportedOpenAIAuth, OpenAiTokenService, extract_openai_chatgpt_account_id},
     store::sqlite::SqliteStore,
     support::time::now_unix,
@@ -29,71 +29,57 @@ impl AccountStore {
         Ok(())
     }
 
-    pub async fn add_openai_account_for_owner(
+    pub async fn add_openai_account(
         &self,
-        owner_user_id: Option<i64>,
         imported: ImportedOpenAIAuth,
     ) -> Result<AccountRecord, String> {
         let mut records = self.records.lock().await;
         if records.iter().any(|account| {
-            account.owner_user_id == owner_user_id
-                && account.email == imported.email
-                && account.provider() == PROVIDER_OPENAI_PROXY
+            account.email == imported.email && account.provider() == PROVIDER_OPENAI_PROXY
         }) {
             return Err(format!("OpenAI 账号已经存在: {}", imported.email));
         }
 
         let account = AccountRecord {
             id: Uuid::new_v4().to_string(),
-            account_type: AccountType::Openai,
             email: imported.email,
             access_token: imported.access_token,
             refresh_token: imported.refresh_token,
             expiry_timestamp: imported.expiry_timestamp,
             client_id: Some(imported.client_id),
             upstream_account_id: imported.account_id,
-            owner_user_id,
         };
         self.persist_account(&account)?;
         records.push(account.clone());
         Ok(account)
     }
 
-    pub async fn acquire_by_id_for_owner(
+    pub async fn acquire_by_id(
         &self,
-        owner_user_id: Option<i64>,
         token_service: &OpenAiTokenService,
         account_id: &str,
     ) -> Result<AccountRecord, String> {
         let account = self
-            .find_by_id_for_owner(owner_user_id, account_id)
+            .find_by_id(account_id)
             .await
             .ok_or_else(|| format!("账户不存在: {account_id}"))?;
         self.prepare_account_for_use(account, token_service).await
     }
 
-    pub async fn find_by_id_for_owner(
-        &self,
-        owner_user_id: Option<i64>,
-        account_id: &str,
-    ) -> Option<AccountRecord> {
+    pub async fn find_by_id(&self, account_id: &str) -> Option<AccountRecord> {
         self.records
             .lock()
             .await
             .iter()
-            .find(|account| account.id == account_id && account.owner_user_id == owner_user_id)
+            .find(|account| account.id == account_id)
             .cloned()
     }
 
-    pub async fn delete_for_owner(
-        &self,
-        owner_user_id: Option<i64>,
-        account_id: &str,
-    ) -> Result<AccountRecord, String> {
+    pub async fn delete(&self, account_id: &str) -> Result<AccountRecord, String> {
         let mut records = self.records.lock().await;
         let index = records
             .iter()
-            .position(|account| account.id == account_id && account.owner_user_id == owner_user_id)
+            .position(|account| account.id == account_id)
             .ok_or_else(|| format!("账户不存在: {account_id}"))?;
 
         self.sqlite.delete_account(account_id)?;

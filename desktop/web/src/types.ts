@@ -75,7 +75,6 @@ export interface ProviderQuotaSummary {
 
 export interface OfficialCodexAuthPayload {
   tokens: {
-    id_token?: string;
     access_token: string;
     refresh_token: string;
     account_id?: string;
@@ -83,7 +82,6 @@ export interface OfficialCodexAuthPayload {
 }
 
 export interface CockpitToolsCodexToken {
-  id_token?: string;
   access_token: string;
   refresh_token: string;
   account_id?: string;

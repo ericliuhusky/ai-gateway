@@ -12,12 +12,6 @@ pub enum ProviderAuthMode {
     Account,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum AccountType {
-    Openai,
-}
-
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreateApiProviderRequest {
@@ -199,8 +193,6 @@ pub struct ProviderQuotaResponse {
 pub struct AccountRecord {
     #[serde(default)]
     pub id: String,
-    #[serde(rename = "type", alias = "account_type", alias = "kind")]
-    pub account_type: AccountType,
     pub email: String,
     pub access_token: String,
     pub refresh_token: String,
@@ -209,15 +201,11 @@ pub struct AccountRecord {
     pub client_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", alias = "account_id")]
     pub upstream_account_id: Option<String>,
-    #[serde(skip_serializing)]
-    pub owner_user_id: Option<i64>,
 }
 
 impl AccountRecord {
     pub fn provider(&self) -> &str {
-        match self.account_type {
-            AccountType::Openai => PROVIDER_OPENAI_PROXY,
-        }
+        PROVIDER_OPENAI_PROXY
     }
 
     pub fn access_token(&self) -> &str {

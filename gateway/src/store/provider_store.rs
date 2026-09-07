@@ -180,9 +180,7 @@ impl ProviderStore {
 mod tests {
     use super::ProviderStore;
     use crate::{
-        models::{
-            AccountRecord, AccountType, CreateApiProviderRequest, OPENAI_ACCOUNT_PROVIDER_NAME,
-        },
+        models::{AccountRecord, CreateApiProviderRequest, OPENAI_ACCOUNT_PROVIDER_NAME},
         store::sqlite::SqliteStore,
     };
     use std::{
@@ -199,14 +197,12 @@ mod tests {
             sqlite
                 .upsert_account(&AccountRecord {
                     id: id.to_string(),
-                    account_type: AccountType::Openai,
                     email: format!("{id}@example.com"),
                     access_token: "access".to_string(),
                     refresh_token: "refresh".to_string(),
                     expiry_timestamp: 0,
                     client_id: None,
                     upstream_account_id: None,
-                    owner_user_id: None,
                 })
                 .expect("save account");
         }

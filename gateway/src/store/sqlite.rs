@@ -1,8 +1,8 @@
 use crate::{
     config::Config,
     models::{
-        AccountRecord, AccountType, ApiProviderRecord, CachedProviderModels, GatewayIssue,
-        GatewayIssueRecord, ProviderAuthMode, SelectedRoute,
+        AccountRecord, ApiProviderRecord, CachedProviderModels, GatewayIssue, GatewayIssueRecord,
+        ProviderAuthMode, SelectedRoute,
     },
 };
 use rusqlite::{Connection, OptionalExtension, params};
@@ -48,7 +48,7 @@ impl SqliteStore {
         }
         let mut stmt = conn
             .prepare(
-                "SELECT id, account_type, email, access_token, refresh_token, expiry_timestamp, client_id, upstream_account_id, owner_user_id
+                "SELECT id, email, access_token, refresh_token, expiry_timestamp, client_id, upstream_account_id
                  FROM accounts
                  ORDER BY rowid ASC",
             )
@@ -57,15 +57,12 @@ impl SqliteStore {
             .query_map([], move |row| {
                 Ok(AccountRecord {
                     id: row.get(0)?,
-                    account_type: account_type_from_str(&row.get::<_, String>(1)?)
-                        .map_err(rusqlite::Error::ToSqlConversionFailure)?,
-                    email: row.get(2)?,
-                    access_token: row.get(3)?,
-                    refresh_token: row.get(4)?,
-                    expiry_timestamp: row.get(5)?,
-                    client_id: row.get(6)?,
-                    upstream_account_id: row.get(7)?,
-                    owner_user_id: row.get(8)?,
+                    email: row.get(1)?,
+                    access_token: row.get(2)?,
+                    refresh_token: row.get(3)?,
+                    expiry_timestamp: row.get(4)?,
+                    client_id: row.get(5)?,
+                    upstream_account_id: row.get(6)?,
                 })
             })
             .map_err(|err| format!("query accounts failed: {err}"))?;
@@ -372,14 +369,12 @@ impl SqliteStore {
 
             CREATE TABLE IF NOT EXISTS accounts (
                 id TEXT PRIMARY KEY,
-                account_type TEXT NOT NULL,
                 email TEXT NOT NULL,
                 access_token TEXT NOT NULL,
                 refresh_token TEXT NOT NULL,
                 expiry_timestamp INTEGER NOT NULL,
                 client_id TEXT,
-                upstream_account_id TEXT,
-                owner_user_id INTEGER
+                upstream_account_id TEXT
             );
 
             CREATE TABLE IF NOT EXISTS providers (
@@ -433,7 +428,7 @@ impl SqliteStore {
             ",
         )
         .map_err(|err| format!("initialize sqlite schema failed: {err}"))?;
-        add_column_if_missing(&conn, "accounts", "owner_user_id INTEGER")?;
+        drop_legacy_account_columns(&conn)?;
         add_column_if_missing(
             &conn,
             "gateway_state",
@@ -446,10 +441,9 @@ impl SqliteStore {
         drop_provider_compatibility_profile(&conn)?;
         migrate_gateway_issue_payloads(&conn)?;
         conn.execute_batch(
-            "CREATE INDEX IF NOT EXISTS idx_accounts_owner_user_id ON accounts(owner_user_id);
-             CREATE INDEX IF NOT EXISTS idx_providers_owner_user_id ON providers(owner_user_id);",
+            "CREATE INDEX IF NOT EXISTS idx_providers_owner_user_id ON providers(owner_user_id);",
         )
-        .map_err(|err| format!("create ownership indexes failed: {err}"))?;
+        .map_err(|err| format!("create provider ownership index failed: {err}"))?;
         Ok(())
     }
 
@@ -478,6 +472,20 @@ fn add_column_if_missing(conn: &Connection, table: &str, definition: &str) -> Re
             "add column `{definition}` to `{table}` failed: {error}"
         )),
     }
+}
+
+fn drop_legacy_account_columns(conn: &Connection) -> Result<(), String> {
+    conn.execute("DROP INDEX IF EXISTS idx_accounts_owner_user_id", [])
+        .map_err(|err| format!("remove account ownership index failed: {err}"))?;
+    if table_has_column(conn, "accounts", "account_type")? {
+        conn.execute("ALTER TABLE accounts DROP COLUMN account_type", [])
+            .map_err(|err| format!("remove account type failed: {err}"))?;
+    }
+    if table_has_column(conn, "accounts", "owner_user_id")? {
+        conn.execute("ALTER TABLE accounts DROP COLUMN owner_user_id", [])
+            .map_err(|err| format!("remove account owner failed: {err}"))?;
+    }
+    Ok(())
 }
 
 // Legacy databases may still contain the removed instance_id column. The
@@ -577,27 +585,23 @@ fn gateway_issue_from_row(row: &rusqlite::Row<'_>) -> Result<GatewayIssue, rusql
 fn upsert_account_record(conn: &Connection, account: &AccountRecord) -> Result<(), String> {
     conn.execute(
         "INSERT INTO accounts (
-            id, account_type, email, access_token, refresh_token, expiry_timestamp, client_id, upstream_account_id, owner_user_id
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            id, email, access_token, refresh_token, expiry_timestamp, client_id, upstream_account_id
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
          ON CONFLICT(id) DO UPDATE SET
-            account_type = excluded.account_type,
             email = excluded.email,
             access_token = excluded.access_token,
             refresh_token = excluded.refresh_token,
             expiry_timestamp = excluded.expiry_timestamp,
             client_id = excluded.client_id,
-            upstream_account_id = excluded.upstream_account_id,
-            owner_user_id = excluded.owner_user_id",
+            upstream_account_id = excluded.upstream_account_id",
         params![
             account.id,
-            account_type_to_str(&account.account_type),
             account.email,
             account.access_token,
             account.refresh_token,
             account.expiry_timestamp,
             account.client_id,
-            account.upstream_account_id,
-            account.owner_user_id
+            account.upstream_account_id
         ],
     )
     .map_err(|err| format!("upsert account failed: {err}"))?;
@@ -638,21 +642,6 @@ fn upsert_provider_record(conn: &Connection, provider: &ApiProviderRecord) -> Re
     Ok(())
 }
 
-fn account_type_to_str(value: &AccountType) -> &'static str {
-    match value {
-        AccountType::Openai => "openai",
-    }
-}
-
-fn account_type_from_str(
-    value: &str,
-) -> Result<AccountType, Box<dyn std::error::Error + Send + Sync>> {
-    match value {
-        "openai" => Ok(AccountType::Openai),
-        other => Err(format!("unknown account_type: {other}").into()),
-    }
-}
-
 fn provider_auth_mode_to_str(value: &ProviderAuthMode) -> &'static str {
     match value {
         ProviderAuthMode::ApiKey => "api_key",
@@ -674,8 +663,7 @@ fn provider_auth_mode_from_str(
 mod tests {
     use super::SqliteStore;
     use crate::models::{
-        AccountRecord, AccountType, ApiProviderRecord, CachedProviderModels, ProviderAuthMode,
-        SelectedRoute,
+        AccountRecord, ApiProviderRecord, CachedProviderModels, ProviderAuthMode, SelectedRoute,
     };
     use rusqlite::Connection;
     use std::{
@@ -730,14 +718,12 @@ mod tests {
         let store = SqliteStore::for_test(db_path.clone()).expect("create compact database");
         let account = AccountRecord {
             id: "account-1".to_string(),
-            account_type: AccountType::Openai,
             email: "account@example.com".to_string(),
             access_token: "access".to_string(),
             refresh_token: "refresh".to_string(),
             expiry_timestamp: 1,
             client_id: Some("client".to_string()),
             upstream_account_id: Some("upstream".to_string()),
-            owner_user_id: None,
         };
         store.upsert_account(&account).expect("save account");
         let provider = ApiProviderRecord {
@@ -771,14 +757,12 @@ mod tests {
         let store = SqliteStore::for_test(db_path.clone()).expect("create database");
         let account = AccountRecord {
             id: "account-1".to_string(),
-            account_type: AccountType::Openai,
             email: "account@example.com".to_string(),
             access_token: "access-secret".to_string(),
             refresh_token: "refresh-secret".to_string(),
             expiry_timestamp: 1,
             client_id: None,
             upstream_account_id: None,
-            owner_user_id: None,
         };
         store.upsert_account(&account).expect("save account");
         store
