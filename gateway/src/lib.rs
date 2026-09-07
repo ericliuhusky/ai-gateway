@@ -10,28 +10,19 @@ mod store;
 mod support;
 mod upstream;
 
-use api::{AppState, build_management_router, build_router};
+use api::{AppState, build_router};
 use config::Config;
 use openai_device_login::OpenAiDeviceLoginService;
 use openai_tokens::OpenAiTokenService;
 use reqwest::Client;
 use std::{
     env, fs,
-    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::Command,
     sync::Arc,
 };
 
-use axum::{
-    Router,
-    http::{Method, header::ACCEPT},
-};
-use hyper_util::{
-    rt::{TokioExecutor, TokioIo},
-    server::conn::auto::Builder as HyperServerBuilder,
-    service::TowerToHyperService,
-};
+use axum::http::{Method, header::ACCEPT};
 use serde_json::Value;
 use store::{AccountStore, IssueStore, ModelStore, ProviderStore, RouteStore};
 use upstream::UpstreamClient;
@@ -42,32 +33,17 @@ pub use models::ProviderCompatibilityProfile;
 pub const LOCAL_GATEWAY_URL: &str = "http://127.0.0.1:42401/v1";
 pub const LOCAL_API_ROOT: &str = "http://127.0.0.1:42401";
 
-/// Client for the daemon's private Unix-domain-socket control API.
-///
-/// This client is owned by the desktop process and is reached through Tauri
-/// `invoke`; the WebView never receives a TCP management endpoint.
+/// Client for the daemon's local HTTP management API.
 #[derive(Clone)]
 pub struct GatewayDaemonClient {
-    control_socket: std::path::PathBuf,
     client: Client,
 }
 
 impl GatewayDaemonClient {
     pub fn local() -> Result<Self, String> {
-        let config = Config::local()?;
-        let control_socket = config.control_socket_path();
-        let client = Client::builder()
-            .unix_socket(control_socket.clone())
-            .build()
-            .map_err(|error| format!("创建本机控制连接失败：{error}"))?;
         Ok(Self {
-            control_socket,
-            client,
+            client: Client::new(),
         })
-    }
-
-    pub fn control_socket_path(&self) -> &std::path::Path {
-        &self.control_socket
     }
 
     pub async fn request(
@@ -88,7 +64,7 @@ impl GatewayDaemonClient {
             return Err("本机请求路径无效".to_string());
         }
 
-        let url = format!("http://localhost{path}");
+        let url = format!("{LOCAL_API_ROOT}{path}");
         let mut request = self
             .client
             .request(method, url)
@@ -124,9 +100,13 @@ impl GatewayDaemonClient {
     }
 
     pub async fn is_ready(&self) -> bool {
-        self.request("GET".to_string(), "/control/status".to_string(), None)
-            .await
-            .is_ok()
+        self.request(
+            "GET".to_string(),
+            "/management/control/status".to_string(),
+            None,
+        )
+        .await
+        .is_ok()
     }
 }
 
@@ -263,82 +243,26 @@ fn path_str(path: &Path) -> Result<&str, String> {
 
 pub async fn local_gateway_is_healthy() -> bool {
     Client::new()
-        .get(format!("{LOCAL_API_ROOT}/healthz"))
+        .get(format!("{LOCAL_API_ROOT}/management/healthz"))
         .send()
         .await
         .is_ok_and(|response| response.status().is_success())
 }
 
-/// Runs the persistent local daemon. The OpenAI-compatible data plane is
-/// bound to loopback TCP, while management is served only over a user-owned
-/// Unix domain socket.
+/// Runs the persistent local daemon over loopback HTTP.
 pub async fn serve_gateway() -> Result<(), String> {
     let state = initialize_local_gateway().await?;
     let listen_addr = gateway_listen_addr();
     let tcp_listener = tokio::net::TcpListener::bind(&listen_addr)
         .await
         .map_err(|error| format!("无法启动 Gateway 服务 ({listen_addr})：{error}"))?;
-    let control_socket = control_socket_path()?;
-    let unix_listener = bind_control_socket(&control_socket).await?;
-
-    let gateway = axum::serve(tcp_listener, build_router(state.clone()));
-    let management = serve_control_socket(unix_listener, build_management_router(state));
-    let result = tokio::try_join!(
-        async {
-            gateway
-                .await
-                .map_err(|error| format!("Gateway 服务已停止：{error}"))
-        },
-        management,
-    );
-    let _ = fs::remove_file(&control_socket);
-    result.map(|_| ())
+    axum::serve(tcp_listener, build_router(state))
+        .await
+        .map_err(|error| format!("Gateway 服务已停止：{error}"))
 }
 
 fn gateway_listen_addr() -> String {
     env::var("AI_GATEWAY_LISTEN_ADDR").unwrap_or_else(|_| "127.0.0.1:42401".to_string())
-}
-
-pub fn control_socket_path() -> Result<PathBuf, String> {
-    Ok(Config::local()?.control_socket_path())
-}
-
-async fn serve_control_socket(
-    listener: tokio::net::UnixListener,
-    router: Router,
-) -> Result<(), String> {
-    loop {
-        let (stream, _) = listener
-            .accept()
-            .await
-            .map_err(|error| format!("接受本机 Gateway 控制连接失败：{error}"))?;
-        let service = TowerToHyperService::new(router.clone());
-        tokio::spawn(async move {
-            let result = HyperServerBuilder::new(TokioExecutor::new())
-                .serve_connection(TokioIo::new(stream), service)
-                .await;
-            if let Err(error) = result {
-                eprintln!("本机 Gateway 控制连接已停止：{error}");
-            }
-        });
-    }
-}
-
-async fn bind_control_socket(path: &std::path::Path) -> Result<tokio::net::UnixListener, String> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| "本机控制 Socket 路径无效".to_string())?;
-    fs::create_dir_all(parent).map_err(|error| format!("创建本机控制目录失败：{error}"))?;
-    match fs::remove_file(path) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(format!("清理旧本机控制 Socket 失败：{error}")),
-    }
-    let listener = tokio::net::UnixListener::bind(path)
-        .map_err(|error| format!("无法启动本机 Gateway 控制服务：{error}"))?;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
-        .map_err(|error| format!("设置本机控制 Socket 权限失败：{error}"))?;
-    Ok(listener)
 }
 
 async fn initialize_local_gateway() -> Result<AppState, String> {

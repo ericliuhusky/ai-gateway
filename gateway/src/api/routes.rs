@@ -23,20 +23,17 @@ use axum::{
 // definitions, which exceed Axum's 2 MiB default body limit.
 const RESPONSES_REQUEST_BODY_LIMIT: usize = 32 * 1024 * 1024;
 
-/// HTTP routes that must remain reachable by the local Codex client.
-///
-/// The desktop management API deliberately does not live here: it is exposed
-/// only over the daemon's private Unix socket via [`build_management_router`].
+/// HTTP routes exposed by the local Gateway.
 pub fn build_router(state: AppState) -> Router {
     Router::new()
-        .route("/healthz", get(healthz))
-        .merge(gateway_router(state))
+        .merge(gateway_router(state.clone()))
+        .merge(build_management_router(state))
 }
 
-/// Private management router. It is never bound to a TCP listener; the daemon
-/// serves it through a user-owned Unix domain socket.
+/// Management routes exposed under the `/management` namespace.
 pub fn build_management_router(state: AppState) -> Router {
-    Router::new()
+    let management_routes = Router::new()
+        .route("/healthz", get(healthz))
         .route("/control/status", get(gateway_status))
         .route("/accounts/openai/import-token", post(import_openai_token))
         .route(
@@ -71,15 +68,13 @@ pub fn build_management_router(state: AppState) -> Router {
                 .put(set_selected_reasoning_effort)
                 .delete(clear_selected_reasoning_effort),
         )
-        // The UI needs model discovery too; its HTTP endpoint remains available
-        // in `gateway_router` for Codex compatibility.
-        .route("/v1/models", get(list_models))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             management_runtime_scope,
         ))
         .route_layer(middleware::from_fn(local_scope))
-        .with_state(state)
+        .with_state(state);
+    Router::new().nest("/management", management_routes)
 }
 
 fn gateway_router(state: AppState) -> Router {
@@ -101,7 +96,8 @@ async fn management_runtime_scope(
     next: Next,
 ) -> Response {
     let path = request.uri().path();
-    let allowed_while_stopped = matches!(path, "/control/status");
+    let allowed_while_stopped =
+        matches!(path, "/management/healthz" | "/management/control/status");
     if state.gateway_runtime.enabled() || allowed_while_stopped {
         next.run(request).await
     } else {
@@ -130,7 +126,7 @@ async fn local_scope(mut request: Request, next: Next) -> Response {
 
 #[cfg(test)]
 mod tests {
-    use super::{RESPONSES_REQUEST_BODY_LIMIT, build_management_router, build_router};
+    use super::{RESPONSES_REQUEST_BODY_LIMIT, build_router};
     use crate::{
         api::AppState,
         config::Config,
@@ -200,7 +196,6 @@ mod tests {
             .set_provider(Some(provider.id.clone()))
             .await
             .expect("select local provider");
-        let management_router = build_management_router(state.clone());
         let router = build_router(state);
 
         let externally_visible_management_response = router
@@ -213,18 +208,22 @@ mod tests {
             StatusCode::NOT_FOUND
         );
 
-        let providers_response = management_router
+        let providers_response = router
             .clone()
-            .oneshot(request(Method::GET, "/providers", Body::empty()))
+            .oneshot(request(Method::GET, "/management/providers", Body::empty()))
             .await
-            .expect("list providers over private management router");
+            .expect("list providers over management HTTP route");
         assert_eq!(providers_response.status(), StatusCode::OK);
 
-        let readiness_response = management_router
+        let readiness_response = router
             .clone()
-            .oneshot(request(Method::GET, "/control/status", Body::empty()))
+            .oneshot(request(
+                Method::GET,
+                "/management/control/status",
+                Body::empty(),
+            ))
             .await
-            .expect("daemon readiness response");
+            .expect("daemon readiness response over management HTTP route");
         assert_eq!(readiness_response.status(), StatusCode::OK);
 
         let response = router

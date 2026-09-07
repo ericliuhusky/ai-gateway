@@ -22,9 +22,8 @@ cargo build
 启动客户端后：
 
 - Gateway 只监听 `127.0.0.1:42401`；
-- UI 通过 Tauri `invoke` 调用 Rust，再经私有 Unix Socket 管理后台 Gateway；
+- UI 通过 Tauri `invoke` 调用 Rust，再经本机 HTTP 管理接口管理后台 Gateway；
 - 运行数据保存在 `~/Library/Application Support/AI Gateway/db.sqlite`；
-- 私有控制 Socket 位于 `~/Library/Application Support/AI Gateway/control/gateway.sock`；
 - 默认 Codex 的配置保留在当前 Mac；
 - 退出客户端不会停止 Gateway；Codex 可继续使用本机网关。
 
@@ -34,7 +33,7 @@ cargo build
 
 `gateway/` 既提供共享 API crate，也构建为内部使用的 `ai-gateway-daemon` 二进制。开发时，执行 `cargo run` 会自动构建并携带该二进制；发布时，Tauri 会将它作为 sidecar 打包进客户端。客户端会将该二进制注册为 LaunchAgent 并自动启动，用户不需要手动运行任何 Gateway 命令。
 
-Gateway 对 TCP 只暴露 `/healthz` 和 `/v1/*`；供应商、账号等管理操作只在当前用户可访问的 Unix Socket 上提供，并由 Tauri `invoke` 间接调用，不构建或托管 Web UI。
+Gateway 对 TCP 暴露 `/v1/*` 和 `/management/*`；前者用于 LLM 请求，后者用于本机管理操作。管理接口只绑定本机回环地址，并由 Tauri `invoke` 间接调用，不构建或托管 Web UI。
 
 ## 验证
 

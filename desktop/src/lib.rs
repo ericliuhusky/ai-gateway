@@ -59,9 +59,9 @@ async fn ensure_gateway_daemon() -> Result<gateway::GatewayDaemonClient, String>
         thread::sleep(DAEMON_READY_POLL_INTERVAL);
     }
     Err(format!(
-        "Gateway 服务未在 {} 秒内就绪；控制 Socket：{}",
+        "Gateway 服务未在 {} 秒内就绪；本机 HTTP 地址：{}",
         DAEMON_READY_TIMEOUT.as_secs(),
-        gateway.control_socket_path().display()
+        gateway::LOCAL_API_ROOT
     ))
 }
 
@@ -89,7 +89,7 @@ fn gateway_daemon_path_from_desktop(desktop: &Path) -> Result<PathBuf, String> {
 }
 
 /// The WebView invokes this command. Rust then talks to the persistent daemon
-/// through its private Unix socket; no management HTTP endpoint is exposed.
+/// through its local HTTP management API.
 #[tauri::command]
 async fn gateway_request(
     gateway: State<'_, gateway::GatewayDaemonClient>,

@@ -5,7 +5,6 @@ pub const DEFAULT_CODEX_CLIENT_VERSION: &str = "0.153.4";
 #[derive(Clone)]
 pub struct Config {
     data_dir: PathBuf,
-    control_dir: PathBuf,
 }
 
 impl Config {
@@ -17,11 +16,7 @@ impl Config {
             .join("Library")
             .join("Application Support")
             .join("AI Gateway");
-        let control_dir = data_dir.join("control");
-        Ok(Self {
-            data_dir,
-            control_dir,
-        })
+        Ok(Self { data_dir })
     }
 
     pub fn data_dir(&self) -> PathBuf {
@@ -32,30 +27,8 @@ impl Config {
         self.data_dir.join("db.sqlite")
     }
 
-    pub fn control_socket_path(&self) -> PathBuf {
-        self.control_dir.join("gateway.sock")
-    }
-
     #[cfg(test)]
     pub fn for_test(data_dir: PathBuf) -> Self {
-        Self {
-            control_dir: data_dir.join("control"),
-            data_dir,
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::Config;
-    use std::path::PathBuf;
-
-    #[test]
-    fn control_socket_is_stored_with_application_data() {
-        let config = Config::for_test(PathBuf::from("/tmp/AI Gateway"));
-        assert_eq!(
-            config.control_socket_path(),
-            PathBuf::from("/tmp/AI Gateway/control/gateway.sock")
-        );
+        Self { data_dir }
     }
 }

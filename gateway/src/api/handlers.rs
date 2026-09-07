@@ -91,10 +91,9 @@ pub async fn healthz() -> &'static str {
     "ok"
 }
 
-/// Private daemon readiness probe used by the desktop process.
+/// Local daemon readiness probe exposed under the HTTP management namespace.
 ///
-/// This endpoint exists only on the Unix-domain management socket. It must
-/// remain available even when the Gateway data plane is stopped.
+/// It remains available even when the Gateway data plane is stopped.
 pub async fn gateway_status() -> Json<Value> {
     Json(json!({ "status": "ok" }))
 }
