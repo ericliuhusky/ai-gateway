@@ -1,7 +1,4 @@
-mod request_policy;
-
 use crate::models::{ApiProviderRecord, ProviderAuthMode};
-use request_policy::sanitize_codex_request_body;
 
 #[derive(Debug)]
 pub enum ResponsesAdapterError {
@@ -41,8 +38,6 @@ pub fn prepare_responses_upstream(
     request_stream: bool,
 ) -> Result<PreparedResponsesUpstream, ResponsesAdapterError> {
     if provider.auth_mode == ProviderAuthMode::Account && provider.uses_openai_account {
-        let request_body =
-            sanitize_codex_request_body(request_body).map_err(ResponsesAdapterError::BadRequest)?;
         return Ok(
             PreparedResponsesUpstream::OpenAiAccountResponsesPassthrough(
                 PreparedResponsesPassthrough {
@@ -127,7 +122,7 @@ mod tests {
     }
 
     #[test]
-    fn api_provider_preserves_response_tools() {
+    fn api_provider_passes_response_body_through_unchanged() {
         let provider = api_provider("https://example.com/v1");
         let body = json!({
             "model": "external/gpt-5.5",
@@ -186,7 +181,7 @@ mod tests {
     }
 
     #[test]
-    fn removes_non_replayable_reasoning_for_openai_account_requests() {
+    fn codex_account_passes_response_body_through_unchanged() {
         let body = json!({
             "model": "gpt-test",
             "input": [
@@ -235,16 +230,6 @@ mod tests {
         else {
             panic!("expected OpenAI account passthrough");
         };
-        let adapted: serde_json::Value = serde_json::from_str(&prepared.request_body).unwrap();
-
-        assert_eq!(adapted["input"].as_array().unwrap().len(), 4);
-        assert_eq!(
-            adapted["input"][0]["content"][0]["text"],
-            body["input"][0]["content"][0]["text"]
-        );
-        assert_eq!(
-            adapted["input"][3]["content"][0]["text"],
-            body["input"][4]["content"][0]["text"]
-        );
+        assert_eq!(prepared.request_body, body.to_string());
     }
 }
