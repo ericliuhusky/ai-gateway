@@ -15,11 +15,11 @@ pub struct OpenAiTokenService {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-struct TokenResponse {
-    access_token: String,
-    expires_in: i64,
+pub struct TokenResponse {
+    pub access_token: String,
+    pub expires_in: i64,
     #[serde(default)]
-    refresh_token: Option<String>,
+    pub refresh_token: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -43,7 +43,7 @@ impl OpenAiTokenService {
         &self,
         client_id: &str,
         refresh_token: &str,
-    ) -> Result<RefreshedOpenAiToken, String> {
+    ) -> Result<TokenResponse, String> {
         let params = [
             ("client_id", client_id),
             ("refresh_token", refresh_token),
@@ -67,11 +67,7 @@ impl OpenAiTokenService {
             .json::<TokenResponse>()
             .await
             .map_err(|err| format!("解析 OpenAI 刷新响应失败：{err}"))?;
-        Ok(RefreshedOpenAiToken {
-            access_token: token.access_token,
-            expires_in: token.expires_in,
-            refresh_token: token.refresh_token,
-        })
+        Ok(token)
     }
 
     pub fn import_codex_tokens(
@@ -104,13 +100,6 @@ impl OpenAiTokenService {
     pub fn refresh_needed(&self, expiry_timestamp: i64) -> bool {
         expiry_timestamp <= now_unix() as i64 + TOKEN_REFRESH_SKEW_SECONDS
     }
-}
-
-#[derive(Debug, Clone)]
-pub struct RefreshedOpenAiToken {
-    pub access_token: String,
-    pub expires_in: i64,
-    pub refresh_token: Option<String>,
 }
 
 fn decode_openai_claims(token: &str) -> Result<OpenAITokenClaims, String> {
