@@ -502,7 +502,7 @@ pub async fn get_provider_quota(
         let private_usage = PrivateOpenAiRequestBuilder {
             base_url: OPENAI_CODEX_BASE_URL,
             access_token: account.access_token(),
-            account_id: account.upstream_account_id(),
+            account_id: account.account_id(),
             client_version: None,
         };
         let upstream = state
@@ -816,7 +816,7 @@ async fn responses_inner(
         let private_responses = PrivateOpenAiRequestBuilder {
             base_url: OPENAI_CODEX_BASE_URL,
             access_token: account.access_token(),
-            account_id: account.upstream_account_id(),
+            account_id: account.account_id(),
             client_version: None,
         };
         responses_passthrough_inner(
@@ -1351,7 +1351,7 @@ async fn fetch_provider_models(
         let private_models = PrivateOpenAiRequestBuilder {
             base_url: OPENAI_CODEX_BASE_URL,
             access_token: account.access_token(),
-            account_id: account.upstream_account_id(),
+            account_id: account.account_id(),
             client_version: Some(client_version),
         };
         let upstream = state

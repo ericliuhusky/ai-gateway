@@ -47,7 +47,7 @@ impl AccountStore {
             refresh_token: imported.refresh_token,
             expiry_timestamp: imported.expiry_timestamp,
             client_id: Some(imported.client_id),
-            upstream_account_id: imported.account_id,
+            account_id: imported.account_id,
         };
         self.persist_account(&account)?;
         records.push(account.clone());
@@ -121,8 +121,7 @@ impl AccountStore {
                     if let Some(refresh_token) = refreshed.refresh_token {
                         *account.refresh_token_mut() = refresh_token;
                     }
-                    account.upstream_account_id =
-                        extract_openai_chatgpt_account_id(account.access_token());
+                    account.account_id = extract_openai_chatgpt_account_id(account.access_token());
                 }
                 Err(err) => {
                     return Err(format!("refresh failed for {}: {err}", account.email));
@@ -130,8 +129,8 @@ impl AccountStore {
             }
         }
 
-        if account.provider() == PROVIDER_OPENAI_PROXY && account.upstream_account_id.is_none() {
-            account.upstream_account_id = extract_openai_chatgpt_account_id(account.access_token());
+        if account.provider() == PROVIDER_OPENAI_PROXY && account.account_id.is_none() {
+            account.account_id = extract_openai_chatgpt_account_id(account.access_token());
         }
 
         self.update_account(account.clone()).await?;

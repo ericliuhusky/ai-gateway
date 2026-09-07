@@ -48,7 +48,7 @@ impl SqliteStore {
         }
         let mut stmt = conn
             .prepare(
-                "SELECT id, email, access_token, refresh_token, expiry_timestamp, client_id, upstream_account_id
+                "SELECT id, email, access_token, refresh_token, expiry_timestamp, client_id, account_id
                  FROM accounts
                  ORDER BY rowid ASC",
             )
@@ -62,7 +62,7 @@ impl SqliteStore {
                     refresh_token: row.get(3)?,
                     expiry_timestamp: row.get(4)?,
                     client_id: row.get(5)?,
-                    upstream_account_id: row.get(6)?,
+                    account_id: row.get(6)?,
                 })
             })
             .map_err(|err| format!("query accounts failed: {err}"))?;
@@ -374,7 +374,7 @@ impl SqliteStore {
                 refresh_token TEXT NOT NULL,
                 expiry_timestamp INTEGER NOT NULL,
                 client_id TEXT,
-                upstream_account_id TEXT
+                account_id TEXT
             );
 
             CREATE TABLE IF NOT EXISTS providers (
@@ -429,6 +429,7 @@ impl SqliteStore {
         )
         .map_err(|err| format!("initialize sqlite schema failed: {err}"))?;
         drop_legacy_account_columns(&conn)?;
+        rename_legacy_account_id_column(&conn)?;
         add_column_if_missing(
             &conn,
             "gateway_state",
@@ -484,6 +485,19 @@ fn drop_legacy_account_columns(conn: &Connection) -> Result<(), String> {
     if table_has_column(conn, "accounts", "owner_user_id")? {
         conn.execute("ALTER TABLE accounts DROP COLUMN owner_user_id", [])
             .map_err(|err| format!("remove account owner failed: {err}"))?;
+    }
+    Ok(())
+}
+
+fn rename_legacy_account_id_column(conn: &Connection) -> Result<(), String> {
+    if table_has_column(conn, "accounts", "upstream_account_id")?
+        && !table_has_column(conn, "accounts", "account_id")?
+    {
+        conn.execute(
+            "ALTER TABLE accounts RENAME COLUMN upstream_account_id TO account_id",
+            [],
+        )
+        .map_err(|err| format!("rename account id column failed: {err}"))?;
     }
     Ok(())
 }
@@ -585,7 +599,7 @@ fn gateway_issue_from_row(row: &rusqlite::Row<'_>) -> Result<GatewayIssue, rusql
 fn upsert_account_record(conn: &Connection, account: &AccountRecord) -> Result<(), String> {
     conn.execute(
         "INSERT INTO accounts (
-            id, email, access_token, refresh_token, expiry_timestamp, client_id, upstream_account_id
+            id, email, access_token, refresh_token, expiry_timestamp, client_id, account_id
          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
          ON CONFLICT(id) DO UPDATE SET
             email = excluded.email,
@@ -593,7 +607,7 @@ fn upsert_account_record(conn: &Connection, account: &AccountRecord) -> Result<(
             refresh_token = excluded.refresh_token,
             expiry_timestamp = excluded.expiry_timestamp,
             client_id = excluded.client_id,
-            upstream_account_id = excluded.upstream_account_id",
+            account_id = excluded.account_id",
         params![
             account.id,
             account.email,
@@ -601,7 +615,7 @@ fn upsert_account_record(conn: &Connection, account: &AccountRecord) -> Result<(
             account.refresh_token,
             account.expiry_timestamp,
             account.client_id,
-            account.upstream_account_id
+            account.account_id
         ],
     )
     .map_err(|err| format!("upsert account failed: {err}"))?;
@@ -723,7 +737,7 @@ mod tests {
             refresh_token: "refresh".to_string(),
             expiry_timestamp: 1,
             client_id: Some("client".to_string()),
-            upstream_account_id: Some("upstream".to_string()),
+            account_id: Some("upstream".to_string()),
         };
         store.upsert_account(&account).expect("save account");
         let provider = ApiProviderRecord {
@@ -762,7 +776,7 @@ mod tests {
             refresh_token: "refresh-secret".to_string(),
             expiry_timestamp: 1,
             client_id: None,
-            upstream_account_id: None,
+            account_id: None,
         };
         store.upsert_account(&account).expect("save account");
         store

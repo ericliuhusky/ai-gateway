@@ -202,7 +202,7 @@ mod tests {
                     refresh_token: "refresh".to_string(),
                     expiry_timestamp: 0,
                     client_id: None,
-                    upstream_account_id: None,
+                    account_id: None,
                 })
                 .expect("save account");
         }

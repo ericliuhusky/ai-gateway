@@ -199,8 +199,8 @@ pub struct AccountRecord {
     pub expiry_timestamp: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", alias = "account_id")]
-    pub upstream_account_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", alias = "upstream_account_id")]
+    pub account_id: Option<String>,
 }
 
 impl AccountRecord {
@@ -232,7 +232,7 @@ impl AccountRecord {
         self.client_id.as_deref()
     }
 
-    pub fn upstream_account_id(&self) -> Option<&str> {
-        self.upstream_account_id.as_deref()
+    pub fn account_id(&self) -> Option<&str> {
+        self.account_id.as_deref()
     }
 }
