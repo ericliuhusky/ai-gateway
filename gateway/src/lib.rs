@@ -1,4 +1,3 @@
-mod adapters;
 mod api;
 mod config;
 mod control;

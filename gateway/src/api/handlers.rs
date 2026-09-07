@@ -1,8 +1,4 @@
 use crate::{
-    adapters::responses::{
-        PreparedResponsesUpstream, ResponsesAdapterError, ResponsesAdapterProvider,
-        prepare_responses_upstream,
-    },
     api::RequestScope,
     config::{Config, DEFAULT_CODEX_CLIENT_VERSION},
     models::openai::responses::{
@@ -817,52 +813,46 @@ async fn responses_inner(
     };
     let failure_context =
         GatewayFailureContext::new(owner_user_id, &routed_provider, &request_json);
-    let prepared = prepare_responses_upstream(
-        ResponsesAdapterProvider {
-            name: routed_provider.name.clone(),
-            auth_mode: routed_provider.auth_mode.clone(),
-            record: routed_provider.record.clone(),
-            uses_openai_account: provider_uses_openai_account(&routed_provider),
-        },
-        request_body,
-        request_stream,
-    )
-    .map_err(adapter_error_to_app_error)?;
-    let response = match prepared {
-        PreparedResponsesUpstream::OpenAiAccountResponsesPassthrough(prepared) => {
-            let account =
-                resolve_account_for_provider_for_owner(&state, owner_user_id, &routed_provider)
-                    .await?;
-            let private_responses = PrivateOpenAiRequestBuilder {
-                base_url: OPENAI_CODEX_BASE_URL,
-                access_token: account.access_token(),
-                account_id: account.upstream_account_id(),
-                client_version: None,
-            };
-            responses_passthrough_inner(
-                state,
-                private_responses,
-                prepared.request_stream,
-                prepared.request_body,
-                failure_context.with_base_url(OPENAI_CODEX_BASE_URL),
-            )
-            .await?
+    let response = if routed_provider.auth_mode == ProviderAuthMode::Account {
+        if !provider_uses_openai_account(&routed_provider) {
+            return Err(AppError::bad_request(format!(
+                "账户认证供应商 `{}` 暂不支持",
+                routed_provider.name
+            )));
         }
-        PreparedResponsesUpstream::ApiResponsesPassthrough(prepared) => {
-            let public_responses = PublicOpenAiRequestBuilder {
-                base_url: prepared.provider.base_url.as_str(),
-                api_key: prepared.provider.api_key.as_str(),
-            };
-            let failure_context = failure_context.with_base_url(public_responses.base_url());
-            responses_passthrough_inner(
-                state,
-                public_responses,
-                prepared.request_stream,
-                prepared.request_body,
-                failure_context,
-            )
-            .await?
-        }
+        let account =
+            resolve_account_for_provider_for_owner(&state, owner_user_id, &routed_provider).await?;
+        let private_responses = PrivateOpenAiRequestBuilder {
+            base_url: OPENAI_CODEX_BASE_URL,
+            access_token: account.access_token(),
+            account_id: account.upstream_account_id(),
+            client_version: None,
+        };
+        responses_passthrough_inner(
+            state,
+            private_responses,
+            request_stream,
+            request_body,
+            failure_context.with_base_url(OPENAI_CODEX_BASE_URL),
+        )
+        .await?
+    } else {
+        let native_provider = routed_provider.record.as_ref().ok_or_else(|| {
+            AppError::bad_request(format!("未知供应商: {}", routed_provider.name))
+        })?;
+        let public_responses = PublicOpenAiRequestBuilder {
+            base_url: native_provider.base_url.as_str(),
+            api_key: native_provider.api_key.as_str(),
+        };
+        let failure_context = failure_context.with_base_url(public_responses.base_url());
+        responses_passthrough_inner(
+            state,
+            public_responses,
+            request_stream,
+            request_body,
+            failure_context,
+        )
+        .await?
     };
     let _ = headers;
     Ok(response)
@@ -1838,12 +1828,6 @@ impl AppError {
             message: message.into(),
             source: AppErrorSource::Gateway,
         }
-    }
-}
-
-fn adapter_error_to_app_error(error: ResponsesAdapterError) -> AppError {
-    match error {
-        ResponsesAdapterError::BadRequest(message) => AppError::bad_request(message),
     }
 }
 
