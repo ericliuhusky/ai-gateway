@@ -29,7 +29,6 @@ pub struct ImportedOpenAIAuth {
     pub expiry_timestamp: i64,
     pub client_id: String,
     pub account_id: Option<String>,
-    pub scopes: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -40,30 +39,6 @@ struct OpenAITokenClaims {
     client_id: Option<String>,
     #[serde(default)]
     email: Option<String>,
-    #[serde(default, rename = "scp")]
-    scopes: Vec<String>,
-    #[serde(default, rename = "https://api.openai.com/profile")]
-    https_api_openai_com_profile: Option<OpenAIProfileClaims>,
-    #[serde(default, rename = "https://api.openai.com/auth")]
-    https_api_openai_com_auth: Option<OpenAIAuthClaims>,
-}
-
-#[derive(Debug, Deserialize)]
-struct OpenAIProfileClaims {
-    #[serde(default)]
-    email: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct OpenAIAuthClaims {
-    #[serde(default)]
-    chatgpt_account_id: Option<String>,
-    #[serde(default)]
-    chatgpt_account_user_id: Option<String>,
-    #[serde(default)]
-    chatgpt_user_id: Option<String>,
-    #[serde(default)]
-    user_id: Option<String>,
 }
 
 impl OpenAiTokenService {
@@ -120,8 +95,6 @@ impl OpenAiTokenService {
         let expiry_timestamp = access_claims
             .exp
             .ok_or_else(|| "OpenAI 访问 Token 缺少 exp 字段".to_string())?;
-        let account_id = openai_account_id_from_claims(&access_claims).or(account_id_hint);
-
         Ok(ImportedOpenAIAuth {
             email,
             access_token,
@@ -131,8 +104,7 @@ impl OpenAiTokenService {
                 .client_id
                 .clone()
                 .unwrap_or_else(|| CODEX_CLIENT_ID.to_string()),
-            account_id,
-            scopes: access_claims.scopes,
+            account_id: account_id_hint,
         })
     }
 
@@ -161,59 +133,30 @@ fn decode_openai_claims(token: &str) -> Result<OpenAITokenClaims, String> {
 }
 
 fn openai_email_from_claims(claims: &OpenAITokenClaims) -> Option<String> {
-    claims.email.clone().or_else(|| {
-        claims
-            .https_api_openai_com_profile
-            .as_ref()
-            .and_then(|profile| profile.email.clone())
-    })
-}
-
-fn openai_account_id_from_claims(claims: &OpenAITokenClaims) -> Option<String> {
-    claims.https_api_openai_com_auth.as_ref().and_then(|auth| {
-        auth.chatgpt_account_id
-            .clone()
-            .or_else(|| auth.chatgpt_account_user_id.clone())
-            .or_else(|| auth.chatgpt_user_id.clone())
-            .or_else(|| auth.user_id.clone())
-    })
-}
-
-pub fn extract_openai_chatgpt_account_id(access_token: &str) -> Option<String> {
-    let claims = decode_openai_claims(access_token).ok()?;
-    openai_account_id_from_claims(&claims)
+    claims.email.clone()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_openai_claims, openai_account_id_from_claims, openai_email_from_claims};
+    use super::{decode_openai_claims, openai_email_from_claims};
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 
     #[test]
-    fn extracts_openai_identity_from_url_claims() {
+    fn extracts_supported_claims_from_access_token() {
         let payload = serde_json::json!({
             "exp": 1_700_000_000,
             "client_id": "app_test",
             "email": "user@example.com",
-            "scp": ["openid", "profile"],
-            "https://api.openai.com/auth": {
-                "chatgpt_account_id": "acc_123"
-            },
-            "https://api.openai.com/profile": {
-                "email": "profile@example.com"
-            }
         });
         let payload_encoded = URL_SAFE_NO_PAD.encode(payload.to_string().as_bytes());
         let token = format!("header.{payload_encoded}.sig");
 
         let claims = decode_openai_claims(&token).expect("should decode jwt payload");
         assert_eq!(
-            openai_account_id_from_claims(&claims).as_deref(),
-            Some("acc_123")
-        );
-        assert_eq!(
             openai_email_from_claims(&claims).as_deref(),
             Some("user@example.com")
         );
+        assert_eq!(claims.exp, Some(1_700_000_000));
+        assert_eq!(claims.client_id.as_deref(), Some("app_test"));
     }
 }

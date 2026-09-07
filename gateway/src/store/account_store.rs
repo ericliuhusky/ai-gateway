@@ -1,7 +1,7 @@
 use crate::{
     config::Config,
     models::{AccountRecord, PROVIDER_OPENAI_PROXY},
-    openai_tokens::{ImportedOpenAIAuth, OpenAiTokenService, extract_openai_chatgpt_account_id},
+    openai_tokens::{ImportedOpenAIAuth, OpenAiTokenService},
     store::sqlite::SqliteStore,
     support::time::now_unix,
 };
@@ -121,16 +121,11 @@ impl AccountStore {
                     if let Some(refresh_token) = refreshed.refresh_token {
                         *account.refresh_token_mut() = refresh_token;
                     }
-                    account.account_id = extract_openai_chatgpt_account_id(account.access_token());
                 }
                 Err(err) => {
                     return Err(format!("refresh failed for {}: {err}", account.email));
                 }
             }
-        }
-
-        if account.provider() == PROVIDER_OPENAI_PROXY && account.account_id.is_none() {
-            account.account_id = extract_openai_chatgpt_account_id(account.access_token());
         }
 
         self.update_account(account.clone()).await?;

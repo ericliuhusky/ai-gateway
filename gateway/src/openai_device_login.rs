@@ -71,7 +71,6 @@ pub enum DeviceLoginPoll {
 pub struct DeviceLoginCompletion {
     pub email: String,
     pub account_id: String,
-    pub has_responses_write: bool,
 }
 
 #[derive(Debug, Deserialize)]

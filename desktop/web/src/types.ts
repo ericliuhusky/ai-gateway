@@ -111,6 +111,5 @@ export interface OpenAiDeviceLoginStatus {
   expires_in?: number;
   email?: string;
   account_id?: string;
-  has_responses_write?: boolean;
   error?: string;
 }

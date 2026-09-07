@@ -199,7 +199,6 @@ pub struct ImportOpenAiFromLocalResponse {
     imported_count: usize,
     email: String,
     account_id: String,
-    has_responses_write: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -229,8 +228,6 @@ pub struct OpenAiDeviceLoginStatusResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     account_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    has_responses_write: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
 }
 
@@ -258,10 +255,6 @@ pub async fn import_openai_token(
             .openai_tokens
             .import_codex_tokens(tokens.access_token, refresh_token, tokens.account_id)
             .map_err(AppError::bad_request)?;
-        let has_responses_write = imported
-            .scopes
-            .iter()
-            .any(|scope| scope == "api.responses.write");
         let email = imported.email.clone();
 
         let account = state
@@ -280,11 +273,11 @@ pub async fn import_openai_token(
             .map_err(AppError::bad_request)?;
 
         if first_imported.is_none() {
-            first_imported = Some((email, account.id, has_responses_write));
+            first_imported = Some((email, account.id));
         }
     }
 
-    let (email, account_id, has_responses_write) =
+    let (email, account_id) =
         first_imported.ok_or_else(|| AppError::bad_request("导入 JSON 不包含任何账号"))?;
 
     Ok(Json(ImportOpenAiFromLocalResponse {
@@ -292,7 +285,6 @@ pub async fn import_openai_token(
         imported_count,
         email,
         account_id,
-        has_responses_write,
     }))
 }
 
@@ -346,10 +338,6 @@ pub async fn poll_openai_device_login(
                     .exchange_authorization(&authorization, &state.openai_tokens)
                     .await
                     .map_err(AppError::upstream_message)?;
-                let has_responses_write = imported
-                    .scopes
-                    .iter()
-                    .any(|scope| scope == "api.responses.write");
                 let email = imported.email.clone();
                 let account = state
                     .accounts
@@ -368,7 +356,6 @@ pub async fn poll_openai_device_login(
                 Ok::<_, AppError>(DeviceLoginCompletion {
                     email,
                     account_id: account.id,
-                    has_responses_write,
                 })
             }
             .await;
@@ -427,7 +414,6 @@ fn device_login_pending_response(start: DeviceLoginStart) -> OpenAiDeviceLoginSt
         expires_in: Some(start.expires_in),
         email: None,
         account_id: None,
-        has_responses_write: None,
         error: None,
     }
 }
@@ -442,7 +428,6 @@ fn device_login_finalizing_response() -> OpenAiDeviceLoginStatusResponse {
         expires_in: None,
         email: None,
         account_id: None,
-        has_responses_write: None,
         error: None,
     }
 }
@@ -459,7 +444,6 @@ fn device_login_completed_response(
         expires_in: None,
         email: Some(completion.email),
         account_id: Some(completion.account_id),
-        has_responses_write: Some(completion.has_responses_write),
         error: None,
     }
 }
@@ -474,7 +458,6 @@ fn device_login_failed_response(error: String) -> OpenAiDeviceLoginStatusRespons
         expires_in: None,
         email: None,
         account_id: None,
-        has_responses_write: None,
         error: Some(format!("{UPSTREAM_ERROR_PREFIX}{error}")),
     }
 }
