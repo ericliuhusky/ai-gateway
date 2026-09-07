@@ -1,7 +1,6 @@
 mod api;
 mod config;
 mod control;
-mod crypto;
 mod models;
 mod openai_device_login;
 mod openai_tokens;

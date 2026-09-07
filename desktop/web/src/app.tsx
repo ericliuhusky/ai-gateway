@@ -926,7 +926,7 @@ function AccountProviderForm({
   return (
     <div>
       <p className="mb-5 text-xs leading-5 text-slate-500 dark:text-slate-400">
-        通过 OpenAI 官方设备授权登录；凭据会加密保存在本机。
+        通过 OpenAI 官方设备授权登录；凭据会直接保存在本机数据库中。
       </p>
       <div className="mb-5 flex rounded-xl bg-slate-100 p-1 text-xs font-semibold dark:bg-white/[0.06]">
         <button

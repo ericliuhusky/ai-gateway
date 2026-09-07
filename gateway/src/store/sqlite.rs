@@ -1,23 +1,15 @@
 use crate::{
     config::Config,
-    crypto::FieldEncryptor,
     models::{
         AccountRecord, AccountType, ApiProviderRecord, CachedProviderModels, GatewayIssue,
         GatewayIssueRecord, ProviderAuthMode, SelectedRoute,
     },
 };
 use rusqlite::{Connection, OptionalExtension, params};
-#[cfg(test)]
-use rusqlite::{Transaction, TransactionBehavior};
 use std::{fs, path::PathBuf, sync::Arc};
 #[derive(Clone, Debug)]
 pub struct SqliteStore {
     db_path: PathBuf,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct DatabaseSecuritySettings {
-    pub encryption_key: String,
 }
 
 impl SqliteStore {
@@ -29,8 +21,6 @@ impl SqliteStore {
             db_path: config.sqlite_path(),
         };
         store.init()?;
-        #[cfg(test)]
-        store.set_database_encryption_key("MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")?;
         Ok(store)
     }
 
@@ -43,7 +33,6 @@ impl SqliteStore {
 
         let store = Self { db_path };
         store.init()?;
-        store.set_database_encryption_key("MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")?;
         Ok(store)
     }
 
@@ -64,12 +53,6 @@ impl SqliteStore {
                  ORDER BY rowid ASC",
             )
             .map_err(|err| format!("prepare accounts query failed: {err}"))?;
-        let Some(encryption) = self.optional_encryption()? else {
-            // A gateway must remain bootable for first-run setup. Existing
-            // credential rows stay untouched and are deliberately unavailable
-            // until the local encryption key is available.
-            return Ok(Vec::new());
-        };
         let rows = stmt
             .query_map([], move |row| {
                 Ok(AccountRecord {
@@ -77,12 +60,8 @@ impl SqliteStore {
                     account_type: account_type_from_str(&row.get::<_, String>(1)?)
                         .map_err(rusqlite::Error::ToSqlConversionFailure)?,
                     email: row.get(2)?,
-                    access_token: encryption
-                        .decrypt(&row.get::<_, String>(3)?)
-                        .map_err(decrypt_conversion_error)?,
-                    refresh_token: encryption
-                        .decrypt(&row.get::<_, String>(4)?)
-                        .map_err(decrypt_conversion_error)?,
+                    access_token: row.get(3)?,
+                    refresh_token: row.get(4)?,
                     expiry_timestamp: row.get(5)?,
                     client_id: row.get(6)?,
                     upstream_account_id: row.get(7)?,
@@ -97,7 +76,7 @@ impl SqliteStore {
 
     pub fn upsert_account(&self, account: &AccountRecord) -> Result<(), String> {
         let conn = self.connect()?;
-        upsert_account_record(&conn, &self.encryption()?, account)
+        upsert_account_record(&conn, account)
     }
 
     pub fn delete_account(&self, account_id: &str) -> Result<(), String> {
@@ -125,11 +104,6 @@ impl SqliteStore {
                  ORDER BY rowid ASC",
             )
             .map_err(|err| format!("prepare providers query failed: {err}"))?;
-        let Some(encryption) = self.optional_encryption()? else {
-            // See load_accounts: do not make a missing setup key fatal at
-            // startup, and never expose credential-backed providers without it.
-            return Ok(Vec::new());
-        };
         let rows = stmt
             .query_map([], move |row| {
                 Ok(ApiProviderRecord {
@@ -138,16 +112,7 @@ impl SqliteStore {
                     auth_mode: provider_auth_mode_from_str(&row.get::<_, String>(2)?)
                         .map_err(rusqlite::Error::ToSqlConversionFailure)?,
                     base_url: row.get(3)?,
-                    api_key: {
-                        let api_key = row.get::<_, String>(4)?;
-                        if api_key.is_empty() {
-                            String::new()
-                        } else {
-                            encryption
-                                .decrypt(&api_key)
-                                .map_err(decrypt_conversion_error)?
-                        }
-                    },
+                    api_key: row.get(4)?,
                     account_id: row.get(5)?,
                     owner_user_id: row.get(6)?,
                 })
@@ -160,7 +125,7 @@ impl SqliteStore {
 
     pub fn upsert_provider(&self, provider: &ApiProviderRecord) -> Result<(), String> {
         let conn = self.connect()?;
-        upsert_provider_record(&conn, &self.encryption()?, provider)
+        upsert_provider_record(&conn, provider)
     }
 
     pub fn delete_provider(&self, provider_id: &str) -> Result<(), String> {
@@ -399,48 +364,6 @@ impl SqliteStore {
         .map_err(|err| format!("clear gateway issues failed: {err}"))
     }
 
-    pub(crate) fn database_security_settings(&self) -> Result<DatabaseSecuritySettings, String> {
-        let conn = self.connect()?;
-        conn.query_row(
-            "SELECT COALESCE(database_encryption_key, '')
-             FROM gateway_state WHERE id = 1",
-            [],
-            |row| {
-                Ok(DatabaseSecuritySettings {
-                    encryption_key: row.get(0)?,
-                })
-            },
-        )
-        .map_err(|err| format!("load database security settings failed: {err}"))
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_database_encryption_key(&self, key: &str) -> Result<(), String> {
-        let key = key.trim();
-        let new_encryptor = FieldEncryptor::from_base64_key(key)?;
-        let mut conn = self.connect()?;
-        let transaction = conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(|err| format!("begin database encryption key transaction failed: {err}"))?;
-        let current = database_security_settings_from(&transaction)?;
-        rotate_database_encryption_key(&transaction, &current.encryption_key, key, &new_encryptor)?;
-        transaction
-            .commit()
-            .map_err(|err| format!("commit database encryption key transaction failed: {err}"))
-    }
-
-    pub(crate) fn encryption(&self) -> Result<FieldEncryptor, String> {
-        self.optional_encryption()?
-            .ok_or_else(|| "本机数据库加密密钥不可用；请重新启动桌面客户端".to_string())
-    }
-
-    fn optional_encryption(&self) -> Result<Option<FieldEncryptor>, String> {
-        let key = self.database_security_settings()?.encryption_key;
-        (!key.is_empty())
-            .then(|| FieldEncryptor::from_base64_key(&key))
-            .transpose()
-    }
-
     fn init(&self) -> Result<(), String> {
         let conn = self.connect()?;
         conn.execute_batch(
@@ -480,7 +403,6 @@ impl SqliteStore {
             CREATE TABLE IF NOT EXISTS gateway_state (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 selected_provider_id TEXT,
-                database_encryption_key TEXT NOT NULL DEFAULT '',
                 route_updated_at INTEGER NOT NULL DEFAULT 0,
                 FOREIGN KEY (selected_provider_id) REFERENCES providers(id) ON DELETE SET NULL
             );
@@ -515,19 +437,11 @@ impl SqliteStore {
         add_column_if_missing(
             &conn,
             "gateway_state",
-            "database_encryption_key TEXT NOT NULL DEFAULT ''",
+            "route_updated_at INTEGER NOT NULL DEFAULT 0",
         )?;
-        let created_gateway_state = conn
-            .execute("INSERT OR IGNORE INTO gateway_state (id) VALUES (1)", [])
+        drop_database_encryption_key(&conn)?;
+        conn.execute("INSERT OR IGNORE INTO gateway_state (id) VALUES (1)", [])
             .map_err(|err| format!("initialize gateway state failed: {err}"))?;
-        if created_gateway_state == 1 {
-            let key = FieldEncryptor::generate_base64_key()?;
-            conn.execute(
-                "UPDATE gateway_state SET database_encryption_key = ?1 WHERE id = 1",
-                params![key],
-            )
-            .map_err(|err| format!("initialize database encryption key failed: {err}"))?;
-        }
         add_column_if_missing(&conn, "providers", "owner_user_id INTEGER")?;
         drop_provider_compatibility_profile(&conn)?;
         migrate_gateway_issue_payloads(&conn)?;
@@ -550,106 +464,6 @@ impl SqliteStore {
             .map_err(|err| format!("configure sqlite connection failed: {err}"))?;
         Ok(conn)
     }
-}
-
-#[cfg(test)]
-fn database_security_settings_from(
-    transaction: &Transaction<'_>,
-) -> Result<DatabaseSecuritySettings, String> {
-    transaction
-        .query_row(
-            "SELECT COALESCE(database_encryption_key, '')
-             FROM gateway_state WHERE id = 1",
-            [],
-            |row| {
-                Ok(DatabaseSecuritySettings {
-                    encryption_key: row.get(0)?,
-                })
-            },
-        )
-        .map_err(|err| format!("load database security settings failed: {err}"))
-}
-
-#[cfg(test)]
-fn rotate_database_encryption_key(
-    transaction: &Transaction<'_>,
-    current_key: &str,
-    new_key: &str,
-    new_encryptor: &FieldEncryptor,
-) -> Result<(), String> {
-    if !current_key.is_empty() && current_key != new_key {
-        let current_encryptor = FieldEncryptor::from_base64_key(current_key)?;
-        reencrypt_column(
-            transaction,
-            "accounts",
-            "access_token",
-            "rotate account access tokens",
-            &current_encryptor,
-            new_encryptor,
-        )?;
-        reencrypt_column(
-            transaction,
-            "accounts",
-            "refresh_token",
-            "rotate account refresh tokens",
-            &current_encryptor,
-            new_encryptor,
-        )?;
-        reencrypt_column(
-            transaction,
-            "providers",
-            "api_key",
-            "rotate provider API keys",
-            &current_encryptor,
-            new_encryptor,
-        )?;
-    }
-    transaction
-        .execute(
-            "UPDATE gateway_state SET database_encryption_key = ?1 WHERE id = 1",
-            params![new_key],
-        )
-        .map_err(|err| format!("save database encryption key failed: {err}"))?;
-    Ok(())
-}
-
-#[cfg(test)]
-fn reencrypt_column(
-    transaction: &Transaction<'_>,
-    table: &str,
-    column: &str,
-    operation: &str,
-    current_encryptor: &FieldEncryptor,
-    new_encryptor: &FieldEncryptor,
-) -> Result<(), String> {
-    let select = format!(
-        "SELECT rowid, {column} FROM {table} WHERE {column} IS NOT NULL AND {column} <> ''"
-    );
-    let values = {
-        let mut statement = transaction
-            .prepare(&select)
-            .map_err(|err| format!("{operation}: prepare query failed: {err}"))?;
-        let rows = statement
-            .query_map([], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-            })
-            .map_err(|err| format!("{operation}: query failed: {err}"))?;
-        rows.collect::<Result<Vec<_>, _>>()
-            .map_err(|err| format!("{operation}: read values failed: {err}"))?
-    };
-    let update = format!("UPDATE {table} SET {column} = ?1 WHERE rowid = ?2");
-    for (rowid, ciphertext) in values {
-        let plaintext = current_encryptor
-            .decrypt(&ciphertext)
-            .map_err(|err| format!("{operation}: {err}"))?;
-        let ciphertext = new_encryptor
-            .encrypt(&plaintext)
-            .map_err(|err| format!("{operation}: {err}"))?;
-        transaction
-            .execute(&update, params![ciphertext, rowid])
-            .map_err(|err| format!("{operation}: save value failed: {err}"))?;
-    }
-    Ok(())
 }
 
 fn add_column_if_missing(conn: &Connection, table: &str, definition: &str) -> Result<(), String> {
@@ -732,6 +546,18 @@ fn drop_provider_compatibility_profile(conn: &Connection) -> Result<(), String> 
     Ok(())
 }
 
+fn drop_database_encryption_key(conn: &Connection) -> Result<(), String> {
+    if !table_has_column(conn, "gateway_state", "database_encryption_key")? {
+        return Ok(());
+    }
+    conn.execute(
+        "ALTER TABLE gateway_state DROP COLUMN database_encryption_key",
+        [],
+    )
+    .map_err(|err| format!("remove database encryption key failed: {err}"))?;
+    Ok(())
+}
+
 fn gateway_issue_from_row(row: &rusqlite::Row<'_>) -> Result<GatewayIssue, rusqlite::Error> {
     Ok(GatewayIssue {
         id: row.get(0)?,
@@ -748,11 +574,7 @@ fn gateway_issue_from_row(row: &rusqlite::Row<'_>) -> Result<GatewayIssue, rusql
     })
 }
 
-fn upsert_account_record(
-    conn: &Connection,
-    encryption: &FieldEncryptor,
-    account: &AccountRecord,
-) -> Result<(), String> {
+fn upsert_account_record(conn: &Connection, account: &AccountRecord) -> Result<(), String> {
     conn.execute(
         "INSERT INTO accounts (
             id, account_type, email, access_token, refresh_token, expiry_timestamp, client_id, upstream_account_id, owner_user_id
@@ -770,8 +592,8 @@ fn upsert_account_record(
             account.id,
             account_type_to_str(&account.account_type),
             account.email,
-            encryption.encrypt(&account.access_token)?,
-            encryption.encrypt(&account.refresh_token)?,
+            account.access_token,
+            account.refresh_token,
             account.expiry_timestamp,
             account.client_id,
             account.upstream_account_id,
@@ -782,15 +604,11 @@ fn upsert_account_record(
     Ok(())
 }
 
-fn upsert_provider_record(
-    conn: &Connection,
-    encryption: &FieldEncryptor,
-    provider: &ApiProviderRecord,
-) -> Result<(), String> {
+fn upsert_provider_record(conn: &Connection, provider: &ApiProviderRecord) -> Result<(), String> {
     let (base_url, api_key) = match provider.auth_mode {
         ProviderAuthMode::ApiKey => (
             Some(provider.base_url.as_str()),
-            Some(encryption.encrypt(&provider.api_key)?),
+            Some(provider.api_key.as_str()),
         ),
         ProviderAuthMode::Account => (None, None),
     };
@@ -852,19 +670,12 @@ fn provider_auth_mode_from_str(
     }
 }
 
-fn decrypt_conversion_error(error: String) -> rusqlite::Error {
-    rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::other(error)))
-}
-
 #[cfg(test)]
 mod tests {
     use super::SqliteStore;
-    use crate::{
-        crypto::FieldEncryptor,
-        models::{
-            AccountRecord, AccountType, ApiProviderRecord, CachedProviderModels, ProviderAuthMode,
-            SelectedRoute,
-        },
+    use crate::models::{
+        AccountRecord, AccountType, ApiProviderRecord, CachedProviderModels, ProviderAuthMode,
+        SelectedRoute,
     };
     use rusqlite::Connection;
     use std::{
@@ -955,9 +766,9 @@ mod tests {
     }
 
     #[test]
-    fn stores_credentials_as_authenticated_ciphertext() {
-        let db_path = unique_test_db_path("encrypted-credentials");
-        let store = SqliteStore::for_test(db_path.clone()).expect("create encrypted database");
+    fn stores_credentials_as_plaintext() {
+        let db_path = unique_test_db_path("plaintext-credentials");
+        let store = SqliteStore::for_test(db_path.clone()).expect("create database");
         let account = AccountRecord {
             id: "account-1".to_string(),
             account_type: AccountType::Openai,
@@ -974,7 +785,7 @@ mod tests {
             .upsert_provider(&api_provider("provider-1"))
             .expect("save provider");
 
-        let conn = Connection::open(&db_path).expect("open encrypted database");
+        let conn = Connection::open(&db_path).expect("open database");
         let (access_token, refresh_token): (String, String) = conn
             .query_row(
                 "SELECT access_token, refresh_token FROM accounts WHERE id = ?1",
@@ -995,98 +806,12 @@ mod tests {
             (refresh_token, "refresh-secret"),
             (api_key, "sk-test"),
         ] {
-            assert!(stored.starts_with("aigw:v1:"));
-            assert_ne!(stored, plaintext);
-            assert!(!stored.contains(plaintext));
+            assert_eq!(stored, plaintext);
         }
         let loaded_account = store.load_accounts().unwrap().pop().unwrap();
         assert_eq!(loaded_account.access_token, account.access_token);
         assert_eq!(loaded_account.refresh_token, account.refresh_token);
         assert_eq!(store.load_providers().unwrap()[0].api_key, "sk-test");
-
-        let _ = fs::remove_file(db_path);
-    }
-
-    #[test]
-    fn changing_database_encryption_key_reencrypts_all_credentials() {
-        const NEW_KEY: &str = "ZmVkY2JhOTg3NjU0MzIxMGZlZGNiYTk4NzY1NDMyMTA=";
-
-        let db_path = unique_test_db_path("rotate-encryption-key");
-        let store = SqliteStore::for_test(db_path.clone()).expect("create encrypted database");
-        let account = AccountRecord {
-            id: "account-1".to_string(),
-            account_type: AccountType::Openai,
-            email: "account@example.com".to_string(),
-            access_token: "access-secret".to_string(),
-            refresh_token: "refresh-secret".to_string(),
-            expiry_timestamp: 1,
-            client_id: None,
-            upstream_account_id: None,
-            owner_user_id: None,
-        };
-        store.upsert_account(&account).expect("save account");
-        store
-            .upsert_provider(&api_provider("provider-1"))
-            .expect("save provider");
-
-        let old_encryptor = store.encryption().expect("load old encryptor");
-        let conn = Connection::open(&db_path).expect("open encrypted database");
-        let before: Vec<String> = conn
-            .prepare(
-                "SELECT access_token FROM accounts
-                 UNION ALL SELECT refresh_token FROM accounts
-                 UNION ALL SELECT api_key FROM providers",
-            )
-            .expect("prepare ciphertext query")
-            .query_map([], |row| row.get(0))
-            .expect("query ciphertext")
-            .collect::<Result<_, _>>()
-            .expect("read ciphertext");
-
-        store
-            .set_database_encryption_key(NEW_KEY)
-            .expect("rotate encryption key");
-
-        let rotated_account = store.load_accounts().unwrap().remove(0);
-        assert_eq!(rotated_account.access_token, account.access_token);
-        assert_eq!(rotated_account.refresh_token, account.refresh_token);
-        assert_eq!(store.load_providers().unwrap()[0].api_key, "sk-test");
-        let settings = store
-            .database_security_settings()
-            .expect("load security settings");
-        assert_eq!(settings.encryption_key, NEW_KEY);
-
-        let after: Vec<String> = conn
-            .prepare(
-                "SELECT access_token FROM accounts
-                 UNION ALL SELECT refresh_token FROM accounts
-                 UNION ALL SELECT api_key FROM providers",
-            )
-            .expect("prepare rotated ciphertext query")
-            .query_map([], |row| row.get(0))
-            .expect("query rotated ciphertext")
-            .collect::<Result<_, _>>()
-            .expect("read rotated ciphertext");
-        assert_ne!(before, after);
-        assert!(old_encryptor.decrypt(&after[0]).is_err());
-
-        let _ = fs::remove_file(db_path);
-    }
-
-    #[test]
-    fn initializes_new_databases_with_a_generated_encryption_key() {
-        let db_path = unique_test_db_path("generated-encryption-key");
-        let store = SqliteStore {
-            db_path: db_path.clone(),
-        };
-
-        store.init().expect("initialize database");
-
-        let settings = store
-            .database_security_settings()
-            .expect("load security settings");
-        assert!(!settings.encryption_key.is_empty());
-        assert!(FieldEncryptor::from_base64_key(&settings.encryption_key).is_ok());
 
         let _ = fs::remove_file(db_path);
     }
