@@ -5,7 +5,7 @@ use crate::{
         CodexUsageCredits, CodexUsageRateLimit, CodexUsageRateLimitWindow, CodexUsageResponse,
     },
     models::{
-        AccountRecord, ApiProviderRecord, ApiProviderSummary, CreateApiProviderRequest,
+        ApiProviderRecord, ApiProviderSummary, ChatGPTAuthRecord, CreateApiProviderRequest,
         GatewayIssue, GatewayIssueRecord, ModelListItem, ModelListResponse,
         OPENAI_ACCOUNT_PROVIDER_NAME, ProviderAuthMode, ProviderQuotaCredits,
         ProviderQuotaResponse, ProviderQuotaSnapshot, ProviderQuotaSummary, ProviderQuotaWindow,
@@ -1596,7 +1596,7 @@ fn resolved_provider_from_record(record: ApiProviderRecord) -> ResolvedProvider 
 async fn resolve_account_for_provider_for_owner(
     state: &AppState,
     provider: &ResolvedProvider,
-) -> Result<AccountRecord, AppError> {
+) -> Result<ChatGPTAuthRecord, AppError> {
     let account_id = provider
         .account_id
         .as_deref()

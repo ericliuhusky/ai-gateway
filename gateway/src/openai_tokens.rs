@@ -1,4 +1,4 @@
-use crate::models::AccountRecord;
+use crate::models::ChatGPTAuthRecord;
 use crate::support::time::now_unix;
 use crate::upstream::build_http_client;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -79,27 +79,26 @@ impl OpenAiTokenService {
         access_token: String,
         refresh_token: String,
         account_id_hint: Option<String>,
-    ) -> Result<AccountRecord, String> {
+    ) -> Result<ChatGPTAuthRecord, String> {
         let access_claims = decode_openai_claims(&access_token)?;
         let email = openai_email_from_claims(&access_claims)
             .ok_or_else(|| "无法从粘贴的 Codex Token 中确定邮箱".to_string())?;
         let expiry_timestamp = access_claims
             .exp
             .ok_or_else(|| "OpenAI 访问 Token 缺少 exp 字段".to_string())?;
-        Ok(AccountRecord {
-            id: String::new(),
+        Ok(ChatGPTAuthRecord::new(
             email,
             access_token,
             refresh_token,
             expiry_timestamp,
-            client_id: Some(
+            Some(
                 access_claims
                     .client_id
                     .clone()
                     .unwrap_or_else(|| CODEX_CLIENT_ID.to_string()),
             ),
-            account_id: account_id_hint,
-        })
+            account_id_hint,
+        ))
     }
 
     pub fn refresh_needed(&self, expiry_timestamp: i64) -> bool {

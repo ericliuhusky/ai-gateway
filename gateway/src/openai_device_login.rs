@@ -1,4 +1,4 @@
-use crate::models::AccountRecord;
+use crate::models::ChatGPTAuthRecord;
 use crate::openai_tokens::OpenAiTokenService;
 use crate::support::time::now_unix;
 use crate::upstream::build_http_client;
@@ -257,7 +257,7 @@ impl OpenAiDeviceLoginService {
         &self,
         authorization: &DeviceAuthorization,
         tokens: &OpenAiTokenService,
-    ) -> Result<AccountRecord, String> {
+    ) -> Result<ChatGPTAuthRecord, String> {
         let params = [
             ("grant_type", "authorization_code"),
             ("code", authorization.authorization_code.as_str()),

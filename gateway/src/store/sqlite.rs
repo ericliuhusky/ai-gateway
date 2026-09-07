@@ -1,8 +1,8 @@
 use crate::{
     config::Config,
     models::{
-        AccountRecord, ApiProviderRecord, CachedProviderModels, GatewayIssue, GatewayIssueRecord,
-        ProviderAuthMode, SelectedRoute,
+        ApiProviderRecord, CachedProviderModels, ChatGPTAuthRecord, GatewayIssue,
+        GatewayIssueRecord, ProviderAuthMode, SelectedRoute,
     },
 };
 use rusqlite::{Connection, OptionalExtension, params};
@@ -36,7 +36,7 @@ impl SqliteStore {
         Ok(store)
     }
 
-    pub fn load_accounts(&self) -> Result<Vec<AccountRecord>, String> {
+    pub fn load_accounts(&self) -> Result<Vec<ChatGPTAuthRecord>, String> {
         let conn = self.connect()?;
         let has_accounts: bool = conn
             .query_row("SELECT EXISTS(SELECT 1 FROM accounts)", [], |row| {
@@ -55,7 +55,7 @@ impl SqliteStore {
             .map_err(|err| format!("prepare accounts query failed: {err}"))?;
         let rows = stmt
             .query_map([], move |row| {
-                Ok(AccountRecord {
+                Ok(ChatGPTAuthRecord {
                     id: row.get(0)?,
                     email: row.get(1)?,
                     access_token: row.get(2)?,
@@ -71,7 +71,7 @@ impl SqliteStore {
             .map_err(|err| format!("read accounts failed: {err}"))
     }
 
-    pub fn upsert_account(&self, account: &AccountRecord) -> Result<(), String> {
+    pub fn upsert_account(&self, account: &ChatGPTAuthRecord) -> Result<(), String> {
         let conn = self.connect()?;
         upsert_account_record(&conn, account)
     }
@@ -596,7 +596,7 @@ fn gateway_issue_from_row(row: &rusqlite::Row<'_>) -> Result<GatewayIssue, rusql
     })
 }
 
-fn upsert_account_record(conn: &Connection, account: &AccountRecord) -> Result<(), String> {
+fn upsert_account_record(conn: &Connection, account: &ChatGPTAuthRecord) -> Result<(), String> {
     conn.execute(
         "INSERT INTO accounts (
             id, email, access_token, refresh_token, expiry_timestamp, client_id, account_id
@@ -677,7 +677,7 @@ fn provider_auth_mode_from_str(
 mod tests {
     use super::SqliteStore;
     use crate::models::{
-        AccountRecord, ApiProviderRecord, CachedProviderModels, ProviderAuthMode, SelectedRoute,
+        ApiProviderRecord, CachedProviderModels, ChatGPTAuthRecord, ProviderAuthMode, SelectedRoute,
     };
     use rusqlite::Connection;
     use std::{
@@ -730,7 +730,7 @@ mod tests {
     fn account_provider_uses_null_transport_credentials() {
         let db_path = unique_test_db_path("account-provider-null-credentials");
         let store = SqliteStore::for_test(db_path.clone()).expect("create compact database");
-        let account = AccountRecord {
+        let account = ChatGPTAuthRecord {
             id: "account-1".to_string(),
             email: "account@example.com".to_string(),
             access_token: "access".to_string(),
@@ -769,7 +769,7 @@ mod tests {
     fn stores_credentials_as_plaintext() {
         let db_path = unique_test_db_path("plaintext-credentials");
         let store = SqliteStore::for_test(db_path.clone()).expect("create database");
-        let account = AccountRecord {
+        let account = ChatGPTAuthRecord {
             id: "account-1".to_string(),
             email: "account@example.com".to_string(),
             access_token: "access-secret".to_string(),

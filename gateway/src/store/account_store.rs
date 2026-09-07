@@ -1,18 +1,17 @@
 use crate::{
     config::Config,
-    models::{AccountRecord, PROVIDER_OPENAI_PROXY},
+    models::{ChatGPTAuthRecord, PROVIDER_OPENAI_PROXY},
     openai_tokens::OpenAiTokenService,
     store::sqlite::SqliteStore,
     support::time::now_unix,
 };
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use uuid::Uuid;
 
 #[derive(Clone, Debug)]
 pub struct AccountStore {
     sqlite: SqliteStore,
-    records: Arc<Mutex<Vec<AccountRecord>>>,
+    records: Arc<Mutex<Vec<ChatGPTAuthRecord>>>,
 }
 
 impl AccountStore {
@@ -31,8 +30,8 @@ impl AccountStore {
 
     pub async fn add_openai_account(
         &self,
-        mut account: AccountRecord,
-    ) -> Result<AccountRecord, String> {
+        account: ChatGPTAuthRecord,
+    ) -> Result<ChatGPTAuthRecord, String> {
         let mut records = self.records.lock().await;
         if records.iter().any(|existing| {
             existing.email == account.email && existing.provider() == PROVIDER_OPENAI_PROXY
@@ -40,7 +39,6 @@ impl AccountStore {
             return Err(format!("OpenAI 账号已经存在: {}", account.email));
         }
 
-        account.id = Uuid::new_v4().to_string();
         self.persist_account(&account)?;
         records.push(account.clone());
         Ok(account)
@@ -50,7 +48,7 @@ impl AccountStore {
         &self,
         token_service: &OpenAiTokenService,
         account_id: &str,
-    ) -> Result<AccountRecord, String> {
+    ) -> Result<ChatGPTAuthRecord, String> {
         let account = self
             .find_by_id(account_id)
             .await
@@ -58,7 +56,7 @@ impl AccountStore {
         self.prepare_account_for_use(account, token_service).await
     }
 
-    pub async fn find_by_id(&self, account_id: &str) -> Option<AccountRecord> {
+    pub async fn find_by_id(&self, account_id: &str) -> Option<ChatGPTAuthRecord> {
         self.records
             .lock()
             .await
@@ -67,7 +65,7 @@ impl AccountStore {
             .cloned()
     }
 
-    pub async fn delete(&self, account_id: &str) -> Result<AccountRecord, String> {
+    pub async fn delete(&self, account_id: &str) -> Result<ChatGPTAuthRecord, String> {
         let mut records = self.records.lock().await;
         let index = records
             .iter()
@@ -78,7 +76,7 @@ impl AccountStore {
         Ok(records.remove(index))
     }
 
-    async fn update_account(&self, account: AccountRecord) -> Result<(), String> {
+    async fn update_account(&self, account: ChatGPTAuthRecord) -> Result<(), String> {
         self.persist_account(&account)?;
         let mut records = self.records.lock().await;
         if let Some(existing) = records.iter_mut().find(|item| item.id == account.id) {
@@ -89,15 +87,15 @@ impl AccountStore {
         Ok(())
     }
 
-    fn persist_account(&self, account: &AccountRecord) -> Result<(), String> {
+    fn persist_account(&self, account: &ChatGPTAuthRecord) -> Result<(), String> {
         self.sqlite.upsert_account(account)
     }
 
     async fn prepare_account_for_use(
         &self,
-        mut account: AccountRecord,
+        mut account: ChatGPTAuthRecord,
         token_service: &OpenAiTokenService,
-    ) -> Result<AccountRecord, String> {
+    ) -> Result<ChatGPTAuthRecord, String> {
         if token_service.refresh_needed(account.expiry_timestamp) {
             let client_id = account
                 .client_id()

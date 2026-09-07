@@ -180,7 +180,7 @@ impl ProviderStore {
 mod tests {
     use super::ProviderStore;
     use crate::{
-        models::{AccountRecord, CreateApiProviderRequest, OPENAI_ACCOUNT_PROVIDER_NAME},
+        models::{ChatGPTAuthRecord, CreateApiProviderRequest, OPENAI_ACCOUNT_PROVIDER_NAME},
         store::sqlite::SqliteStore,
     };
     use std::{
@@ -195,7 +195,7 @@ mod tests {
         let sqlite = test_sqlite_store("multi-account-providers");
         for id in ["account_1", "account_2"] {
             sqlite
-                .upsert_account(&AccountRecord {
+                .upsert_account(&ChatGPTAuthRecord {
                     id: id.to_string(),
                     email: format!("{id}@example.com"),
                     access_token: "access".to_string(),

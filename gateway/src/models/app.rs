@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use uuid::Uuid;
 
 pub const PROVIDER_OPENAI_PROXY: &str = "openai-proxy";
 pub const OPENAI_ACCOUNT_PROVIDER_NAME: &str = "GPT账户";
@@ -190,7 +191,7 @@ pub struct ProviderQuotaResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AccountRecord {
+pub struct ChatGPTAuthRecord {
     #[serde(default)]
     pub id: String,
     pub email: String,
@@ -203,7 +204,26 @@ pub struct AccountRecord {
     pub account_id: Option<String>,
 }
 
-impl AccountRecord {
+impl ChatGPTAuthRecord {
+    pub fn new(
+        email: String,
+        access_token: String,
+        refresh_token: String,
+        expiry_timestamp: i64,
+        client_id: Option<String>,
+        account_id: Option<String>,
+    ) -> Self {
+        Self {
+            id: Uuid::new_v4().to_string(),
+            email,
+            access_token,
+            refresh_token,
+            expiry_timestamp,
+            client_id,
+            account_id,
+        }
+    }
+
     pub fn provider(&self) -> &str {
         PROVIDER_OPENAI_PROXY
     }
