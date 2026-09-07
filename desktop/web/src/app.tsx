@@ -1,5 +1,6 @@
 import * as React from "react";
 import {
+  Activity,
   Bug,
   Check,
   CheckCircle2,
@@ -7,6 +8,7 @@ import {
   CircleAlert,
   Cloud,
   Copy,
+  Gauge,
   KeyRound,
   LayoutDashboard,
   LoaderCircle,
@@ -15,6 +17,7 @@ import {
   Server,
   Trash2,
   UserRound,
+  Wrench,
   Play,
   Square,
   X,
@@ -33,6 +36,7 @@ import type {
   ReasoningEffort,
   SelectedProvider,
   GatewayCompatibilityProfile,
+  OpenAiDeviceLoginStart,
 } from "./types";
 
 const GATEWAY_ERROR_PREFIX = "AI网关错误：";
@@ -139,6 +143,56 @@ export function GatewayDashboard() {
   </div>;
 }
 function NavTabs({ active, onSelect }: { active: Page; onSelect: (page: Page) => void }) { return <nav className="flex min-w-0 flex-1 items-center gap-1 sm:ml-2 md:ml-6" aria-label="主导航">{NAV_TABS.map(({ id, label, icon: Icon }) => <button key={id} type="button" title={label} aria-current={active === id ? "page" : undefined} onClick={() => onSelect(id)} className={cn("inline-flex shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-sm font-semibold", active === id ? "bg-slate-900 text-white dark:bg-white dark:text-slate-950" : "text-slate-500 hover:bg-slate-900/5 dark:text-slate-400 dark:hover:bg-white/10")}><Icon className="size-4" /><span className="max-[520px]:sr-only">{label}</span></button>)}</nav>; }
+
+function DefaultCodexGatewayControl({ onError }: { onError: (message: string) => void }) {
+  const [started, setStarted] = React.useState(false);
+  const [loading, setLoading] = React.useState(true);
+  const [busy, setBusy] = React.useState(false);
+
+  React.useEffect(() => {
+    void gatewayApi.codexGatewayStatus()
+      .then((status) => setStarted(status.started))
+      .catch((statusError) => onError(errorMessage(statusError)))
+      .finally(() => setLoading(false));
+  }, [onError]);
+
+  async function toggle() {
+    if (busy || loading) return;
+    setBusy(true);
+    try {
+      const result = started
+        ? await gatewayApi.stopCodexGateway()
+        : await gatewayApi.startCodexGateway();
+      setStarted((current) => !current);
+      if (result.warnings.length) onError(result.warnings.join("\n"));
+    } catch (toggleError) {
+      onError(errorMessage(toggleError));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Button
+      type="button"
+      variant="outline"
+      size="icon"
+      disabled={loading || busy}
+      title={started ? "停止并恢复默认 Codex 配置" : "启动默认 Codex 网关"}
+      aria-label={started ? "停止默认 Codex 网关" : "启动默认 Codex 网关"}
+      onClick={() => void toggle()}
+    >
+      {loading || busy ? (
+        <LoaderCircle className="size-4 animate-spin" />
+      ) : started ? (
+        <Square className="size-3.5 fill-current" />
+      ) : (
+        <Play className="size-4 fill-current" />
+      )}
+    </Button>
+  );
+}
+
 function DefaultRouteSection({ providers, selected, onChanged, onError }: { providers: GatewayProvider[]; selected: SelectedProvider; onChanged: () => Promise<void>; onError: (message: string) => void }) {
   const [models, setModels] = React.useState<GatewayModel[]>([]); const [loadingModels, setLoadingModels] = React.useState(false); const [saving, setSaving] = React.useState(false);
   const provider = providers.find((item) => item.id === selected.provider_id);
@@ -283,7 +337,7 @@ function GatewayIssueSection({
                       <span className="text-[10px] text-slate-400">
                         {issue.provider_name}
                       </span>
-                      <span className="text-[10px] text-slate-400">{turnLogTime(issue.created_at)}</span>
+                      <span className="text-[10px] text-slate-400">{formatIssueTime(issue.created_at)}</span>
                     </div>
                     <div className="mt-2 break-words text-xs font-medium leading-5 text-red-600 dark:text-red-400">
                       {issue.error_message}
@@ -350,6 +404,17 @@ function gatewayIssueKindLabel(kind: string) {
     stream_interrupted: "响应流中断",
   };
   return labels[kind] ?? kind;
+}
+
+function formatIssueTime(timestamp: number) {
+  return new Date(timestamp * 1000).toLocaleString("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
 }
 
 
