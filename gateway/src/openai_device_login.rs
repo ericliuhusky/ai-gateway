@@ -1,4 +1,4 @@
-use crate::models::ChatGPTAuthRecord;
+use crate::models::ProviderRecord;
 use crate::openai_tokens::OpenAiTokenService;
 use crate::support::time::now_unix;
 use crate::upstream::build_http_client;
@@ -71,7 +71,7 @@ pub enum DeviceLoginPoll {
 #[derive(Clone, Debug)]
 pub struct DeviceLoginCompletion {
     pub email: String,
-    pub account_id: String,
+    pub provider_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -257,7 +257,7 @@ impl OpenAiDeviceLoginService {
         &self,
         authorization: &DeviceAuthorization,
         tokens: &OpenAiTokenService,
-    ) -> Result<ChatGPTAuthRecord, String> {
+    ) -> Result<ProviderRecord, String> {
         let params = [
             ("grant_type", "authorization_code"),
             ("code", authorization.authorization_code.as_str()),

@@ -53,7 +53,7 @@ mod tests {
         let request = PrivateOpenAiRequestBuilder {
             base_url: OPENAI_CODEX_BASE_URL,
             access_token: "token",
-            account_id: None,
+            upstream_account_id: None,
             client_version: Some("test"),
         }
         .build(&reqwest::Client::new(), OpenAiEndpoint::Models)

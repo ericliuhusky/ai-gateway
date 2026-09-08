@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-pub const PROVIDER_OPENAI_PROXY: &str = "openai-proxy";
-pub const OPENAI_ACCOUNT_PROVIDER_NAME: &str = "GPT账户";
+pub const DEFAULT_OPENAI_PROVIDER_NAME: &str = "GPT账户";
+pub const LEGACY_OPENAI_PROVIDER_NAME: &str = "openai-proxy";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -15,7 +15,7 @@ pub enum ProviderAuthMode {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct CreateApiProviderRequest {
+pub struct CreateProviderRequest {
     #[serde(alias = "provider_name")]
     pub name: String,
     #[serde(default)]
@@ -25,7 +25,7 @@ pub struct CreateApiProviderRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ApiProviderRecord {
+pub struct ProviderRecord {
     #[serde(default)]
     pub id: String,
     #[serde(alias = "provider_name")]
@@ -35,19 +35,28 @@ pub struct ApiProviderRecord {
     pub base_url: String,
     pub api_key: String,
     #[serde(default)]
-    pub account_id: Option<String>,
+    #[serde(skip_serializing)]
+    pub email: Option<String>,
+    #[serde(default, skip_serializing)]
+    pub access_token: Option<String>,
+    #[serde(default, skip_serializing)]
+    pub refresh_token: Option<String>,
+    #[serde(default, skip_serializing)]
+    pub expiry_timestamp: Option<i64>,
+    #[serde(default, skip_serializing)]
+    pub client_id: Option<String>,
+    #[serde(default, skip_serializing, alias = "account_id")]
+    pub upstream_account_id: Option<String>,
     #[serde(skip_serializing)]
     pub owner_user_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct ApiProviderSummary {
+pub struct ProviderSummary {
     pub id: String,
     pub name: String,
     pub auth_mode: ProviderAuthMode,
     pub base_url: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub account_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub account_email: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -188,73 +197,52 @@ pub struct ProviderQuotaSummary {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ProviderQuotaResponse {
-    pub provider: ApiProviderSummary,
+    pub provider: ProviderSummary,
     pub quota: ProviderQuotaSummary,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChatGPTAuthRecord {
-    #[serde(default)]
-    pub id: String,
-    pub email: String,
-    pub access_token: String,
-    pub refresh_token: String,
-    pub expiry_timestamp: i64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub client_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", alias = "upstream_account_id")]
-    pub account_id: Option<String>,
-}
-
-impl ChatGPTAuthRecord {
-    pub fn new(
+impl ProviderRecord {
+    pub fn new_openai_account(
         email: String,
         access_token: String,
         refresh_token: String,
         expiry_timestamp: i64,
         client_id: Option<String>,
-        account_id: Option<String>,
+        upstream_account_id: Option<String>,
     ) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
-            email,
-            access_token,
-            refresh_token,
-            expiry_timestamp,
+            name: DEFAULT_OPENAI_PROVIDER_NAME.to_string(),
+            auth_mode: ProviderAuthMode::Account,
+            base_url: String::new(),
+            api_key: String::new(),
+            email: Some(email),
+            access_token: Some(access_token),
+            refresh_token: Some(refresh_token),
+            expiry_timestamp: Some(expiry_timestamp),
             client_id,
-            account_id,
+            upstream_account_id,
+            owner_user_id: None,
         }
     }
 
-    pub fn provider(&self) -> &str {
-        PROVIDER_OPENAI_PROXY
+    pub fn access_token(&self) -> Option<&str> {
+        self.access_token.as_deref()
     }
 
-    pub fn access_token(&self) -> &str {
-        self.access_token.as_str()
+    pub fn refresh_token(&self) -> Option<&str> {
+        self.refresh_token.as_deref()
     }
 
-    pub fn refresh_token(&self) -> &str {
-        self.refresh_token.as_str()
-    }
-
-    pub fn refresh_token_mut(&mut self) -> &mut String {
-        &mut self.refresh_token
-    }
-
-    pub fn access_token_mut(&mut self) -> &mut String {
-        &mut self.access_token
-    }
-
-    pub fn set_expiry_timestamp(&mut self, expiry_timestamp: i64) {
-        self.expiry_timestamp = expiry_timestamp;
+    pub fn upstream_account_id(&self) -> Option<&str> {
+        self.upstream_account_id.as_deref()
     }
 
     pub fn client_id(&self) -> Option<&str> {
         self.client_id.as_deref()
     }
 
-    pub fn account_id(&self) -> Option<&str> {
-        self.account_id.as_deref()
+    pub fn set_expiry_timestamp(&mut self, expiry_timestamp: i64) {
+        self.expiry_timestamp = Some(expiry_timestamp);
     }
 }

@@ -1,10 +1,12 @@
 use crate::{
     config::Config,
     models::{
-        ApiProviderRecord, ApiProviderSummary, CreateApiProviderRequest,
-        OPENAI_ACCOUNT_PROVIDER_NAME, PROVIDER_OPENAI_PROXY, ProviderAuthMode,
+        CreateProviderRequest, DEFAULT_OPENAI_PROVIDER_NAME, LEGACY_OPENAI_PROVIDER_NAME,
+        ProviderAuthMode, ProviderRecord, ProviderSummary,
     },
+    openai_tokens::OpenAiTokenService,
     store::sqlite::SqliteStore,
+    support::time::now_unix,
 };
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -13,7 +15,7 @@ use uuid::Uuid;
 #[derive(Clone, Debug)]
 pub struct ProviderStore {
     sqlite: SqliteStore,
-    providers: Arc<Mutex<Vec<ApiProviderRecord>>>,
+    providers: Arc<Mutex<Vec<ProviderRecord>>>,
 }
 
 impl ProviderStore {
@@ -38,9 +40,9 @@ impl ProviderStore {
         loaded.retain(|provider| !provider.id.starts_with("shared_"));
         for provider in &mut loaded {
             if provider.auth_mode == ProviderAuthMode::Account
-                && provider.name == PROVIDER_OPENAI_PROXY
+                && provider.name == LEGACY_OPENAI_PROVIDER_NAME
             {
-                provider.name = OPENAI_ACCOUNT_PROVIDER_NAME.to_string();
+                provider.name = DEFAULT_OPENAI_PROVIDER_NAME.to_string();
                 self.persist_provider(provider)?;
             }
         }
@@ -48,20 +50,19 @@ impl ProviderStore {
         Ok(())
     }
 
-    pub async fn list_for_owner(&self, owner_user_id: Option<i64>) -> Vec<ApiProviderSummary> {
+    pub async fn list_for_owner(&self, owner_user_id: Option<i64>) -> Vec<ProviderSummary> {
         self.providers
             .lock()
             .await
             .iter()
             .filter(|provider| provider.owner_user_id == owner_user_id)
-            .map(|provider| ApiProviderSummary {
+            .map(|provider| ProviderSummary {
                 id: provider.id.clone(),
                 name: provider.name.clone(),
                 auth_mode: provider.auth_mode.clone(),
                 base_url: provider.base_url.clone(),
-                account_id: provider.account_id.clone(),
-                account_email: None,
-                account_expires_at: None,
+                account_email: provider.email.clone(),
+                account_expires_at: provider.expiry_timestamp,
             })
             .collect()
     }
@@ -69,8 +70,8 @@ impl ProviderStore {
     pub async fn upsert_for_owner(
         &self,
         owner_user_id: Option<i64>,
-        request: CreateApiProviderRequest,
-    ) -> Result<ApiProviderRecord, String> {
+        request: CreateProviderRequest,
+    ) -> Result<ProviderRecord, String> {
         let name = request.name.trim().to_string();
         if name.is_empty() {
             return Err("供应商名称不能为空".to_string());
@@ -92,13 +93,18 @@ impl ProviderStore {
             return Err(format!("供应商名称已存在: {name}"));
         }
 
-        let provider = ApiProviderRecord {
+        let provider = ProviderRecord {
             id: Uuid::new_v4().to_string(),
             name,
             auth_mode: ProviderAuthMode::ApiKey,
             base_url,
             api_key,
-            account_id: None,
+            email: None,
+            access_token: None,
+            refresh_token: None,
+            expiry_timestamp: None,
+            client_id: None,
+            upstream_account_id: None,
             owner_user_id,
         };
         self.persist_provider(&provider)?;
@@ -106,11 +112,65 @@ impl ProviderStore {
         Ok(provider)
     }
 
+    pub async fn import_openai_provider_for_owner(
+        &self,
+        owner_user_id: Option<i64>,
+        mut provider: ProviderRecord,
+    ) -> Result<ProviderRecord, String> {
+        if provider.auth_mode != ProviderAuthMode::Account {
+            return Err("导入的 OpenAI 凭据必须是账户认证供应商".to_string());
+        }
+        let email = provider
+            .email
+            .as_deref()
+            .filter(|email| !email.trim().is_empty())
+            .ok_or_else(|| "导入的 OpenAI 凭据缺少邮箱".to_string())?;
+        let mut providers = self.providers.lock().await;
+        if providers.iter().any(|existing| {
+            existing.owner_user_id == owner_user_id
+                && existing.auth_mode == ProviderAuthMode::Account
+                && existing.email.as_deref() == Some(email)
+        }) {
+            return Err(format!("OpenAI 账号已经存在: {email}"));
+        }
+
+        provider.owner_user_id = owner_user_id;
+        self.persist_provider(&provider)?;
+        providers.push(provider.clone());
+        Ok(provider)
+    }
+
+    pub async fn acquire_by_id(
+        &self,
+        token_service: &OpenAiTokenService,
+        provider_id: &str,
+    ) -> Result<ProviderRecord, String> {
+        let provider = self
+            .find_by_id(provider_id)
+            .await
+            .ok_or_else(|| format!("供应商不存在: {provider_id}"))?;
+        self.prepare_provider_for_use(provider, token_service).await
+    }
+
+    pub async fn refresh(
+        &self,
+        token_service: &OpenAiTokenService,
+        provider_id: &str,
+    ) -> Result<ProviderRecord, String> {
+        let provider = self
+            .find_by_id(provider_id)
+            .await
+            .ok_or_else(|| format!("供应商不存在: {provider_id}"))?;
+        let provider = self.refresh_provider(provider, token_service).await?;
+        self.update_provider(provider.clone()).await?;
+        Ok(provider)
+    }
+
     pub async fn find_by_id_for_owner(
         &self,
         owner_user_id: Option<i64>,
         id: &str,
-    ) -> Option<ApiProviderRecord> {
+    ) -> Option<ProviderRecord> {
         self.providers
             .lock()
             .await
@@ -119,49 +179,20 @@ impl ProviderStore {
             .cloned()
     }
 
-    pub async fn has_account_provider_for_owner(
-        &self,
-        owner_user_id: Option<i64>,
-        account_id: &str,
-    ) -> bool {
-        self.providers.lock().await.iter().any(|provider| {
-            provider.owner_user_id == owner_user_id
-                && provider.account_id.as_deref() == Some(account_id)
-        })
-    }
-
-    pub async fn add_account_provider_for_owner(
-        &self,
-        owner_user_id: Option<i64>,
-        name: &str,
-        account_id: &str,
-    ) -> Result<ApiProviderRecord, String> {
-        let mut providers = self.providers.lock().await;
-        if providers.iter().any(|provider| {
-            provider.owner_user_id == owner_user_id
-                && provider.account_id.as_deref() == Some(account_id)
-        }) {
-            return Err(format!("账户已经绑定供应商: {account_id}"));
-        }
-        let provider = ApiProviderRecord {
-            id: Uuid::new_v4().to_string(),
-            name: name.to_string(),
-            auth_mode: ProviderAuthMode::Account,
-            base_url: String::new(),
-            api_key: String::new(),
-            account_id: Some(account_id.to_string()),
-            owner_user_id,
-        };
-        self.persist_provider(&provider)?;
-        providers.push(provider.clone());
-        Ok(provider)
+    async fn find_by_id(&self, provider_id: &str) -> Option<ProviderRecord> {
+        self.providers
+            .lock()
+            .await
+            .iter()
+            .find(|provider| provider.id == provider_id)
+            .cloned()
     }
 
     pub async fn delete_for_owner(
         &self,
         owner_user_id: Option<i64>,
         id: &str,
-    ) -> Result<ApiProviderRecord, String> {
+    ) -> Result<ProviderRecord, String> {
         let mut providers = self.providers.lock().await;
         let index = providers
             .iter()
@@ -172,7 +203,64 @@ impl ProviderStore {
         Ok(provider)
     }
 
-    fn persist_provider(&self, provider: &ApiProviderRecord) -> Result<(), String> {
+    async fn prepare_provider_for_use(
+        &self,
+        mut provider: ProviderRecord,
+        token_service: &OpenAiTokenService,
+    ) -> Result<ProviderRecord, String> {
+        if provider.auth_mode != ProviderAuthMode::Account {
+            return Err(format!("供应商不是账户认证模式: {}", provider.name));
+        }
+        let expiry_timestamp = provider
+            .expiry_timestamp
+            .ok_or_else(|| format!("账户认证供应商 `{}` 缺少过期时间", provider.name))?;
+        if token_service.refresh_needed(expiry_timestamp) {
+            provider = self.refresh_provider(provider, token_service).await?;
+        }
+
+        self.update_provider(provider.clone()).await?;
+        Ok(provider)
+    }
+
+    async fn refresh_provider(
+        &self,
+        mut provider: ProviderRecord,
+        token_service: &OpenAiTokenService,
+    ) -> Result<ProviderRecord, String> {
+        let client_id = provider
+            .client_id()
+            .ok_or_else(|| "openai provider missing oauth client id".to_string())?;
+        let refresh_token = provider
+            .refresh_token()
+            .ok_or_else(|| "openai provider missing refresh token".to_string())?;
+        let refreshed = token_service
+            .refresh_access_token(client_id, refresh_token)
+            .await
+            .map_err(|err| {
+                format!(
+                    "refresh failed for {}: {err}",
+                    provider.email.as_deref().unwrap_or("unknown")
+                )
+            })?;
+
+        provider.access_token = Some(refreshed.access_token);
+        provider.set_expiry_timestamp(now_unix() as i64 + refreshed.expires_in);
+        if let Some(refresh_token) = refreshed.refresh_token {
+            provider.refresh_token = Some(refresh_token);
+        }
+        Ok(provider)
+    }
+
+    async fn update_provider(&self, provider: ProviderRecord) -> Result<(), String> {
+        self.persist_provider(&provider)?;
+        let mut providers = self.providers.lock().await;
+        if let Some(existing) = providers.iter_mut().find(|item| item.id == provider.id) {
+            *existing = provider;
+        }
+        Ok(())
+    }
+
+    fn persist_provider(&self, provider: &ProviderRecord) -> Result<(), String> {
         self.sqlite.upsert_provider(provider)
     }
 }
@@ -181,7 +269,7 @@ impl ProviderStore {
 mod tests {
     use super::ProviderStore;
     use crate::{
-        models::{ChatGPTAuthRecord, CreateApiProviderRequest, OPENAI_ACCOUNT_PROVIDER_NAME},
+        models::{CreateProviderRequest, ProviderAuthMode, ProviderRecord},
         store::sqlite::SqliteStore,
     };
     use std::{
@@ -192,48 +280,34 @@ mod tests {
     use tokio::sync::Mutex;
 
     #[tokio::test]
-    async fn add_account_provider_creates_one_provider_per_account() {
-        let sqlite = test_sqlite_store("multi-account-providers");
-        for id in ["account_1", "account_2"] {
-            sqlite
-                .upsert_account(&ChatGPTAuthRecord {
-                    id: id.to_string(),
-                    email: format!("{id}@example.com"),
-                    access_token: "access".to_string(),
-                    refresh_token: "refresh".to_string(),
-                    expiry_timestamp: 0,
-                    client_id: None,
-                    account_id: None,
-                })
-                .expect("save account");
-        }
+    async fn imports_one_provider_per_openai_email() {
+        let sqlite = test_sqlite_store("openai-providers");
         let store = ProviderStore {
             sqlite,
             providers: Arc::new(Mutex::new(Vec::new())),
         };
+        let provider = || {
+            ProviderRecord::new_openai_account(
+                "user@example.com".to_string(),
+                "access".to_string(),
+                "refresh".to_string(),
+                1_700_000_000,
+                Some("client".to_string()),
+                Some("upstream".to_string()),
+            )
+        };
 
         let first = store
-            .add_account_provider_for_owner(None, OPENAI_ACCOUNT_PROVIDER_NAME, "account_1")
+            .import_openai_provider_for_owner(None, provider())
             .await
-            .expect("bind first account");
-        let second = store
-            .add_account_provider_for_owner(None, OPENAI_ACCOUNT_PROVIDER_NAME, "account_2")
-            .await
-            .expect("bind second account");
-
-        assert_ne!(first.id, second.id);
-        assert_eq!(first.name, OPENAI_ACCOUNT_PROVIDER_NAME);
-        assert_eq!(second.name, OPENAI_ACCOUNT_PROVIDER_NAME);
-        assert_eq!(first.account_id.as_deref(), Some("account_1"));
-        assert_eq!(second.account_id.as_deref(), Some("account_2"));
-        let providers = store.list_for_owner(None).await;
-        assert_eq!(providers.len(), 2);
-        assert_eq!(
-            providers
-                .iter()
-                .filter(|provider| provider.name == OPENAI_ACCOUNT_PROVIDER_NAME)
-                .count(),
-            2
+            .expect("import first provider");
+        assert_eq!(first.auth_mode, ProviderAuthMode::Account);
+        assert_eq!(first.email.as_deref(), Some("user@example.com"));
+        assert!(
+            store
+                .import_openai_provider_for_owner(None, provider())
+                .await
+                .is_err()
         );
     }
 
@@ -248,15 +322,16 @@ mod tests {
         let provider = store
             .upsert_for_owner(
                 None,
-                CreateApiProviderRequest {
+                CreateProviderRequest {
                     name: "official".to_string(),
                     base_url: Some("https://api.openai.com/v1".to_string()),
                     api_key: Some("sk-test".to_string()),
                 },
             )
             .await
-            .expect("create legacy provider");
+            .expect("create provider");
         assert_eq!(provider.base_url, "https://api.openai.com/v1");
+        assert!(provider.email.is_none());
     }
 
     fn test_sqlite_store(prefix: &str) -> SqliteStore {

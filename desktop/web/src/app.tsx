@@ -95,7 +95,7 @@ export function GatewayDashboard() {
   const [issuesOpen, setIssuesOpen] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [deleting, setDeleting] = React.useState<Set<string>>(new Set());
-  const [refreshingAccounts, setRefreshingAccounts] = React.useState<Set<string>>(new Set());
+  const [refreshingProviders, setRefreshingProviders] = React.useState<Set<string>>(new Set());
   const loadQuotas = React.useCallback(async (items: GatewayProvider[], visibleLoading = true) => {
     const ids = items.filter((item) => item.auth_mode === "account").map((item) => item.id);
     if (!ids.length) return;
@@ -131,13 +131,12 @@ export function GatewayDashboard() {
     }
   }
   function requestDeleteProvider(provider: GatewayProvider) { if (!deleting.has(provider.id)) { setProviderToDelete(provider); setDialog("delete-provider"); } }
-  async function refreshAccount(provider: GatewayProvider) {
-    const accountId = provider.account_id;
-    if (!accountId || refreshingAccounts.has(accountId)) return;
-    setRefreshingAccounts((current) => new Set(current).add(accountId));
-    try { await gatewayApi.refreshAccount(accountId); await refresh(); }
+  async function refreshProvider(provider: GatewayProvider) {
+    if (refreshingProviders.has(provider.id)) return;
+    setRefreshingProviders((current) => new Set(current).add(provider.id));
+    try { await gatewayApi.refreshProvider(provider.id); await refresh(); }
     catch (refreshError) { setError(errorMessage(refreshError)); }
-    finally { setRefreshingAccounts((current) => { const next = new Set(current); next.delete(accountId); return next; }); }
+    finally { setRefreshingProviders((current) => { const next = new Set(current); next.delete(provider.id); return next; }); }
   }
   async function confirmDeleteProvider() {
     const provider = providerToDelete; if (!provider || deleting.has(provider.id)) return;
@@ -147,7 +146,7 @@ export function GatewayDashboard() {
     finally { setDeleting((current) => { const next = new Set(current); next.delete(provider.id); return next; }); }
   }
   return <div className="min-h-screen min-w-0">
-    <main className="mx-auto max-w-[1480px] px-3 py-4 sm:px-8 sm:py-8">{loading ? <LoadingState /> : <><section><div className="mb-3 flex flex-wrap items-center gap-3 px-1"><h2 className="text-xs font-bold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">AI 网关</h2><Button className="ml-auto" variant="outline" size="sm" onClick={() => setDialog("provider")}><Plus className="size-3.5" />添加供应商</Button></div><DefaultRouteSection providers={providers} selected={selected} onChanged={refresh} onError={setError} onOpenIssues={() => setIssuesOpen(true)} /></section>{providers.length === 0 ? <div className="mt-8"><EmptyState onAdd={() => setDialog("provider")} /></div> : <div className="mt-8"><ProviderSection title="供应商" providers={providers} selectedId={selected.provider_id} quotas={quotas} quotaErrors={quotaErrors} loadingQuotas={loadingQuotas} deleting={deleting} refreshingAccounts={refreshingAccounts} onSelect={selectProvider} onDelete={requestDeleteProvider} onRefreshQuota={(provider) => void loadQuotas([provider])} onRefreshAccount={(provider) => void refreshAccount(provider)} /></div>}</>}</main>
+    <main className="mx-auto max-w-[1480px] px-3 py-4 sm:px-8 sm:py-8">{loading ? <LoadingState /> : <><section><div className="mb-3 flex flex-wrap items-center gap-3 px-1"><h2 className="text-xs font-bold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">AI 网关</h2><Button className="ml-auto" variant="outline" size="sm" onClick={() => setDialog("provider")}><Plus className="size-3.5" />添加供应商</Button></div><DefaultRouteSection providers={providers} selected={selected} onChanged={refresh} onError={setError} onOpenIssues={() => setIssuesOpen(true)} /></section>{providers.length === 0 ? <div className="mt-8"><EmptyState onAdd={() => setDialog("provider")} /></div> : <div className="mt-8"><ProviderSection title="供应商" providers={providers} selectedId={selected.provider_id} quotas={quotas} quotaErrors={quotaErrors} loadingQuotas={loadingQuotas} deleting={deleting} refreshingProviders={refreshingProviders} onSelect={selectProvider} onDelete={requestDeleteProvider} onRefreshQuota={(provider) => void loadQuotas([provider])} onRefreshProvider={(provider) => void refreshProvider(provider)} /></div>}</>}</main>
     {issuesOpen ? <GatewayIssueDialog issues={gatewayIssues} onChanged={async () => setGatewayIssues(await gatewayApi.gatewayIssues(200))} onError={setError} onClose={() => setIssuesOpen(false)} /> : null}{error ? <ErrorToast message={error} onClose={() => setError(null)} /> : null}{dialog === "provider" ? <ProviderDialog onClose={() => setDialog(null)} onCreated={handleProviderCreated} onError={setError} /> : null}{dialog === "delete-provider" && providerToDelete ? <DeleteProviderDialog provider={providerToDelete} deleting={deleting.has(providerToDelete.id)} onClose={() => { if (!deleting.has(providerToDelete.id)) { setProviderToDelete(null); setDialog(null); } }} onConfirm={() => void confirmDeleteProvider()} /> : null}
   </div>;
 }
@@ -250,11 +249,11 @@ function ProviderSection(props: {
   quotaErrors: ErrorMap;
   loadingQuotas: Set<string>;
   deleting: Set<string>;
-  refreshingAccounts: Set<string>;
+  refreshingProviders: Set<string>;
   onSelect: (provider: GatewayProvider) => void;
   onDelete: (provider: GatewayProvider) => void;
   onRefreshQuota: (provider: GatewayProvider) => void;
-  onRefreshAccount: (provider: GatewayProvider) => void;
+  onRefreshProvider: (provider: GatewayProvider) => void;
 }) {
   if (!props.providers.length) return null;
   return (
@@ -277,11 +276,11 @@ function ProviderSection(props: {
             quotaError={props.quotaErrors[provider.id]}
             loadingQuota={props.loadingQuotas.has(provider.id)}
             deleting={props.deleting.has(provider.id)}
-            refreshingAccount={provider.account_id ? props.refreshingAccounts.has(provider.account_id) : false}
+            refreshingAccount={props.refreshingProviders.has(provider.id)}
             onSelect={() => props.onSelect(provider)}
             onDelete={() => props.onDelete(provider)}
             onRefreshQuota={() => props.onRefreshQuota(provider)}
-            onRefreshAccount={() => props.onRefreshAccount(provider)}
+            onRefreshProvider={() => props.onRefreshProvider(provider)}
           />
         ))}
       </div>
@@ -518,7 +517,7 @@ function ProviderCard({
   onSelect,
   onDelete,
   onRefreshQuota,
-  onRefreshAccount,
+  onRefreshProvider,
 }: {
   provider: GatewayProvider;
   selected: boolean;
@@ -530,7 +529,7 @@ function ProviderCard({
   onSelect: () => void;
   onDelete: () => void;
   onRefreshQuota: () => void;
-  onRefreshAccount: () => void;
+  onRefreshProvider: () => void;
 }) {
   return (
     <article
@@ -585,8 +584,8 @@ function ProviderCard({
           <AuthPanel
             expiresAt={provider.account_expires_at}
             refreshing={refreshingAccount}
-            disabled={!provider.account_id}
-            onRefresh={onRefreshAccount}
+            disabled={false}
+            onRefresh={onRefreshProvider}
           />
           <QuotaPanel
             quota={quota}
@@ -872,7 +871,7 @@ function ProviderDialog({
         </button>
       </div>
       <div className={providerType === "account" ? undefined : "hidden"}>
-        <AccountProviderForm onClose={onClose} onCreated={onCreated} onError={onError} />
+        <ProviderAuthForm onClose={onClose} onCreated={onCreated} onError={onError} />
       </div>
       {apiTabVisited ? (
         <div className={providerType === "api" ? undefined : "hidden"}>
@@ -960,7 +959,7 @@ function ApiProviderForm({
   );
 }
 
-function AccountProviderForm({
+function ProviderAuthForm({
   onClose,
   onCreated,
   onError,
@@ -987,7 +986,7 @@ function AccountProviderForm({
     if (!parsed) return;
     setSubmitting(true);
     try {
-      await gatewayApi.importAccount(parsed);
+      await gatewayApi.importProvider(parsed);
       await onCreated();
     } catch (submitError) {
       onError(errorMessage(submitError));
@@ -1162,7 +1161,7 @@ function DeleteProviderDialog({
       <div className="space-y-5">
         <div className="rounded-2xl border border-amber-500/20 bg-amber-500/5 p-4 text-xs leading-5 text-amber-700 dark:text-amber-300">
           {provider.auth_mode === "account"
-            ? "该账户不再被其他供应商使用时，其本机登录信息也会一并删除。"
+            ? "删除该供应商时，其本机登录信息也会一并删除。"
             : "此操作不可撤销；需要时可重新添加该供应商。"}
         </div>
         <div className="flex flex-wrap justify-end gap-2">

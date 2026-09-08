@@ -5,21 +5,17 @@ use crate::{
         CodexUsageCredits, CodexUsageRateLimit, CodexUsageRateLimitWindow, CodexUsageResponse,
     },
     models::{
-        ApiProviderRecord, ApiProviderSummary, ChatGPTAuthRecord, CreateApiProviderRequest,
-        GatewayIssue, GatewayIssueRecord, ModelListItem, ModelListResponse,
-        OPENAI_ACCOUNT_PROVIDER_NAME, ProviderAuthMode, ProviderQuotaCredits,
-        ProviderQuotaResponse, ProviderQuotaSnapshot, ProviderQuotaSummary, ProviderQuotaWindow,
-        QuotaSource, QuotaSupportStatus, SelectedRoute, UpdateSelectedModelRequest,
+        CreateProviderRequest, GatewayIssue, GatewayIssueRecord, ModelListItem, ModelListResponse,
+        ProviderAuthMode, ProviderQuotaCredits, ProviderQuotaResponse, ProviderQuotaSnapshot,
+        ProviderQuotaSummary, ProviderQuotaWindow, ProviderRecord, ProviderSummary, QuotaSource,
+        QuotaSupportStatus, SelectedRoute, UpdateSelectedModelRequest,
         UpdateSelectedProviderRequest, UpdateSelectedReasoningEffortRequest,
     },
     openai_device_login::{
         DeviceLoginCompletion, DeviceLoginPoll, DeviceLoginStart, OpenAiDeviceLoginService,
     },
     openai_tokens::OpenAiTokenService,
-    store::{
-        AccountStore, IssueStore, ModelStore, ProviderStore, RouteStore,
-        issue_store::truncate_issue_body,
-    },
+    store::{IssueStore, ModelStore, ProviderStore, RouteStore, issue_store::truncate_issue_body},
     support::time::now_unix,
     upstream::{
         OPENAI_CODEX_BASE_URL, OpenAiEndpoint, OpenAiRequestBody, OpenAiRequestBuilder,
@@ -50,7 +46,6 @@ pub struct AppState {
     pub _config: Arc<Config>,
     pub openai_tokens: OpenAiTokenService,
     pub openai_device_login: OpenAiDeviceLoginService,
-    pub accounts: AccountStore,
     pub providers: ProviderStore,
     pub routes: RouteStore,
     pub models: ModelStore,
@@ -137,7 +132,8 @@ struct CodexAuthTokensFile {
     #[serde(default)]
     refresh_token: Option<String>,
     #[serde(default)]
-    account_id: Option<String>,
+    #[serde(alias = "account_id")]
+    upstream_account_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -198,12 +194,12 @@ pub struct ImportOpenAiFromLocalResponse {
     imported: bool,
     imported_count: usize,
     email: String,
-    account_id: String,
+    provider_id: String,
 }
 
 #[derive(Debug, Serialize)]
-pub struct RefreshOpenAiAccountResponse {
-    account_id: String,
+pub struct RefreshOpenAiProviderResponse {
+    provider_id: String,
     email: String,
     expiry_timestamp: i64,
 }
@@ -233,7 +229,7 @@ pub struct OpenAiDeviceLoginStatusResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     email: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    account_id: Option<String>,
+    provider_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
 }
@@ -260,55 +256,48 @@ pub async fn import_openai_token(
             })?;
         let imported = state
             .openai_tokens
-            .import_codex_tokens(tokens.access_token, refresh_token, tokens.account_id)
-            .map_err(AppError::bad_request)?;
-        let email = imported.email.clone();
-
-        let account = state
-            .accounts
-            .add_openai_account(imported)
-            .await
-            .map_err(AppError::bad_request)?;
-        state
-            .providers
-            .add_account_provider_for_owner(
-                scope.owner_user_id,
-                OPENAI_ACCOUNT_PROVIDER_NAME,
-                &account.id,
+            .import_codex_tokens(
+                tokens.access_token,
+                refresh_token,
+                tokens.upstream_account_id,
             )
+            .map_err(AppError::bad_request)?;
+        let provider = state
+            .providers
+            .import_openai_provider_for_owner(scope.owner_user_id, imported)
             .await
             .map_err(AppError::bad_request)?;
 
         if first_imported.is_none() {
-            first_imported = Some((email, account.id));
+            first_imported = Some((provider.email.clone().unwrap_or_default(), provider.id));
         }
     }
 
-    let (email, account_id) =
+    let (email, provider_id) =
         first_imported.ok_or_else(|| AppError::bad_request("导入 JSON 不包含任何账号"))?;
 
     Ok(Json(ImportOpenAiFromLocalResponse {
         imported: true,
         imported_count,
         email,
-        account_id,
+        provider_id,
     }))
 }
 
-pub async fn refresh_openai_account(
+pub async fn refresh_openai_provider(
     State(state): State<AppState>,
     Extension(_scope): Extension<RequestScope>,
-    AxumPath(account_id): AxumPath<String>,
-) -> Result<Json<RefreshOpenAiAccountResponse>, AppError> {
-    let account = state
-        .accounts
-        .refresh(&state.openai_tokens, &account_id)
+    AxumPath(provider_id): AxumPath<String>,
+) -> Result<Json<RefreshOpenAiProviderResponse>, AppError> {
+    let provider = state
+        .providers
+        .refresh(&state.openai_tokens, &provider_id)
         .await
         .map_err(AppError::bad_request)?;
-    Ok(Json(RefreshOpenAiAccountResponse {
-        account_id: account.id,
-        email: account.email,
-        expiry_timestamp: account.expiry_timestamp,
+    Ok(Json(RefreshOpenAiProviderResponse {
+        provider_id: provider.id,
+        email: provider.email.unwrap_or_default(),
+        expiry_timestamp: provider.expiry_timestamp.unwrap_or_default(),
     }))
 }
 
@@ -362,24 +351,14 @@ pub async fn poll_openai_device_login(
                     .exchange_authorization(&authorization, &state.openai_tokens)
                     .await
                     .map_err(AppError::upstream_message)?;
-                let email = imported.email.clone();
-                let account = state
-                    .accounts
-                    .add_openai_account(imported)
-                    .await
-                    .map_err(AppError::bad_request)?;
-                state
+                let provider = state
                     .providers
-                    .add_account_provider_for_owner(
-                        scope.owner_user_id,
-                        OPENAI_ACCOUNT_PROVIDER_NAME,
-                        &account.id,
-                    )
+                    .import_openai_provider_for_owner(scope.owner_user_id, imported)
                     .await
                     .map_err(AppError::bad_request)?;
                 Ok::<_, AppError>(DeviceLoginCompletion {
-                    email,
-                    account_id: account.id,
+                    email: provider.email.clone().unwrap_or_default(),
+                    provider_id: provider.id,
                 })
             }
             .await;
@@ -437,7 +416,7 @@ fn device_login_pending_response(start: DeviceLoginStart) -> OpenAiDeviceLoginSt
         interval_seconds: Some(start.interval_seconds),
         expires_in: Some(start.expires_in),
         email: None,
-        account_id: None,
+        provider_id: None,
         error: None,
     }
 }
@@ -451,7 +430,7 @@ fn device_login_finalizing_response() -> OpenAiDeviceLoginStatusResponse {
         interval_seconds: None,
         expires_in: None,
         email: None,
-        account_id: None,
+        provider_id: None,
         error: None,
     }
 }
@@ -467,7 +446,7 @@ fn device_login_completed_response(
         interval_seconds: None,
         expires_in: None,
         email: Some(completion.email),
-        account_id: Some(completion.account_id),
+        provider_id: Some(completion.provider_id),
         error: None,
     }
 }
@@ -481,7 +460,7 @@ fn device_login_failed_response(error: String) -> OpenAiDeviceLoginStatusRespons
         interval_seconds: None,
         expires_in: None,
         email: None,
-        account_id: None,
+        provider_id: None,
         error: Some(format!("{UPSTREAM_ERROR_PREFIX}{error}")),
     }
 }
@@ -505,11 +484,17 @@ pub async fn get_provider_quota(
         provider_summary_for_resolved_for_owner(&state, scope.owner_user_id, &provider).await?;
 
     let quota = if provider.auth_mode == ProviderAuthMode::Account {
-        let account = resolve_account_for_provider_for_owner(&state, &provider).await?;
+        let provider_record = resolve_provider_record_for_use(&state, &provider).await?;
+        let access_token = provider_record.access_token().ok_or_else(|| {
+            AppError::bad_request(format!(
+                "账户认证供应商 `{}` 缺少 access token",
+                provider.name
+            ))
+        })?;
         let private_usage = PrivateOpenAiRequestBuilder {
             base_url: OPENAI_CODEX_BASE_URL,
-            access_token: account.access_token(),
-            account_id: account.account_id(),
+            access_token,
+            upstream_account_id: provider_record.upstream_account_id(),
             client_version: None,
         };
         let upstream = state
@@ -551,7 +536,7 @@ pub async fn list_models(
 pub async fn add_provider(
     State(state): State<AppState>,
     Extension(scope): Extension<RequestScope>,
-    Json(request): Json<CreateApiProviderRequest>,
+    Json(request): Json<CreateProviderRequest>,
 ) -> Result<Json<Value>, AppError> {
     let provider = state
         .providers
@@ -566,7 +551,6 @@ pub async fn add_provider(
             "auth_mode": provider.auth_mode,
             "base_url": provider.base_url,
             "api_key": provider.api_key,
-            "account_id": provider.account_id,
         }
     })))
 }
@@ -576,7 +560,7 @@ pub async fn delete_provider(
     Extension(scope): Extension<RequestScope>,
     AxumPath(provider_id): AxumPath<String>,
 ) -> Result<Json<Value>, AppError> {
-    let provider = state
+    let _provider = state
         .providers
         .find_by_id_for_owner(scope.owner_user_id, &provider_id)
         .await
@@ -586,20 +570,6 @@ pub async fn delete_provider(
         .delete_for_owner(scope.owner_user_id, &provider_id)
         .await
         .map_err(AppError::bad_request)?;
-
-    if provider.auth_mode == ProviderAuthMode::Account
-        && let Some(account_id) = provider.account_id.as_deref()
-        && !state
-            .providers
-            .has_account_provider_for_owner(scope.owner_user_id, account_id)
-            .await
-    {
-        state
-            .accounts
-            .delete(account_id)
-            .await
-            .map_err(AppError::internal)?;
-    }
 
     let route = selected_route(&state).await?;
     if route.provider_id.as_deref() == Some(provider_id.as_str()) {
@@ -798,11 +768,17 @@ async fn responses_inner(
                 routed_provider.name
             )));
         }
-        let account = resolve_account_for_provider_for_owner(&state, &routed_provider).await?;
+        let provider_record = resolve_provider_record_for_use(&state, &routed_provider).await?;
+        let access_token = provider_record.access_token().ok_or_else(|| {
+            AppError::bad_request(format!(
+                "账户认证供应商 `{}` 缺少 access token",
+                routed_provider.name
+            ))
+        })?;
         let private_responses = PrivateOpenAiRequestBuilder {
             base_url: OPENAI_CODEX_BASE_URL,
-            access_token: account.access_token(),
-            account_id: account.account_id(),
+            access_token,
+            upstream_account_id: provider_record.upstream_account_id(),
             client_version: None,
         };
         responses_passthrough_inner(
@@ -1326,12 +1302,18 @@ async fn fetch_provider_models(
     provider: &ResolvedProvider,
 ) -> Result<ModelListResponse, AppError> {
     if provider.auth_mode == ProviderAuthMode::Account {
-        let account = resolve_account_for_provider_for_owner(state, provider).await?;
+        let provider_record = resolve_provider_record_for_use(state, provider).await?;
+        let access_token = provider_record.access_token().ok_or_else(|| {
+            AppError::bad_request(format!(
+                "账户认证供应商 `{}` 缺少 access token",
+                provider.name
+            ))
+        })?;
         let client_version = DEFAULT_CODEX_CLIENT_VERSION;
         let private_models = PrivateOpenAiRequestBuilder {
             base_url: OPENAI_CODEX_BASE_URL,
-            access_token: account.access_token(),
-            account_id: account.account_id(),
+            access_token,
+            upstream_account_id: provider_record.upstream_account_id(),
             client_version: Some(client_version),
         };
         let upstream = state
@@ -1370,7 +1352,6 @@ async fn load_provider_models(
         .record
         .as_ref()
         .map(|record| record.id.as_str())
-        .or(provider.account_id.as_deref())
         .ok_or_else(|| AppError::bad_request(format!("供应商缓存键缺失: {}", provider.name)))?;
 
     if !force_refresh
@@ -1564,8 +1545,7 @@ fn native_model_id(entry: &Value) -> Option<&str> {
 pub(super) struct ResolvedProvider {
     pub(super) name: String,
     pub(super) auth_mode: ProviderAuthMode,
-    pub(super) account_id: Option<String>,
-    pub(super) record: Option<ApiProviderRecord>,
+    pub(super) record: Option<ProviderRecord>,
 }
 
 async fn resolve_provider_by_id_for_owner(
@@ -1581,34 +1561,26 @@ async fn resolve_provider_by_id_for_owner(
     Ok(resolved_provider_from_record(record))
 }
 
-fn resolved_provider_from_record(record: ApiProviderRecord) -> ResolvedProvider {
+fn resolved_provider_from_record(record: ProviderRecord) -> ResolvedProvider {
     ResolvedProvider {
         name: record.name.clone(),
         auth_mode: record.auth_mode.clone(),
-        account_id: record.account_id.clone(),
         record: Some(record),
     }
 }
 
-async fn resolve_account_for_provider_for_owner(
+async fn resolve_provider_record_for_use(
     state: &AppState,
     provider: &ResolvedProvider,
-) -> Result<ChatGPTAuthRecord, AppError> {
-    let account_id = provider
-        .account_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| {
-            AppError::bad_request(format!(
-                "账户认证供应商 `{}` 缺少 account_id；请先绑定账户",
-                provider.name
-            ))
-        })?;
-
+) -> Result<ProviderRecord, AppError> {
+    let provider_id = provider
+        .record
+        .as_ref()
+        .map(|record| record.id.as_str())
+        .ok_or_else(|| AppError::bad_request(format!("未知供应商: {}", provider.name)))?;
     state
-        .accounts
-        .acquire_by_id(&state.openai_tokens, account_id)
+        .providers
+        .acquire_by_id(&state.openai_tokens, provider_id)
         .await
         .map_err(AppError::bad_request)
 }
@@ -1617,52 +1589,34 @@ pub(super) fn provider_uses_openai_account(provider: &ResolvedProvider) -> bool 
     provider
         .record
         .as_ref()
-        .and_then(|record| record.account_id.as_ref())
-        .is_some()
+        .map(|record| record.auth_mode == ProviderAuthMode::Account)
+        .unwrap_or(false)
 }
 
 async fn hydrated_provider_summaries_for_owner(
     state: &AppState,
     _owner_user_id: Option<i64>,
-) -> Vec<ApiProviderSummary> {
-    let mut providers = state.providers.list_for_owner(None).await;
-    for provider in &mut providers {
-        hydrate_provider_summary_for_owner(state, provider).await;
-    }
-    providers
+) -> Vec<ProviderSummary> {
+    state.providers.list_for_owner(None).await
 }
 
 async fn provider_summary_for_resolved_for_owner(
-    state: &AppState,
+    _state: &AppState,
     _owner_user_id: Option<i64>,
     provider: &ResolvedProvider,
-) -> Result<ApiProviderSummary, AppError> {
+) -> Result<ProviderSummary, AppError> {
     let record = provider
         .record
         .clone()
         .ok_or_else(|| AppError::bad_request(format!("未知供应商: {}", provider.name)))?;
-    let mut summary = ApiProviderSummary {
-        id: record.id.clone(),
-        name: record.name.clone(),
-        auth_mode: record.auth_mode.clone(),
-        base_url: record.base_url.clone(),
-        account_id: record.account_id.clone(),
-        account_email: None,
-        account_expires_at: None,
-    };
-    hydrate_provider_summary_for_owner(state, &mut summary).await;
-    Ok(summary)
-}
-
-async fn hydrate_provider_summary_for_owner(state: &AppState, provider: &mut ApiProviderSummary) {
-    if provider.auth_mode == ProviderAuthMode::Account
-        && let Some(account_id) = provider.account_id.as_deref()
-    {
-        if let Some(account) = state.accounts.find_by_id(account_id).await {
-            provider.account_email = Some(account.email);
-            provider.account_expires_at = Some(account.expiry_timestamp);
-        }
-    }
+    Ok(ProviderSummary {
+        id: record.id,
+        name: record.name,
+        auth_mode: record.auth_mode,
+        base_url: record.base_url,
+        account_email: record.email,
+        account_expires_at: record.expiry_timestamp,
+    })
 }
 
 fn unsupported_quota_summary(message: String) -> ProviderQuotaSummary {

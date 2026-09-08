@@ -78,7 +78,7 @@ impl OpenAiRequestBuilder for PublicOpenAiRequestBuilder<'_> {
 pub struct PrivateOpenAiRequestBuilder<'a> {
     pub base_url: &'a str,
     pub access_token: &'a str,
-    pub account_id: Option<&'a str>,
+    pub upstream_account_id: Option<&'a str>,
     pub client_version: Option<&'a str>,
 }
 
@@ -93,8 +93,10 @@ impl OpenAiRequestBuilder for PrivateOpenAiRequestBuilder<'_> {
 
     fn customize_request(&self, request: RequestBuilder) -> RequestBuilder {
         let request = request.header("user-agent", "CodexBar");
-        if let Some(account_id) = self.account_id.filter(|value| !value.is_empty()) {
-            request.header("ChatGPT-Account-Id", account_id)
+        if let Some(upstream_account_id) =
+            self.upstream_account_id.filter(|value| !value.is_empty())
+        {
+            request.header("ChatGPT-Account-Id", upstream_account_id)
         } else {
             request
         }

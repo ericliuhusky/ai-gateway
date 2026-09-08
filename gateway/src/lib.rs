@@ -22,7 +22,7 @@ use std::{
 
 use axum::http::{Method, header::ACCEPT};
 use serde_json::Value;
-use store::{AccountStore, IssueStore, ModelStore, ProviderStore, RouteStore};
+use store::{IssueStore, ModelStore, ProviderStore, RouteStore};
 use upstream::UpstreamClient;
 
 pub use control::GatewayRuntime;
@@ -312,8 +312,6 @@ fn gateway_listen_addr() -> String {
 
 async fn initialize_local_gateway() -> Result<AppState, String> {
     let config = Arc::new(Config::local()?);
-    let accounts = AccountStore::new(config.clone())?;
-    accounts.load().await?;
     let providers = ProviderStore::new(config.clone())?;
     providers.load().await?;
     let routes = RouteStore::new(config.clone())?;
@@ -325,7 +323,6 @@ async fn initialize_local_gateway() -> Result<AppState, String> {
         _config: config.clone(),
         openai_tokens: OpenAiTokenService::new(),
         openai_device_login: OpenAiDeviceLoginService::new(),
-        accounts,
         providers,
         routes,
         models,

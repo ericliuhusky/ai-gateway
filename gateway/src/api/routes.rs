@@ -6,7 +6,7 @@ use crate::{
         clear_selected_reasoning_effort, delete_provider, gateway_status,
         get_gateway_issue_repair_prompt, get_provider_quota, get_route, get_selected_model,
         get_selected_reasoning_effort, healthz, import_openai_token, list_gateway_issues,
-        list_models, list_providers, poll_openai_device_login, refresh_openai_account, responses,
+        list_models, list_providers, poll_openai_device_login, refresh_openai_provider, responses,
         set_route, set_selected_model, set_selected_reasoning_effort, start_openai_device_login,
     },
 };
@@ -35,17 +35,17 @@ pub fn build_management_router(state: AppState) -> Router {
     let management_routes = Router::new()
         .route("/healthz", get(healthz))
         .route("/control/status", get(gateway_status))
-        .route("/accounts/openai/import-token", post(import_openai_token))
+        .route("/providers/openai/import-token", post(import_openai_token))
         .route(
-            "/accounts/openai/:account_id/refresh",
-            post(refresh_openai_account),
+            "/providers/:provider_id/refresh",
+            post(refresh_openai_provider),
         )
         .route(
-            "/accounts/openai/login/device",
+            "/providers/openai/login/device",
             post(start_openai_device_login),
         )
         .route(
-            "/accounts/openai/login/device/:login_id",
+            "/providers/openai/login/device/:login_id",
             get(poll_openai_device_login).delete(cancel_openai_device_login),
         )
         .route("/providers", get(list_providers).post(add_provider))
@@ -134,10 +134,10 @@ mod tests {
     use crate::{
         api::AppState,
         config::Config,
-        models::CreateApiProviderRequest,
+        models::CreateProviderRequest,
         openai_device_login::OpenAiDeviceLoginService,
         openai_tokens::OpenAiTokenService,
-        store::{AccountStore, IssueStore, ModelStore, ProviderStore, RouteStore},
+        store::{IssueStore, ModelStore, ProviderStore, RouteStore},
         upstream::UpstreamClient,
     };
     use axum::{
@@ -187,7 +187,7 @@ mod tests {
         let provider = providers
             .upsert_for_owner(
                 None,
-                CreateApiProviderRequest {
+                CreateProviderRequest {
                     name: "Mock Provider".to_string(),
                     base_url: Some(format!("http://{upstream_addr}/v1")),
                     api_key: Some("sk-local-only".to_string()),
@@ -298,7 +298,7 @@ mod tests {
         let provider = providers
             .upsert_for_owner(
                 None,
-                CreateApiProviderRequest {
+                CreateProviderRequest {
                     name: "Unavailable Provider".to_string(),
                     base_url: Some(format!("http://{upstream_addr}/v1")),
                     api_key: Some("sk-local-only".to_string()),
@@ -375,8 +375,6 @@ mod tests {
 
     async fn test_state(data_dir: PathBuf) -> (AppState, ProviderStore, RouteStore) {
         let config = Arc::new(Config::for_test(data_dir.clone()));
-        let accounts = AccountStore::new(config.clone()).expect("create accounts");
-        accounts.load().await.expect("load accounts");
         let providers = ProviderStore::new(config.clone()).expect("create providers");
         providers.load().await.expect("load providers");
         let routes = RouteStore::new(config.clone()).expect("create routes");
@@ -387,7 +385,6 @@ mod tests {
             _config: config.clone(),
             openai_tokens: OpenAiTokenService::new(),
             openai_device_login: OpenAiDeviceLoginService::new(),
-            accounts,
             providers: providers.clone(),
             routes: routes.clone(),
             models,

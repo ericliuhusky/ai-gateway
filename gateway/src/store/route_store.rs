@@ -66,7 +66,7 @@ impl RouteStore {
 mod tests {
     use super::RouteStore;
     use crate::{
-        models::{ApiProviderRecord, ProviderAuthMode, SelectedRoute},
+        models::{ProviderAuthMode, ProviderRecord, SelectedRoute},
         store::sqlite::SqliteStore,
     };
     use std::{
@@ -80,13 +80,18 @@ mod tests {
     async fn update_persists_final_route_and_provider_preferences() {
         let db_path = unique_test_db_path("route-update");
         let sqlite = SqliteStore::for_test(db_path.clone()).expect("create sqlite store");
-        let provider = ApiProviderRecord {
+        let provider = ProviderRecord {
             id: "provider-a".to_string(),
             name: "Provider A".to_string(),
             auth_mode: ProviderAuthMode::ApiKey,
             base_url: "https://example.com/v1".to_string(),
             api_key: "key".to_string(),
-            account_id: None,
+            email: None,
+            access_token: None,
+            refresh_token: None,
+            expiry_timestamp: None,
+            client_id: None,
+            upstream_account_id: None,
             owner_user_id: None,
         };
         sqlite.upsert_provider(&provider).expect("save provider");

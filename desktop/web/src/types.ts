@@ -5,7 +5,6 @@ export interface GatewayProvider {
   name: string;
   auth_mode: GatewayAuthMode;
   base_url: string;
-  account_id?: string;
   account_email?: string;
   account_expires_at?: number;
 }
@@ -110,6 +109,6 @@ export interface OpenAiDeviceLoginStatus {
   interval_seconds?: number;
   expires_in?: number;
   email?: string;
-  account_id?: string;
+  provider_id?: string;
   error?: string;
 }
