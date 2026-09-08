@@ -30,6 +30,14 @@ struct OpenAITokenClaims {
     client_id: Option<String>,
     #[serde(default)]
     email: Option<String>,
+    #[serde(default, rename = "https://api.openai.com/profile")]
+    profile: Option<OpenAIProfileClaims>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAIProfileClaims {
+    #[serde(default)]
+    email: Option<String>,
 }
 
 impl OpenAiTokenService {
@@ -115,7 +123,12 @@ fn decode_openai_claims(token: &str) -> Result<OpenAITokenClaims, String> {
 }
 
 fn openai_email_from_claims(claims: &OpenAITokenClaims) -> Option<String> {
-    claims.email.clone()
+    claims.email.clone().or_else(|| {
+        claims
+            .profile
+            .as_ref()
+            .and_then(|profile| profile.email.clone())
+    })
 }
 
 #[cfg(test)]
@@ -140,5 +153,24 @@ mod tests {
         );
         assert_eq!(claims.exp, Some(1_700_000_000));
         assert_eq!(claims.client_id.as_deref(), Some("app_test"));
+    }
+
+    #[test]
+    fn extracts_email_from_openai_profile_claim() {
+        let payload = serde_json::json!({
+            "exp": 1_700_000_000,
+            "https://api.openai.com/profile": {
+                "email": "user@example.com",
+                "email_verified": true,
+            },
+        });
+        let payload_encoded = URL_SAFE_NO_PAD.encode(payload.to_string().as_bytes());
+        let token = format!("header.{payload_encoded}.sig");
+
+        let claims = decode_openai_claims(&token).expect("should decode jwt payload");
+        assert_eq!(
+            openai_email_from_claims(&claims).as_deref(),
+            Some("user@example.com")
+        );
     }
 }
