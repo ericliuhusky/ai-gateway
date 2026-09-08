@@ -56,8 +56,7 @@ pub fn stop_default_codex() -> Result<CodexConfigurationResult, String> {
     };
     let _lock = ConfigLock::acquire(&codex_dir)?;
     let next = restore_gateway_config(&source)?;
-    let mut changed = write_if_changed(&config_path, next.as_bytes())?;
-    changed |= restore_authentication(&codex_dir)?;
+    let changed = write_if_changed(&config_path, next.as_bytes())?;
     Ok(CodexConfigurationResult { changed })
 }
 
@@ -254,25 +253,6 @@ fn write_if_changed(path: &Path, content: &[u8]) -> Result<bool, String> {
     fs::rename(&temporary, path)
         .map_err(|error| format!("保存 {} 失败：{error}", path.display()))?;
     Ok(true)
-}
-
-fn restore_authentication(codex_dir: &Path) -> Result<bool, String> {
-    let auth_path = codex_dir.join("auth.json");
-    let backup_path = codex_dir.join(".ai-gateway-auth.before-setup.json");
-    let absent_marker = codex_dir.join(".ai-gateway-auth.was-absent");
-    if backup_path.exists() {
-        fs::rename(&backup_path, &auth_path)
-            .map_err(|error| format!("恢复 Codex 登录凭据失败：{error}"))?;
-        let _ = fs::remove_file(absent_marker);
-        return Ok(true);
-    }
-    if absent_marker.exists() {
-        let _ = fs::remove_file(&auth_path);
-        fs::remove_file(absent_marker)
-            .map_err(|error| format!("清理 Codex 登录标记失败：{error}"))?;
-        return Ok(true);
-    }
-    Ok(false)
 }
 
 struct ConfigLock {
