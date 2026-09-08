@@ -6,11 +6,9 @@ import {
   CheckCircle2,
   ChevronDown,
   CircleAlert,
-  Cloud,
   Copy,
   Gauge,
   KeyRound,
-  LayoutDashboard,
   LoaderCircle,
   Plus,
   RefreshCw,
@@ -42,14 +40,6 @@ import type {
 const GATEWAY_ERROR_PREFIX = "AI网关错误：";
 const UPSTREAM_ERROR_PREFIX = "上游服务错误：";
 type Dialog = "provider" | "delete-provider" | null;
-type Page = "overview" | "issues";
-const ROUTE_TO_PAGE: Record<string, Page> = { "/": "overview", "/issues": "issues" };
-const PAGE_TO_ROUTE: Record<Page, string> = { overview: "/", issues: "/issues" };
-function pageFromPath(path: string): Page { return ROUTE_TO_PAGE[path] ?? "overview"; }
-const NAV_TABS: { id: Page; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
-  { id: "overview", label: "概览", icon: LayoutDashboard },
-  { id: "issues", label: "网关问题", icon: Bug },
-];
 type QuotaMap = Record<string, ProviderQuotaSummary | undefined>;
 type ErrorMap = Record<string, string | undefined>;
 function errorMessage(error: unknown) {
@@ -102,12 +92,10 @@ export function GatewayDashboard() {
   const [loading, setLoading] = React.useState(true);
   const [dialog, setDialog] = React.useState<Dialog>(null);
   const [providerToDelete, setProviderToDelete] = React.useState<GatewayProvider | null>(null);
-  const [activePage, setActivePageState] = React.useState<Page>(() => pageFromPath(window.location.pathname));
+  const [issuesOpen, setIssuesOpen] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [deleting, setDeleting] = React.useState<Set<string>>(new Set());
   const [refreshingAccounts, setRefreshingAccounts] = React.useState<Set<string>>(new Set());
-  function setActivePage(page: Page) { const route = PAGE_TO_ROUTE[page]; if (window.location.pathname !== route) window.history.pushState(null, "", route); setActivePageState(page); }
-  React.useEffect(() => { const onPopState = () => setActivePageState(pageFromPath(window.location.pathname)); window.addEventListener("popstate", onPopState); return () => window.removeEventListener("popstate", onPopState); }, []);
   const loadQuotas = React.useCallback(async (items: GatewayProvider[], visibleLoading = true) => {
     const ids = items.filter((item) => item.auth_mode === "account").map((item) => item.id);
     if (!ids.length) return;
@@ -124,6 +112,7 @@ export function GatewayDashboard() {
       const [providerList, route, issues] = await Promise.all([gatewayApi.providers(), gatewayApi.selectedProvider(), gatewayApi.gatewayIssues(200)]);
       const sorted = [...providerList].sort((a, b) => a.name.localeCompare(b.name));
       setProviders(sorted); setSelected(route); setGatewayIssues(issues); setError(null); void loadQuotas(sorted);
+      return sorted;
     } catch (loadError) { setError(errorMessage(loadError)); } finally { setLoading(false); }
   }, [loadQuotas]);
   React.useEffect(() => { void refresh(); }, [refresh]);
@@ -132,6 +121,14 @@ export function GatewayDashboard() {
     if (provider.id === selected.provider_id || deleting.has(provider.id)) return;
     setSelected((current) => ({ ...current, provider_id: provider.id, selected_model: undefined, selected_reasoning_effort: undefined }));
     try { setSelected(await gatewayApi.selectProvider(provider.id)); await loadQuotas([provider]); } catch (selectionError) { setError(errorMessage(selectionError)); await refresh(); }
+  }
+  async function handleProviderCreated() {
+    const shouldSelectFirst = providers.length === 0;
+    setDialog(null);
+    const nextProviders = await refresh();
+    if (shouldSelectFirst && nextProviders?.[0]) {
+      await selectProvider(nextProviders[0]);
+    }
   }
   function requestDeleteProvider(provider: GatewayProvider) { if (!deleting.has(provider.id)) { setProviderToDelete(provider); setDialog("delete-provider"); } }
   async function refreshAccount(provider: GatewayProvider) {
@@ -150,14 +147,11 @@ export function GatewayDashboard() {
     finally { setDeleting((current) => { const next = new Set(current); next.delete(provider.id); return next; }); }
   }
   return <div className="min-h-screen min-w-0">
-    <header className="relative z-50 border-b border-white/50 bg-white/55 backdrop-blur-xl dark:border-white/8 dark:bg-slate-950/55"><div className="mx-auto flex min-h-14 max-w-[1480px] items-center gap-2 px-3 py-2 sm:h-16 sm:gap-3 sm:px-8 sm:py-0"><button type="button" className="flex shrink-0 items-center gap-2 rounded-xl text-left outline-none transition-opacity hover:opacity-80" aria-label="返回首页" onClick={() => setActivePage("overview")}><span className="flex size-9 items-center justify-center rounded-xl bg-slate-900 text-white shadow-lg dark:bg-white dark:text-slate-950"><Cloud className="size-[18px]" /></span><span className="hidden text-[15px] font-bold min-[440px]:inline">AI网关</span></button><NavTabs active={activePage} onSelect={setActivePage} /><span className="ml-auto hidden rounded-full bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold text-emerald-700 dark:text-emerald-300 xl:inline">本地功能无需登录</span></div></header>
-    <main className="mx-auto max-w-[1480px] px-3 py-4 sm:px-8 sm:py-8">{loading ? <LoadingState /> : activePage === "issues" ? <GatewayIssueSection issues={gatewayIssues} onChanged={async () => setGatewayIssues(await gatewayApi.gatewayIssues(200))} onError={setError} /> : <><section><div className="mb-3 flex flex-wrap items-center gap-3 px-1"><h2 className="text-xs font-bold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">AI 网关</h2><Button className="ml-auto" variant="outline" size="sm" onClick={() => setDialog("provider")}><Plus className="size-3.5" />添加供应商</Button></div><DefaultRouteSection providers={providers} selected={selected} onChanged={refresh} onError={setError} /></section>{providers.length === 0 ? <div className="mt-8"><EmptyState onAdd={() => setDialog("provider")} /></div> : <div className="mt-8"><ProviderSection title="供应商" providers={providers} selectedId={selected.provider_id} quotas={quotas} quotaErrors={quotaErrors} loadingQuotas={loadingQuotas} deleting={deleting} refreshingAccounts={refreshingAccounts} onSelect={selectProvider} onDelete={requestDeleteProvider} onRefreshQuota={(provider) => void loadQuotas([provider])} onRefreshAccount={(provider) => void refreshAccount(provider)} /></div>}</>}</main>
-    {error ? <ErrorToast message={error} onClose={() => setError(null)} /> : null}{dialog === "provider" ? <ProviderDialog onClose={() => setDialog(null)} onCreated={async () => { setDialog(null); await refresh(); }} onError={setError} /> : null}{dialog === "delete-provider" && providerToDelete ? <DeleteProviderDialog provider={providerToDelete} deleting={deleting.has(providerToDelete.id)} onClose={() => { if (!deleting.has(providerToDelete.id)) { setProviderToDelete(null); setDialog(null); } }} onConfirm={() => void confirmDeleteProvider()} /> : null}
+    <main className="mx-auto max-w-[1480px] px-3 py-4 sm:px-8 sm:py-8">{loading ? <LoadingState /> : <><section><div className="mb-3 flex flex-wrap items-center gap-3 px-1"><h2 className="text-xs font-bold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">AI 网关</h2><Button className="ml-auto" variant="outline" size="sm" onClick={() => setDialog("provider")}><Plus className="size-3.5" />添加供应商</Button></div><DefaultRouteSection providers={providers} selected={selected} onChanged={refresh} onError={setError} onOpenIssues={() => setIssuesOpen(true)} /></section>{providers.length === 0 ? <div className="mt-8"><EmptyState onAdd={() => setDialog("provider")} /></div> : <div className="mt-8"><ProviderSection title="供应商" providers={providers} selectedId={selected.provider_id} quotas={quotas} quotaErrors={quotaErrors} loadingQuotas={loadingQuotas} deleting={deleting} refreshingAccounts={refreshingAccounts} onSelect={selectProvider} onDelete={requestDeleteProvider} onRefreshQuota={(provider) => void loadQuotas([provider])} onRefreshAccount={(provider) => void refreshAccount(provider)} /></div>}</>}</main>
+    {issuesOpen ? <GatewayIssueDialog issues={gatewayIssues} onChanged={async () => setGatewayIssues(await gatewayApi.gatewayIssues(200))} onError={setError} onClose={() => setIssuesOpen(false)} /> : null}{error ? <ErrorToast message={error} onClose={() => setError(null)} /> : null}{dialog === "provider" ? <ProviderDialog onClose={() => setDialog(null)} onCreated={handleProviderCreated} onError={setError} /> : null}{dialog === "delete-provider" && providerToDelete ? <DeleteProviderDialog provider={providerToDelete} deleting={deleting.has(providerToDelete.id)} onClose={() => { if (!deleting.has(providerToDelete.id)) { setProviderToDelete(null); setDialog(null); } }} onConfirm={() => void confirmDeleteProvider()} /> : null}
   </div>;
 }
-function NavTabs({ active, onSelect }: { active: Page; onSelect: (page: Page) => void }) { return <nav className="flex min-w-0 flex-1 items-center gap-1 sm:ml-2 md:ml-6" aria-label="主导航">{NAV_TABS.map(({ id, label, icon: Icon }) => <button key={id} type="button" title={label} aria-current={active === id ? "page" : undefined} onClick={() => onSelect(id)} className={cn("inline-flex shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-sm font-semibold", active === id ? "bg-slate-900 text-white dark:bg-white dark:text-slate-950" : "text-slate-500 hover:bg-slate-900/5 dark:text-slate-400 dark:hover:bg-white/10")}><Icon className="size-4" /><span className="max-[520px]:sr-only">{label}</span></button>)}</nav>; }
-
-function DefaultCodexGatewayControl({ onError }: { onError: (message: string) => void }) {
+function DefaultCodexGatewayControl({ onError, onOpenIssues }: { onError: (message: string) => void; onOpenIssues: () => void }) {
   const [started, setStarted] = React.useState(false);
   const [loading, setLoading] = React.useState(true);
   const [busy, setBusy] = React.useState(false);
@@ -226,16 +220,26 @@ function DefaultCodexGatewayControl({ onError }: { onError: (message: string) =>
       >
         {restartingChatGpt ? <LoaderCircle className="size-4 animate-spin" /> : <RotateCcw className="size-4" />}
       </Button>
+      <Button
+        type="button"
+        variant="outline"
+        size="icon"
+        title="查看网关问题"
+        aria-label="查看网关问题"
+        onClick={onOpenIssues}
+      >
+        <Bug className="size-4" />
+      </Button>
     </div>
   );
 }
 
-function DefaultRouteSection({ providers, selected, onChanged, onError }: { providers: GatewayProvider[]; selected: SelectedProvider; onChanged: () => Promise<void>; onError: (message: string) => void }) {
+function DefaultRouteSection({ providers, selected, onChanged, onError, onOpenIssues }: { providers: GatewayProvider[]; selected: SelectedProvider; onChanged: () => Promise<unknown>; onError: (message: string) => void; onOpenIssues: () => void }) {
   const [models, setModels] = React.useState<GatewayModel[]>([]); const [loadingModels, setLoadingModels] = React.useState(false); const [saving, setSaving] = React.useState(false);
   const provider = providers.find((item) => item.id === selected.provider_id);
   React.useEffect(() => { if (!selected.provider_id) { setModels([]); return; } let cancelled = false; setLoadingModels(true); void gatewayApi.models(selected.provider_id).then((items) => { if (!cancelled) setModels([...items].sort((a,b) => a.id.localeCompare(b.id))); }).catch((e) => onError(errorMessage(e))).finally(() => { if (!cancelled) setLoadingModels(false); }); return () => { cancelled = true; }; }, [selected.provider_id, onError]);
   async function run(action: () => Promise<unknown>) { setSaving(true); try { await action(); await onChanged(); } catch (e) { onError(errorMessage(e)); } finally { setSaving(false); } }
-  return <article className="glass-panel flex flex-col gap-4 rounded-[22px] p-3.5 sm:p-4 lg:flex-row lg:items-center lg:gap-5"><div className="min-w-0 flex-1"><h3 className="text-lg font-bold">AI网关</h3><div className="mt-1.5 font-mono text-[11px] text-slate-400">/v1</div></div><DefaultCodexGatewayControl onError={onError} /><div className="flex min-w-0 flex-1 flex-col gap-3 sm:flex-row"><label className="min-w-0 flex-1"><span className="eyebrow">供应商</span><select className="field mt-1 h-9 w-full text-xs font-semibold" value={selected.provider_id ?? ""} disabled={saving} onChange={(e) => { const id=e.target.value; if (id) void run(() => gatewayApi.selectProvider(id)); }}><option value="">选择供应商</option>{providers.map((item) => <option key={item.id} value={item.id}>{item.account_email ? `${item.name} (${item.account_email})` : item.name}</option>)}</select></label><label className="min-w-0 flex-1"><span className="eyebrow">模型</span><select className="field mt-1 h-9 w-full font-mono text-xs font-semibold" value={selected.selected_model ?? ""} disabled={saving || loadingModels || !provider} onChange={(e) => void run(() => e.target.value ? gatewayApi.selectModel(e.target.value) : gatewayApi.clearSelectedModel())}><option value="">跟随请求模型</option>{models.map((item) => <option key={item.id} value={item.id}>{item.id}</option>)}</select></label><label className="min-w-0 flex-1"><span className="eyebrow">推理强度</span><select className="field mt-1 h-9 w-full text-xs font-semibold" value={selected.selected_reasoning_effort ?? ""} disabled={saving || !provider} onChange={(e) => void run(() => e.target.value ? gatewayApi.selectReasoningEffort(e.target.value as ReasoningEffort) : gatewayApi.clearSelectedReasoningEffort())}><option value="">跟随请求</option><option value="low">低（low）</option><option value="medium">中（medium）</option><option value="high">高（high）</option><option value="xhigh">极高（xhigh）</option></select></label></div></article>;
+  return <article className="glass-panel flex flex-col gap-4 rounded-[22px] p-3.5 sm:p-4 lg:flex-row lg:items-center lg:gap-5"><DefaultCodexGatewayControl onError={onError} onOpenIssues={onOpenIssues} /><div className="flex min-w-0 flex-1 flex-col gap-3 sm:flex-row"><label className="min-w-0 flex-1"><span className="eyebrow">模型</span><select className="field mt-1 h-9 w-full font-mono text-xs font-semibold" value={selected.selected_model ?? ""} disabled={saving || loadingModels || !provider} onChange={(e) => void run(() => e.target.value ? gatewayApi.selectModel(e.target.value) : gatewayApi.clearSelectedModel())}><option value="">跟随请求模型</option>{models.map((item) => <option key={item.id} value={item.id}>{item.id}</option>)}</select></label><label className="min-w-0 flex-1"><span className="eyebrow">推理强度</span><select className="field mt-1 h-9 w-full text-xs font-semibold" value={selected.selected_reasoning_effort ?? ""} disabled={saving || !provider} onChange={(e) => void run(() => e.target.value ? gatewayApi.selectReasoningEffort(e.target.value as ReasoningEffort) : gatewayApi.clearSelectedReasoningEffort())}><option value="">跟随请求</option><option value="low">低（low）</option><option value="medium">中（medium）</option><option value="high">高（high）</option><option value="xhigh">极高（xhigh）</option></select></label></div></article>;
 }
 
 function ProviderSection(props: {
@@ -285,15 +289,54 @@ function ProviderSection(props: {
   );
 }
 
+function GatewayIssueDialog({
+  issues,
+  onChanged,
+  onError,
+  onClose,
+}: {
+  issues: GatewayIssue[];
+  onChanged: () => Promise<void>;
+  onError: (message: string) => void;
+  onClose: () => void;
+}) {
+  React.useEffect(() => {
+    const handler = (event: KeyboardEvent) => event.key === "Escape" && onClose();
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose]);
+
+  return (
+    <div
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/25 p-3 backdrop-blur-sm sm:p-6"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <div
+        className="dialog-panel max-h-[calc(100dvh-6rem)] w-full max-w-3xl overflow-y-auto rounded-[22px] p-4 sm:max-h-[calc(100vh-8rem)] sm:rounded-[26px] sm:p-5"
+        role="dialog"
+        aria-modal="true"
+        aria-label="网关问题"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <GatewayIssueSection issues={issues} onChanged={onChanged} onError={onError} onClose={onClose} />
+      </div>
+    </div>
+  );
+}
+
 
 function GatewayIssueSection({
   issues,
   onChanged,
   onError,
+  onClose,
 }: {
   issues: GatewayIssue[];
   onChanged: () => Promise<void>;
   onError: (message: string) => void;
+  onClose?: () => void;
 }) {
   const [copyingId, setCopyingId] = React.useState<string | null>(null);
   const [copiedId, setCopiedId] = React.useState<string | null>(null);
@@ -352,6 +395,11 @@ function GatewayIssueSection({
           {clearing ? <LoaderCircle className="size-3.5 animate-spin" /> : <Trash2 className="size-3.5" />}
           一键清空
         </Button>
+        {onClose ? (
+          <Button className="ml-auto" variant="outline" size="icon" title="关闭" aria-label="关闭" onClick={onClose}>
+            <X className="size-3.5" />
+          </Button>
+        ) : null}
       </div>
       <div className="overflow-hidden rounded-[22px] border border-white/70 bg-white/55 shadow-sm backdrop-blur-xl dark:border-white/8 dark:bg-white/[0.035]">
         {!issues.length ? (
