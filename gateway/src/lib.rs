@@ -179,6 +179,46 @@ pub fn install_gateway_daemon(program: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Starts an existing per-user Gateway LaunchAgent without rewriting its
+/// plist. The plist is replaced only when it is missing or no longer matches
+/// the current daemon executable/configuration.
+pub fn start_gateway_daemon(program: &Path) -> Result<(), String> {
+    if !program.is_file() {
+        return Err(format!("Gateway 服务程序不存在：{}", program.display()));
+    }
+    if !gateway_daemon_is_installed(program)? {
+        return install_gateway_daemon(program);
+    }
+
+    let home = env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or_else(|| "未设置 HOME 环境变量".to_string())?;
+    let plist_path = home
+        .join("Library/LaunchAgents")
+        .join(format!("{SERVICE_LABEL}.plist"));
+    let target = format!("gui/{}/{}", current_uid(), SERVICE_LABEL);
+    let domain = format!("gui/{}", current_uid());
+
+    // A stopped job has a valid plist but is no longer bootstrapped. Loading
+    // the existing plist is enough; if it is already loaded, kickstart below
+    // simply restarts it.
+    if let Err(bootstrap_error) =
+        run_launchctl(&["bootstrap", &domain, path_str(&plist_path)?], false)
+    {
+        run_launchctl(&["enable", &target], true)?;
+        return run_launchctl(&["kickstart", "-k", &target], false)
+            .map(|_| ())
+            .map_err(|restart_error| {
+                format!(
+                    "启动 Gateway LaunchAgent 失败：{bootstrap_error}；尝试重启已注册服务也失败：{restart_error}"
+                )
+            });
+    }
+    run_launchctl(&["enable", &target], true)?;
+    run_launchctl(&["kickstart", "-k", &target], false)?;
+    Ok(())
+}
+
 /// Stops the per-user Gateway LaunchAgent without removing its configuration,
 /// so it can be started again by `install_gateway_daemon`.
 pub fn stop_gateway_daemon() -> Result<(), String> {

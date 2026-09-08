@@ -59,7 +59,7 @@ async fn ensure_gateway_daemon() -> Result<gateway::GatewayDaemonClient, String>
 }
 
 fn install_and_start_gateway_daemon(daemon: &Path) -> Result<(), String> {
-    gateway::install_gateway_daemon(daemon)
+    gateway::start_gateway_daemon(daemon)
 }
 
 /// Tauri copies `bundle.externalBin` next to the desktop executable both in
