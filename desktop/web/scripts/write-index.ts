@@ -20,7 +20,7 @@ await writeFile(
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="theme-color" content="#eef3f7" />
   <meta name="color-scheme" content="light dark" />
-  <title>AI Gateway</title>
+  <title>AI网关</title>
   <link rel="stylesheet" href="/assets/styles.css" />
 </head>
 <body>

@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "AI Gateway",
+  "productName": "AI网关",
   "version": "0.1.0",
   "identifier": "com.ai-gateway.desktop",
   "build": {
@@ -18,7 +18,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "AI Gateway",
+        "title": "AI网关",
         "width": 900,
         "height": 680,
         "resizable": true

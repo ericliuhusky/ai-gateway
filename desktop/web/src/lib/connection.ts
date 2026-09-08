@@ -17,7 +17,7 @@ export async function invokeTauri<T>(
 ): Promise<T> {
   const tauri = tauriCore();
   if (!tauri) {
-    throw new Error("AI Gateway 管理界面只能在桌面客户端中使用");
+    throw new Error("AI网关管理界面只能在桌面客户端中使用");
   }
   return (await tauri.invoke(cmd, args)) as T;
 }
