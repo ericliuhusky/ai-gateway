@@ -86,14 +86,9 @@ function authExpiryLabel(timestamp?: number) {
   if (!timestamp) return "未知";
   const date = new Date(timestamp * 1000);
   const expired = timestamp * 1000 <= Date.now();
-  return `${expired ? "已过期" : "到期"} ${date.toLocaleString("zh-CN", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  })}`;
+  const weekdays = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
+  const time = `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+  return `${date.getMonth() + 1}月${date.getDate()}日 ${weekdays[date.getDay()]} ${time} ${expired ? "已过期" : "到期"}`;
 }
 function copyText(text: string) { return navigator.clipboard.writeText(text); }
 export function App() { return <GatewayDashboard />; }
@@ -492,7 +487,7 @@ function ProviderCard({
   return (
     <article
       className={cn(
-        "provider-card group relative flex min-h-[220px] cursor-pointer flex-col rounded-[24px] p-4 sm:h-[252px] sm:p-5",
+        "provider-card group relative flex min-h-[220px] cursor-pointer flex-col rounded-[24px] p-4 sm:min-h-[252px] sm:p-5",
         selected && "selected",
         deleting && "pointer-events-none opacity-60",
       )}
@@ -505,49 +500,27 @@ function ProviderCard({
               ? (provider.account_email ?? "等待账户登录")
               : provider.name}
           </h3>
-          <div className="mt-2 flex flex-wrap gap-1.5">
-            <Badge tone={provider.auth_mode === "account" ? "green" : "blue"}>
-              {provider.auth_mode === "account" ? "账户" : "API Key"}
-            </Badge>
-            {provider.auth_mode === "account" ? (
-              <Badge tone="slate">Codex</Badge>
-            ) : null}
-          </div>
         </div>
-        {selected ? (
-          <div className="relative size-5 shrink-0">
-            <CheckCircle2 className="size-5 text-blue-500" />
-            {deleting ? (
-              <LoaderCircle className="absolute right-0 top-6 size-5 animate-spin text-slate-400" />
-            ) : (
-              <button
-                className="absolute -right-1.5 top-6 flex size-8 items-center justify-center rounded-xl text-slate-400 opacity-100 transition hover:bg-black/5 hover:text-red-500 sm:opacity-0 sm:group-hover:opacity-100 focus-visible:opacity-100 dark:hover:bg-white/8"
-                type="button"
-                title="删除供应商"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  onDelete();
-                }}
-              >
-                <Trash2 className="size-3.5" />
-              </button>
-            )}
-          </div>
-        ) : deleting ? (
-          <LoaderCircle className="size-5 shrink-0 animate-spin text-slate-400" />
-        ) : (
-          <button
-            className="flex size-8 shrink-0 items-center justify-center rounded-xl text-slate-400 opacity-100 transition hover:bg-black/5 hover:text-red-500 sm:opacity-0 sm:group-hover:opacity-100 focus-visible:opacity-100 dark:hover:bg-white/8"
-            type="button"
-            title="删除供应商"
-            onClick={(event) => {
-              event.stopPropagation();
-              onDelete();
-            }}
-          >
-            <Trash2 className="size-3.5" />
-          </button>
-        )}
+        <div className="flex shrink-0 items-center gap-1">
+          {deleting ? (
+            <LoaderCircle className="size-5 animate-spin text-slate-400" />
+          ) : (
+            <button
+              className={cn(
+                "flex size-8 items-center justify-center rounded-xl text-slate-400 opacity-0 transition hover:bg-black/5 hover:text-red-500 group-hover:opacity-100 focus-visible:opacity-100 dark:hover:bg-white/8",
+              )}
+              type="button"
+              title="删除供应商"
+              onClick={(event) => {
+                event.stopPropagation();
+                onDelete();
+              }}
+            >
+              <Trash2 className="size-3.5" />
+            </button>
+          )}
+          {selected ? <CheckCircle2 className="size-5 text-blue-500" /> : null}
+        </div>
       </div>
 
       {provider.auth_mode !== "account" ? (
@@ -561,32 +534,12 @@ function ProviderCard({
 
       {provider.auth_mode === "account" ? (
         <div className="mt-auto">
-          <div className="mb-3 flex items-center justify-between gap-3 rounded-2xl border border-white/65 bg-white/45 px-3 py-2.5 dark:border-white/8 dark:bg-white/[0.035]">
-            <div className="min-w-0">
-              <div className="eyebrow">Auth 到期时间</div>
-              <div className={cn(
-                "mt-1 truncate text-[11px] font-semibold",
-                provider.account_expires_at && provider.account_expires_at * 1000 <= Date.now()
-                  ? "text-red-500"
-                  : "text-slate-600 dark:text-slate-300",
-              )}>
-                {authExpiryLabel(provider.account_expires_at)}
-              </div>
-            </div>
-            <button
-              type="button"
-              title="刷新授权"
-              className="inline-flex shrink-0 items-center gap-1.5 rounded-lg px-2 py-1.5 text-[11px] font-semibold text-slate-500 transition hover:bg-black/5 hover:text-slate-800 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-white/10 dark:hover:text-white"
-              disabled={refreshingAccount || !provider.account_id}
-              onClick={(event) => {
-                event.stopPropagation();
-                onRefreshAccount();
-              }}
-            >
-              {refreshingAccount ? <LoaderCircle className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}
-              刷新授权
-            </button>
-          </div>
+          <AuthPanel
+            expiresAt={provider.account_expires_at}
+            refreshing={refreshingAccount}
+            disabled={!provider.account_id}
+            onRefresh={onRefreshAccount}
+          />
           <QuotaPanel
             quota={quota}
             error={quotaError}
@@ -615,25 +568,7 @@ function QuotaPanel({
   const secondary = snapshot?.secondary;
 
   return (
-    <div className="mt-auto rounded-2xl border border-white/65 bg-white/45 p-3 dark:border-white/8 dark:bg-white/[0.035]">
-      <div className="mb-2.5 flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
-          <Gauge className="size-3.5 text-slate-400" />
-          <span className="text-[10px] font-bold uppercase tracking-[0.1em] text-slate-500">额度窗口</span>
-        </div>
-        <button
-          type="button"
-          title="刷新额度"
-          className="text-slate-400 transition hover:text-slate-700 dark:hover:text-white"
-          disabled={loading}
-          onClick={(event) => {
-            event.stopPropagation();
-            onRefresh();
-          }}
-        >
-          <RefreshCw className={cn("size-3.5", loading && "animate-spin")} />
-        </button>
-      </div>
+    <ControlPanel icon={Gauge} title="额度窗口" actionLabel="刷新额度" loading={loading} onRefresh={onRefresh}>
       {loading && !quota ? (
         <div className="flex h-[68px] items-center justify-center text-xs text-slate-400">同步中…</div>
       ) : error ? (
@@ -649,6 +584,69 @@ function QuotaPanel({
       ) : (
         <div className="text-xs text-slate-400">还没有拿到额度信息</div>
       )}
+    </ControlPanel>
+  );
+}
+
+function AuthPanel({
+  expiresAt,
+  refreshing,
+  disabled,
+  onRefresh,
+}: {
+  expiresAt?: number;
+  refreshing: boolean;
+  disabled: boolean;
+  onRefresh: () => void;
+}) {
+  return (
+    <ControlPanel icon={KeyRound} title="Auth 到期时间" actionLabel="刷新授权" loading={refreshing} disabled={disabled} onRefresh={onRefresh} className="mb-3">
+      <div className="text-[11px] font-semibold text-slate-600 dark:text-slate-300">{authExpiryLabel(expiresAt)}</div>
+    </ControlPanel>
+  );
+}
+
+function ControlPanel({
+  icon: Icon,
+  title,
+  actionLabel,
+  loading,
+  disabled = false,
+  onRefresh,
+  className,
+  children,
+}: {
+  icon: React.ComponentType<{ className?: string }>;
+  title: string;
+  actionLabel: string;
+  loading: boolean;
+  disabled?: boolean;
+  onRefresh: () => void;
+  className?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className={cn("rounded-2xl border border-white/65 bg-white/45 p-3 dark:border-white/8 dark:bg-white/[0.035]", className)}>
+      <div className="mb-2.5 flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <Icon className="size-3.5 text-slate-400" />
+          <span className="text-xs font-bold text-slate-500 dark:text-slate-400">{title}</span>
+        </div>
+        <button
+          type="button"
+          title={actionLabel}
+          className="inline-flex shrink-0 items-center gap-1.5 rounded-lg px-2 py-1.5 text-[10px] font-semibold text-slate-500 transition hover:bg-black/5 hover:text-slate-800 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-white/10 dark:hover:text-white"
+          disabled={loading || disabled}
+          onClick={(event) => {
+            event.stopPropagation();
+            onRefresh();
+          }}
+        >
+          {loading ? <LoaderCircle className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}
+          {actionLabel}
+        </button>
+      </div>
+      {children}
     </div>
   );
 }
@@ -671,8 +669,8 @@ function QuotaRow({ title, window }: { title: string; window: ProviderQuotaWindo
   const tone = quotaTone(value);
   return (
     <div>
-      <div className="mb-1 flex items-center gap-2 text-[10px] font-semibold">
-        <span className="text-slate-500">{title}</span>
+      <div className="mb-1 flex items-center gap-2 text-[11px] font-semibold text-slate-600 dark:text-slate-300">
+        <span>{title}</span>
         <span
           className={cn(
             "ml-auto font-bold",
@@ -695,7 +693,7 @@ function QuotaRow({ title, window }: { title: string; window: ProviderQuotaWindo
           style={{ width: `${Math.max(value, 2)}%` }}
         />
       </div>
-      {resetLabel(window) ? <div className="mt-1 text-[9px] text-slate-400">{resetLabel(window)}</div> : null}
+      {resetLabel(window) ? <div className="mt-1 text-[11px] font-semibold text-slate-600 dark:text-slate-300">{resetLabel(window)}</div> : null}
     </div>
   );
 }
@@ -712,7 +710,7 @@ function QuotaFootnote({ quota }: { quota: ProviderQuotaSummary }) {
     unlimited ? "账户余额无限" : balance ? `余额 ${balance}` : null,
     quota.snapshot?.plan_type ? `Plan ${quota.snapshot.plan_type}` : null,
   ].filter(Boolean);
-  return parts.length ? <div className="text-[9px] text-slate-400">{parts.join(" · ")}</div> : null;
+  return parts.length ? <div className="text-[10px] text-slate-400">{parts.join(" · ")}</div> : null;
 }
 
 function Badge({ children, tone }: { children: React.ReactNode; tone: "green" | "blue" | "purple" | "amber" | "slate" | "red" }) {
