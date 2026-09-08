@@ -196,7 +196,7 @@ mod tests {
             .await
             .expect("add local provider");
         routes
-            .set_provider(Some(provider.id.clone()))
+            .update(Some(provider.id.clone()), None, None, true)
             .await
             .expect("select local provider");
         let router = build_router(state);
@@ -307,7 +307,7 @@ mod tests {
             .await
             .expect("add unavailable provider");
         routes
-            .set_provider(Some(provider.id.clone()))
+            .update(Some(provider.id.clone()), None, None, true)
             .await
             .expect("select unavailable provider");
         let issues = state.issues.clone();

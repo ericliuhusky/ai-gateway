@@ -603,15 +603,7 @@ pub async fn delete_provider(
 
     let route = selected_route(&state).await?;
     if route.provider_id.as_deref() == Some(provider_id.as_str()) {
-        let _ = set_route_for_scope(
-            &state,
-            scope.owner_user_id,
-            None,
-            None,
-            None,
-            route.updated_at,
-        )
-        .await?;
+        let _ = set_route_for_scope(&state, None, None, None, false).await?;
     }
 
     Ok(Json(json!({
@@ -638,16 +630,7 @@ pub async fn set_route(
     let provider_id = normalize_selected_provider_id(request.provider_id)?;
     let _provider =
         resolve_provider_by_id_for_owner(&state, scope.owner_user_id, &provider_id).await?;
-    let existing = selected_route(&state).await?;
-    let route = set_route_for_scope(
-        &state,
-        scope.owner_user_id,
-        Some(provider_id),
-        None,
-        None,
-        existing.updated_at,
-    )
-    .await?;
+    let route = set_route_for_scope(&state, Some(provider_id), None, None, true).await?;
     Ok(Json(json!({
         "selected_provider": route_payload(route),
     })))
@@ -679,11 +662,10 @@ pub async fn set_selected_model(
     let existing = selected_route(&state).await?;
     let route = set_route_for_scope(
         &state,
-        scope.owner_user_id,
         existing.provider_id,
         Some(model),
         existing.selected_reasoning_effort,
-        existing.updated_at,
+        false,
     )
     .await?;
     Ok(Json(json!({ "selected_model": route_payload(route) })))
@@ -691,16 +673,15 @@ pub async fn set_selected_model(
 
 pub async fn clear_selected_model(
     State(state): State<AppState>,
-    Extension(scope): Extension<RequestScope>,
+    Extension(_scope): Extension<RequestScope>,
 ) -> Result<Json<Value>, AppError> {
     let existing = selected_route(&state).await?;
     let route = set_route_for_scope(
         &state,
-        scope.owner_user_id,
         existing.provider_id,
         None,
         existing.selected_reasoning_effort,
-        existing.updated_at,
+        false,
     )
     .await?;
     Ok(Json(json!({ "selected_model": route_payload(route) })))
@@ -726,11 +707,10 @@ pub async fn set_selected_reasoning_effort(
     let existing = selected_route(&state).await?;
     let route = set_route_for_scope(
         &state,
-        scope.owner_user_id,
         existing.provider_id,
         existing.selected_model,
         Some(effort),
-        existing.updated_at,
+        false,
     )
     .await?;
     Ok(Json(json!({
@@ -740,16 +720,15 @@ pub async fn set_selected_reasoning_effort(
 
 pub async fn clear_selected_reasoning_effort(
     State(state): State<AppState>,
-    Extension(scope): Extension<RequestScope>,
+    Extension(_scope): Extension<RequestScope>,
 ) -> Result<Json<Value>, AppError> {
     let existing = selected_route(&state).await?;
     let route = set_route_for_scope(
         &state,
-        scope.owner_user_id,
         existing.provider_id,
         existing.selected_model,
         None,
-        existing.updated_at,
+        false,
     )
     .await?;
     Ok(Json(json!({
@@ -1177,25 +1156,19 @@ fn responses_request_stream(request: &Value) -> bool {
 
 async fn set_route_for_scope(
     state: &AppState,
-    _owner_user_id: Option<i64>,
     provider_id: Option<String>,
     selected_model: Option<String>,
     selected_reasoning_effort: Option<String>,
-    _previous_updated_at: i64,
+    load_provider_preferences: bool,
 ) -> Result<SelectedRoute, AppError> {
     state
         .routes
-        .set_provider(provider_id)
-        .await
-        .map_err(AppError::internal)?;
-    state
-        .routes
-        .set_model(selected_model)
-        .await
-        .map_err(AppError::internal)?;
-    state
-        .routes
-        .set_reasoning_effort(selected_reasoning_effort)
+        .update(
+            provider_id,
+            selected_model,
+            selected_reasoning_effort,
+            load_provider_preferences,
+        )
         .await
         .map_err(AppError::internal)
 }
