@@ -44,8 +44,6 @@ pub struct ProviderRecord {
     pub client_id: Option<String>,
     #[serde(default, skip_serializing, alias = "account_id")]
     pub upstream_account_id: Option<String>,
-    #[serde(skip_serializing)]
-    pub owner_user_id: Option<i64>,
 }
 
 impl ProviderRecord {
@@ -113,7 +111,6 @@ pub struct GatewayIssue {
 #[derive(Debug, Clone)]
 pub struct GatewayIssueRecord {
     pub id: String,
-    pub owner_user_id: Option<i64>,
     pub provider_id: String,
     pub provider_name: String,
     pub model: String,
@@ -225,7 +222,6 @@ impl ProviderRecord {
             expiry_timestamp: Some(expiry_timestamp),
             client_id,
             upstream_account_id,
-            owner_user_id: None,
         }
     }
 

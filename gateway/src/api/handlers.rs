@@ -1,5 +1,4 @@
 use crate::{
-    api::RequestScope,
     config::{Config, DEFAULT_CODEX_CLIENT_VERSION},
     models::openai::responses::{
         CodexUsageCredits, CodexUsageRateLimit, CodexUsageRateLimitWindow, CodexUsageResponse,
@@ -25,7 +24,7 @@ use crate::{
 use async_stream::stream;
 use axum::{
     body::{Body, Bytes},
-    extract::{Extension, Path as AxumPath, Query, State},
+    extract::{Path as AxumPath, Query, State},
     http::{HeaderMap, HeaderName, StatusCode},
     response::{IntoResponse, Json, Response},
 };
@@ -90,35 +89,24 @@ pub async fn gateway_status() -> Json<Value> {
 
 pub async fn list_gateway_issues(
     State(state): State<AppState>,
-    Extension(scope): Extension<RequestScope>,
     Query(query): Query<GatewayIssueListQuery>,
 ) -> Result<Json<Value>, AppError> {
-    let issues = state
-        .issues
-        .list_for_owner(scope.owner_user_id, query.limit)
-        .map_err(AppError::internal)?;
+    let issues = state.issues.list(query.limit).map_err(AppError::internal)?;
     Ok(Json(json!({ "issues": issues })))
 }
 
-pub async fn clear_gateway_issues(
-    State(state): State<AppState>,
-    Extension(scope): Extension<RequestScope>,
-) -> Result<Json<Value>, AppError> {
-    let deleted = state
-        .issues
-        .clear_for_owner(scope.owner_user_id)
-        .map_err(AppError::internal)?;
+pub async fn clear_gateway_issues(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
+    let deleted = state.issues.clear().map_err(AppError::internal)?;
     Ok(Json(json!({ "deleted": deleted })))
 }
 
 pub async fn get_gateway_issue_repair_prompt(
     State(state): State<AppState>,
-    Extension(scope): Extension<RequestScope>,
     AxumPath(issue_id): AxumPath<String>,
 ) -> Result<Json<GatewayIssueRepairPromptResponse>, AppError> {
     let issue = state
         .issues
-        .get_for_owner(scope.owner_user_id, &issue_id)
+        .get(&issue_id)
         .map_err(AppError::internal)?
         .ok_or_else(|| AppError::bad_request("网关问题不存在"))?;
     Ok(Json(GatewayIssueRepairPromptResponse {
@@ -237,7 +225,6 @@ pub struct OpenAiDeviceLoginStatusResponse {
 /// Import OpenAI accounts from a pasted Codex `auth.json` or Cockpit Tools export.
 pub async fn import_openai_token(
     State(state): State<AppState>,
-    Extension(scope): Extension<RequestScope>,
     Json(payload): Json<Value>,
 ) -> Result<Json<ImportOpenAiFromLocalResponse>, AppError> {
     let tokens = import_tokens_from_value(payload).map_err(AppError::bad_request)?;
@@ -264,7 +251,7 @@ pub async fn import_openai_token(
             .map_err(AppError::bad_request)?;
         let provider = state
             .providers
-            .import_openai_provider_for_owner(scope.owner_user_id, imported)
+            .import_openai_provider(imported)
             .await
             .map_err(AppError::bad_request)?;
 
@@ -286,7 +273,6 @@ pub async fn import_openai_token(
 
 pub async fn refresh_openai_provider(
     State(state): State<AppState>,
-    Extension(_scope): Extension<RequestScope>,
     AxumPath(provider_id): AxumPath<String>,
 ) -> Result<Json<RefreshOpenAiProviderResponse>, AppError> {
     let provider = state
@@ -304,26 +290,23 @@ pub async fn refresh_openai_provider(
 /// Starts the official OpenAI device authorization flow used by Codex.
 pub async fn start_openai_device_login(
     State(state): State<AppState>,
-    Extension(scope): Extension<RequestScope>,
 ) -> Result<Json<OpenAiDeviceLoginStartResponse>, AppError> {
     let start = state
         .openai_device_login
-        .start(scope.owner_user_id)
+        .start()
         .await
         .map_err(AppError::upstream_message)?;
-    let _ = scope;
     Ok(Json(device_login_start_response(start)))
 }
 
 /// Polls a device authorization session and persists the account when OpenAI approves it.
 pub async fn poll_openai_device_login(
     State(state): State<AppState>,
-    Extension(scope): Extension<RequestScope>,
     AxumPath(login_id): AxumPath<String>,
 ) -> Result<Json<OpenAiDeviceLoginStatusResponse>, AppError> {
     let poll = state
         .openai_device_login
-        .poll(scope.owner_user_id, &login_id)
+        .poll(&login_id)
         .await
         .map_err(AppError::bad_request)?;
 
@@ -337,7 +320,7 @@ pub async fn poll_openai_device_login(
         DeviceLoginPoll::Ready => {
             let authorization = match state
                 .openai_device_login
-                .begin_finalization(scope.owner_user_id, &login_id)
+                .begin_finalization(&login_id)
                 .await
                 .map_err(AppError::bad_request)?
             {
@@ -353,7 +336,7 @@ pub async fn poll_openai_device_login(
                     .map_err(AppError::upstream_message)?;
                 let provider = state
                     .providers
-                    .import_openai_provider_for_owner(scope.owner_user_id, imported)
+                    .import_openai_provider(imported)
                     .await
                     .map_err(AppError::bad_request)?;
                 Ok::<_, AppError>(DeviceLoginCompletion {
@@ -386,12 +369,11 @@ pub async fn poll_openai_device_login(
 
 pub async fn cancel_openai_device_login(
     State(state): State<AppState>,
-    Extension(scope): Extension<RequestScope>,
     AxumPath(login_id): AxumPath<String>,
 ) -> Result<Json<Value>, AppError> {
     state
         .openai_device_login
-        .cancel(scope.owner_user_id, &login_id)
+        .cancel(&login_id)
         .await
         .map_err(AppError::bad_request)?;
     Ok(Json(json!({ "cancelled": true })))
@@ -465,23 +447,17 @@ fn device_login_failed_response(error: String) -> OpenAiDeviceLoginStatusRespons
     }
 }
 
-pub async fn list_providers(
-    State(state): State<AppState>,
-    Extension(scope): Extension<RequestScope>,
-) -> Json<Value> {
-    let providers = hydrated_provider_summaries_for_owner(&state, scope.owner_user_id).await;
+pub async fn list_providers(State(state): State<AppState>) -> Json<Value> {
+    let providers = hydrated_provider_summaries(&state).await;
     Json(json!({ "providers": providers }))
 }
 
 pub async fn get_provider_quota(
     State(state): State<AppState>,
-    Extension(scope): Extension<RequestScope>,
     AxumPath(provider_id): AxumPath<String>,
 ) -> Result<Json<ProviderQuotaResponse>, AppError> {
-    let provider =
-        resolve_provider_by_id_for_owner(&state, scope.owner_user_id, &provider_id).await?;
-    let provider_summary =
-        provider_summary_for_resolved_for_owner(&state, scope.owner_user_id, &provider).await?;
+    let provider = resolve_provider_by_id(&state, &provider_id).await?;
+    let provider_summary = provider_summary_for_resolved(&state, &provider).await?;
 
     let quota = if provider.auth_mode == ProviderAuthMode::Account {
         let provider_record = resolve_provider_record_for_use(&state, &provider).await?;
@@ -518,29 +494,26 @@ pub async fn get_provider_quota(
 
 pub async fn list_models(
     State(state): State<AppState>,
-    Extension(scope): Extension<RequestScope>,
     Query(query): Query<ListModelsQuery>,
 ) -> Result<Json<ModelListResponse>, AppError> {
     let provider = match query.provider_id.as_deref().map(str::trim) {
         Some(provider_id) if !provider_id.is_empty() => {
-            resolve_provider_by_id_for_owner(&state, scope.owner_user_id, provider_id).await?
+            resolve_provider_by_id(&state, provider_id).await?
         }
-        _ => resolve_selected_provider(&state, scope.owner_user_id).await?,
+        _ => resolve_selected_provider(&state).await?,
     };
-    let mut response =
-        load_provider_models(&state, scope.owner_user_id, &provider, query.force).await?;
+    let mut response = load_provider_models(&state, &provider, query.force).await?;
     ensure_codex_model_infos(&mut response);
     Ok(Json(response))
 }
 
 pub async fn add_provider(
     State(state): State<AppState>,
-    Extension(scope): Extension<RequestScope>,
     Json(request): Json<CreateProviderRequest>,
 ) -> Result<Json<Value>, AppError> {
     let provider = state
         .providers
-        .upsert_for_owner(scope.owner_user_id, request)
+        .upsert(request)
         .await
         .map_err(AppError::bad_request)?;
 
@@ -557,23 +530,22 @@ pub async fn add_provider(
 
 pub async fn delete_provider(
     State(state): State<AppState>,
-    Extension(scope): Extension<RequestScope>,
     AxumPath(provider_id): AxumPath<String>,
 ) -> Result<Json<Value>, AppError> {
     let _provider = state
         .providers
-        .find_by_id_for_owner(scope.owner_user_id, &provider_id)
+        .find_by_id(&provider_id)
         .await
         .ok_or_else(|| AppError::bad_request(format!("未知的 provider_id: {provider_id}")))?;
     let deleted = state
         .providers
-        .delete_for_owner(scope.owner_user_id, &provider_id)
+        .delete(&provider_id)
         .await
         .map_err(AppError::bad_request)?;
 
     let route = selected_route(&state).await?;
     if route.provider_id.as_deref() == Some(provider_id.as_str()) {
-        let _ = set_route_for_scope(&state, None, None, None, false).await?;
+        let _ = update_route(&state, None, None, None, false).await?;
     }
 
     Ok(Json(json!({
@@ -584,44 +556,35 @@ pub async fn delete_provider(
     })))
 }
 
-pub async fn get_route(
-    State(state): State<AppState>,
-    Extension(_scope): Extension<RequestScope>,
-) -> Json<Value> {
+pub async fn get_route(State(state): State<AppState>) -> Json<Value> {
     let route = selected_route(&state).await.unwrap_or_default();
     Json(json!({ "selected_provider": route_payload(route) }))
 }
 
 pub async fn set_route(
     State(state): State<AppState>,
-    Extension(scope): Extension<RequestScope>,
     Json(request): Json<UpdateSelectedProviderRequest>,
 ) -> Result<Json<Value>, AppError> {
     let provider_id = normalize_selected_provider_id(request.provider_id)?;
-    let _provider =
-        resolve_provider_by_id_for_owner(&state, scope.owner_user_id, &provider_id).await?;
-    let route = set_route_for_scope(&state, Some(provider_id), None, None, true).await?;
+    let _provider = resolve_provider_by_id(&state, &provider_id).await?;
+    let route = update_route(&state, Some(provider_id), None, None, true).await?;
     Ok(Json(json!({
         "selected_provider": route_payload(route),
     })))
 }
 
-pub async fn get_selected_model(
-    State(state): State<AppState>,
-    Extension(_scope): Extension<RequestScope>,
-) -> Json<Value> {
+pub async fn get_selected_model(State(state): State<AppState>) -> Json<Value> {
     let route = selected_route(&state).await.unwrap_or_default();
     Json(json!({ "selected_model": route_payload(route) }))
 }
 
 pub async fn set_selected_model(
     State(state): State<AppState>,
-    Extension(scope): Extension<RequestScope>,
     Json(request): Json<UpdateSelectedModelRequest>,
 ) -> Result<Json<Value>, AppError> {
     let model = normalize_selected_model(request.model)?;
-    let provider = resolve_selected_provider(&state, scope.owner_user_id).await?;
-    let models = load_provider_models(&state, scope.owner_user_id, &provider, false).await?;
+    let provider = resolve_selected_provider(&state).await?;
+    let models = load_provider_models(&state, &provider, false).await?;
     if !models.data.iter().any(|item| item.id == model) {
         return Err(AppError::bad_request(format!(
             "模型 `{model}` 不可用于所选供应商 `{}`",
@@ -630,7 +593,7 @@ pub async fn set_selected_model(
     }
 
     let existing = selected_route(&state).await?;
-    let route = set_route_for_scope(
+    let route = update_route(
         &state,
         existing.provider_id,
         Some(model),
@@ -641,12 +604,9 @@ pub async fn set_selected_model(
     Ok(Json(json!({ "selected_model": route_payload(route) })))
 }
 
-pub async fn clear_selected_model(
-    State(state): State<AppState>,
-    Extension(_scope): Extension<RequestScope>,
-) -> Result<Json<Value>, AppError> {
+pub async fn clear_selected_model(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
     let existing = selected_route(&state).await?;
-    let route = set_route_for_scope(
+    let route = update_route(
         &state,
         existing.provider_id,
         None,
@@ -657,10 +617,7 @@ pub async fn clear_selected_model(
     Ok(Json(json!({ "selected_model": route_payload(route) })))
 }
 
-pub async fn get_selected_reasoning_effort(
-    State(state): State<AppState>,
-    Extension(_scope): Extension<RequestScope>,
-) -> Json<Value> {
+pub async fn get_selected_reasoning_effort(State(state): State<AppState>) -> Json<Value> {
     let route = selected_route(&state).await.unwrap_or_default();
     Json(json!({
         "selected_reasoning_effort": route_payload(route)
@@ -669,13 +626,12 @@ pub async fn get_selected_reasoning_effort(
 
 pub async fn set_selected_reasoning_effort(
     State(state): State<AppState>,
-    Extension(scope): Extension<RequestScope>,
     Json(request): Json<UpdateSelectedReasoningEffortRequest>,
 ) -> Result<Json<Value>, AppError> {
-    resolve_selected_provider(&state, scope.owner_user_id).await?;
+    resolve_selected_provider(&state).await?;
     let effort = normalize_selected_reasoning_effort(request.effort)?;
     let existing = selected_route(&state).await?;
-    let route = set_route_for_scope(
+    let route = update_route(
         &state,
         existing.provider_id,
         existing.selected_model,
@@ -690,10 +646,9 @@ pub async fn set_selected_reasoning_effort(
 
 pub async fn clear_selected_reasoning_effort(
     State(state): State<AppState>,
-    Extension(_scope): Extension<RequestScope>,
 ) -> Result<Json<Value>, AppError> {
     let existing = selected_route(&state).await?;
-    let route = set_route_for_scope(
+    let route = update_route(
         &state,
         existing.provider_id,
         existing.selected_model,
@@ -708,29 +663,26 @@ pub async fn clear_selected_reasoning_effort(
 
 pub async fn responses(
     State(state): State<AppState>,
-    Extension(scope): Extension<RequestScope>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, AppError> {
     let raw_body = std::str::from_utf8(&body)
         .map_err(|_| AppError::bad_request("请求体必须是有效的 UTF-8"))?
         .to_owned();
-    responses_inner(state, raw_body, headers, scope.owner_user_id).await
+    responses_inner(state, raw_body, headers).await
 }
 
 async fn responses_inner(
     state: AppState,
     raw_body: String,
     headers: HeaderMap,
-    owner_user_id: Option<i64>,
 ) -> Result<Response, AppError> {
     let route = selected_route(&state).await?;
     let provider_id = route
         .provider_id
         .as_deref()
         .ok_or_else(no_provider_selected_error)?;
-    let routed_provider =
-        resolve_provider_by_id_for_owner(&state, owner_user_id, provider_id).await?;
+    let routed_provider = resolve_provider_by_id(&state, provider_id).await?;
     let mut request_json: Value = serde_json::from_str(&raw_body)
         .map_err(|err| AppError::bad_request(format!("无效的请求 JSON: {err}")))?;
     let request_stream = responses_request_stream(&request_json);
@@ -759,8 +711,7 @@ async fn responses_inner(
     } else {
         raw_body
     };
-    let failure_context =
-        GatewayFailureContext::new(owner_user_id, &routed_provider, &request_json);
+    let failure_context = GatewayFailureContext::new(&routed_provider, &request_json);
     let response = if routed_provider.auth_mode == ProviderAuthMode::Account {
         if !provider_uses_openai_account(&routed_provider) {
             return Err(AppError::bad_request(format!(
@@ -970,7 +921,6 @@ where
 
 #[derive(Clone)]
 struct GatewayFailureContext {
-    owner_user_id: Option<i64>,
     provider_id: String,
     provider_name: String,
     model: String,
@@ -978,9 +928,8 @@ struct GatewayFailureContext {
 }
 
 impl GatewayFailureContext {
-    fn new(owner_user_id: Option<i64>, provider: &ResolvedProvider, request: &Value) -> Self {
+    fn new(provider: &ResolvedProvider, request: &Value) -> Self {
         Self {
-            owner_user_id,
             provider_id: provider
                 .record
                 .as_ref()
@@ -1028,7 +977,6 @@ fn record_gateway_issue(
     let (upstream_response, upstream_response_truncated) = truncate_issue_body(upstream_response);
     let issue = GatewayIssueRecord {
         id: format!("issue_{}", Uuid::new_v4().simple()),
-        owner_user_id: context.owner_user_id,
         provider_id: context.provider_id.clone(),
         provider_name: context.provider_name.clone(),
         model: context.model.clone(),
@@ -1091,13 +1039,10 @@ fn gateway_issue_repair_prompt(issue: &GatewayIssue) -> String {
     )
 }
 
-async fn resolve_selected_provider(
-    state: &AppState,
-    owner_user_id: Option<i64>,
-) -> Result<ResolvedProvider, AppError> {
+async fn resolve_selected_provider(state: &AppState) -> Result<ResolvedProvider, AppError> {
     let route = selected_route(state).await?;
     if let Some(provider_id) = route.provider_id {
-        return resolve_provider_by_id_for_owner(state, owner_user_id, &provider_id).await;
+        return resolve_provider_by_id(state, &provider_id).await;
     }
     Err(no_provider_selected_error())
 }
@@ -1130,7 +1075,7 @@ fn responses_request_stream(request: &Value) -> bool {
         .unwrap_or(false)
 }
 
-async fn set_route_for_scope(
+async fn update_route(
     state: &AppState,
     provider_id: Option<String>,
     selected_model: Option<String>,
@@ -1298,7 +1243,6 @@ fn decorate_upstream_sse_frame(frame: &str) -> String {
 
 async fn fetch_provider_models(
     state: &AppState,
-    _owner_user_id: Option<i64>,
     provider: &ResolvedProvider,
 ) -> Result<ModelListResponse, AppError> {
     if provider.auth_mode == ProviderAuthMode::Account {
@@ -1344,7 +1288,6 @@ async fn fetch_provider_models(
 
 async fn load_provider_models(
     state: &AppState,
-    owner_user_id: Option<i64>,
     provider: &ResolvedProvider,
     force_refresh: bool,
 ) -> Result<ModelListResponse, AppError> {
@@ -1360,7 +1303,7 @@ async fn load_provider_models(
         return Ok(cached);
     }
 
-    let models = fetch_provider_models(state, owner_user_id, provider).await?;
+    let models = fetch_provider_models(state, provider).await?;
     state
         .models
         .save(provider_id, &models)
@@ -1548,14 +1491,13 @@ pub(super) struct ResolvedProvider {
     pub(super) record: Option<ProviderRecord>,
 }
 
-async fn resolve_provider_by_id_for_owner(
+async fn resolve_provider_by_id(
     state: &AppState,
-    _owner_user_id: Option<i64>,
     provider_id: &str,
 ) -> Result<ResolvedProvider, AppError> {
     let record = state
         .providers
-        .find_by_id_for_owner(None, provider_id)
+        .find_by_id(provider_id)
         .await
         .ok_or_else(|| AppError::bad_request(format!("未知的 provider_id: {provider_id}")))?;
     Ok(resolved_provider_from_record(record))
@@ -1593,16 +1535,12 @@ pub(super) fn provider_uses_openai_account(provider: &ResolvedProvider) -> bool 
         .unwrap_or(false)
 }
 
-async fn hydrated_provider_summaries_for_owner(
-    state: &AppState,
-    _owner_user_id: Option<i64>,
-) -> Vec<ProviderSummary> {
-    state.providers.list_for_owner(None).await
+async fn hydrated_provider_summaries(state: &AppState) -> Vec<ProviderSummary> {
+    state.providers.list().await
 }
 
-async fn provider_summary_for_resolved_for_owner(
+async fn provider_summary_for_resolved(
     _state: &AppState,
-    _owner_user_id: Option<i64>,
     provider: &ResolvedProvider,
 ) -> Result<ProviderSummary, AppError> {
     let record = provider

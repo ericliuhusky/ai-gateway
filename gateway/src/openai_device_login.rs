@@ -25,7 +25,6 @@ pub struct OpenAiDeviceLoginService {
 
 #[derive(Clone, Debug)]
 struct DeviceLoginSession {
-    owner_user_id: Option<i64>,
     user_code: String,
     device_auth_id: String,
     verification_uri: String,
@@ -112,7 +111,7 @@ impl OpenAiDeviceLoginService {
         }
     }
 
-    pub async fn start(&self, owner_user_id: Option<i64>) -> Result<DeviceLoginStart, String> {
+    pub async fn start(&self) -> Result<DeviceLoginStart, String> {
         self.prune_expired().await;
 
         let response = self
@@ -153,7 +152,6 @@ impl OpenAiDeviceLoginService {
         self.sessions.lock().await.insert(
             login_id,
             DeviceLoginSession {
-                owner_user_id,
                 user_code: start.user_code.clone(),
                 device_auth_id: payload.device_auth_id,
                 verification_uri: start.verification_uri.clone(),
@@ -167,17 +165,12 @@ impl OpenAiDeviceLoginService {
         Ok(start)
     }
 
-    pub async fn poll(
-        &self,
-        owner_user_id: Option<i64>,
-        login_id: &str,
-    ) -> Result<DeviceLoginPoll, String> {
+    pub async fn poll(&self, login_id: &str) -> Result<DeviceLoginPoll, String> {
         let session = {
             let mut sessions = self.sessions.lock().await;
             let session = sessions
                 .get_mut(login_id)
                 .ok_or_else(|| "登录会话不存在或已过期，请重新开始".to_string())?;
-            ensure_owner(session, owner_user_id)?;
             if session.expires_at <= now_unix() as i64 {
                 session.status = DeviceLoginStatus::Failed("登录已超时，请重新开始".to_string());
             }
@@ -213,8 +206,6 @@ impl OpenAiDeviceLoginService {
         let current = sessions
             .get_mut(login_id)
             .ok_or_else(|| "登录会话不存在或已过期，请重新开始".to_string())?;
-        ensure_owner(current, owner_user_id)?;
-
         match poll_result {
             Ok(Some(authorization)) => {
                 current.status = DeviceLoginStatus::Ready(authorization.clone());
@@ -232,14 +223,12 @@ impl OpenAiDeviceLoginService {
 
     pub async fn begin_finalization(
         &self,
-        owner_user_id: Option<i64>,
         login_id: &str,
     ) -> Result<Option<DeviceAuthorization>, String> {
         let mut sessions = self.sessions.lock().await;
         let session = sessions
             .get_mut(login_id)
             .ok_or_else(|| "登录会话不存在或已过期，请重新开始".to_string())?;
-        ensure_owner(session, owner_user_id)?;
         match &session.status {
             DeviceLoginStatus::Ready(authorization) => {
                 let authorization = authorization.clone();
@@ -301,12 +290,11 @@ impl OpenAiDeviceLoginService {
         }
     }
 
-    pub async fn cancel(&self, owner_user_id: Option<i64>, login_id: &str) -> Result<(), String> {
+    pub async fn cancel(&self, login_id: &str) -> Result<(), String> {
         let mut sessions = self.sessions.lock().await;
-        let session = sessions
+        sessions
             .get(login_id)
             .ok_or_else(|| "登录会话不存在或已结束".to_string())?;
-        ensure_owner(session, owner_user_id)?;
         if sessions.remove(login_id).is_none() {
             return Err("登录会话不存在或已结束".to_string());
         }
@@ -360,14 +348,6 @@ impl OpenAiDeviceLoginService {
             .lock()
             .await
             .retain(|_, session| session.expires_at > now);
-    }
-}
-
-fn ensure_owner(session: &DeviceLoginSession, owner_user_id: Option<i64>) -> Result<(), String> {
-    if session.owner_user_id == owner_user_id {
-        Ok(())
-    } else {
-        Err("登录会话不属于当前用户".to_string())
     }
 }
 

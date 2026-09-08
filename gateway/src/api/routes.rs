@@ -1,14 +1,11 @@
 use super::AppState;
-use crate::{
-    api::RequestScope,
-    api::handlers::{
-        add_provider, cancel_openai_device_login, clear_gateway_issues, clear_selected_model,
-        clear_selected_reasoning_effort, delete_provider, gateway_status,
-        get_gateway_issue_repair_prompt, get_provider_quota, get_route, get_selected_model,
-        get_selected_reasoning_effort, healthz, import_openai_token, list_gateway_issues,
-        list_models, list_providers, poll_openai_device_login, refresh_openai_provider, responses,
-        set_route, set_selected_model, set_selected_reasoning_effort, start_openai_device_login,
-    },
+use crate::api::handlers::{
+    add_provider, cancel_openai_device_login, clear_gateway_issues, clear_selected_model,
+    clear_selected_reasoning_effort, delete_provider, gateway_status,
+    get_gateway_issue_repair_prompt, get_provider_quota, get_route, get_selected_model,
+    get_selected_reasoning_effort, healthz, import_openai_token, list_gateway_issues, list_models,
+    list_providers, poll_openai_device_login, refresh_openai_provider, responses, set_route,
+    set_selected_model, set_selected_reasoning_effort, start_openai_device_login,
 };
 use axum::{
     Router,
@@ -76,7 +73,6 @@ pub fn build_management_router(state: AppState) -> Router {
             state.clone(),
             management_runtime_scope,
         ))
-        .route_layer(middleware::from_fn(local_scope))
         .with_state(state);
     Router::new().nest("/management", management_routes)
 }
@@ -89,7 +85,6 @@ fn gateway_router(state: AppState) -> Router {
             state.clone(),
             gateway_runtime_scope,
         ))
-        .route_layer(middleware::from_fn(local_scope))
         .layer(DefaultBodyLimit::max(RESPONSES_REQUEST_BODY_LIMIT))
         .with_state(state)
 }
@@ -119,13 +114,6 @@ async fn gateway_runtime_scope(
     } else {
         (StatusCode::SERVICE_UNAVAILABLE, "AI Gateway 服务未启动").into_response()
     }
-}
-
-async fn local_scope(mut request: Request, next: Next) -> Response {
-    request.extensions_mut().insert(RequestScope {
-        owner_user_id: None,
-    });
-    next.run(request).await
 }
 
 #[cfg(test)]
@@ -185,14 +173,11 @@ mod tests {
         let (state, providers, routes) = test_state(data_dir.clone()).await;
         let issues = state.issues.clone();
         let provider = providers
-            .upsert_for_owner(
-                None,
-                CreateProviderRequest {
-                    name: "Mock Provider".to_string(),
-                    base_url: Some(format!("http://{upstream_addr}/v1")),
-                    api_key: Some("sk-local-only".to_string()),
-                },
-            )
+            .upsert(CreateProviderRequest {
+                name: "Mock Provider".to_string(),
+                base_url: Some(format!("http://{upstream_addr}/v1")),
+                api_key: Some("sk-local-only".to_string()),
+            })
             .await
             .expect("add local provider");
         routes
@@ -275,10 +260,7 @@ mod tests {
             );
         }
         assert!(
-            issues
-                .list_for_owner(None, 50)
-                .expect("list gateway issues")
-                .is_empty(),
+            issues.list(50).expect("list gateway issues").is_empty(),
             "successful requests must not be recorded as gateway issues"
         );
 
@@ -296,14 +278,11 @@ mod tests {
         let data_dir = unique_test_data_dir("connection-failure-issues");
         let (state, providers, routes) = test_state(data_dir.clone()).await;
         let provider = providers
-            .upsert_for_owner(
-                None,
-                CreateProviderRequest {
-                    name: "Unavailable Provider".to_string(),
-                    base_url: Some(format!("http://{upstream_addr}/v1")),
-                    api_key: Some("sk-local-only".to_string()),
-                },
-            )
+            .upsert(CreateProviderRequest {
+                name: "Unavailable Provider".to_string(),
+                base_url: Some(format!("http://{upstream_addr}/v1")),
+                api_key: Some("sk-local-only".to_string()),
+            })
             .await
             .expect("add unavailable provider");
         routes
@@ -330,9 +309,7 @@ mod tests {
             .expect("gateway response");
 
         assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
-        let recorded = issues
-            .list_for_owner(None, 50)
-            .expect("list gateway issues");
+        let recorded = issues.list(50).expect("list gateway issues");
         assert_eq!(recorded.len(), 1);
         assert_eq!(recorded[0].failure_kind, "upstream_connect_error");
         assert_eq!(recorded[0].provider_id, provider.id);

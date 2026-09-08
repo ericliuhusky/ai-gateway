@@ -92,7 +92,6 @@ mod tests {
             expiry_timestamp: None,
             client_id: None,
             upstream_account_id: None,
-            owner_user_id: None,
         };
         sqlite.upsert_provider(&provider).expect("save provider");
         sqlite

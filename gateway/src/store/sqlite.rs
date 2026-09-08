@@ -50,7 +50,7 @@ impl SqliteStore {
             .prepare(
                 "SELECT id, name, auth_mode, COALESCE(base_url, ''), COALESCE(api_key, ''),
                         email, access_token, refresh_token, expiry_timestamp, client_id,
-                        upstream_account_id, owner_user_id
+                        upstream_account_id
                  FROM providers
                  ORDER BY rowid ASC",
             )
@@ -70,7 +70,6 @@ impl SqliteStore {
                     expiry_timestamp: row.get(8)?,
                     client_id: row.get(9)?,
                     upstream_account_id: row.get(10)?,
-                    owner_user_id: row.get(11)?,
                 })
             })
             .map_err(|err| format!("query providers failed: {err}"))?;
@@ -220,7 +219,6 @@ impl SqliteStore {
         issue: &GatewayIssueRecord,
         limit: i64,
     ) -> Result<(), String> {
-        let owner_user_id = issue.owner_user_id.unwrap_or(0);
         let mut conn = self.connect()?;
         let transaction = conn
             .transaction()
@@ -228,13 +226,12 @@ impl SqliteStore {
         transaction
             .execute(
                 "INSERT INTO gateway_issues (
-                    id, owner_user_id, provider_id, provider_name, model,
+                    id, provider_id, provider_name, model,
                     upstream_url, failure_kind, status_code, error_message,
                     upstream_response, upstream_response_truncated, created_at
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                 params![
                     issue.id,
-                    owner_user_id,
                     issue.provider_id,
                     issue.provider_name,
                     issue.model,
@@ -251,13 +248,12 @@ impl SqliteStore {
         transaction
             .execute(
                 "DELETE FROM gateway_issues
-                 WHERE owner_user_id = ?1 AND id IN (
+                 WHERE id IN (
                     SELECT id FROM gateway_issues
-                    WHERE owner_user_id = ?1
                     ORDER BY created_at DESC, rowid DESC
-                    LIMIT -1 OFFSET ?2
+                    LIMIT -1 OFFSET ?1
                  )",
-                params![owner_user_id, limit],
+                params![limit],
             )
             .map_err(|err| format!("trim gateway issues failed: {err}"))?;
         transaction
@@ -265,11 +261,7 @@ impl SqliteStore {
             .map_err(|err| format!("commit gateway issue transaction failed: {err}"))
     }
 
-    pub fn list_gateway_issues(
-        &self,
-        owner_user_id: Option<i64>,
-        limit: i64,
-    ) -> Result<Vec<GatewayIssue>, String> {
+    pub fn list_gateway_issues(&self, limit: i64) -> Result<Vec<GatewayIssue>, String> {
         let conn = self.connect()?;
         let mut statement = conn
             .prepare(
@@ -277,47 +269,36 @@ impl SqliteStore {
                         failure_kind, status_code, error_message, upstream_response,
                         upstream_response_truncated, created_at
                  FROM gateway_issues
-                 WHERE owner_user_id = ?1
                  ORDER BY created_at DESC, rowid DESC
-                 LIMIT ?2",
+                 LIMIT ?1",
             )
             .map_err(|err| format!("prepare gateway issue list failed: {err}"))?;
         statement
-            .query_map(
-                params![owner_user_id.unwrap_or(0), limit],
-                gateway_issue_from_row,
-            )
+            .query_map(params![limit], gateway_issue_from_row)
             .map_err(|err| format!("query gateway issues failed: {err}"))?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|err| format!("read gateway issues failed: {err}"))
     }
 
-    pub fn load_gateway_issue(
-        &self,
-        owner_user_id: Option<i64>,
-        issue_id: &str,
-    ) -> Result<Option<GatewayIssue>, String> {
+    pub fn load_gateway_issue(&self, issue_id: &str) -> Result<Option<GatewayIssue>, String> {
         let conn = self.connect()?;
         conn.query_row(
             "SELECT id, provider_id, provider_name, model, upstream_url,
                     failure_kind, status_code, error_message, upstream_response,
                     upstream_response_truncated, created_at
              FROM gateway_issues
-             WHERE owner_user_id = ?1 AND id = ?2",
-            params![owner_user_id.unwrap_or(0), issue_id],
+             WHERE id = ?1",
+            params![issue_id],
             gateway_issue_from_row,
         )
         .optional()
         .map_err(|err| format!("load gateway issue failed: {err}"))
     }
 
-    pub fn clear_gateway_issues(&self, owner_user_id: Option<i64>) -> Result<usize, String> {
+    pub fn clear_gateway_issues(&self) -> Result<usize, String> {
         let conn = self.connect()?;
-        conn.execute(
-            "DELETE FROM gateway_issues WHERE owner_user_id = ?1",
-            params![owner_user_id.unwrap_or(0)],
-        )
-        .map_err(|err| format!("clear gateway issues failed: {err}"))
+        conn.execute("DELETE FROM gateway_issues", [])
+            .map_err(|err| format!("clear gateway issues failed: {err}"))
     }
 
     fn init(&self) -> Result<(), String> {
@@ -339,8 +320,7 @@ impl SqliteStore {
                 client_id TEXT,
                 upstream_account_id TEXT,
                 preferred_model TEXT,
-                preferred_reasoning_effort TEXT,
-                owner_user_id INTEGER
+                preferred_reasoning_effort TEXT
             );
 
             CREATE TABLE IF NOT EXISTS gateway_state (
@@ -359,7 +339,6 @@ impl SqliteStore {
 
             CREATE TABLE IF NOT EXISTS gateway_issues (
                 id TEXT PRIMARY KEY,
-                owner_user_id INTEGER NOT NULL DEFAULT 0,
                 provider_id TEXT NOT NULL,
                 provider_name TEXT NOT NULL,
                 model TEXT NOT NULL,
@@ -371,8 +350,6 @@ impl SqliteStore {
                 upstream_response_truncated INTEGER NOT NULL DEFAULT 0,
                 created_at INTEGER NOT NULL
             );
-            CREATE INDEX IF NOT EXISTS idx_gateway_issues_owner_created
-                ON gateway_issues(owner_user_id, created_at DESC);
             ",
         )
         .map_err(|err| format!("initialize sqlite schema failed: {err}"))?;
@@ -385,13 +362,8 @@ impl SqliteStore {
         drop_database_encryption_key(&conn)?;
         conn.execute("INSERT OR IGNORE INTO gateway_state (id) VALUES (1)", [])
             .map_err(|err| format!("initialize gateway state failed: {err}"))?;
-        add_column_if_missing(&conn, "providers", "owner_user_id INTEGER")?;
         drop_provider_compatibility_profile(&conn)?;
         migrate_gateway_issue_payloads(&conn)?;
-        conn.execute_batch(
-            "CREATE INDEX IF NOT EXISTS idx_providers_owner_user_id ON providers(owner_user_id);",
-        )
-        .map_err(|err| format!("create provider ownership index failed: {err}"))?;
         Ok(())
     }
 
@@ -450,7 +422,6 @@ fn migrate_accounts_into_providers(conn: &Connection) -> Result<(), String> {
         "expiry_timestamp INTEGER",
         "client_id TEXT",
         "upstream_account_id TEXT",
-        "owner_user_id INTEGER",
     ] {
         add_column_if_missing(conn, "providers", definition)?;
     }
@@ -484,18 +455,17 @@ fn migrate_accounts_into_providers(conn: &Connection) -> Result<(), String> {
             client_id TEXT,
             upstream_account_id TEXT,
             preferred_model TEXT,
-            preferred_reasoning_effort TEXT,
-            owner_user_id INTEGER
+            preferred_reasoning_effort TEXT
          );
          INSERT INTO providers_new (
             id, name, auth_mode, base_url, api_key, email, access_token,
             refresh_token, expiry_timestamp, client_id, upstream_account_id,
-            preferred_model, preferred_reasoning_effort, owner_user_id
+            preferred_model, preferred_reasoning_effort
          )
          SELECT
             id, name, auth_mode, base_url, api_key, email, access_token,
             refresh_token, expiry_timestamp, client_id, upstream_account_id,
-            preferred_model, preferred_reasoning_effort, owner_user_id
+            preferred_model, preferred_reasoning_effort
          FROM providers;
          DROP TABLE providers;
          ALTER TABLE providers_new RENAME TO providers;
@@ -526,7 +496,6 @@ fn migrate_gateway_issue_payloads(conn: &Connection) -> Result<(), String> {
         "BEGIN;
          CREATE TABLE gateway_issues_new (
             id TEXT PRIMARY KEY,
-            owner_user_id INTEGER NOT NULL DEFAULT 0,
             provider_id TEXT NOT NULL,
             provider_name TEXT NOT NULL,
             model TEXT NOT NULL,
@@ -539,19 +508,17 @@ fn migrate_gateway_issue_payloads(conn: &Connection) -> Result<(), String> {
             created_at INTEGER NOT NULL
          );
          INSERT INTO gateway_issues_new (
-            id, owner_user_id, provider_id, provider_name, model,
+            id, provider_id, provider_name, model,
             upstream_url, failure_kind, status_code, error_message,
             upstream_response, upstream_response_truncated, created_at
          )
          SELECT
-            id, owner_user_id, provider_id, provider_name, model,
+            id, provider_id, provider_name, model,
             upstream_url, failure_kind, status_code, error_message,
             COALESCE(response_body, ''), response_truncated, created_at
          FROM gateway_issues;
          DROP TABLE gateway_issues;
          ALTER TABLE gateway_issues_new RENAME TO gateway_issues;
-         CREATE INDEX IF NOT EXISTS idx_gateway_issues_owner_created
-            ON gateway_issues(owner_user_id, created_at DESC);
          COMMIT;",
     )
     .map_err(|err| format!("migrate gateway issue payloads failed: {err}"))
@@ -620,9 +587,8 @@ fn upsert_provider_record(conn: &Connection, provider: &ProviderRecord) -> Resul
     conn.execute(
         "INSERT INTO providers (
             id, name, auth_mode, base_url, api_key, email, access_token,
-            refresh_token, expiry_timestamp, client_id, upstream_account_id,
-            owner_user_id
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+            refresh_token, expiry_timestamp, client_id, upstream_account_id
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
          ON CONFLICT(id) DO UPDATE SET
             name = excluded.name,
             auth_mode = excluded.auth_mode,
@@ -633,8 +599,7 @@ fn upsert_provider_record(conn: &Connection, provider: &ProviderRecord) -> Resul
             refresh_token = excluded.refresh_token,
             expiry_timestamp = excluded.expiry_timestamp,
             client_id = excluded.client_id,
-            upstream_account_id = excluded.upstream_account_id,
-            owner_user_id = excluded.owner_user_id",
+            upstream_account_id = excluded.upstream_account_id",
         params![
             provider.id,
             provider.name,
@@ -646,8 +611,7 @@ fn upsert_provider_record(conn: &Connection, provider: &ProviderRecord) -> Resul
             provider.refresh_token.as_deref(),
             provider.expiry_timestamp,
             provider.client_id.as_deref(),
-            provider.upstream_account_id.as_deref(),
-            provider.owner_user_id
+            provider.upstream_account_id.as_deref()
         ],
     )
     .map_err(|err| format!("upsert provider failed: {err}"))?;
@@ -738,7 +702,6 @@ mod tests {
             expiry_timestamp: Some(1),
             client_id: Some("client".to_string()),
             upstream_account_id: Some("upstream".to_string()),
-            owner_user_id: None,
         };
         store.upsert_provider(&provider).expect("save provider");
 
@@ -772,7 +735,6 @@ mod tests {
             expiry_timestamp: Some(1),
             client_id: None,
             upstream_account_id: None,
-            owner_user_id: None,
         };
         store
             .upsert_provider(&account_provider)
@@ -855,7 +817,6 @@ mod tests {
                 account_id TEXT,
                 preferred_model TEXT,
                 preferred_reasoning_effort TEXT,
-                owner_user_id INTEGER,
                 FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
              );
              INSERT INTO accounts (
@@ -867,10 +828,10 @@ mod tests {
              );
              INSERT INTO providers (
                 id, name, auth_mode, base_url, api_key, account_id,
-                preferred_model, preferred_reasoning_effort, owner_user_id
+                preferred_model, preferred_reasoning_effort
              ) VALUES (
                 'provider-1', 'GPT账户', 'account', NULL, NULL, 'account-1',
-                'gpt-5', 'high', NULL
+                'gpt-5', 'high'
              );",
         )
         .expect("create legacy provider schema");
@@ -923,7 +884,6 @@ mod tests {
         conn.execute_batch(
             "CREATE TABLE gateway_issues (
                 id TEXT PRIMARY KEY,
-                owner_user_id INTEGER NOT NULL DEFAULT 0,
                 instance_id TEXT,
                 provider_id TEXT NOT NULL,
                 provider_name TEXT NOT NULL,
@@ -939,11 +899,11 @@ mod tests {
                 created_at INTEGER NOT NULL
              );
              INSERT INTO gateway_issues (
-                id, owner_user_id, instance_id, provider_id, provider_name, model,
+                id, instance_id, provider_id, provider_name, model,
                 upstream_url, failure_kind, status_code, error_message,
                 request_body, response_body, request_truncated, response_truncated, created_at
              ) VALUES (
-                'legacy', 0, NULL, 'provider', 'Provider', 'model',
+                'legacy', NULL, 'provider', 'Provider', 'model',
                 'https://example.com/v1/responses', 'upstream_http_error', 500, 'failed',
                 '{\"input\":\"secret\"}', '{\"error\":\"failed\"}', 0, 1, 1
              );",
@@ -969,7 +929,7 @@ mod tests {
         assert!(columns.iter().any(|column| column == "upstream_response"));
 
         let issue = store
-            .load_gateway_issue(None, "legacy")
+            .load_gateway_issue("legacy")
             .expect("load migrated issue")
             .expect("migrated issue exists");
         assert_eq!(issue.upstream_response, "{\"error\":\"failed\"}");
@@ -991,7 +951,6 @@ mod tests {
             expiry_timestamp: None,
             client_id: None,
             upstream_account_id: None,
-            owner_user_id: None,
         }
     }
 
