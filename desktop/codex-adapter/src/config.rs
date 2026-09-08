@@ -1,4 +1,3 @@
-use rusqlite::{Connection, TransactionBehavior, params, types::Value};
 use serde::Serialize;
 use std::{
     env, fs,
@@ -18,7 +17,6 @@ pub struct DefaultCodexStatus {
 #[derive(Debug, Clone, Serialize)]
 pub struct CodexConfigurationResult {
     pub changed: bool,
-    pub warnings: Vec<String>,
 }
 
 pub fn default_codex_status() -> Result<DefaultCodexStatus, String> {
@@ -42,10 +40,9 @@ pub fn start_default_codex(gateway_base_url: &str) -> Result<CodexConfigurationR
     let _lock = ConfigLock::acquire(&codex_dir)?;
     let config_path = codex_dir.join("config.toml");
     let source = read_optional(&config_path)?;
-    let (next, previous_provider) = configure_gateway_config(&source, &gateway_base_url);
+    let (next, _) = configure_gateway_config(&source, &gateway_base_url);
     let changed = write_if_changed(&config_path, next.as_bytes())?;
-    let warnings = sync_history_aliases(&codex_dir, &previous_provider);
-    Ok(CodexConfigurationResult { changed, warnings })
+    Ok(CodexConfigurationResult { changed })
 }
 
 pub fn stop_default_codex() -> Result<CodexConfigurationResult, String> {
@@ -54,20 +51,14 @@ pub fn stop_default_codex() -> Result<CodexConfigurationResult, String> {
     let source = match read_optional(&config_path)? {
         Some(source) => source,
         None => {
-            return Ok(CodexConfigurationResult {
-                changed: false,
-                warnings: Vec::new(),
-            });
+            return Ok(CodexConfigurationResult { changed: false });
         }
     };
     let _lock = ConfigLock::acquire(&codex_dir)?;
     let next = restore_gateway_config(&source)?;
     let mut changed = write_if_changed(&config_path, next.as_bytes())?;
     changed |= restore_authentication(&codex_dir)?;
-    Ok(CodexConfigurationResult {
-        changed,
-        warnings: Vec::new(),
-    })
+    Ok(CodexConfigurationResult { changed })
 }
 
 fn codex_dir() -> Result<PathBuf, String> {
@@ -316,279 +307,6 @@ fn set_private_permissions(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-#[derive(Debug)]
-struct ThreadSource {
-    id: String,
-    rollout_path: String,
-    archived: bool,
-}
-
-fn sync_history_aliases(codex_dir: &Path, source_provider: &str) -> Vec<String> {
-    if source_provider == GATEWAY_PROVIDER {
-        return Vec::new();
-    }
-    let state_path = codex_dir.join("state_5.sqlite");
-    if !state_path.exists() {
-        return Vec::new();
-    }
-    match sync_history_aliases_inner(codex_dir, source_provider, &state_path) {
-        Ok(()) => Vec::new(),
-        Err(error) => vec![format!("Codex 历史同步已跳过：{error}")],
-    }
-}
-
-fn sync_history_aliases_inner(
-    codex_dir: &Path,
-    source_provider: &str,
-    state_path: &Path,
-) -> Result<(), String> {
-    let history_dir = codex_dir.join(".ai-gateway-history");
-    fs::create_dir_all(&history_dir).map_err(|error| format!("创建历史目录失败：{error}"))?;
-    let mut connection = Connection::open(state_path)
-        .map_err(|error| format!("打开 Codex state 数据库失败：{error}"))?;
-    connection
-        .busy_timeout(std::time::Duration::from_secs(10))
-        .map_err(|error| format!("设置数据库等待时间失败：{error}"))?;
-    let has_threads: bool = connection
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'threads')",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|error| format!("检查 Codex 历史数据库失败：{error}"))?;
-    if !has_threads {
-        return Ok(());
-    }
-
-    let columns = connection
-        .prepare("SELECT name FROM pragma_table_info('threads') ORDER BY cid")
-        .map_err(|error| format!("读取 Codex 历史表结构失败：{error}"))?
-        .query_map([], |row| row.get::<_, String>(0))
-        .map_err(|error| format!("读取 Codex 历史表结构失败：{error}"))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| format!("读取 Codex 历史表结构失败：{error}"))?;
-    if !["id", "rollout_path", "model_provider"]
-        .iter()
-        .all(|required| columns.iter().any(|column| column == required))
-    {
-        return Ok(());
-    }
-    if columns.iter().any(|column| {
-        !column
-            .chars()
-            .all(|char| char.is_ascii_alphanumeric() || char == '_')
-    }) {
-        return Ok(());
-    }
-
-    let sources = connection.prepare(
-        "SELECT id, rollout_path, archived FROM threads WHERE model_provider = ?1 ORDER BY created_at, id"
-    ).map_err(|error| format!("读取 Codex 历史失败：{error}"))?
-        .query_map([source_provider], |row| Ok(ThreadSource { id: row.get(0)?, rollout_path: row.get(1)?, archived: row.get::<_, i64>(2)? != 0 }))
-        .map_err(|error| format!("读取 Codex 历史失败：{error}"))?
-        .collect::<Result<Vec<_>, _>>().map_err(|error| format!("读取 Codex 历史失败：{error}"))?;
-    if sources.is_empty() {
-        return Ok(());
-    }
-
-    let backup_path = history_dir.join("state_5.before-first-sync.sqlite");
-    if !backup_path.exists() {
-        let path = backup_path.display().to_string().replace('\'', "''");
-        connection
-            .execute_batch(&format!("VACUUM INTO '{path}'"))
-            .map_err(|error| format!("创建 Codex state 备份失败：{error}"))?;
-        set_private_permissions(&backup_path)?;
-    }
-
-    let mapping_path = history_dir.join("aliases.tsv");
-    let mut mappings = read_alias_mappings(&mapping_path)?;
-    let mut changed_mapping = false;
-    let mut inserts = Vec::new();
-    for source in sources {
-        if !is_safe_thread_id(&source.id) {
-            continue;
-        }
-        let key = (source_provider.to_string(), source.id.clone());
-        let (alias_id, alias_rollout) = if let Some(existing) = mappings.get(&key) {
-            (existing.0.clone(), PathBuf::from(&existing.1))
-        } else {
-            let alias_id = Uuid::new_v4().to_string();
-            let alias_rollout = alias_rollout_path(codex_dir, &source, &alias_id)?;
-            mappings.insert(
-                key.clone(),
-                (alias_id.clone(), alias_rollout.display().to_string()),
-            );
-            changed_mapping = true;
-            (alias_id, alias_rollout)
-        };
-        if !is_safe_thread_id(&alias_id) || !alias_rollout.starts_with(codex_dir) {
-            continue;
-        }
-        let exists: bool = connection
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM threads WHERE id = ?1 AND model_provider = ?2)",
-                params![alias_id, GATEWAY_PROVIDER],
-                |row| row.get(0),
-            )
-            .map_err(|error| format!("检查 Codex 历史别名失败：{error}"))?;
-        if !alias_rollout.exists() {
-            rewrite_rollout(
-                Path::new(&source.rollout_path),
-                &alias_rollout,
-                &source.id,
-                &alias_id,
-                source_provider,
-            )?;
-        }
-        if !exists {
-            inserts.push((source.id, alias_id, alias_rollout.display().to_string()));
-        }
-    }
-    if changed_mapping {
-        write_alias_mappings(&mapping_path, &mappings)?;
-    }
-    if inserts.is_empty() {
-        return Ok(());
-    }
-
-    let quoted_columns = columns
-        .iter()
-        .map(|column| format!("\"{column}\""))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let select_columns = columns
-        .iter()
-        .map(|column| match column.as_str() {
-            "id" | "rollout_path" | "model_provider" => "?".to_string(),
-            _ => format!("\"{column}\""),
-        })
-        .collect::<Vec<_>>()
-        .join(", ");
-    let sql = format!(
-        "INSERT INTO threads ({quoted_columns}) SELECT {select_columns} FROM threads WHERE id = ? AND model_provider = ?"
-    );
-    let transaction = connection
-        .transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(|error| format!("写入 Codex 历史别名失败：{error}"))?;
-    for (source_id, alias_id, alias_rollout) in inserts {
-        let mut values = Vec::<Value>::new();
-        for column in &columns {
-            match column.as_str() {
-                "id" => values.push(Value::Text(alias_id.clone())),
-                "rollout_path" => values.push(Value::Text(alias_rollout.clone())),
-                "model_provider" => values.push(Value::Text(GATEWAY_PROVIDER.to_string())),
-                _ => {}
-            }
-        }
-        values.push(Value::Text(source_id));
-        values.push(Value::Text(source_provider.to_string()));
-        transaction
-            .execute(&sql, rusqlite::params_from_iter(values))
-            .map_err(|error| format!("写入 Codex 历史别名失败：{error}"))?;
-    }
-    transaction
-        .commit()
-        .map_err(|error| format!("提交 Codex 历史别名失败：{error}"))?;
-    Ok(())
-}
-
-fn is_safe_thread_id(value: &str) -> bool {
-    !value.is_empty()
-        && value
-            .chars()
-            .all(|char| char.is_ascii_alphanumeric() || char == '-')
-}
-
-fn alias_rollout_path(
-    codex_dir: &Path,
-    source: &ThreadSource,
-    alias_id: &str,
-) -> Result<PathBuf, String> {
-    let source_file = Path::new(&source.rollout_path)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| "历史任务 rollout 文件名无效".to_string())?;
-    if !source_file.starts_with("rollout-")
-        || !source_file.ends_with(".jsonl")
-        || !source_file.contains(&source.id)
-    {
-        return Err("历史任务 rollout 文件名无效".to_string());
-    }
-    let alias_file = source_file.replacen(&source.id, alias_id, 1);
-    if source.archived {
-        return Ok(codex_dir.join("archived_sessions").join(alias_file));
-    }
-    let date = source_file
-        .strip_prefix("rollout-")
-        .and_then(|name| name.get(..10))
-        .filter(|date| {
-            date.as_bytes().get(4) == Some(&b'-') && date.as_bytes().get(7) == Some(&b'-')
-        })
-        .ok_or_else(|| "历史任务 rollout 日期无效".to_string())?;
-    Ok(codex_dir
-        .join("sessions")
-        .join(&date[..4])
-        .join(&date[5..7])
-        .join(&date[8..10])
-        .join(alias_file))
-}
-
-fn rewrite_rollout(
-    source: &Path,
-    target: &Path,
-    source_id: &str,
-    alias_id: &str,
-    source_provider: &str,
-) -> Result<(), String> {
-    let content =
-        fs::read_to_string(source).map_err(|error| format!("读取历史 rollout 失败：{error}"))?;
-    let id_needle = format!("\"{source_id}\"");
-    let provider_needle = format!("\"model_provider\":\"{source_provider}\"");
-    if !content.contains(&id_needle) || !content.contains(&provider_needle) {
-        return Err("历史 rollout 内容无法安全转换".to_string());
-    }
-    let content = content
-        .replace(&id_needle, &format!("\"{alias_id}\""))
-        .replace(&provider_needle, "\"model_provider\":\"ai-gateway\"");
-    let parent = target
-        .parent()
-        .ok_or_else(|| "历史 rollout 目标路径无效".to_string())?;
-    fs::create_dir_all(parent).map_err(|error| format!("创建历史 rollout 目录失败：{error}"))?;
-    write_if_changed(target, content.as_bytes())?;
-    Ok(())
-}
-
-fn read_alias_mappings(
-    path: &Path,
-) -> Result<std::collections::BTreeMap<(String, String), (String, String)>, String> {
-    let mut result = std::collections::BTreeMap::new();
-    let Some(content) = read_optional(path)? else {
-        return Ok(result);
-    };
-    for line in content.lines().filter(|line| !line.starts_with('#')) {
-        let fields = line.split('\t').collect::<Vec<_>>();
-        if fields.len() == 4 {
-            result.insert(
-                (fields[0].to_string(), fields[1].to_string()),
-                (fields[2].to_string(), fields[3].to_string()),
-            );
-        }
-    }
-    Ok(result)
-}
-
-fn write_alias_mappings(
-    path: &Path,
-    mappings: &std::collections::BTreeMap<(String, String), (String, String)>,
-) -> Result<(), String> {
-    let mut content = String::from("# source_provider\tsource_id\talias_id\talias_rollout_path\n");
-    for ((provider, source), (alias, rollout)) in mappings {
-        content.push_str(&format!("{provider}\t{source}\t{alias}\t{rollout}\n"));
-    }
-    write_if_changed(path, content.as_bytes())?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -609,81 +327,6 @@ mod tests {
         let (second, _) =
             configure_gateway_config(&Some(first.clone()), "http://127.0.0.1:42401/v1");
         assert_eq!(first, second);
-    }
-
-    #[test]
-    fn history_sync_creates_idempotent_gateway_aliases() {
-        let root = unique_test_dir();
-        let codex_dir = root.join(".codex");
-        let sessions = codex_dir.join("sessions/2026/08/11");
-        fs::create_dir_all(&sessions).expect("create sessions");
-        let source_id = "019fabcd-1234-7abc-8def-1234567890ab";
-        let rollout = sessions.join(format!("rollout-2026-08-11T10-00-00-{source_id}.jsonl"));
-        fs::write(
-            &rollout,
-            format!(
-                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{source_id}\",\"model_provider\":\"openai\"}}}}\n"
-            ),
-        )
-        .expect("write rollout");
-        let state_path = codex_dir.join("state_5.sqlite");
-        let connection = Connection::open(&state_path).expect("open state database");
-        connection
-            .execute_batch(
-                "CREATE TABLE threads (
-                    id TEXT PRIMARY KEY,
-                    rollout_path TEXT NOT NULL,
-                    created_at INTEGER NOT NULL,
-                    model_provider TEXT NOT NULL,
-                    archived INTEGER NOT NULL DEFAULT 0
-                );",
-            )
-            .expect("create threads");
-        connection
-            .execute(
-                "INSERT INTO threads (id, rollout_path, created_at, model_provider, archived) VALUES (?1, ?2, 1, 'openai', 0)",
-                params![source_id, rollout.display().to_string()],
-            )
-            .expect("insert source thread");
-        drop(connection);
-
-        sync_history_aliases_inner(&codex_dir, "openai", &state_path).expect("sync history");
-        sync_history_aliases_inner(&codex_dir, "openai", &state_path).expect("resync history");
-
-        let mapping = fs::read_to_string(codex_dir.join(".ai-gateway-history/aliases.tsv"))
-            .expect("read alias mapping");
-        let mapping = mapping
-            .lines()
-            .find(|line| !line.starts_with('#'))
-            .expect("mapping row");
-        let fields = mapping.split('\t').collect::<Vec<_>>();
-        assert_eq!(fields.len(), 4);
-        let alias_rollout = fs::read_to_string(fields[3]).expect("read alias rollout");
-        assert!(alias_rollout.contains(&format!("\"id\":\"{}\"", fields[2])));
-        assert!(alias_rollout.contains("\"model_provider\":\"ai-gateway\""));
-        let connection = Connection::open(&state_path).expect("reopen state database");
-        let aliases: i64 = connection
-            .query_row(
-                "SELECT count(*) FROM threads WHERE model_provider = 'ai-gateway'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("count aliases");
-        assert_eq!(aliases, 1);
-        assert!(
-            codex_dir
-                .join(".ai-gateway-history/state_5.before-first-sync.sqlite")
-                .exists()
-        );
-        fs::remove_dir_all(root).expect("remove test directory");
-    }
-
-    fn unique_test_dir() -> PathBuf {
-        let unique = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("system time")
-            .as_nanos();
-        std::env::temp_dir().join(format!("ai-gateway-codex-config-{unique}"))
     }
 }
 

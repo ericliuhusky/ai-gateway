@@ -179,11 +179,9 @@ function DefaultCodexGatewayControl({ onError }: { onError: (message: string) =>
     if (busy || loading) return;
     setBusy(true);
     try {
-      const result = started
-        ? await gatewayApi.stopCodexGateway()
-        : await gatewayApi.startCodexGateway();
+      if (started) await gatewayApi.stopCodexGateway();
+      else await gatewayApi.startCodexGateway();
       setStarted(!started);
-      if (result.warnings.length) onError(result.warnings.join("\n"));
     } catch (toggleError) {
       onError(errorMessage(toggleError));
     } finally {

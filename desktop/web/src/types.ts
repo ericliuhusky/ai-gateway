@@ -16,7 +16,6 @@ export interface DefaultCodexStatus {
 
 export interface CodexConfigurationResult {
   changed: boolean;
-  warnings: string[];
 }
 
 export interface SelectedProvider {
