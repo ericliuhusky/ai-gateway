@@ -1,5 +1,5 @@
 use codex_adapter::{
-    CodexConfigurationResult, DefaultCodexStatus, default_codex_status,
+    CodexConfigurationResult, DefaultCodexStatus, default_codex_status, restart_chatgpt,
     start_codex_gateway as patch_codex_gateway, stop_codex_gateway as restore_codex_gateway,
 };
 use serde_json::Value;
@@ -19,21 +19,14 @@ const DAEMON_READY_POLL_INTERVAL: Duration = Duration::from_millis(200);
 pub fn run() {
     let gateway = tauri::async_runtime::block_on(ensure_gateway_daemon())
         .unwrap_or_else(|error| panic!("启动本机 Gateway 服务失败：{error}"));
-    match patch_codex_gateway(LOCAL_GATEWAY_URL) {
-        Ok(result) => {
-            for warning in result.warnings {
-                eprintln!("{warning}");
-            }
-        }
-        Err(error) => eprintln!("自动配置本机 Codex 失败：{error}"),
-    }
     tauri::Builder::default()
         .manage(gateway)
         .invoke_handler(tauri::generate_handler![
             gateway_request,
             get_codex_gateway_status,
             start_codex_gateway,
-            stop_codex_gateway
+            stop_codex_gateway,
+            restart_chatgpt_app
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|error| panic!("运行 Tauri 客户端失败：{error}"));
@@ -106,13 +99,21 @@ fn get_codex_gateway_status() -> Result<DefaultCodexStatus, String> {
 }
 
 #[tauri::command]
-fn start_codex_gateway() -> Result<CodexConfigurationResult, String> {
+async fn start_codex_gateway() -> Result<CodexConfigurationResult, String> {
+    ensure_gateway_daemon().await?;
     patch_codex_gateway(LOCAL_GATEWAY_URL)
 }
 
 #[tauri::command]
 fn stop_codex_gateway() -> Result<CodexConfigurationResult, String> {
-    restore_codex_gateway()
+    let result = restore_codex_gateway()?;
+    gateway::stop_gateway_daemon()?;
+    Ok(result)
+}
+
+#[tauri::command]
+fn restart_chatgpt_app() -> Result<(), String> {
+    restart_chatgpt()
 }
 
 #[cfg(test)]

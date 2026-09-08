@@ -61,4 +61,5 @@ export const gatewayApi = {
   codexGatewayStatus: () => invokeTauri<DefaultCodexStatus>("get_codex_gateway_status"),
   startCodexGateway: () => invokeTauri<CodexConfigurationResult>("start_codex_gateway"),
   stopCodexGateway: () => invokeTauri<CodexConfigurationResult>("stop_codex_gateway"),
+  restartChatGpt: () => invokeTauri<void>("restart_chatgpt_app"),
 };

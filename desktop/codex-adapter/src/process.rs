@@ -14,25 +14,19 @@ fn configure_codex(
     start: bool,
     gateway_base_url: &str,
 ) -> Result<CodexConfigurationResult, String> {
-    let mut result = if start {
-        start_default_codex(gateway_base_url)?
+    if start {
+        start_default_codex(gateway_base_url)
     } else {
         let _ = gateway_base_url;
-        stop_default_codex()?
-    };
-    if result.changed {
-        if let Some(warning) = restart_codex() {
-            result.warnings.push(warning);
-        }
+        stop_default_codex()
     }
-    Ok(result)
 }
 
-fn restart_codex() -> Option<String> {
+pub fn restart_chatgpt() -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         if !Path::new("/Applications/ChatGPT.app").is_dir() {
-            return Some("未找到 ChatGPT.app，请手动重新启动 Codex 以加载新配置。".to_string());
+            return Err("未找到 ChatGPT.app".to_string());
         }
         let running = Command::new("pgrep")
             .args(["-x", "ChatGPT"])
@@ -46,7 +40,7 @@ fn restart_codex() -> Option<String> {
                 .map(|status| status.success())
                 .unwrap_or(false)
             {
-                return Some("无法自动退出 Codex，请手动完全退出后重新打开。".to_string());
+                return Err("无法退出 ChatGPT.app".to_string());
             }
             for _ in 0..10 {
                 if !Command::new("pgrep")
@@ -65,7 +59,7 @@ fn restart_codex() -> Option<String> {
                 .map(|status| status.success())
                 .unwrap_or(false)
             {
-                return Some("Codex 未在 10 秒内完全退出，请手动完全退出后重新打开。".to_string());
+                return Err("ChatGPT.app 未在 10 秒内完全退出".to_string());
             }
         }
         if !Command::new("open")
@@ -74,12 +68,12 @@ fn restart_codex() -> Option<String> {
             .map(|status| status.success())
             .unwrap_or(false)
         {
-            return Some("无法自动打开 Codex，请手动重新打开 ChatGPT.app。".to_string());
+            return Err("无法打开 ChatGPT.app".to_string());
         }
-        None
+        Ok(())
     }
     #[cfg(not(target_os = "macos"))]
     {
-        Some("请手动重新启动 Codex 以加载新配置。".to_string())
+        Err("仅支持在 macOS 上重新打开 ChatGPT.app".to_string())
     }
 }

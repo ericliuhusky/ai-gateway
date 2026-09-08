@@ -179,6 +179,14 @@ pub fn install_gateway_daemon(program: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Stops the per-user Gateway LaunchAgent without removing its configuration,
+/// so it can be started again by `install_gateway_daemon`.
+pub fn stop_gateway_daemon() -> Result<(), String> {
+    let target = format!("gui/{}/{}", current_uid(), SERVICE_LABEL);
+    run_launchctl(&["bootout", &target], true)?;
+    Ok(())
+}
+
 fn gateway_launchd_plist(program: &Path, root: &Path, home: &Path) -> String {
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>

@@ -14,6 +14,7 @@ import {
   LoaderCircle,
   Plus,
   RefreshCw,
+  RotateCcw,
   Server,
   Trash2,
   UserRound,
@@ -165,6 +166,7 @@ function DefaultCodexGatewayControl({ onError }: { onError: (message: string) =>
   const [started, setStarted] = React.useState(false);
   const [loading, setLoading] = React.useState(true);
   const [busy, setBusy] = React.useState(false);
+  const [restartingChatGpt, setRestartingChatGpt] = React.useState(false);
 
   React.useEffect(() => {
     void gatewayApi.codexGatewayStatus()
@@ -180,7 +182,7 @@ function DefaultCodexGatewayControl({ onError }: { onError: (message: string) =>
       const result = started
         ? await gatewayApi.stopCodexGateway()
         : await gatewayApi.startCodexGateway();
-      setStarted((current) => !current);
+      setStarted(!started);
       if (result.warnings.length) onError(result.warnings.join("\n"));
     } catch (toggleError) {
       onError(errorMessage(toggleError));
@@ -189,24 +191,49 @@ function DefaultCodexGatewayControl({ onError }: { onError: (message: string) =>
     }
   }
 
+  async function restartChatGpt() {
+    if (restartingChatGpt) return;
+    setRestartingChatGpt(true);
+    try {
+      await gatewayApi.restartChatGpt();
+    } catch (restartError) {
+      onError(errorMessage(restartError));
+    } finally {
+      setRestartingChatGpt(false);
+    }
+  }
+
   return (
-    <Button
-      type="button"
-      variant="outline"
-      size="icon"
-      disabled={loading || busy}
-      title={started ? "停止并恢复默认 Codex 配置" : "启动默认 Codex 网关"}
-      aria-label={started ? "停止默认 Codex 网关" : "启动默认 Codex 网关"}
-      onClick={() => void toggle()}
-    >
-      {loading || busy ? (
-        <LoaderCircle className="size-4 animate-spin" />
-      ) : started ? (
-        <Square className="size-3.5 fill-current" />
-      ) : (
-        <Play className="size-4 fill-current" />
-      )}
-    </Button>
+    <div className="flex items-center gap-2">
+      <Button
+        type="button"
+        variant="outline"
+        size="icon"
+        disabled={loading || busy}
+        title={started ? "停止 AI 网关并恢复默认 Codex 配置" : "启动 AI 网关"}
+        aria-label={started ? "停止 AI 网关" : "启动 AI 网关"}
+        onClick={() => void toggle()}
+      >
+        {loading || busy ? (
+          <LoaderCircle className="size-4 animate-spin" />
+        ) : started ? (
+          <Square className="size-3.5 fill-current" />
+        ) : (
+          <Play className="size-4 fill-current" />
+        )}
+      </Button>
+      <Button
+        type="button"
+        variant="outline"
+        size="icon"
+        disabled={restartingChatGpt}
+        title="重新打开 ChatGPT.app"
+        aria-label="重新打开 ChatGPT.app"
+        onClick={() => void restartChatGpt()}
+      >
+        {restartingChatGpt ? <LoaderCircle className="size-4 animate-spin" /> : <RotateCcw className="size-4" />}
+      </Button>
+    </div>
   );
 }
 
