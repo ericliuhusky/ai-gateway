@@ -82,7 +82,7 @@ mod tests {
         let sqlite = SqliteStore::for_test(db_path.clone()).expect("create sqlite store");
         let provider = ProviderRecord {
             id: "provider-a".to_string(),
-            name: "Provider A".to_string(),
+            name: Some("Provider A".to_string()),
             auth_mode: ProviderAuthMode::ApiKey,
             base_url: "https://example.com/v1".to_string(),
             api_key: "key".to_string(),

@@ -328,7 +328,7 @@ impl SqliteStore {
 
             CREATE TABLE IF NOT EXISTS providers (
                 id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
+                name TEXT,
                 auth_mode TEXT NOT NULL CHECK (auth_mode IN ('api_key', 'account')),
                 base_url TEXT,
                 api_key TEXT,
@@ -473,7 +473,7 @@ fn migrate_accounts_into_providers(conn: &Connection) -> Result<(), String> {
          BEGIN;
          CREATE TABLE providers_new (
             id TEXT PRIMARY KEY,
-            name TEXT NOT NULL,
+            name TEXT,
             auth_mode TEXT NOT NULL CHECK (auth_mode IN ('api_key', 'account')),
             base_url TEXT,
             api_key TEXT,
@@ -728,7 +728,7 @@ mod tests {
         let store = SqliteStore::for_test(db_path.clone()).expect("create compact database");
         let provider = ProviderRecord {
             id: "provider-account".to_string(),
-            name: "account".to_string(),
+            name: Some("account".to_string()),
             auth_mode: ProviderAuthMode::Account,
             base_url: String::new(),
             api_key: String::new(),
@@ -762,7 +762,7 @@ mod tests {
         let store = SqliteStore::for_test(db_path.clone()).expect("create database");
         let account_provider = ProviderRecord {
             id: "provider-account".to_string(),
-            name: "account".to_string(),
+            name: Some("account".to_string()),
             auth_mode: ProviderAuthMode::Account,
             base_url: String::new(),
             api_key: String::new(),
@@ -981,7 +981,7 @@ mod tests {
     fn api_provider(id: &str) -> ProviderRecord {
         ProviderRecord {
             id: id.to_string(),
-            name: id.to_string(),
+            name: Some(id.to_string()),
             auth_mode: ProviderAuthMode::ApiKey,
             base_url: "https://example.com/v1".to_string(),
             api_key: "sk-test".to_string(),

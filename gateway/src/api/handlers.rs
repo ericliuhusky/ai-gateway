@@ -547,7 +547,7 @@ pub async fn add_provider(
     Ok(Json(json!({
         "provider": {
             "id": provider.id,
-            "name": provider.name,
+            "name": provider.name(),
             "auth_mode": provider.auth_mode,
             "base_url": provider.base_url,
             "api_key": provider.api_key,
@@ -579,7 +579,7 @@ pub async fn delete_provider(
     Ok(Json(json!({
         "deleted_provider": {
             "id": deleted.id,
-            "name": deleted.name,
+            "name": deleted.name(),
         }
     })))
 }
@@ -1563,7 +1563,7 @@ async fn resolve_provider_by_id_for_owner(
 
 fn resolved_provider_from_record(record: ProviderRecord) -> ResolvedProvider {
     ResolvedProvider {
-        name: record.name.clone(),
+        name: record.name().to_string(),
         auth_mode: record.auth_mode.clone(),
         record: Some(record),
     }
@@ -1609,9 +1609,10 @@ async fn provider_summary_for_resolved_for_owner(
         .record
         .clone()
         .ok_or_else(|| AppError::bad_request(format!("未知供应商: {}", provider.name)))?;
+    let name = record.name().to_string();
     Ok(ProviderSummary {
         id: record.id,
-        name: record.name,
+        name,
         auth_mode: record.auth_mode,
         base_url: record.base_url,
         account_email: record.email,

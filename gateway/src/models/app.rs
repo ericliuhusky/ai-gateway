@@ -2,9 +2,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-pub const DEFAULT_OPENAI_PROVIDER_NAME: &str = "GPT账户";
-pub const LEGACY_OPENAI_PROVIDER_NAME: &str = "openai-proxy";
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderAuthMode {
@@ -28,8 +25,8 @@ pub struct CreateProviderRequest {
 pub struct ProviderRecord {
     #[serde(default)]
     pub id: String,
-    #[serde(alias = "provider_name")]
-    pub name: String,
+    #[serde(alias = "provider_name", skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     #[serde(default)]
     pub auth_mode: ProviderAuthMode,
     pub base_url: String,
@@ -49,6 +46,12 @@ pub struct ProviderRecord {
     pub upstream_account_id: Option<String>,
     #[serde(skip_serializing)]
     pub owner_user_id: Option<i64>,
+}
+
+impl ProviderRecord {
+    pub fn name(&self) -> &str {
+        self.name.as_deref().or(self.email.as_deref()).unwrap_or("")
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -212,7 +215,7 @@ impl ProviderRecord {
     ) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
-            name: DEFAULT_OPENAI_PROVIDER_NAME.to_string(),
+            name: None,
             auth_mode: ProviderAuthMode::Account,
             base_url: String::new(),
             api_key: String::new(),

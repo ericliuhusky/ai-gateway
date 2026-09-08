@@ -1,9 +1,6 @@
 use crate::{
     config::Config,
-    models::{
-        CreateProviderRequest, DEFAULT_OPENAI_PROVIDER_NAME, LEGACY_OPENAI_PROVIDER_NAME,
-        ProviderAuthMode, ProviderRecord, ProviderSummary,
-    },
+    models::{CreateProviderRequest, ProviderAuthMode, ProviderRecord, ProviderSummary},
     openai_tokens::OpenAiTokenService,
     store::sqlite::SqliteStore,
     support::time::now_unix,
@@ -38,14 +35,6 @@ impl ProviderStore {
             self.sqlite.delete_provider(provider_id)?;
         }
         loaded.retain(|provider| !provider.id.starts_with("shared_"));
-        for provider in &mut loaded {
-            if provider.auth_mode == ProviderAuthMode::Account
-                && provider.name == LEGACY_OPENAI_PROVIDER_NAME
-            {
-                provider.name = DEFAULT_OPENAI_PROVIDER_NAME.to_string();
-                self.persist_provider(provider)?;
-            }
-        }
         *self.providers.lock().await = loaded;
         Ok(())
     }
@@ -58,7 +47,7 @@ impl ProviderStore {
             .filter(|provider| provider.owner_user_id == owner_user_id)
             .map(|provider| ProviderSummary {
                 id: provider.id.clone(),
-                name: provider.name.clone(),
+                name: provider.name().to_string(),
                 auth_mode: provider.auth_mode.clone(),
                 base_url: provider.base_url.clone(),
                 account_email: provider.email.clone(),
@@ -88,14 +77,14 @@ impl ProviderStore {
         let mut providers = self.providers.lock().await;
         if providers
             .iter()
-            .any(|provider| provider.owner_user_id == owner_user_id && provider.name == name)
+            .any(|provider| provider.owner_user_id == owner_user_id && provider.name() == name)
         {
             return Err(format!("供应商名称已存在: {name}"));
         }
 
         let provider = ProviderRecord {
             id: Uuid::new_v4().to_string(),
-            name,
+            name: Some(name),
             auth_mode: ProviderAuthMode::ApiKey,
             base_url,
             api_key,
@@ -209,11 +198,11 @@ impl ProviderStore {
         token_service: &OpenAiTokenService,
     ) -> Result<ProviderRecord, String> {
         if provider.auth_mode != ProviderAuthMode::Account {
-            return Err(format!("供应商不是账户认证模式: {}", provider.name));
+            return Err(format!("供应商不是账户认证模式: {}", provider.name()));
         }
         let expiry_timestamp = provider
             .expiry_timestamp
-            .ok_or_else(|| format!("账户认证供应商 `{}` 缺少过期时间", provider.name))?;
+            .ok_or_else(|| format!("账户认证供应商 `{}` 缺少过期时间", provider.name()))?;
         if token_service.refresh_needed(expiry_timestamp) {
             provider = self.refresh_provider(provider, token_service).await?;
         }
