@@ -1,7 +1,7 @@
 use crate::models::ProviderRecord;
+use crate::openai::build_http_client;
 use crate::openai_tokens::OpenAiTokenService;
 use crate::support::time::now_unix;
-use crate::upstream::build_http_client;
 use reqwest::Client;
 use serde::Deserialize;
 use std::{collections::HashMap, sync::Arc};

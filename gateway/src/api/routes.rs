@@ -123,10 +123,10 @@ mod tests {
         api::AppState,
         config::Config,
         models::CreateProviderRequest,
+        openai::{OpenAiClient, build_http_client},
         openai_device_login::OpenAiDeviceLoginService,
         openai_tokens::OpenAiTokenService,
         store::{IssueStore, ModelStore, ProviderStore, RouteStore},
-        upstream::UpstreamClient,
     };
     use axum::{
         Json, Router,
@@ -366,7 +366,7 @@ mod tests {
             routes: routes.clone(),
             models,
             issues: IssueStore::new(config.clone()).expect("create issues"),
-            upstream: UpstreamClient::new(),
+            upstream: OpenAiClient::new(build_http_client()),
             gateway_runtime: crate::GatewayRuntime::new(true),
         };
         (state, providers, routes)

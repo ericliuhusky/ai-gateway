@@ -2,11 +2,11 @@ mod api;
 mod config;
 mod control;
 mod models;
+mod openai;
 mod openai_device_login;
 mod openai_tokens;
 mod store;
 mod support;
-mod upstream;
 
 use api::{AppState, build_router};
 use config::Config;
@@ -21,9 +21,9 @@ use std::{
 };
 
 use axum::http::{Method, header::ACCEPT};
+use openai::{OpenAiClient, build_http_client};
 use serde_json::Value;
 use store::{IssueStore, ModelStore, ProviderStore, RouteStore};
-use upstream::UpstreamClient;
 
 pub use control::GatewayRuntime;
 
@@ -327,7 +327,7 @@ async fn initialize_local_gateway() -> Result<AppState, String> {
         routes,
         models,
         issues: IssueStore::new(config.clone())?,
-        upstream: UpstreamClient::new(),
+        upstream: OpenAiClient::new(build_http_client()),
         gateway_runtime,
     };
     Ok(state)

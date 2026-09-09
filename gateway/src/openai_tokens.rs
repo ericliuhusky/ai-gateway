@@ -1,6 +1,6 @@
 use crate::models::ProviderRecord;
+use crate::openai::build_http_client;
 use crate::support::time::now_unix;
-use crate::upstream::build_http_client;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use reqwest::Client;
 use serde::Deserialize;

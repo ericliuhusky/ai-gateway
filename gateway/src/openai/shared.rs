@@ -1,5 +1,6 @@
 use reqwest::{Client, Proxy, Url};
 use std::{collections::HashMap, process::Command};
+
 pub fn build_http_client() -> Client {
     let mut builder = Client::builder();
 

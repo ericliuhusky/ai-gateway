@@ -12,7 +12,7 @@ impl OpenAiClient {
         Self { http }
     }
 
-    pub async fn send_api_responses_passthrough(
+    pub async fn api_responses_passthrough(
         &self,
         base_url: &str,
         api_key: &str,
@@ -37,7 +37,7 @@ impl OpenAiClient {
         .await
     }
 
-    pub async fn send_account_responses_passthrough(
+    pub async fn account_responses_passthrough(
         &self,
         access_token: &str,
         upstream_account_id: Option<&str>,
@@ -63,7 +63,7 @@ impl OpenAiClient {
         self.send_passthrough(request).await
     }
 
-    pub async fn send_api_models(&self, base_url: &str, api_key: &str) -> Result<Response, String> {
+    pub async fn api_models(&self, base_url: &str, api_key: &str) -> Result<Response, String> {
         self.send(
             self.http
                 .get(models_api_url(base_url))
@@ -73,7 +73,7 @@ impl OpenAiClient {
         .await
     }
 
-    pub async fn send_account_models(
+    pub async fn account_models(
         &self,
         access_token: &str,
         upstream_account_id: Option<&str>,
@@ -92,7 +92,7 @@ impl OpenAiClient {
         self.send(request).await
     }
 
-    pub async fn send_account_usage(
+    pub async fn account_usage(
         &self,
         access_token: &str,
         upstream_account_id: Option<&str>,

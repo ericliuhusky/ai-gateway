@@ -10,13 +10,13 @@ use crate::{
         QuotaSupportStatus, SelectedRoute, UpdateSelectedModelRequest,
         UpdateSelectedProviderRequest, UpdateSelectedReasoningEffortRequest,
     },
+    openai::{OPENAI_CODEX_BASE_URL, OpenAiClient, responses_api_url},
     openai_device_login::{
         DeviceLoginCompletion, DeviceLoginPoll, DeviceLoginStart, OpenAiDeviceLoginService,
     },
     openai_tokens::OpenAiTokenService,
     store::{IssueStore, ModelStore, ProviderStore, RouteStore, issue_store::truncate_issue_body},
     support::time::now_unix,
-    upstream::{OPENAI_CODEX_BASE_URL, UpstreamClient, responses_api_url},
 };
 use async_stream::stream;
 use axum::{
@@ -46,7 +46,7 @@ pub struct AppState {
     pub routes: RouteStore,
     pub models: ModelStore,
     pub issues: IssueStore,
-    pub upstream: UpstreamClient,
+    pub upstream: OpenAiClient,
     pub gateway_runtime: crate::GatewayRuntime,
 }
 

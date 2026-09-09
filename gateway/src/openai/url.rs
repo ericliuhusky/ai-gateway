@@ -86,6 +86,5 @@ mod tests {
             base_api_url("https://example.com/backend-api/codex/", "endpoint"),
             "https://example.com/backend-api/codex/endpoint"
         );
-
     }
 }
