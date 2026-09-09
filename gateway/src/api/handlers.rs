@@ -394,15 +394,15 @@ pub async fn get_provider_quota(
     if provider.auth_mode != ProviderAuthMode::Account {
         return Err(AppError::bad_request(format!(
             "供应商 `{}` 不支持账户额度查询",
-            provider.name
+            provider.name()
         )));
     }
 
-    let provider_record = resolve_provider_record_for_use(&state, &provider).await?;
+    let provider_record = acquire_provider_for_use(&state, &provider.id).await?;
     let access_token = provider_record.access_token().ok_or_else(|| {
         AppError::bad_request(format!(
             "账户认证供应商 `{}` 缺少 access token",
-            provider.name
+            provider.name()
         ))
     })?;
     let upstream = state
@@ -579,7 +579,7 @@ pub async fn clear_selected_reasoning_effort(
     })))
 }
 
-async fn resolve_selected_provider(state: &AppState) -> Result<ResolvedProvider, AppError> {
+async fn resolve_selected_provider(state: &AppState) -> Result<ProviderRecord, AppError> {
     let route = selected_route(state).await?;
     if let Some(provider_id) = route.provider_id {
         return resolve_provider_by_id(state, &provider_id).await;
@@ -657,14 +657,14 @@ pub(super) fn build_passthrough_response(
 
 async fn fetch_provider_models(
     state: &AppState,
-    provider: &ResolvedProvider,
+    provider: &ProviderRecord,
 ) -> Result<reqwest::Response, AppError> {
     if provider.auth_mode == ProviderAuthMode::Account {
-        let provider_record = resolve_provider_record_for_use(state, provider).await?;
+        let provider_record = acquire_provider_for_use(state, &provider.id).await?;
         let access_token = provider_record.access_token().ok_or_else(|| {
             AppError::bad_request(format!(
                 "账户认证供应商 `{}` 缺少 access token",
-                provider.name
+                provider.name()
             ))
         })?;
         let client_version = DEFAULT_CODEX_CLIENT_VERSION;
@@ -676,16 +676,9 @@ async fn fetch_provider_models(
         return Ok(upstream);
     }
 
-    let native_provider = provider
-        .record
-        .as_ref()
-        .ok_or_else(|| AppError::bad_request(format!("未知供应商: {}", provider.name)))?;
     let upstream = state
         .upstream
-        .api_models(
-            native_provider.base_url.as_str(),
-            native_provider.api_key.as_str(),
-        )
+        .api_models(provider.base_url.as_str(), provider.api_key.as_str())
         .await
         .map_err(AppError::upstream_message)?;
     Ok(upstream)
@@ -718,42 +711,22 @@ fn normalize_selected_reasoning_effort(effort: String) -> Result<String, AppErro
     ))
 }
 
-#[derive(Clone, Debug)]
-pub(super) struct ResolvedProvider {
-    pub(super) name: String,
-    pub(super) auth_mode: ProviderAuthMode,
-    pub(super) record: Option<ProviderRecord>,
-}
-
 pub(super) async fn resolve_provider_by_id(
     state: &AppState,
     provider_id: &str,
-) -> Result<ResolvedProvider, AppError> {
+) -> Result<ProviderRecord, AppError> {
     let record = state
         .providers
         .find_by_id(provider_id)
         .await
         .ok_or_else(|| AppError::bad_request(format!("未知的 provider_id: {provider_id}")))?;
-    Ok(resolved_provider_from_record(record))
+    Ok(record)
 }
 
-fn resolved_provider_from_record(record: ProviderRecord) -> ResolvedProvider {
-    ResolvedProvider {
-        name: record.name().to_string(),
-        auth_mode: record.auth_mode.clone(),
-        record: Some(record),
-    }
-}
-
-pub(super) async fn resolve_provider_record_for_use(
+pub(super) async fn acquire_provider_for_use(
     state: &AppState,
-    provider: &ResolvedProvider,
+    provider_id: &str,
 ) -> Result<ProviderRecord, AppError> {
-    let provider_id = provider
-        .record
-        .as_ref()
-        .map(|record| record.id.as_str())
-        .ok_or_else(|| AppError::bad_request(format!("未知供应商: {}", provider.name)))?;
     state
         .providers
         .acquire_by_id(&state.openai_tokens, provider_id)

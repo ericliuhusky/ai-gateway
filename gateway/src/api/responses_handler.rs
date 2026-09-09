@@ -1,8 +1,8 @@
 use super::{
     AppState,
     handlers::{
-        AppError, ResolvedProvider, build_passthrough_response, no_provider_selected_error,
-        resolve_provider_by_id, resolve_provider_record_for_use, selected_route,
+        AppError, acquire_provider_for_use, build_passthrough_response, no_provider_selected_error,
+        resolve_provider_by_id, selected_route,
     },
 };
 use crate::models::{ProviderAuthMode, SelectedRoute};
@@ -38,17 +38,11 @@ pub async fn responses(
     };
 
     let upstream_result = if routed_provider.auth_mode == ProviderAuthMode::Account {
-        if !provider_uses_openai_account(&routed_provider) {
-            return Err(AppError::bad_request(format!(
-                "账户认证供应商 `{}` 暂不支持",
-                routed_provider.name
-            )));
-        }
-        let provider_record = resolve_provider_record_for_use(&state, &routed_provider).await?;
+        let provider_record = acquire_provider_for_use(&state, &routed_provider.id).await?;
         let access_token = provider_record.access_token().ok_or_else(|| {
             AppError::bad_request(format!(
                 "账户认证供应商 `{}` 缺少 access token",
-                routed_provider.name
+                routed_provider.name()
             ))
         })?;
         state
@@ -56,14 +50,11 @@ pub async fn responses(
             .account_responses_passthrough(access_token, request_body, &headers)
             .await
     } else {
-        let native_provider = routed_provider.record.as_ref().ok_or_else(|| {
-            AppError::bad_request(format!("未知供应商: {}", routed_provider.name))
-        })?;
         state
             .upstream
             .api_responses_passthrough(
-                native_provider.base_url.as_str(),
-                native_provider.api_key.as_str(),
+                routed_provider.base_url.as_str(),
+                routed_provider.api_key.as_str(),
                 request_body,
                 &headers,
             )
@@ -110,12 +101,4 @@ fn apply_route_overrides(request: &mut Value, route: &SelectedRoute) -> Result<(
             .insert("effort".to_string(), Value::String(effort.to_string()));
     }
     Ok(())
-}
-
-fn provider_uses_openai_account(provider: &ResolvedProvider) -> bool {
-    provider
-        .record
-        .as_ref()
-        .map(|record| record.auth_mode == ProviderAuthMode::Account)
-        .unwrap_or(false)
 }
