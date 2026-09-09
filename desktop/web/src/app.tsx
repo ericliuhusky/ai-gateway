@@ -22,7 +22,28 @@ import {
 
 import { gatewayApi } from "./api";
 import { Button } from "./components/ui/button";
+import {
+  GATEWAY_ERROR_PREFIX,
+  MODEL_CACHE_MAX_AGE_MS,
+  MODEL_CACHE_STORAGE_KEY,
+  NINEBOT_PRIVATE_DEPLOYMENT_PRESET,
+  QUOTA_CACHE_STORAGE_KEY,
+  authExpiryLabel,
+  copyText,
+  duplicateAccountEmail,
+  errorMessage,
+  parseCodexAuthPayload,
+  quotaTone,
+  readLocalCache,
+  remaining,
+  resetLabel,
+  writeLocalCache,
+  type ErrorMap,
+  type ModelCache,
+  type QuotaMap,
+} from "./lib/dashboard";
 import { cn } from "./lib/utils";
+import { useGatewayDashboard } from "./lib/use-gateway-dashboard";
 import type {
   CodexAuthPayload,
   GatewayModel,
@@ -34,179 +55,31 @@ import type {
   OpenAiDeviceLoginStart,
 } from "./types";
 
-const GATEWAY_ERROR_PREFIX = "AI网关错误：";
-const UPSTREAM_ERROR_PREFIX = "上游服务错误：";
-const MODEL_CACHE_STORAGE_KEY = "ai-gateway:model-cache:v1";
-const QUOTA_CACHE_STORAGE_KEY = "ai-gateway:quota-cache:v1";
-const MODEL_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
-type Dialog = "provider" | "delete-provider" | null;
-type QuotaMap = Record<string, CodexUsageResponse | undefined>;
-type ErrorMap = Record<string, string | undefined>;
-type ModelCache = Record<string, { models: GatewayModel[]; fetchedAt: number }>;
-type QuotaCache = Record<string, { quota: CodexUsageResponse; fetchedAt: number }>;
-function readLocalCache<T>(key: string, fallback: T): T {
-  try {
-    const raw = window.localStorage.getItem(key);
-    return raw ? JSON.parse(raw) as T : fallback;
-  } catch {
-    return fallback;
-  }
-}
-function writeLocalCache<T>(key: string, value: T) {
-  try { window.localStorage.setItem(key, JSON.stringify(value)); } catch { /* storage is best effort */ }
-}
-function quotasFromCache(cache: QuotaCache): QuotaMap {
-  return Object.fromEntries(Object.entries(cache).map(([id, entry]) => [id, entry.quota]));
-}
-function errorMessage(error: unknown) {
-  const message = error instanceof Error ? error.message : String(error);
-  return message.startsWith(GATEWAY_ERROR_PREFIX) || message.startsWith(UPSTREAM_ERROR_PREFIX) ? message : `${GATEWAY_ERROR_PREFIX}${message}`;
-}
-function duplicateAccountEmail(error: unknown): string | null {
-  const message = error instanceof Error ? error.message : String(error);
-  return message.match(/OpenAI 账号已经存在[:：]\s*(.+)$/)?.[1]?.trim() ?? null;
-}
-function hasTokenPair(value: unknown): boolean {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const token = value as Record<string, unknown>;
-  return typeof token.access_token === "string" && token.access_token.trim().length > 0 && typeof token.refresh_token === "string" && token.refresh_token.trim().length > 0;
-}
-function parseCodexAuthPayload(value: unknown): CodexAuthPayload | null {
-  const entries = Array.isArray(value) ? value : [value];
-  if (!entries.length) return null;
-  const supported = entries.every((entry) => {
-    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return false;
-    const record = entry as Record<string, unknown>;
-    return hasTokenPair(record.tokens) || hasTokenPair(record);
-  });
-  return supported ? value as CodexAuthPayload : null;
-}
-const NINEBOT_PRIVATE_DEPLOYMENT_PRESET = { name: "九号私有部署", baseUrl: "https://ai-service.segway-ninebot.com/v1" };
-function remaining(window: CodexUsageRateLimitWindow) { return Math.min(100, Math.max(0, 100 - window.used_percent)); }
-function quotaTone(value: number) { return value <= 15 ? "danger" : value <= 35 ? "warning" : "good"; }
-function resetLabel(window: CodexUsageRateLimitWindow) {
-  if (!window.reset_at) return null;
-  const date = new Date(window.reset_at * 1000);
-  const time = `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
-  if (window.limit_window_seconds === 5 * 60 * 60) return `${time} 重置`;
-  const weekdays = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
-  return `${date.getMonth() + 1}月${date.getDate()}日 ${weekdays[date.getDay()]} ${time} 重置`;
-}
-function authExpiryLabel(timestamp?: number) {
-  if (!timestamp) return "未知";
-  const date = new Date(timestamp * 1000);
-  const expired = timestamp * 1000 <= Date.now();
-  const weekdays = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
-  const time = `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
-  return `${date.getMonth() + 1}月${date.getDate()}日 ${weekdays[date.getDay()]} ${time} ${expired ? "已过期" : "到期"}`;
-}
-function copyText(text: string) { return navigator.clipboard.writeText(text); }
 export function App() { return <GatewayDashboard />; }
 export function GatewayDashboard() {
-  const [providers, setProviders] = React.useState<GatewayProvider[]>([]);
-  const [selected, setSelected] = React.useState<SelectedProvider>({ updated_at: 0 });
-  const quotaCacheRef = React.useRef<QuotaCache>(readLocalCache(QUOTA_CACHE_STORAGE_KEY, {}));
-  const quotaRequestsRef = React.useRef(new Map<string, Promise<void>>());
-  const [quotas, setQuotas] = React.useState<QuotaMap>(() => quotasFromCache(quotaCacheRef.current));
-  const [quotaErrors, setQuotaErrors] = React.useState<ErrorMap>({});
-  const [loadingQuotas, setLoadingQuotas] = React.useState<Set<string>>(new Set());
-  const [loading, setLoading] = React.useState(true);
-  const [dialog, setDialog] = React.useState<Dialog>(null);
-  const [providerToDelete, setProviderToDelete] = React.useState<GatewayProvider | null>(null);
-  const [error, setError] = React.useState<string | null>(null);
-  const [deleting, setDeleting] = React.useState<Set<string>>(new Set());
-  const [refreshingProviders, setRefreshingProviders] = React.useState<Set<string>>(new Set());
-  const prefetchModels = React.useCallback(async (items: GatewayProvider[]) => {
-    await Promise.all(items.map(async (provider) => {
-      try {
-        const fetched = await gatewayApi.models(provider.id);
-        const models = [...fetched].sort((a, b) => a.id.localeCompare(b.id));
-        const cache = readLocalCache<ModelCache>(MODEL_CACHE_STORAGE_KEY, {});
-        cache[provider.id] = { models, fetchedAt: Date.now() };
-        writeLocalCache(MODEL_CACHE_STORAGE_KEY, cache);
-      } catch (modelError) {
-        setError(errorMessage(modelError));
-      }
-    }));
-  }, []);
-  const loadQuotas = React.useCallback(async (items: GatewayProvider[], forceRefresh = false, visibleLoading = true) => {
-    const ids = items.filter((item) => item.auth_mode === "account").map((item) => item.id);
-    if (!ids.length) return;
-    const requestIds = ids.filter((id) => forceRefresh || !quotaCacheRef.current[id]);
-    if (!requestIds.length) return;
-    const fetchQuota = (id: string) => {
-      const inFlight = quotaRequestsRef.current.get(id);
-      if (inFlight) return inFlight;
-      if (visibleLoading) setLoadingQuotas((current) => new Set([...current, id]));
-      const request = gatewayApi.quota(id)
-        .then((quota) => {
-          quotaCacheRef.current = { ...quotaCacheRef.current, [id]: { quota, fetchedAt: Date.now() } };
-          writeLocalCache(QUOTA_CACHE_STORAGE_KEY, quotaCacheRef.current);
-          setQuotas((current) => ({ ...current, [id]: quota }));
-          setQuotaErrors((current) => ({ ...current, [id]: undefined }));
-        })
-        .catch((quotaError) => { setQuotaErrors((current) => ({ ...current, [id]: errorMessage(quotaError) })); })
-        .finally(() => {
-          quotaRequestsRef.current.delete(id);
-          setLoadingQuotas((current) => { const next = new Set(current); next.delete(id); return next; });
-        });
-      quotaRequestsRef.current.set(id, request);
-      return request;
-    };
-    await Promise.all(requestIds.map(fetchQuota));
-  }, []);
-  const refresh = React.useCallback(async () => {
-    setLoading(true);
-    try {
-      const [providerList, route] = await Promise.all([gatewayApi.providers(), gatewayApi.selectedProvider()]);
-      const sorted = [...providerList].sort((a, b) => a.name.localeCompare(b.name));
-      const accountIds = new Set(sorted.filter((provider) => provider.auth_mode === "account").map((provider) => provider.id));
-      quotaCacheRef.current = Object.fromEntries(Object.entries(quotaCacheRef.current).filter(([id]) => accountIds.has(id)));
-      writeLocalCache(QUOTA_CACHE_STORAGE_KEY, quotaCacheRef.current);
-      const modelCache = readLocalCache<ModelCache>(MODEL_CACHE_STORAGE_KEY, {});
-      const providerIds = new Set(sorted.map((provider) => provider.id));
-      writeLocalCache(
-        MODEL_CACHE_STORAGE_KEY,
-        Object.fromEntries(Object.entries(modelCache).filter(([id]) => providerIds.has(id))),
-      );
-      setQuotas(quotasFromCache(quotaCacheRef.current));
-      setProviders(sorted); setSelected(route); setError(null);
-      return sorted;
-    } catch (loadError) { setError(errorMessage(loadError)); } finally { setLoading(false); }
-  }, [loadQuotas]);
-  React.useEffect(() => { void refresh(); }, [refresh]);
-  React.useEffect(() => { const timer = window.setInterval(() => void loadQuotas(providers, true, false), 60000); return () => window.clearInterval(timer); }, [loadQuotas, providers]);
-  async function selectProvider(provider: GatewayProvider) {
-    if (provider.id === selected.provider_id || deleting.has(provider.id)) return;
-    setSelected((current) => ({ ...current, provider_id: provider.id, selected_model: undefined, selected_reasoning_effort: undefined }));
-    try { setSelected(await gatewayApi.selectProvider(provider.id)); await loadQuotas([provider]); } catch (selectionError) { setError(errorMessage(selectionError)); await refresh(); }
-  }
-  async function handleProviderCreated() {
-    const existingProviderIds = new Set(providers.map((provider) => provider.id));
-    const shouldSelectFirst = providers.length === 0;
-    setDialog(null);
-    const nextProviders = await refresh();
-    const newProviders = nextProviders?.filter((provider) => !existingProviderIds.has(provider.id)) ?? [];
-    await Promise.all([prefetchModels(newProviders), loadQuotas(newProviders, true)]);
-    if (shouldSelectFirst && nextProviders?.[0]) {
-      await selectProvider(nextProviders[0]);
-    }
-  }
-  function requestDeleteProvider(provider: GatewayProvider) { if (!deleting.has(provider.id)) { setProviderToDelete(provider); setDialog("delete-provider"); } }
-  async function refreshProvider(provider: GatewayProvider) {
-    if (refreshingProviders.has(provider.id)) return;
-    setRefreshingProviders((current) => new Set(current).add(provider.id));
-    try { await gatewayApi.refreshProvider(provider.id); await refresh(); }
-    catch (refreshError) { setError(errorMessage(refreshError)); }
-    finally { setRefreshingProviders((current) => { const next = new Set(current); next.delete(provider.id); return next; }); }
-  }
-  async function confirmDeleteProvider() {
-    const provider = providerToDelete; if (!provider || deleting.has(provider.id)) return;
-    setDeleting((current) => new Set(current).add(provider.id));
-    try { await gatewayApi.deleteProvider(provider.id); setProviderToDelete(null); setDialog(null); await refresh(); }
-    catch (deleteError) { setError(errorMessage(deleteError)); }
-    finally { setDeleting((current) => { const next = new Set(current); next.delete(provider.id); return next; }); }
-  }
+  const {
+    providers,
+    selected,
+    quotas,
+    quotaErrors,
+    loadingQuotas,
+    loading,
+    dialog,
+    setDialog,
+    providerToDelete,
+    setProviderToDelete,
+    error,
+    setError,
+    deleting,
+    refreshingProviders,
+    refresh,
+    loadQuotas,
+    selectProvider,
+    handleProviderCreated,
+    requestDeleteProvider,
+    refreshProvider,
+    confirmDeleteProvider,
+  } = useGatewayDashboard();
   return <div className="min-h-screen min-w-0">
     <main className="mx-auto max-w-[1480px] px-3 py-4 sm:px-8 sm:py-8">{loading ? <LoadingState /> : <><section><div className="mb-3 flex flex-wrap items-center gap-3 px-1"><h2 className="text-xs font-bold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">AI 网关</h2><Button className="ml-auto" variant="outline" size="sm" onClick={() => setDialog("provider")}><Plus className="size-3.5" />添加供应商</Button></div><DefaultRouteSection providers={providers} selected={selected} onChanged={refresh} onError={setError} /></section>{providers.length === 0 ? <div className="mt-8"><EmptyState onAdd={() => setDialog("provider")} /></div> : <div className="mt-8"><ProviderSection title="供应商" providers={providers} selectedId={selected.provider_id} quotas={quotas} quotaErrors={quotaErrors} loadingQuotas={loadingQuotas} deleting={deleting} refreshingProviders={refreshingProviders} onSelect={selectProvider} onDelete={requestDeleteProvider} onRefreshQuota={(provider) => void loadQuotas([provider], true)} onRefreshProvider={(provider) => void refreshProvider(provider)} /></div>}</>}</main>
     {error ? <ErrorToast message={error} onClose={() => setError(null)} /> : null}{dialog === "provider" ? <ProviderDialog onClose={() => setDialog(null)} onCreated={handleProviderCreated} onError={setError} /> : null}{dialog === "delete-provider" && providerToDelete ? <DeleteProviderDialog provider={providerToDelete} deleting={deleting.has(providerToDelete.id)} onClose={() => { if (!deleting.has(providerToDelete.id)) { setProviderToDelete(null); setDialog(null); } }} onConfirm={() => void confirmDeleteProvider()} /> : null}

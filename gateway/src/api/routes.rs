@@ -88,7 +88,6 @@ mod tests {
         routing::post,
     };
     use http_body_util::BodyExt;
-    use reqwest::Client;
     use serde_json::{Value, json};
     use std::{
         fs,
@@ -464,8 +463,6 @@ mod tests {
         let routes = RouteStore::new(config.clone()).expect("create routes");
         routes.load().await.expect("load routes");
         let state = AppState {
-            _client: Client::new(),
-            _config: config.clone(),
             openai_tokens: OpenAiTokenService::new(),
             openai_device_login: OpenAiDeviceLoginService::new(),
             providers: providers.clone(),

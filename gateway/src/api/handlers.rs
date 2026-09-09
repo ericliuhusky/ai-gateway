@@ -3,7 +3,7 @@ use super::dto::{
     UpdateSelectedProviderRequest, UpdateSelectedReasoningEffortRequest,
 };
 use crate::{
-    config::{Config, DEFAULT_CODEX_CLIENT_VERSION},
+    config::DEFAULT_CODEX_CLIENT_VERSION,
     domain::{Provider, ProviderAuthMode, SelectedRoute},
     openai::{
         DeviceLoginCompletion, DeviceLoginPoll, DeviceLoginStart, OpenAiClient,
@@ -17,19 +17,15 @@ use axum::{
     http::{HeaderMap, HeaderName, StatusCode},
     response::{IntoResponse, Json, Response},
 };
-use reqwest::Client;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::{Value, json};
-use std::sync::Arc;
 
 const GATEWAY_ERROR_PREFIX: &str = "AI网关错误：";
 const UPSTREAM_ERROR_PREFIX: &str = "上游服务错误：";
 
 #[derive(Clone)]
 pub struct AppState {
-    pub _client: Client,
-    pub _config: Arc<Config>,
     pub openai_tokens: OpenAiTokenService,
     pub openai_device_login: OpenAiDeviceLoginService,
     pub providers: ProviderStore,

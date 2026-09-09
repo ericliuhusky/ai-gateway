@@ -302,8 +302,6 @@ async fn initialize_local_gateway() -> Result<AppState, String> {
     let routes = RouteStore::new(config.clone())?;
     routes.load().await?;
     let state = AppState {
-        _client: Client::new(),
-        _config: config.clone(),
         openai_tokens: OpenAiTokenService::new(),
         openai_device_login: OpenAiDeviceLoginService::new(),
         providers,
