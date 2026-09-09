@@ -43,6 +43,12 @@ pub struct ListModelsQuery {
     pub provider_id: Option<String>,
 }
 
+#[derive(Debug, Default, Deserialize)]
+pub struct ReplaceProviderQuery {
+    #[serde(default)]
+    pub replace: bool,
+}
+
 pub async fn healthz() -> &'static str {
     "ok"
 }
@@ -154,9 +160,24 @@ pub struct OpenAiDeviceLoginStatusResponse {
     error: Option<String>,
 }
 
+fn device_login_conflict_response(email: String) -> OpenAiDeviceLoginStatusResponse {
+    OpenAiDeviceLoginStatusResponse {
+        status: "conflict".to_string(),
+        login_id: None,
+        user_code: None,
+        verification_uri: None,
+        interval_seconds: None,
+        expires_in: None,
+        email: Some(email),
+        provider_id: None,
+        error: None,
+    }
+}
+
 /// Import OpenAI accounts from a pasted Codex `auth.json` or Cockpit Tools export.
 pub async fn import_openai_token(
     State(state): State<AppState>,
+    Query(query): Query<ReplaceProviderQuery>,
     Json(payload): Json<Value>,
 ) -> Result<Json<ImportOpenAiFromLocalResponse>, AppError> {
     let tokens = import_tokens_from_value(payload).map_err(AppError::bad_request)?;
@@ -177,11 +198,15 @@ pub async fn import_openai_token(
             .openai_tokens
             .import_codex_tokens(tokens.access_token, refresh_token, tokens.account_id)
             .map_err(AppError::bad_request)?;
-        let provider = state
-            .providers
-            .import_openai_provider(imported)
-            .await
-            .map_err(AppError::bad_request)?;
+        let provider = if query.replace {
+            state
+                .providers
+                .import_openai_provider_with_replacement(imported, true)
+                .await
+        } else {
+            state.providers.import_openai_provider(imported).await
+        }
+        .map_err(AppError::bad_request)?;
 
         if first_imported.is_none() {
             first_imported = Some((
@@ -234,16 +259,34 @@ pub async fn start_openai_device_login(
 pub async fn poll_openai_device_login(
     State(state): State<AppState>,
     AxumPath(login_id): AxumPath<String>,
+    Query(query): Query<ReplaceProviderQuery>,
 ) -> Result<Json<OpenAiDeviceLoginStatusResponse>, AppError> {
     let poll = state
         .openai_device_login
-        .poll(&login_id)
+        .poll(&login_id, query.replace)
         .await
         .map_err(AppError::bad_request)?;
 
     match poll {
         DeviceLoginPoll::Pending(start) => Ok(Json(device_login_pending_response(start))),
         DeviceLoginPoll::Finalizing => Ok(Json(device_login_finalizing_response())),
+        DeviceLoginPoll::Conflict(email) => Ok(Json(device_login_conflict_response(email))),
+        DeviceLoginPoll::Replacement(imported) => {
+            let provider = state
+                .providers
+                .import_openai_provider_with_replacement(imported, true)
+                .await
+                .map_err(AppError::bad_request)?;
+            let completion = DeviceLoginCompletion {
+                email: provider.email().unwrap_or_default().to_string(),
+                provider_id: provider.id().to_string(),
+            };
+            state
+                .openai_device_login
+                .complete(&login_id, completion.clone())
+                .await;
+            Ok(Json(device_login_completed_response(completion)))
+        }
         DeviceLoginPoll::Completed(completion) => {
             Ok(Json(device_login_completed_response(completion)))
         }
@@ -259,31 +302,51 @@ pub async fn poll_openai_device_login(
                 None => return Ok(Json(device_login_finalizing_response())),
             };
 
+            enum DeviceLoginFinalization {
+                Completed(DeviceLoginCompletion),
+                Conflict(String),
+            }
+
             let completion = async {
                 let imported = state
                     .openai_device_login
                     .exchange_authorization(&authorization, &state.openai_tokens)
                     .await
                     .map_err(AppError::upstream_message)?;
+                let email = imported
+                    .email()
+                    .ok_or_else(|| AppError::bad_request("导入的 OpenAI 凭据缺少邮箱"))?
+                    .to_string();
+                if !query.replace && state.providers.account_exists(&email).await {
+                    state
+                        .openai_device_login
+                        .mark_replacement(&login_id, imported)
+                        .await
+                        .map_err(AppError::bad_request)?;
+                    return Ok::<_, AppError>(DeviceLoginFinalization::Conflict(email));
+                }
                 let provider = state
                     .providers
-                    .import_openai_provider(imported)
+                    .import_openai_provider_with_replacement(imported, query.replace)
                     .await
                     .map_err(AppError::bad_request)?;
-                Ok::<_, AppError>(DeviceLoginCompletion {
+                Ok::<_, AppError>(DeviceLoginFinalization::Completed(DeviceLoginCompletion {
                     email: provider.email().unwrap_or_default().to_string(),
                     provider_id: provider.id().to_string(),
-                })
+                }))
             }
             .await;
 
             match completion {
-                Ok(completion) => {
+                Ok(DeviceLoginFinalization::Completed(completion)) => {
                     state
                         .openai_device_login
                         .complete(&login_id, completion.clone())
                         .await;
                     Ok(Json(device_login_completed_response(completion)))
+                }
+                Ok(DeviceLoginFinalization::Conflict(email)) => {
+                    Ok(Json(device_login_conflict_response(email)))
                 }
                 Err(error) => {
                     let message = error.message;

@@ -62,6 +62,10 @@ function errorMessage(error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
   return message.startsWith(GATEWAY_ERROR_PREFIX) || message.startsWith(UPSTREAM_ERROR_PREFIX) ? message : `${GATEWAY_ERROR_PREFIX}${message}`;
 }
+function duplicateAccountEmail(error: unknown): string | null {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.match(/OpenAI 账号已经存在[:：]\s*(.+)$/)?.[1]?.trim() ?? null;
+}
 function hasTokenPair(value: unknown): boolean {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const token = value as Record<string, unknown>;
@@ -847,8 +851,20 @@ function ProviderAuthForm({
       await gatewayApi.importProvider(parsed);
       await onCreated();
     } catch (submitError) {
-      onError(errorMessage(submitError));
-      setSubmitting(false);
+      const email = duplicateAccountEmail(submitError);
+      if (!email || !window.confirm(`账号 ${email} 已经存在，是否替换现有账号信息？`)) {
+        if (!email) onError(errorMessage(submitError));
+        setSubmitting(false);
+        return;
+      }
+
+      try {
+        await gatewayApi.importProvider(parsed, true);
+        await onCreated();
+      } catch (replaceError) {
+        onError(errorMessage(replaceError));
+        setSubmitting(false);
+      }
     }
   }
 
@@ -884,6 +900,23 @@ function ProviderAuthForm({
           const result = await gatewayApi.pollOpenAiDeviceLogin(deviceLogin.login_id);
           if (result.status === "finalizing") {
             setLoginState("finalizing");
+            return;
+          }
+          if (result.status === "conflict") {
+            const email = result.email ?? "该账号";
+            if (!window.confirm(`账号 ${email} 已经存在，是否替换现有账号信息？`)) {
+              setLoginState("failed");
+              setLoginError("已取消替换现有账号。");
+              return;
+            }
+            setLoginState("finalizing");
+            const replacement = await gatewayApi.pollOpenAiDeviceLogin(deviceLogin.login_id, true);
+            if (replacement.status === "completed") {
+              await onCreated();
+            } else if (replacement.status === "failed") {
+              setLoginState("failed");
+              setLoginError(replacement.error ? errorMessage(replacement.error) : `${GATEWAY_ERROR_PREFIX}账户替换失败`);
+            }
             return;
           }
           if (result.status === "failed") {

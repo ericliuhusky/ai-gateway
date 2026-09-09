@@ -93,7 +93,7 @@ export interface OpenAiDeviceLoginStart {
 }
 
 export interface OpenAiDeviceLoginStatus {
-  status: "pending" | "finalizing" | "completed" | "failed";
+  status: "pending" | "finalizing" | "conflict" | "completed" | "failed";
   login_id?: string;
   user_code?: string;
   verification_uri?: string;

@@ -91,6 +91,15 @@ impl ProviderStore {
     }
 
     pub async fn import_openai_provider(&self, provider: Provider) -> Result<Provider, String> {
+        self.import_openai_provider_with_replacement(provider, false)
+            .await
+    }
+
+    pub async fn import_openai_provider_with_replacement(
+        &self,
+        mut provider: Provider,
+        replace: bool,
+    ) -> Result<Provider, String> {
         if provider.auth_mode() != ProviderAuthMode::Account {
             return Err("导入的 OpenAI 凭据必须是账户认证供应商".to_string());
         }
@@ -99,15 +108,30 @@ impl ProviderStore {
             .filter(|email| !email.trim().is_empty())
             .ok_or_else(|| "导入的 OpenAI 凭据缺少邮箱".to_string())?;
         let mut providers = self.providers.lock().await;
-        if providers.iter().any(|existing| {
+        if let Some((index, existing)) = providers.iter().enumerate().find(|(_, existing)| {
             existing.auth_mode() == ProviderAuthMode::Account && existing.email() == Some(email)
         }) {
-            return Err(format!("OpenAI 账号已经存在: {email}"));
+            if !replace {
+                return Err(format!("OpenAI 账号已经存在: {email}"));
+            }
+
+            // Keep the existing provider ID so routes and cached UI state continue to point to
+            // the same account after its credentials are replaced.
+            provider.id = existing.id().to_string();
+            self.persist_provider(&provider)?;
+            providers[index] = provider.clone();
+            return Ok(provider);
         }
 
         self.persist_provider(&provider)?;
         providers.push(provider.clone());
         Ok(provider)
+    }
+
+    pub async fn account_exists(&self, email: &str) -> bool {
+        self.providers.lock().await.iter().any(|provider| {
+            provider.auth_mode() == ProviderAuthMode::Account && provider.email() == Some(email)
+        })
     }
 
     pub async fn acquire_by_id(
@@ -258,6 +282,21 @@ mod tests {
         assert_eq!(first.auth_mode(), ProviderAuthMode::Account);
         assert_eq!(first.email(), Some("user@example.com"));
         assert!(store.import_openai_provider(provider()).await.is_err());
+
+        let replacement = Provider::new_openai_account(
+            "user@example.com".to_string(),
+            "new-access".to_string(),
+            "new-refresh".to_string(),
+            1_800_000_000,
+            Some("client".to_string()),
+            Some("upstream".to_string()),
+        );
+        let updated = store
+            .import_openai_provider_with_replacement(replacement, true)
+            .await
+            .expect("replace existing provider");
+        assert_eq!(updated.id(), first.id());
+        assert_eq!(updated.account_access_token(), "new-access");
     }
 
     #[tokio::test]

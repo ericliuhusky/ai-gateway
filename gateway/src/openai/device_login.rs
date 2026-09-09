@@ -39,6 +39,7 @@ enum DeviceLoginStatus {
     Pending,
     Ready(DeviceAuthorization),
     Finalizing,
+    Replacement(Provider),
     Completed(DeviceLoginCompletion),
     Failed(String),
 }
@@ -63,6 +64,8 @@ pub enum DeviceLoginPoll {
     Pending(DeviceLoginStart),
     Ready,
     Finalizing,
+    Conflict(String),
+    Replacement(Provider),
     Completed(DeviceLoginCompletion),
     Failed(String),
 }
@@ -165,7 +168,7 @@ impl OpenAiDeviceLoginService {
         Ok(start)
     }
 
-    pub async fn poll(&self, login_id: &str) -> Result<DeviceLoginPoll, String> {
+    pub async fn poll(&self, login_id: &str, replace: bool) -> Result<DeviceLoginPoll, String> {
         let session = {
             let mut sessions = self.sessions.lock().await;
             let session = sessions
@@ -178,6 +181,16 @@ impl OpenAiDeviceLoginService {
             match &session.status {
                 DeviceLoginStatus::Ready(_) => return Ok(DeviceLoginPoll::Ready),
                 DeviceLoginStatus::Finalizing => return Ok(DeviceLoginPoll::Finalizing),
+                DeviceLoginStatus::Replacement(provider) if replace => {
+                    let provider = provider.clone();
+                    session.status = DeviceLoginStatus::Finalizing;
+                    return Ok(DeviceLoginPoll::Replacement(provider));
+                }
+                DeviceLoginStatus::Replacement(provider) => {
+                    return Ok(DeviceLoginPoll::Conflict(
+                        provider.email().unwrap_or_default().to_string(),
+                    ));
+                }
                 DeviceLoginStatus::Completed(completion) => {
                     return Ok(DeviceLoginPoll::Completed(completion.clone()));
                 }
@@ -236,6 +249,7 @@ impl OpenAiDeviceLoginService {
                 Ok(Some(authorization))
             }
             DeviceLoginStatus::Finalizing => Ok(None),
+            DeviceLoginStatus::Replacement(_) => Ok(None),
             DeviceLoginStatus::Completed(_) => Ok(None),
             DeviceLoginStatus::Failed(error) => Err(error.clone()),
             DeviceLoginStatus::Pending => Ok(None),
@@ -282,6 +296,15 @@ impl OpenAiDeviceLoginService {
         if let Some(session) = self.sessions.lock().await.get_mut(login_id) {
             session.status = DeviceLoginStatus::Completed(completion);
         }
+    }
+
+    pub async fn mark_replacement(&self, login_id: &str, provider: Provider) -> Result<(), String> {
+        let mut sessions = self.sessions.lock().await;
+        let session = sessions
+            .get_mut(login_id)
+            .ok_or_else(|| "登录会话不存在或已过期，请重新开始".to_string())?;
+        session.status = DeviceLoginStatus::Replacement(provider);
+        Ok(())
     }
 
     pub async fn fail(&self, login_id: &str, error: String) {

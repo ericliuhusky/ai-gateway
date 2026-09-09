@@ -55,10 +55,16 @@ export const gatewayApi = {
   createProvider(input: { name: string; base_url: string; api_key: string }) { return gatewayRequest("POST", "/management/providers", input); },
   deleteProvider(providerId: string) { return gatewayRequest("DELETE", `/management/providers/${encodeURIComponent(providerId)}`); },
   async quota(providerId: string) { return gatewayRequest<CodexUsageResponse>("GET", `/management/providers/${encodeURIComponent(providerId)}/quota`); },
-  importProvider(payload: CodexAuthPayload) { return gatewayRequest("POST", "/management/providers/openai/import-token", payload); },
+  importProvider(payload: CodexAuthPayload, replace = false) {
+    const query = replace ? "?replace=true" : "";
+    return gatewayRequest("POST", `/management/providers/openai/import-token${query}`, payload);
+  },
   refreshProvider(providerId: string) { return gatewayRequest<{ provider_id: string; email: string; expiry_timestamp: number }>("POST", `/management/providers/${encodeURIComponent(providerId)}/refresh`); },
   startOpenAiDeviceLogin() { return gatewayRequest<OpenAiDeviceLoginStart>("POST", "/management/providers/openai/login/device"); },
-  pollOpenAiDeviceLogin(loginId: string) { return gatewayRequest<OpenAiDeviceLoginStatus>("GET", `/management/providers/openai/login/device/${encodeURIComponent(loginId)}`); },
+  pollOpenAiDeviceLogin(loginId: string, replace = false) {
+    const query = replace ? "?replace=true" : "";
+    return gatewayRequest<OpenAiDeviceLoginStatus>("GET", `/management/providers/openai/login/device/${encodeURIComponent(loginId)}${query}`);
+  },
   cancelOpenAiDeviceLogin(loginId: string) { return gatewayRequest<{ cancelled: boolean }>("DELETE", `/management/providers/openai/login/device/${encodeURIComponent(loginId)}`); },
   codexGatewayStatus: () => invokeTauri<DefaultCodexStatus>("get_codex_gateway_status"),
   startCodexGateway: () => invokeTauri<CodexConfigurationResult>("start_codex_gateway"),
