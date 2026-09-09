@@ -117,6 +117,19 @@ export function GatewayDashboard() {
   const [error, setError] = React.useState<string | null>(null);
   const [deleting, setDeleting] = React.useState<Set<string>>(new Set());
   const [refreshingProviders, setRefreshingProviders] = React.useState<Set<string>>(new Set());
+  const prefetchModels = React.useCallback(async (items: GatewayProvider[]) => {
+    await Promise.all(items.map(async (provider) => {
+      try {
+        const fetched = await gatewayApi.models(provider.id);
+        const models = [...fetched].sort((a, b) => a.id.localeCompare(b.id));
+        const cache = readLocalCache<ModelCache>(MODEL_CACHE_STORAGE_KEY, {});
+        cache[provider.id] = { models, fetchedAt: Date.now() };
+        writeLocalCache(MODEL_CACHE_STORAGE_KEY, cache);
+      } catch (modelError) {
+        setError(errorMessage(modelError));
+      }
+    }));
+  }, []);
   const loadQuotas = React.useCallback(async (items: GatewayProvider[], forceRefresh = false, visibleLoading = true) => {
     const ids = items.filter((item) => item.auth_mode === "account").map((item) => item.id);
     if (!ids.length) return;
@@ -151,8 +164,14 @@ export function GatewayDashboard() {
       const accountIds = new Set(sorted.filter((provider) => provider.auth_mode === "account").map((provider) => provider.id));
       quotaCacheRef.current = Object.fromEntries(Object.entries(quotaCacheRef.current).filter(([id]) => accountIds.has(id)));
       writeLocalCache(QUOTA_CACHE_STORAGE_KEY, quotaCacheRef.current);
+      const modelCache = readLocalCache<ModelCache>(MODEL_CACHE_STORAGE_KEY, {});
+      const providerIds = new Set(sorted.map((provider) => provider.id));
+      writeLocalCache(
+        MODEL_CACHE_STORAGE_KEY,
+        Object.fromEntries(Object.entries(modelCache).filter(([id]) => providerIds.has(id))),
+      );
       setQuotas(quotasFromCache(quotaCacheRef.current));
-      setProviders(sorted); setSelected(route); setGatewayIssues(issues); setError(null); void loadQuotas(sorted);
+      setProviders(sorted); setSelected(route); setGatewayIssues(issues); setError(null);
       return sorted;
     } catch (loadError) { setError(errorMessage(loadError)); } finally { setLoading(false); }
   }, [loadQuotas]);
@@ -164,9 +183,12 @@ export function GatewayDashboard() {
     try { setSelected(await gatewayApi.selectProvider(provider.id)); await loadQuotas([provider]); } catch (selectionError) { setError(errorMessage(selectionError)); await refresh(); }
   }
   async function handleProviderCreated() {
+    const existingProviderIds = new Set(providers.map((provider) => provider.id));
     const shouldSelectFirst = providers.length === 0;
     setDialog(null);
     const nextProviders = await refresh();
+    const newProviders = nextProviders?.filter((provider) => !existingProviderIds.has(provider.id)) ?? [];
+    await Promise.all([prefetchModels(newProviders), loadQuotas(newProviders, true)]);
     if (shouldSelectFirst && nextProviders?.[0]) {
       await selectProvider(nextProviders[0]);
     }
@@ -282,18 +304,21 @@ function DefaultRouteSection({ providers, selected, onChanged, onError, onOpenIs
   const provider = providers.find((item) => item.id === selected.provider_id);
   React.useEffect(() => {
     const providerIds = new Set(providers.map((item) => item.id));
-    const nextCache = Object.fromEntries(Object.entries(modelCacheRef.current).filter(([id]) => providerIds.has(id)));
+    const storedCache = readLocalCache<ModelCache>(MODEL_CACHE_STORAGE_KEY, {});
+    const nextCache = Object.fromEntries(Object.entries(storedCache).filter(([id]) => providerIds.has(id)));
     modelCacheRef.current = nextCache;
     writeLocalCache(MODEL_CACHE_STORAGE_KEY, nextCache);
-  }, [providers]);
-  React.useEffect(() => { selectedProviderIdRef.current = selected.provider_id; setModels(selected.provider_id ? modelCacheRef.current[selected.provider_id]?.models ?? [] : []); setLoadingModels(false); }, [selected.provider_id]);
-  const loadModels = React.useCallback(async () => {
+    selectedProviderIdRef.current = selected.provider_id;
+    setModels(selected.provider_id ? nextCache[selected.provider_id]?.models ?? [] : []);
+    setLoadingModels(false);
+  }, [providers, selected.provider_id]);
+  const loadModels = React.useCallback(async (forceRefresh = false) => {
     const providerId = selected.provider_id;
     if (!providerId) return;
     const cached = modelCacheRef.current[providerId];
     if (cached) {
       setModels(cached.models);
-      if (Date.now() - cached.fetchedAt <= MODEL_CACHE_MAX_AGE_MS) return;
+      if (!forceRefresh && Date.now() - cached.fetchedAt <= MODEL_CACHE_MAX_AGE_MS) return;
     }
     const inFlight = modelRequestsRef.current.get(providerId);
     if (inFlight) return inFlight;
