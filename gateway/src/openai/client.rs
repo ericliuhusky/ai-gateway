@@ -1,5 +1,6 @@
 use super::OPENAI_CODEX_BASE_URL;
 use super::url::{models_api_url, responses_api_url};
+use axum::{body::Bytes, http::HeaderMap};
 use reqwest::{Client, RequestBuilder, Response};
 
 #[derive(Clone, Debug)]
@@ -16,48 +17,31 @@ impl OpenAiClient {
         &self,
         base_url: &str,
         api_key: &str,
-        body: String,
-        stream: bool,
+        body: Bytes,
+        headers: &HeaderMap,
     ) -> Result<Response, String> {
-        self.send(
-            self.http
-                .post(responses_api_url(base_url))
-                .bearer_auth(api_key)
-                .header("content-type", "application/json")
-                .header(
-                    "accept",
-                    if stream {
-                        "text/event-stream"
-                    } else {
-                        "application/json"
-                    },
-                )
-                .body(body),
-        )
-        .await
+        let request = apply_request_accept(self.http.post(responses_api_url(base_url)), headers)
+            .bearer_auth(api_key)
+            .header("content-type", "application/json")
+            .body(body);
+        self.send(request).await
     }
 
     pub async fn account_responses_passthrough(
         &self,
         access_token: &str,
-        body: String,
-        stream: bool,
+        body: Bytes,
+        headers: &HeaderMap,
     ) -> Result<Response, String> {
-        let request = self
-            .account_request(
+        let request = apply_request_accept(
+            self.account_request(
                 self.http.post(format!("{OPENAI_CODEX_BASE_URL}/responses")),
                 access_token,
-            )
-            .header("content-type", "application/json")
-            .header(
-                "accept",
-                if stream {
-                    "text/event-stream"
-                } else {
-                    "application/json"
-                },
-            )
-            .body(body);
+            ),
+            headers,
+        )
+        .header("content-type", "application/json")
+        .body(body);
         self.send(request).await
     }
 
@@ -100,25 +84,22 @@ impl OpenAiClient {
     }
 
     async fn send(&self, request: RequestBuilder) -> Result<Response, String> {
-        let response = request
+        request
             .send()
             .await
-            .map_err(|err| format!("[AI网关] 向供应商发送http请求失败: {err}"))?;
-
-        if response.status().is_success() {
-            Ok(response)
-        } else {
-            let status = response.status();
-            let response_body = response.text().await.unwrap_or_default();
-            Err(format!(
-                "[AI网关] 供应商内部错误; {status}: {response_body}"
-            ))
-        }
+            .map_err(|err| format!("[AI网关] 向供应商发送http请求失败: {err}"))
     }
 
     fn account_request(&self, request: RequestBuilder, access_token: &str) -> RequestBuilder {
         request.bearer_auth(access_token)
     }
+}
+
+fn apply_request_accept(mut request: RequestBuilder, headers: &HeaderMap) -> RequestBuilder {
+    if let Some(accept) = headers.get("accept") {
+        request = request.header("accept", accept);
+    }
+    request
 }
 
 #[cfg(test)]

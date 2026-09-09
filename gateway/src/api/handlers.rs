@@ -638,104 +638,73 @@ pub async fn responses(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, AppError> {
-    let raw_body = std::str::from_utf8(&body)
-        .map_err(|_| AppError::bad_request("请求体必须是有效的 UTF-8"))?
-        .to_owned();
-    responses_inner(state, raw_body, headers).await
-}
-
-async fn responses_inner(
-    state: AppState,
-    raw_body: String,
-    headers: HeaderMap,
-) -> Result<Response, AppError> {
     let route = selected_route(&state).await?;
     let provider_id = route
         .provider_id
         .as_deref()
         .ok_or_else(no_provider_selected_error)?;
     let routed_provider = resolve_provider_by_id(&state, provider_id).await?;
-    let mut request_json: Value = serde_json::from_str(&raw_body)
-        .map_err(|err| AppError::bad_request(format!("无效的请求 JSON: {err}")))?;
-    let request_stream = responses_request_stream(&request_json);
-    let mut request_overridden = false;
-    if let Some(model) = route.selected_model.as_ref() {
-        request_json["model"] = Value::String(model.clone());
-        request_overridden = true;
-    }
-    if let Some(effort) = route.selected_reasoning_effort.as_deref() {
-        let reasoning = request_json
-            .as_object_mut()
-            .ok_or_else(|| AppError::bad_request("请求 JSON 必须是对象"))?
-            .entry("reasoning".to_string())
-            .or_insert_with(|| json!({}));
-        if !reasoning.is_object() {
-            *reasoning = json!({});
-        }
-        reasoning
-            .as_object_mut()
-            .expect("reasoning object was just initialized")
-            .insert("effort".to_string(), Value::String(effort.to_string()));
-        request_overridden = true;
-    }
-    let request_body = if request_overridden {
-        request_json.to_string()
+    let has_overrides = route.selected_model.is_some() || route.selected_reasoning_effort.is_some();
+    let (request_body, failure_context) = if has_overrides {
+        let mut request_json: Value = serde_json::from_slice(&body)
+            .map_err(|err| AppError::bad_request(format!("无效的请求 JSON: {err}")))?;
+        apply_responses_route_overrides(&mut request_json, &route)?;
+        let failure_context =
+            GatewayFailureContext::new(&routed_provider, responses_request_model(&request_json));
+        (Bytes::from(request_json.to_string()), failure_context)
     } else {
-        raw_body
+        (body, GatewayFailureContext::new(&routed_provider, None))
     };
-    let failure_context = GatewayFailureContext::new(&routed_provider, &request_json);
-    let response = if routed_provider.auth_mode == ProviderAuthMode::Account {
-        if !provider_uses_openai_account(&routed_provider) {
-            return Err(AppError::bad_request(format!(
-                "账户认证供应商 `{}` 暂不支持",
-                routed_provider.name
-            )));
-        }
-        let provider_record = resolve_provider_record_for_use(&state, &routed_provider).await?;
-        let access_token = provider_record.access_token().ok_or_else(|| {
-            AppError::bad_request(format!(
-                "账户认证供应商 `{}` 缺少 access token",
-                routed_provider.name
-            ))
-        })?;
-        let upstream_client = state.upstream.clone();
-        let upstream_result = upstream_client.account_responses_passthrough(
-            access_token,
-            request_body,
-            request_stream,
-        );
-        responses_passthrough_inner(
-            state,
-            upstream_result,
-            request_stream,
-            failure_context.with_base_url(OPENAI_CODEX_BASE_URL),
-        )
-        .await?
-    } else {
-        let native_provider = routed_provider.record.as_ref().ok_or_else(|| {
-            AppError::bad_request(format!("未知供应商: {}", routed_provider.name))
-        })?;
-        let failure_context = failure_context.with_base_url(native_provider.base_url.as_str());
-        let upstream_client = state.upstream.clone();
-        let upstream_result = upstream_client.api_responses_passthrough(
-            native_provider.base_url.as_str(),
-            native_provider.api_key.as_str(),
-            request_body,
-            request_stream,
-        );
-        responses_passthrough_inner(state, upstream_result, request_stream, failure_context).await?
-    };
-    let _ = headers;
-    Ok(response)
+
+    let (upstream_result, failure_context) =
+        if routed_provider.auth_mode == ProviderAuthMode::Account {
+            if !provider_uses_openai_account(&routed_provider) {
+                return Err(AppError::bad_request(format!(
+                    "账户认证供应商 `{}` 暂不支持",
+                    routed_provider.name
+                )));
+            }
+            let provider_record = resolve_provider_record_for_use(&state, &routed_provider).await?;
+            let access_token = provider_record.access_token().ok_or_else(|| {
+                AppError::bad_request(format!(
+                    "账户认证供应商 `{}` 缺少 access token",
+                    routed_provider.name
+                ))
+            })?;
+            let upstream_result = state
+                .upstream
+                .account_responses_passthrough(access_token, request_body, &headers)
+                .await;
+            (
+                upstream_result,
+                failure_context.with_base_url(OPENAI_CODEX_BASE_URL),
+            )
+        } else {
+            let native_provider = routed_provider.record.as_ref().ok_or_else(|| {
+                AppError::bad_request(format!("未知供应商: {}", routed_provider.name))
+            })?;
+            let failure_context = failure_context.with_base_url(native_provider.base_url.as_str());
+            let upstream_result = state
+                .upstream
+                .api_responses_passthrough(
+                    native_provider.base_url.as_str(),
+                    native_provider.api_key.as_str(),
+                    request_body,
+                    &headers,
+                )
+                .await;
+            (upstream_result, failure_context)
+        };
+    responses_passthrough_inner(state, upstream_result, &headers, failure_context).await
 }
 
 async fn responses_passthrough_inner(
     state: AppState,
-    upstream_result: impl std::future::Future<Output = Result<reqwest::Response, String>>,
-    request_stream: bool,
+    upstream_result: Result<reqwest::Response, String>,
+    request_headers: &HeaderMap,
     failure_context: GatewayFailureContext,
 ) -> Result<Response, AppError> {
-    let upstream = match upstream_result.await {
+    let upstream = match upstream_result {
         Ok(response) => response,
         Err(error) => {
             record_gateway_issue(
@@ -752,45 +721,6 @@ async fn responses_passthrough_inner(
     };
     let upstream_status = upstream.status();
     let upstream_headers = upstream.headers().clone();
-    // The Codex upstream currently omits `Content-Type: text/event-stream`
-    // for some streamed Responses replies, even though its body is SSE.
-    // The original request is therefore the reliable fallback signal.
-    let response_is_stream = request_stream || is_event_stream_response(&upstream_headers);
-
-    if !response_is_stream {
-        let response_bytes = match upstream.bytes().await {
-            Ok(bytes) => bytes,
-            Err(error) => {
-                record_gateway_issue(
-                    &state.issues,
-                    &failure_context,
-                    "response_read_error",
-                    Some(upstream_status.as_u16()),
-                    &error.to_string(),
-                    "",
-                    false,
-                );
-                return Err(AppError::upstream(error));
-            }
-        };
-        record_upstream_http_issue_if_failed(
-            &state.issues,
-            &failure_context,
-            upstream_status,
-            &String::from_utf8_lossy(&response_bytes),
-            false,
-        );
-        let response_bytes = if upstream_status.is_success() {
-            response_bytes.to_vec()
-        } else {
-            decorate_upstream_error_body(&response_bytes, response_is_stream)
-        };
-        return build_passthrough_response(
-            upstream_status,
-            &upstream_headers,
-            Body::from(response_bytes),
-        );
-    }
 
     if !upstream_status.is_success() {
         let response_bytes = match upstream.bytes().await {
@@ -818,7 +748,10 @@ async fn responses_passthrough_inner(
         return build_passthrough_response(
             upstream_status,
             &upstream_headers,
-            Body::from(decorate_upstream_error_body(&response_bytes, true)),
+            Body::from(decorate_upstream_error_body(
+                &response_bytes,
+                upstream_response_is_stream(&upstream_headers, request_headers),
+            )),
         );
     }
 
@@ -855,14 +788,6 @@ async fn responses_passthrough_inner(
                 }
             }
         }
-        let captured_response = String::from_utf8_lossy(&captured_response);
-        record_upstream_http_issue_if_failed(
-            &issue_store,
-            &failure_context,
-            upstream_status,
-            captured_response.as_ref(),
-            response_truncated,
-        );
     };
 
     build_passthrough_response(
@@ -881,7 +806,7 @@ struct GatewayFailureContext {
 }
 
 impl GatewayFailureContext {
-    fn new(provider: &ResolvedProvider, request: &Value) -> Self {
+    fn new(provider: &ResolvedProvider, request_model: Option<&str>) -> Self {
         Self {
             provider_id: provider
                 .record
@@ -889,7 +814,7 @@ impl GatewayFailureContext {
                 .map(|record| record.id.clone())
                 .unwrap_or_else(|| "未知".to_string()),
             provider_name: provider.name.clone(),
-            model: responses_request_model(request)
+            model: request_model
                 .and_then(safe_model_name)
                 .unwrap_or_else(|| "未知".to_string()),
             upstream_url: String::new(),
@@ -1021,11 +946,30 @@ fn responses_request_model(request: &Value) -> Option<&str> {
     request.get("model").and_then(Value::as_str)
 }
 
-fn responses_request_stream(request: &Value) -> bool {
-    request
-        .get("stream")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
+fn apply_responses_route_overrides(
+    request: &mut Value,
+    route: &SelectedRoute,
+) -> Result<(), AppError> {
+    let request = request
+        .as_object_mut()
+        .ok_or_else(|| AppError::bad_request("请求 JSON 必须是对象"))?;
+
+    if let Some(model) = route.selected_model.as_ref() {
+        request.insert("model".to_string(), Value::String(model.clone()));
+    }
+    if let Some(effort) = route.selected_reasoning_effort.as_deref() {
+        let reasoning = request
+            .entry("reasoning".to_string())
+            .or_insert_with(|| json!({}));
+        if !reasoning.is_object() {
+            *reasoning = json!({});
+        }
+        reasoning
+            .as_object_mut()
+            .expect("reasoning object was just initialized")
+            .insert("effort".to_string(), Value::String(effort.to_string()));
+    }
+    Ok(())
 }
 
 async fn update_route(
@@ -1071,6 +1015,34 @@ fn is_event_stream_response(headers: &HeaderMap) -> bool {
         .and_then(|value| value.to_str().ok())
         .map(|value| value.to_ascii_lowercase().contains("text/event-stream"))
         .unwrap_or(false)
+}
+
+fn request_accepts_event_stream(headers: &HeaderMap) -> bool {
+    headers.get_all("accept").iter().any(|value| {
+        value.to_str().ok().is_some_and(|value| {
+            value.split(',').any(|media_range| {
+                let mut parts = media_range.trim().split(';');
+                let media_type = parts.next().unwrap_or_default().trim();
+                media_type.eq_ignore_ascii_case("text/event-stream")
+                    && !parts.any(|parameter| {
+                        let Some((name, value)) = parameter.split_once('=') else {
+                            return false;
+                        };
+                        name.trim().eq_ignore_ascii_case("q")
+                            && value
+                                .trim()
+                                .parse::<f32>()
+                                .is_ok_and(|quality| quality <= 0.0)
+                    })
+            })
+        })
+    })
+}
+
+fn upstream_response_is_stream(upstream_headers: &HeaderMap, request_headers: &HeaderMap) -> bool {
+    is_event_stream_response(upstream_headers)
+        || (!upstream_headers.contains_key("content-type")
+            && request_accepts_event_stream(request_headers))
 }
 
 fn should_skip_passthrough_header(name: &HeaderName) -> bool {
