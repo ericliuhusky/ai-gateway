@@ -1,13 +1,19 @@
 export type GatewayAuthMode = "api_key" | "account";
 
-export interface GatewayProvider {
+export type GatewayProvider = {
   id: string;
   name: string;
-  auth_mode: GatewayAuthMode;
-  base_url: string;
-  account_email?: string;
-  account_expires_at?: number;
-}
+} & (
+  | {
+      auth_mode: "api_key";
+      base_url: string;
+    }
+  | {
+      auth_mode: "account";
+      account_email: string;
+      account_expires_at: number;
+    }
+);
 
 export interface DefaultCodexStatus {
   started: boolean;

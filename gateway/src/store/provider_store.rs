@@ -50,14 +50,7 @@ impl ProviderStore {
             .lock()
             .await
             .iter()
-            .map(|provider| ProviderSummaryResp {
-                id: provider.id().to_string(),
-                name: provider.name().to_string(),
-                auth_mode: provider.auth_mode(),
-                base_url: provider.base_url().unwrap_or_default().to_string(),
-                account_email: provider.email().map(str::to_string),
-                account_expires_at: provider.expiry_timestamp(),
-            })
+            .map(ProviderSummaryResp::from)
             .collect()
     }
 
