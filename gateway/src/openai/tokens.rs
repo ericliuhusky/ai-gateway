@@ -1,4 +1,4 @@
-use crate::models::ProviderRecord;
+use crate::domain::Provider;
 use crate::openai::build_http_client;
 use crate::support::time::now_unix;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -82,15 +82,15 @@ impl OpenAiTokenService {
         &self,
         access_token: String,
         refresh_token: String,
-        upstream_account_id_hint: Option<String>,
-    ) -> Result<ProviderRecord, String> {
+        account_id_hint: Option<String>,
+    ) -> Result<Provider, String> {
         let access_claims = decode_openai_claims(&access_token)?;
         let email = openai_email_from_claims(&access_claims)
             .ok_or_else(|| "无法从粘贴的 Codex Token 中确定邮箱".to_string())?;
         let expiry_timestamp = access_claims
             .exp
             .ok_or_else(|| "OpenAI 访问 Token 缺少 exp 字段".to_string())?;
-        Ok(ProviderRecord::new_openai_account(
+        Ok(Provider::new_openai_account(
             email,
             access_token,
             refresh_token,
@@ -101,7 +101,7 @@ impl OpenAiTokenService {
                     .clone()
                     .unwrap_or_else(|| CODEX_CLIENT_ID.to_string()),
             ),
-            upstream_account_id_hint,
+            account_id_hint,
         ))
     }
 

@@ -1,6 +1,7 @@
 use crate::{
     config::Config,
-    models::{ProviderAuthMode, ProviderRecord, SelectedRoute},
+    domain::{ProviderAuthMode, SelectedRoute},
+    store::ProviderRecord,
 };
 use rusqlite::{Connection, OptionalExtension, params};
 use std::{fs, path::PathBuf, sync::Arc};
@@ -45,7 +46,7 @@ impl SqliteStore {
         }
         let mut stmt = conn
             .prepare(
-                "SELECT id, name, auth_mode, COALESCE(base_url, ''), COALESCE(api_key, ''),
+                "SELECT id, name, auth_mode, base_url, api_key,
                         email, access_token, refresh_token, expiry_timestamp, client_id,
                         upstream_account_id
                  FROM providers
@@ -54,11 +55,12 @@ impl SqliteStore {
             .map_err(|err| format!("prepare providers query failed: {err}"))?;
         let rows = stmt
             .query_map([], move |row| {
+                let auth_mode = provider_auth_mode_from_str(&row.get::<_, String>(2)?)
+                    .map_err(rusqlite::Error::ToSqlConversionFailure)?;
                 Ok(ProviderRecord {
                     id: row.get(0)?,
                     name: row.get(1)?,
-                    auth_mode: provider_auth_mode_from_str(&row.get::<_, String>(2)?)
-                        .map_err(rusqlite::Error::ToSqlConversionFailure)?,
+                    auth_mode,
                     base_url: row.get(3)?,
                     api_key: row.get(4)?,
                     email: row.get(5)?,
@@ -66,7 +68,7 @@ impl SqliteStore {
                     refresh_token: row.get(7)?,
                     expiry_timestamp: row.get(8)?,
                     client_id: row.get(9)?,
-                    upstream_account_id: row.get(10)?,
+                    account_id: row.get(10)?,
                 })
             })
             .map_err(|err| format!("query providers failed: {err}"))?;
@@ -375,13 +377,38 @@ fn drop_database_encryption_key(conn: &Connection) -> Result<(), String> {
 }
 
 fn upsert_provider_record(conn: &Connection, provider: &ProviderRecord) -> Result<(), String> {
-    let (base_url, api_key) = match provider.auth_mode {
+    let (
+        base_url,
+        api_key,
+        email,
+        access_token,
+        refresh_token,
+        expiry_timestamp,
+        client_id,
+        account_id,
+    ) = match &provider.auth_mode {
         ProviderAuthMode::ApiKey => (
-            Some(provider.base_url.as_str()),
-            Some(provider.api_key.as_str()),
+            provider.base_url.as_deref(),
+            provider.api_key.as_deref(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         ),
-        ProviderAuthMode::Account => (None, None),
+        ProviderAuthMode::Account => (
+            None,
+            None,
+            provider.email.as_deref(),
+            provider.access_token.as_deref(),
+            provider.refresh_token.as_deref(),
+            provider.expiry_timestamp,
+            provider.client_id.as_deref(),
+            provider.account_id.as_deref(),
+        ),
     };
+    let auth_mode = provider_auth_mode_to_str(&provider.auth_mode);
     conn.execute(
         "INSERT INTO providers (
             id, name, auth_mode, base_url, api_key, email, access_token,
@@ -401,15 +428,15 @@ fn upsert_provider_record(conn: &Connection, provider: &ProviderRecord) -> Resul
         params![
             provider.id,
             provider.name,
-            provider_auth_mode_to_str(&provider.auth_mode),
+            auth_mode,
             base_url,
             api_key,
-            provider.email.as_deref(),
-            provider.access_token.as_deref(),
-            provider.refresh_token.as_deref(),
-            provider.expiry_timestamp,
-            provider.client_id.as_deref(),
-            provider.upstream_account_id.as_deref()
+            email,
+            access_token,
+            refresh_token,
+            expiry_timestamp,
+            client_id,
+            account_id
         ],
     )
     .map_err(|err| format!("upsert provider failed: {err}"))?;
@@ -436,7 +463,10 @@ fn provider_auth_mode_from_str(
 #[cfg(test)]
 mod tests {
     use super::SqliteStore;
-    use crate::models::{ProviderAuthMode, ProviderRecord, SelectedRoute};
+    use crate::{
+        domain::{ProviderAuthMode, SelectedRoute},
+        store::ProviderRecord,
+    };
     use rusqlite::Connection;
     use std::{
         fs,
@@ -483,14 +513,14 @@ mod tests {
             id: "provider-account".to_string(),
             name: Some("account".to_string()),
             auth_mode: ProviderAuthMode::Account,
-            base_url: String::new(),
-            api_key: String::new(),
+            base_url: None,
+            api_key: None,
             email: Some("account@example.com".to_string()),
             access_token: Some("access".to_string()),
             refresh_token: Some("refresh".to_string()),
             expiry_timestamp: Some(1),
             client_id: Some("client".to_string()),
-            upstream_account_id: Some("upstream".to_string()),
+            account_id: Some("upstream".to_string()),
         };
         store.upsert_provider(&provider).expect("save provider");
 
@@ -516,14 +546,14 @@ mod tests {
             id: "provider-account".to_string(),
             name: Some("account".to_string()),
             auth_mode: ProviderAuthMode::Account,
-            base_url: String::new(),
-            api_key: String::new(),
+            base_url: None,
+            api_key: None,
             email: Some("account@example.com".to_string()),
             access_token: Some("access-secret".to_string()),
             refresh_token: Some("refresh-secret".to_string()),
             expiry_timestamp: Some(1),
             client_id: None,
-            upstream_account_id: None,
+            account_id: None,
         };
         store
             .upsert_provider(&account_provider)
@@ -577,7 +607,7 @@ mod tests {
                 .find(|provider| provider.id == "provider-1")
                 .unwrap()
                 .api_key,
-            "sk-test"
+            Some("sk-test".to_string())
         );
 
         let _ = fs::remove_file(db_path);
@@ -661,7 +691,7 @@ mod tests {
         assert_eq!(provider.refresh_token.as_deref(), Some("refresh-secret"));
         assert_eq!(provider.expiry_timestamp, Some(1700000000));
         assert_eq!(provider.client_id.as_deref(), Some("client-1"));
-        assert_eq!(provider.upstream_account_id.as_deref(), Some("upstream-1"));
+        assert_eq!(provider.account_id.as_deref(), Some("upstream-1"));
 
         let _ = fs::remove_file(db_path);
     }
@@ -671,14 +701,14 @@ mod tests {
             id: id.to_string(),
             name: Some(id.to_string()),
             auth_mode: ProviderAuthMode::ApiKey,
-            base_url: "https://example.com/v1".to_string(),
-            api_key: "sk-test".to_string(),
+            base_url: Some("https://example.com/v1".to_string()),
+            api_key: Some("sk-test".to_string()),
             email: None,
             access_token: None,
             refresh_token: None,
             expiry_timestamp: None,
             client_id: None,
-            upstream_account_id: None,
+            account_id: None,
         }
     }
 

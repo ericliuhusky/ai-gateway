@@ -1,5 +1,5 @@
 use crate::{
-    config::Config, models::SelectedRoute, store::sqlite::SqliteStore, support::time::now_unix,
+    config::Config, domain::SelectedRoute, store::sqlite::SqliteStore, support::time::now_unix,
 };
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -66,7 +66,7 @@ impl RouteStore {
 mod tests {
     use super::RouteStore;
     use crate::{
-        models::{ProviderAuthMode, ProviderRecord, SelectedRoute},
+        domain::ProviderAuthMode, domain::SelectedRoute, store::ProviderRecord,
         store::sqlite::SqliteStore,
     };
     use std::{
@@ -84,14 +84,14 @@ mod tests {
             id: "provider-a".to_string(),
             name: Some("Provider A".to_string()),
             auth_mode: ProviderAuthMode::ApiKey,
-            base_url: "https://example.com/v1".to_string(),
-            api_key: "key".to_string(),
+            base_url: Some("https://example.com/v1".to_string()),
+            api_key: Some("key".to_string()),
             email: None,
             access_token: None,
             refresh_token: None,
             expiry_timestamp: None,
             client_id: None,
-            upstream_account_id: None,
+            account_id: None,
         };
         sqlite.upsert_provider(&provider).expect("save provider");
         sqlite

@@ -5,7 +5,7 @@ use super::{
         resolve_provider_by_id, selected_route,
     },
 };
-use crate::models::{ProviderAuthMode, SelectedRoute};
+use crate::domain::{ProviderAuthMode, SelectedRoute};
 use axum::{
     body::{Body, Bytes},
     extract::State,
@@ -37,8 +37,8 @@ pub async fn responses(
         body
     };
 
-    let upstream_result = if routed_provider.auth_mode == ProviderAuthMode::Account {
-        let provider_record = acquire_provider_for_use(&state, &routed_provider.id).await?;
+    let upstream_result = if routed_provider.auth_mode() == ProviderAuthMode::Account {
+        let provider_record = acquire_provider_for_use(&state, routed_provider.id()).await?;
         let access_token = provider_record.access_token().ok_or_else(|| {
             AppError::bad_request(format!(
                 "账户认证供应商 `{}` 缺少 access token",
@@ -53,8 +53,18 @@ pub async fn responses(
         state
             .upstream
             .api_responses_passthrough(
-                routed_provider.base_url.as_str(),
-                routed_provider.api_key.as_str(),
+                routed_provider.base_url().ok_or_else(|| {
+                    AppError::bad_request(format!(
+                        "供应商 `{}` 缺少 base_url",
+                        routed_provider.name()
+                    ))
+                })?,
+                routed_provider.api_key().ok_or_else(|| {
+                    AppError::bad_request(format!(
+                        "供应商 `{}` 缺少 api_key",
+                        routed_provider.name()
+                    ))
+                })?,
                 request_body,
                 &headers,
             )

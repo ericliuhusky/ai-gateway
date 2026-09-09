@@ -1,15 +1,14 @@
+use super::dto::{
+    CreateProviderReq, ProviderSummaryResp, UpdateSelectedModelRequest,
+    UpdateSelectedProviderRequest, UpdateSelectedReasoningEffortRequest,
+};
 use crate::{
     config::{Config, DEFAULT_CODEX_CLIENT_VERSION},
-    models::{
-        CreateProviderRequest, ProviderAuthMode, ProviderRecord, ProviderSummary, SelectedRoute,
-        UpdateSelectedModelRequest, UpdateSelectedProviderRequest,
-        UpdateSelectedReasoningEffortRequest,
+    domain::{Provider, ProviderAuthMode, SelectedRoute},
+    openai::{
+        DeviceLoginCompletion, DeviceLoginPoll, DeviceLoginStart, OpenAiClient,
+        OpenAiDeviceLoginService, OpenAiTokenService,
     },
-    openai::OpenAiClient,
-    openai_device_login::{
-        DeviceLoginCompletion, DeviceLoginPoll, DeviceLoginStart, OpenAiDeviceLoginService,
-    },
-    openai_tokens::OpenAiTokenService,
     store::{ProviderStore, RouteStore},
 };
 use axum::{
@@ -54,8 +53,7 @@ struct CodexAuthTokensFile {
     #[serde(default)]
     refresh_token: Option<String>,
     #[serde(default)]
-    #[serde(alias = "account_id")]
-    upstream_account_id: Option<String>,
+    account_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -177,11 +175,7 @@ pub async fn import_openai_token(
             })?;
         let imported = state
             .openai_tokens
-            .import_codex_tokens(
-                tokens.access_token,
-                refresh_token,
-                tokens.upstream_account_id,
-            )
+            .import_codex_tokens(tokens.access_token, refresh_token, tokens.account_id)
             .map_err(AppError::bad_request)?;
         let provider = state
             .providers
@@ -190,7 +184,10 @@ pub async fn import_openai_token(
             .map_err(AppError::bad_request)?;
 
         if first_imported.is_none() {
-            first_imported = Some((provider.email.clone().unwrap_or_default(), provider.id));
+            first_imported = Some((
+                provider.email().unwrap_or_default().to_string(),
+                provider.id().to_string(),
+            ));
         }
     }
 
@@ -215,9 +212,9 @@ pub async fn refresh_openai_provider(
         .await
         .map_err(AppError::bad_request)?;
     Ok(Json(RefreshOpenAiProviderResponse {
-        provider_id: provider.id,
-        email: provider.email.unwrap_or_default(),
-        expiry_timestamp: provider.expiry_timestamp.unwrap_or_default(),
+        provider_id: provider.id().to_string(),
+        email: provider.email().unwrap_or_default().to_string(),
+        expiry_timestamp: provider.expiry_timestamp().unwrap_or_default(),
     }))
 }
 
@@ -274,8 +271,8 @@ pub async fn poll_openai_device_login(
                     .await
                     .map_err(AppError::bad_request)?;
                 Ok::<_, AppError>(DeviceLoginCompletion {
-                    email: provider.email.clone().unwrap_or_default(),
-                    provider_id: provider.id,
+                    email: provider.email().unwrap_or_default().to_string(),
+                    provider_id: provider.id().to_string(),
                 })
             }
             .await;
@@ -391,14 +388,14 @@ pub async fn get_provider_quota(
     AxumPath(provider_id): AxumPath<String>,
 ) -> Result<Response, AppError> {
     let provider = resolve_provider_by_id(&state, &provider_id).await?;
-    if provider.auth_mode != ProviderAuthMode::Account {
+    if provider.auth_mode() != ProviderAuthMode::Account {
         return Err(AppError::bad_request(format!(
             "供应商 `{}` 不支持账户额度查询",
             provider.name()
         )));
     }
 
-    let provider_record = acquire_provider_for_use(&state, &provider.id).await?;
+    let provider_record = acquire_provider_for_use(&state, provider.id()).await?;
     let access_token = provider_record.access_token().ok_or_else(|| {
         AppError::bad_request(format!(
             "账户认证供应商 `{}` 缺少 access token",
@@ -436,7 +433,7 @@ pub async fn list_models(
 
 pub async fn add_provider(
     State(state): State<AppState>,
-    Json(request): Json<CreateProviderRequest>,
+    Json(request): Json<CreateProviderReq>,
 ) -> Result<Json<Value>, AppError> {
     let provider = state
         .providers
@@ -446,11 +443,11 @@ pub async fn add_provider(
 
     Ok(Json(json!({
         "provider": {
-            "id": provider.id,
+            "id": provider.id(),
             "name": provider.name(),
-            "auth_mode": provider.auth_mode,
-            "base_url": provider.base_url,
-            "api_key": provider.api_key,
+            "auth_mode": provider.auth_mode(),
+            "base_url": provider.base_url(),
+            "api_key": provider.api_key(),
         }
     })))
 }
@@ -579,7 +576,7 @@ pub async fn clear_selected_reasoning_effort(
     })))
 }
 
-async fn resolve_selected_provider(state: &AppState) -> Result<ProviderRecord, AppError> {
+async fn resolve_selected_provider(state: &AppState) -> Result<Provider, AppError> {
     let route = selected_route(state).await?;
     if let Some(provider_id) = route.provider_id {
         return resolve_provider_by_id(state, &provider_id).await;
@@ -657,10 +654,10 @@ pub(super) fn build_passthrough_response(
 
 async fn fetch_provider_models(
     state: &AppState,
-    provider: &ProviderRecord,
+    provider: &Provider,
 ) -> Result<reqwest::Response, AppError> {
-    if provider.auth_mode == ProviderAuthMode::Account {
-        let provider_record = acquire_provider_for_use(state, &provider.id).await?;
+    if provider.auth_mode() == ProviderAuthMode::Account {
+        let provider_record = acquire_provider_for_use(state, provider.id()).await?;
         let access_token = provider_record.access_token().ok_or_else(|| {
             AppError::bad_request(format!(
                 "账户认证供应商 `{}` 缺少 access token",
@@ -678,7 +675,14 @@ async fn fetch_provider_models(
 
     let upstream = state
         .upstream
-        .api_models(provider.base_url.as_str(), provider.api_key.as_str())
+        .api_models(
+            provider.base_url().ok_or_else(|| {
+                AppError::bad_request(format!("供应商 `{}` 缺少 base_url", provider.name()))
+            })?,
+            provider.api_key().ok_or_else(|| {
+                AppError::bad_request(format!("供应商 `{}` 缺少 api_key", provider.name()))
+            })?,
+        )
         .await
         .map_err(AppError::upstream_message)?;
     Ok(upstream)
@@ -714,7 +718,7 @@ fn normalize_selected_reasoning_effort(effort: String) -> Result<String, AppErro
 pub(super) async fn resolve_provider_by_id(
     state: &AppState,
     provider_id: &str,
-) -> Result<ProviderRecord, AppError> {
+) -> Result<Provider, AppError> {
     let record = state
         .providers
         .find_by_id(provider_id)
@@ -726,7 +730,7 @@ pub(super) async fn resolve_provider_by_id(
 pub(super) async fn acquire_provider_for_use(
     state: &AppState,
     provider_id: &str,
-) -> Result<ProviderRecord, AppError> {
+) -> Result<Provider, AppError> {
     state
         .providers
         .acquire_by_id(&state.openai_tokens, provider_id)
@@ -734,7 +738,7 @@ pub(super) async fn acquire_provider_for_use(
         .map_err(AppError::bad_request)
 }
 
-async fn hydrated_provider_summaries(state: &AppState) -> Vec<ProviderSummary> {
+async fn hydrated_provider_summaries(state: &AppState) -> Vec<ProviderSummaryResp> {
     state.providers.list().await
 }
 

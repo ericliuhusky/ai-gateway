@@ -1,6 +1,6 @@
-use crate::models::ProviderRecord;
+use super::tokens::OpenAiTokenService;
+use crate::domain::Provider;
 use crate::openai::build_http_client;
-use crate::openai_tokens::OpenAiTokenService;
 use crate::support::time::now_unix;
 use reqwest::Client;
 use serde::Deserialize;
@@ -246,7 +246,7 @@ impl OpenAiDeviceLoginService {
         &self,
         authorization: &DeviceAuthorization,
         tokens: &OpenAiTokenService,
-    ) -> Result<ProviderRecord, String> {
+    ) -> Result<Provider, String> {
         let params = [
             ("grant_type", "authorization_code"),
             ("code", authorization.authorization_code.as_str()),

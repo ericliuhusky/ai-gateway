@@ -74,11 +74,9 @@ mod tests {
     use super::{RESPONSES_REQUEST_BODY_LIMIT, build_router};
     use crate::{
         api::AppState,
+        api::dto::CreateProviderReq,
         config::Config,
-        models::CreateProviderRequest,
-        openai::{OpenAiClient, build_http_client},
-        openai_device_login::OpenAiDeviceLoginService,
-        openai_tokens::OpenAiTokenService,
+        openai::{OpenAiClient, OpenAiDeviceLoginService, OpenAiTokenService, build_http_client},
         store::{ProviderStore, RouteStore},
     };
     use axum::{
@@ -118,7 +116,7 @@ mod tests {
         let data_dir = unique_test_data_dir("local-routes");
         let (state, providers, routes) = test_state(data_dir.clone()).await;
         let provider = providers
-            .upsert(CreateProviderRequest {
+            .upsert(CreateProviderReq {
                 name: "Mock Provider".to_string(),
                 base_url: Some(format!("http://{upstream_addr}/v1")),
                 api_key: Some("sk-local-only".to_string()),
@@ -126,7 +124,7 @@ mod tests {
             .await
             .expect("add local provider");
         routes
-            .update(Some(provider.id.clone()), None, None, true)
+            .update(Some(provider.id().to_string()), None, None, true)
             .await
             .expect("select local provider");
         let router = build_router(state);
@@ -215,7 +213,7 @@ mod tests {
         let data_dir = unique_test_data_dir("raw-responses");
         let (state, providers, routes) = test_state(data_dir.clone()).await;
         let provider = providers
-            .upsert(CreateProviderRequest {
+            .upsert(CreateProviderReq {
                 name: "Mock Provider".to_string(),
                 base_url: Some(format!("http://{upstream_addr}/v1")),
                 api_key: Some("sk-local-only".to_string()),
@@ -223,7 +221,7 @@ mod tests {
             .await
             .expect("add local provider");
         routes
-            .update(Some(provider.id), None, None, true)
+            .update(Some(provider.id().to_string()), None, None, true)
             .await
             .expect("select local provider");
 
@@ -253,7 +251,7 @@ mod tests {
         let data_dir = unique_test_data_dir("route-overrides");
         let (state, providers, routes) = test_state(data_dir.clone()).await;
         let provider = providers
-            .upsert(CreateProviderRequest {
+            .upsert(CreateProviderReq {
                 name: "Mock Provider".to_string(),
                 base_url: Some(format!("http://{upstream_addr}/v1")),
                 api_key: Some("sk-local-only".to_string()),
@@ -262,7 +260,7 @@ mod tests {
             .expect("add local provider");
         routes
             .update(
-                Some(provider.id),
+                Some(provider.id().to_string()),
                 Some("route-model".to_string()),
                 Some("high".to_string()),
                 false,
@@ -304,7 +302,7 @@ mod tests {
         let data_dir = unique_test_data_dir("upstream-http-error");
         let (state, providers, routes) = test_state(data_dir.clone()).await;
         let provider = providers
-            .upsert(CreateProviderRequest {
+            .upsert(CreateProviderReq {
                 name: "Mock Provider".to_string(),
                 base_url: Some(format!("http://{upstream_addr}/v1")),
                 api_key: Some("sk-local-only".to_string()),
@@ -312,7 +310,7 @@ mod tests {
             .await
             .expect("add local provider");
         routes
-            .update(Some(provider.id), None, None, true)
+            .update(Some(provider.id().to_string()), None, None, true)
             .await
             .expect("select local provider");
 
@@ -350,7 +348,7 @@ mod tests {
         let data_dir = unique_test_data_dir("connection-failure-issues");
         let (state, providers, routes) = test_state(data_dir.clone()).await;
         let provider = providers
-            .upsert(CreateProviderRequest {
+            .upsert(CreateProviderReq {
                 name: "Unavailable Provider".to_string(),
                 base_url: Some(format!("http://{upstream_addr}/v1")),
                 api_key: Some("sk-local-only".to_string()),
@@ -358,7 +356,7 @@ mod tests {
             .await
             .expect("add unavailable provider");
         routes
-            .update(Some(provider.id.clone()), None, None, true)
+            .update(Some(provider.id().to_string()), None, None, true)
             .await
             .expect("select unavailable provider");
         let router = build_router(state);

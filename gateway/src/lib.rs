@@ -1,17 +1,14 @@
 mod api;
 mod config;
-mod models;
+mod domain;
 mod openai;
-mod openai_device_login;
-mod openai_tokens;
 mod scproxy;
 mod store;
 mod support;
 
 use api::{AppState, build_router};
 use config::Config;
-use openai_device_login::OpenAiDeviceLoginService;
-use openai_tokens::OpenAiTokenService;
+use openai::{OpenAiDeviceLoginService, OpenAiTokenService};
 use reqwest::Client;
 use std::{
     env, fs,
