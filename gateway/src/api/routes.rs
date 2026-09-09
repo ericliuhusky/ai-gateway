@@ -2,9 +2,9 @@ use super::AppState;
 use super::responses_handler::responses;
 use crate::api::handlers::{
     add_provider, cancel_openai_device_login, clear_selected_model,
-    clear_selected_reasoning_effort, delete_provider, gateway_status, get_provider_quota,
-    get_route, get_selected_model, get_selected_reasoning_effort, healthz, import_openai_token,
-    list_models, list_providers, poll_openai_device_login, refresh_openai_provider, set_route,
+    clear_selected_reasoning_effort, delete_provider, get_provider_quota, get_route,
+    get_selected_model, get_selected_reasoning_effort, healthz, import_openai_token, list_models,
+    list_providers, poll_openai_device_login, refresh_openai_provider, set_route,
     set_selected_model, set_selected_reasoning_effort, start_openai_device_login,
 };
 use axum::{
@@ -28,7 +28,6 @@ pub fn build_router(state: AppState) -> Router {
 pub fn build_management_router(state: AppState) -> Router {
     let management_routes = Router::new()
         .route("/healthz", get(healthz))
-        .route("/control/status", get(gateway_status))
         .route("/providers/openai/import-token", post(import_openai_token))
         .route(
             "/providers/:provider_id/refresh",
@@ -148,17 +147,6 @@ mod tests {
             .await
             .expect("list providers over management HTTP route");
         assert_eq!(providers_response.status(), StatusCode::OK);
-
-        let readiness_response = router
-            .clone()
-            .oneshot(request(
-                Method::GET,
-                "/management/control/status",
-                Body::empty(),
-            ))
-            .await
-            .expect("daemon readiness response over management HTTP route");
-        assert_eq!(readiness_response.status(), StatusCode::OK);
 
         let request_body = json!({
             "model": "mock-model",

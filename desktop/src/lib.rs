@@ -35,10 +35,7 @@ pub fn run() {
 async fn ensure_gateway_daemon() -> Result<gateway::GatewayDaemonClient, String> {
     let gateway = gateway::GatewayDaemonClient::local()?;
     let daemon = gateway_daemon_path()?;
-    if gateway.is_ready().await
-        && gateway::local_gateway_is_healthy().await
-        && gateway::gateway_daemon_is_installed(&daemon)?
-    {
+    if gateway::local_gateway_is_healthy().await && gateway::gateway_daemon_is_installed(&daemon)? {
         return Ok(gateway);
     }
 
@@ -46,7 +43,7 @@ async fn ensure_gateway_daemon() -> Result<gateway::GatewayDaemonClient, String>
     let attempts =
         (DAEMON_READY_TIMEOUT.as_millis() / DAEMON_READY_POLL_INTERVAL.as_millis()) as u32;
     for _ in 0..attempts {
-        if gateway.is_ready().await && gateway::local_gateway_is_healthy().await {
+        if gateway::local_gateway_is_healthy().await {
             return Ok(gateway);
         }
         thread::sleep(DAEMON_READY_POLL_INTERVAL);

@@ -93,16 +93,6 @@ impl GatewayDaemonClient {
             Err(message)
         }
     }
-
-    pub async fn is_ready(&self) -> bool {
-        self.request(
-            "GET".to_string(),
-            "/management/control/status".to_string(),
-            None,
-        )
-        .await
-        .is_ok()
-    }
 }
 
 const SERVICE_LABEL: &str = "com.ai-gateway.server";

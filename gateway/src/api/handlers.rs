@@ -48,13 +48,6 @@ pub async fn healthz() -> &'static str {
     "ok"
 }
 
-/// Local daemon readiness probe exposed under the HTTP management namespace.
-///
-/// It remains available even when the Gateway data plane is stopped.
-pub async fn gateway_status() -> Json<Value> {
-    Json(json!({ "status": "ok" }))
-}
-
 #[derive(Debug, Clone, Deserialize)]
 struct CodexAuthTokensFile {
     access_token: String,
