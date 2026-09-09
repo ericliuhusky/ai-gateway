@@ -6,6 +6,7 @@ mod openai_device_login;
 mod openai_tokens;
 mod store;
 mod support;
+mod scproxy;
 
 use api::{AppState, build_router};
 use config::Config;
