@@ -233,10 +233,6 @@ impl ProviderRecord {
         self.refresh_token.as_deref()
     }
 
-    pub fn upstream_account_id(&self) -> Option<&str> {
-        self.upstream_account_id.as_deref()
-    }
-
     pub fn client_id(&self) -> Option<&str> {
         self.client_id.as_deref()
     }

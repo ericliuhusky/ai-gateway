@@ -40,7 +40,6 @@ impl OpenAiClient {
     pub async fn account_responses_passthrough(
         &self,
         access_token: &str,
-        upstream_account_id: Option<&str>,
         body: String,
         stream: bool,
     ) -> Result<Response, String> {
@@ -48,7 +47,6 @@ impl OpenAiClient {
             .account_request(
                 self.http.post(format!("{OPENAI_CODEX_BASE_URL}/responses")),
                 access_token,
-                upstream_account_id,
             )
             .header("content-type", "application/json")
             .header(
@@ -76,14 +74,12 @@ impl OpenAiClient {
     pub async fn account_models(
         &self,
         access_token: &str,
-        upstream_account_id: Option<&str>,
         client_version: Option<&str>,
     ) -> Result<Response, String> {
         let mut request = self
             .account_request(
                 self.http.get(format!("{OPENAI_CODEX_BASE_URL}/models")),
                 access_token,
-                upstream_account_id,
             )
             .header("accept", "application/json");
         if let Some(client_version) = client_version {
@@ -92,18 +88,13 @@ impl OpenAiClient {
         self.send(request).await
     }
 
-    pub async fn account_usage(
-        &self,
-        access_token: &str,
-        upstream_account_id: Option<&str>,
-    ) -> Result<Response, String> {
+    pub async fn account_usage(&self, access_token: &str) -> Result<Response, String> {
         let request = self.account_request(
             self.http.get(format!(
                 "{}/wham/usage",
                 OPENAI_CODEX_BASE_URL.trim_end_matches("/codex")
             )),
             access_token,
-            upstream_account_id,
         );
         self.send(request).await
     }
@@ -125,20 +116,8 @@ impl OpenAiClient {
         }
     }
 
-    fn account_request(
-        &self,
-        request: RequestBuilder,
-        access_token: &str,
-        upstream_account_id: Option<&str>,
-    ) -> RequestBuilder {
-        let request = request
-            .bearer_auth(access_token)
-            .header("user-agent", "CodexBar");
-        if let Some(upstream_account_id) = upstream_account_id.filter(|value| !value.is_empty()) {
-            request.header("ChatGPT-Account-Id", upstream_account_id)
-        } else {
-            request
-        }
+    fn account_request(&self, request: RequestBuilder, access_token: &str) -> RequestBuilder {
+        request.bearer_auth(access_token)
     }
 }
 
@@ -153,7 +132,6 @@ mod tests {
             .account_request(
                 client.http.get(format!("{OPENAI_CODEX_BASE_URL}/models")),
                 "token",
-                None,
             )
             .query(&[("client_version", "test")])
             .build()

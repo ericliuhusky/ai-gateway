@@ -466,7 +466,7 @@ pub async fn get_provider_quota(
         })?;
         let upstream = state
             .upstream
-            .account_usage(access_token, provider_record.upstream_account_id())
+            .account_usage(access_token)
             .await
             .map_err(AppError::upstream_message)?;
         let raw: Value = upstream.json().await.map_err(AppError::upstream)?;
@@ -720,7 +720,6 @@ async fn responses_inner(
         let upstream_client = state.upstream.clone();
         let upstream_result = upstream_client.account_responses_passthrough(
             access_token,
-            provider_record.upstream_account_id(),
             request_body,
             request_stream,
         );
@@ -1229,11 +1228,7 @@ async fn fetch_provider_models(
         let client_version = DEFAULT_CODEX_CLIENT_VERSION;
         let upstream = state
             .upstream
-            .account_models(
-                access_token,
-                provider_record.upstream_account_id(),
-                Some(client_version),
-            )
+            .account_models(access_token, Some(client_version))
             .await
             .map_err(AppError::upstream_message)?;
         let raw: Value = upstream.json().await.map_err(AppError::upstream)?;
