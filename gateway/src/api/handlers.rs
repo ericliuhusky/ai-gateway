@@ -16,10 +16,7 @@ use crate::{
     openai_tokens::OpenAiTokenService,
     store::{IssueStore, ModelStore, ProviderStore, RouteStore, issue_store::truncate_issue_body},
     support::time::now_unix,
-    upstream::{
-        OPENAI_CODEX_BASE_URL, OpenAiEndpoint, OpenAiRequestBody, OpenAiRequestBuilder,
-        PrivateOpenAiRequestBuilder, PublicOpenAiRequestBuilder, UpstreamClient, responses_api_url,
-    },
+    upstream::{OPENAI_CODEX_BASE_URL, UpstreamClient, responses_api_url},
 };
 use async_stream::stream;
 use axum::{
@@ -467,15 +464,9 @@ pub async fn get_provider_quota(
                 provider.name
             ))
         })?;
-        let private_usage = PrivateOpenAiRequestBuilder {
-            base_url: OPENAI_CODEX_BASE_URL,
-            access_token,
-            upstream_account_id: provider_record.upstream_account_id(),
-            client_version: None,
-        };
         let upstream = state
             .upstream
-            .openai_send(&private_usage, OpenAiEndpoint::Usage)
+            .account_usage(access_token, provider_record.upstream_account_id())
             .await
             .map_err(AppError::upstream_message)?;
         let raw: Value = upstream.json().await.map_err(AppError::upstream)?;
@@ -726,17 +717,17 @@ async fn responses_inner(
                 routed_provider.name
             ))
         })?;
-        let private_responses = PrivateOpenAiRequestBuilder {
-            base_url: OPENAI_CODEX_BASE_URL,
+        let upstream_client = state.upstream.clone();
+        let upstream_result = upstream_client.account_responses_passthrough(
             access_token,
-            upstream_account_id: provider_record.upstream_account_id(),
-            client_version: None,
-        };
+            provider_record.upstream_account_id(),
+            request_body,
+            request_stream,
+        );
         responses_passthrough_inner(
             state,
-            private_responses,
+            upstream_result,
             request_stream,
-            request_body,
             failure_context.with_base_url(OPENAI_CODEX_BASE_URL),
         )
         .await?
@@ -744,45 +735,27 @@ async fn responses_inner(
         let native_provider = routed_provider.record.as_ref().ok_or_else(|| {
             AppError::bad_request(format!("未知供应商: {}", routed_provider.name))
         })?;
-        let public_responses = PublicOpenAiRequestBuilder {
-            base_url: native_provider.base_url.as_str(),
-            api_key: native_provider.api_key.as_str(),
-        };
-        let failure_context = failure_context.with_base_url(public_responses.base_url());
-        responses_passthrough_inner(
-            state,
-            public_responses,
-            request_stream,
+        let failure_context = failure_context.with_base_url(native_provider.base_url.as_str());
+        let upstream_client = state.upstream.clone();
+        let upstream_result = upstream_client.api_responses_passthrough(
+            native_provider.base_url.as_str(),
+            native_provider.api_key.as_str(),
             request_body,
-            failure_context,
-        )
-        .await?
+            request_stream,
+        );
+        responses_passthrough_inner(state, upstream_result, request_stream, failure_context).await?
     };
     let _ = headers;
     Ok(response)
 }
 
-async fn responses_passthrough_inner<B>(
+async fn responses_passthrough_inner(
     state: AppState,
-    builder: B,
+    upstream_result: impl std::future::Future<Output = Result<reqwest::Response, String>>,
     request_stream: bool,
-    request_body: String,
     failure_context: GatewayFailureContext,
-) -> Result<Response, AppError>
-where
-    B: OpenAiRequestBuilder,
-{
-    let upstream = match state
-        .upstream
-        .openai_send_passthrough(
-            &builder,
-            OpenAiEndpoint::Responses {
-                body: OpenAiRequestBody::Raw(request_body),
-                stream: request_stream,
-            },
-        )
-        .await
-    {
+) -> Result<Response, AppError> {
+    let upstream = match upstream_result.await {
         Ok(response) => response,
         Err(error) => {
             record_gateway_issue(
@@ -1254,15 +1227,13 @@ async fn fetch_provider_models(
             ))
         })?;
         let client_version = DEFAULT_CODEX_CLIENT_VERSION;
-        let private_models = PrivateOpenAiRequestBuilder {
-            base_url: OPENAI_CODEX_BASE_URL,
-            access_token,
-            upstream_account_id: provider_record.upstream_account_id(),
-            client_version: Some(client_version),
-        };
         let upstream = state
             .upstream
-            .openai_send(&private_models, OpenAiEndpoint::Models)
+            .account_models(
+                access_token,
+                provider_record.upstream_account_id(),
+                Some(client_version),
+            )
             .await
             .map_err(AppError::upstream_message)?;
         let raw: Value = upstream.json().await.map_err(AppError::upstream)?;
@@ -1273,13 +1244,12 @@ async fn fetch_provider_models(
         .record
         .as_ref()
         .ok_or_else(|| AppError::bad_request(format!("未知供应商: {}", provider.name)))?;
-    let public_models = PublicOpenAiRequestBuilder {
-        base_url: native_provider.base_url.as_str(),
-        api_key: native_provider.api_key.as_str(),
-    };
     let upstream = state
         .upstream
-        .openai_send(&public_models, OpenAiEndpoint::Models)
+        .api_models(
+            native_provider.base_url.as_str(),
+            native_provider.api_key.as_str(),
+        )
         .await
         .map_err(AppError::upstream_message)?;
     let raw: Value = upstream.json().await.map_err(AppError::upstream)?;

@@ -1,7 +1,4 @@
-use crate::upstream::{
-    openai::{OpenAiClient, OpenAiEndpoint, OpenAiRequestBuilder},
-    shared::build_http_client,
-};
+use crate::upstream::{openai::OpenAiClient, shared::build_http_client};
 use reqwest::Response;
 
 #[derive(Clone, Debug)]
@@ -17,25 +14,52 @@ impl UpstreamClient {
         }
     }
 
-    pub async fn openai_send<B>(
+    pub async fn api_responses_passthrough(
         &self,
-        builder: &B,
-        endpoint: OpenAiEndpoint,
-    ) -> Result<Response, String>
-    where
-        B: OpenAiRequestBuilder + ?Sized,
-    {
-        self.openai.send(builder, endpoint).await
+        base_url: &str,
+        api_key: &str,
+        body: String,
+        stream: bool,
+    ) -> Result<Response, String> {
+        self.openai
+            .send_api_responses_passthrough(base_url, api_key, body, stream)
+            .await
     }
 
-    pub async fn openai_send_passthrough<B>(
+    pub async fn account_responses_passthrough(
         &self,
-        builder: &B,
-        endpoint: OpenAiEndpoint,
-    ) -> Result<Response, String>
-    where
-        B: OpenAiRequestBuilder + ?Sized,
-    {
-        self.openai.send_passthrough(builder, endpoint).await
+        access_token: &str,
+        upstream_account_id: Option<&str>,
+        body: String,
+        stream: bool,
+    ) -> Result<Response, String> {
+        self.openai
+            .send_account_responses_passthrough(access_token, upstream_account_id, body, stream)
+            .await
+    }
+
+    pub async fn api_models(&self, base_url: &str, api_key: &str) -> Result<Response, String> {
+        self.openai.send_api_models(base_url, api_key).await
+    }
+
+    pub async fn account_models(
+        &self,
+        access_token: &str,
+        upstream_account_id: Option<&str>,
+        client_version: Option<&str>,
+    ) -> Result<Response, String> {
+        self.openai
+            .send_account_models(access_token, upstream_account_id, client_version)
+            .await
+    }
+
+    pub async fn account_usage(
+        &self,
+        access_token: &str,
+        upstream_account_id: Option<&str>,
+    ) -> Result<Response, String> {
+        self.openai
+            .send_account_usage(access_token, upstream_account_id)
+            .await
     }
 }

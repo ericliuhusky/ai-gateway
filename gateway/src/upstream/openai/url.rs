@@ -21,19 +21,9 @@ pub fn models_api_url(base_url: &str) -> String {
     base_api_url(base_url, "models")
 }
 
-pub fn usage_api_url(base_url: &str) -> String {
-    base_api_url(
-        base_url
-            .trim_end_matches('/')
-            .strip_suffix("/codex")
-            .unwrap_or(base_url),
-        "wham/usage",
-    )
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{base_api_url, usage_api_url};
+    use super::base_api_url;
 
     #[test]
     fn base_api_url_test() {
@@ -97,14 +87,5 @@ mod tests {
             "https://example.com/backend-api/codex/endpoint"
         );
 
-        assert_eq!(
-            usage_api_url("https://example.com/backend-api/codex"),
-            "https://example.com/backend-api/wham/usage"
-        );
-
-        assert_eq!(
-            usage_api_url("https://example.com/backend-api/codex/"),
-            "https://example.com/backend-api/wham/usage"
-        );
     }
 }
