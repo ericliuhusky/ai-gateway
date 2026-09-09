@@ -19,7 +19,7 @@ impl OpenAiClient {
         body: String,
         stream: bool,
     ) -> Result<Response, String> {
-        self.send_passthrough(
+        self.send(
             self.http
                 .post(responses_api_url(base_url))
                 .bearer_auth(api_key)
@@ -60,7 +60,7 @@ impl OpenAiClient {
                 },
             )
             .body(body);
-        self.send_passthrough(request).await
+        self.send(request).await
     }
 
     pub async fn api_models(&self, base_url: &str, api_key: &str) -> Result<Response, String> {
@@ -108,22 +108,20 @@ impl OpenAiClient {
         self.send(request).await
     }
 
-    async fn send_passthrough(&self, request: RequestBuilder) -> Result<Response, String> {
-        request
+    async fn send(&self, request: RequestBuilder) -> Result<Response, String> {
+        let response = request
             .send()
             .await
-            .map_err(|err| format!("OpenAI 请求失败: {err}"))
-    }
-
-    async fn send(&self, request: RequestBuilder) -> Result<Response, String> {
-        let response = self.send_passthrough(request).await?;
+            .map_err(|err| format!("[AI网关] 向供应商发送http请求失败: {err}"))?;
 
         if response.status().is_success() {
             Ok(response)
         } else {
             let status = response.status();
             let response_body = response.text().await.unwrap_or_default();
-            Err(format!("OpenAI 上游返回状态码 {status}: {response_body}"))
+            Err(format!(
+                "[AI网关] 供应商内部错误; {status}: {response_body}"
+            ))
         }
     }
 
