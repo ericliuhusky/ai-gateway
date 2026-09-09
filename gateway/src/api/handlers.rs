@@ -1,14 +1,10 @@
 use crate::{
     config::{Config, DEFAULT_CODEX_CLIENT_VERSION},
-    models::openai::responses::{
-        CodexUsageCredits, CodexUsageRateLimit, CodexUsageRateLimitWindow, CodexUsageResponse,
-    },
     models::{
         CreateProviderRequest, GatewayIssue, GatewayIssueRecord, ModelListItem, ModelListResponse,
-        ProviderAuthMode, ProviderQuotaCredits, ProviderQuotaResponse, ProviderQuotaSnapshot,
-        ProviderQuotaSummary, ProviderQuotaWindow, ProviderRecord, ProviderSummary, QuotaSource,
-        QuotaSupportStatus, SelectedRoute, UpdateSelectedModelRequest,
-        UpdateSelectedProviderRequest, UpdateSelectedReasoningEffortRequest,
+        ProviderAuthMode, ProviderRecord, ProviderSummary, SelectedRoute,
+        UpdateSelectedModelRequest, UpdateSelectedProviderRequest,
+        UpdateSelectedReasoningEffortRequest,
     },
     openai::{OPENAI_CODEX_BASE_URL, OpenAiClient, responses_api_url},
     openai_device_login::{
@@ -452,35 +448,32 @@ pub async fn list_providers(State(state): State<AppState>) -> Json<Value> {
 pub async fn get_provider_quota(
     State(state): State<AppState>,
     AxumPath(provider_id): AxumPath<String>,
-) -> Result<Json<ProviderQuotaResponse>, AppError> {
+) -> Result<Response, AppError> {
     let provider = resolve_provider_by_id(&state, &provider_id).await?;
-    let provider_summary = provider_summary_for_resolved(&state, &provider).await?;
+    if provider.auth_mode != ProviderAuthMode::Account {
+        return Err(AppError::bad_request(format!(
+            "供应商 `{}` 不支持账户额度查询",
+            provider.name
+        )));
+    }
 
-    let quota = if provider.auth_mode == ProviderAuthMode::Account {
-        let provider_record = resolve_provider_record_for_use(&state, &provider).await?;
-        let access_token = provider_record.access_token().ok_or_else(|| {
-            AppError::bad_request(format!(
-                "账户认证供应商 `{}` 缺少 access token",
-                provider.name
-            ))
-        })?;
-        let upstream = state
-            .upstream
-            .account_usage(access_token)
-            .await
-            .map_err(AppError::upstream_message)?;
-        let raw: Value = upstream.json().await.map_err(AppError::upstream)?;
-        let payload: CodexUsageResponse = serde_json::from_value(raw)
-            .map_err(|err| AppError::upstream_message(err.to_string()))?;
-        quota_from_openai_usage(payload)
-    } else {
-        unsupported_quota_summary(format!("供应商 `{}` 缺少供应商记录", provider.name))
-    };
+    let provider_record = resolve_provider_record_for_use(&state, &provider).await?;
+    let access_token = provider_record.access_token().ok_or_else(|| {
+        AppError::bad_request(format!(
+            "账户认证供应商 `{}` 缺少 access token",
+            provider.name
+        ))
+    })?;
+    let upstream = state
+        .upstream
+        .account_usage(access_token)
+        .await
+        .map_err(AppError::upstream_message)?;
+    let status = upstream.status();
+    let headers = upstream.headers().clone();
+    let body = upstream.bytes().await.map_err(AppError::upstream)?;
 
-    Ok(Json(ProviderQuotaResponse {
-        provider: provider_summary,
-        quota,
-    }))
+    build_passthrough_response(status, &headers, Body::from(body))
 }
 
 pub async fn list_models(
@@ -1502,104 +1495,6 @@ pub(super) fn provider_uses_openai_account(provider: &ResolvedProvider) -> bool 
 
 async fn hydrated_provider_summaries(state: &AppState) -> Vec<ProviderSummary> {
     state.providers.list().await
-}
-
-async fn provider_summary_for_resolved(
-    _state: &AppState,
-    provider: &ResolvedProvider,
-) -> Result<ProviderSummary, AppError> {
-    let record = provider
-        .record
-        .clone()
-        .ok_or_else(|| AppError::bad_request(format!("未知供应商: {}", provider.name)))?;
-    let name = record.name().to_string();
-    Ok(ProviderSummary {
-        id: record.id,
-        name,
-        auth_mode: record.auth_mode,
-        base_url: record.base_url,
-        account_email: record.email,
-        account_expires_at: record.expiry_timestamp,
-    })
-}
-
-fn unsupported_quota_summary(message: String) -> ProviderQuotaSummary {
-    ProviderQuotaSummary {
-        source: QuotaSource::Unsupported,
-        status: QuotaSupportStatus::Unsupported,
-        snapshot: None,
-        additional_snapshots: Vec::new(),
-        message: Some(message),
-    }
-}
-
-fn quota_from_openai_usage(payload: CodexUsageResponse) -> ProviderQuotaSummary {
-    ProviderQuotaSummary {
-        source: QuotaSource::ChatgptCodexUsageApi,
-        status: QuotaSupportStatus::Supported,
-        snapshot: Some(rate_limit_snapshot_from_payload(
-            Some("codex".to_string()),
-            None,
-            payload.rate_limit,
-            payload.credits,
-            Some(payload.plan_type.clone()),
-        )),
-        additional_snapshots: payload
-            .additional_rate_limits
-            .unwrap_or_default()
-            .into_iter()
-            .map(|details| {
-                rate_limit_snapshot_from_payload(
-                    Some(details.metered_feature),
-                    Some(details.limit_name),
-                    details.rate_limit,
-                    None,
-                    Some(payload.plan_type.clone()),
-                )
-            })
-            .collect(),
-        message: None,
-    }
-}
-
-fn rate_limit_snapshot_from_payload(
-    limit_id: Option<String>,
-    limit_name: Option<String>,
-    rate_limit: Option<CodexUsageRateLimit>,
-    credits: Option<CodexUsageCredits>,
-    plan_type: Option<String>,
-) -> ProviderQuotaSnapshot {
-    let (primary, secondary) = match rate_limit {
-        Some(details) => (
-            rate_limit_window_from_payload(details.primary_window),
-            rate_limit_window_from_payload(details.secondary_window),
-        ),
-        None => (None, None),
-    };
-
-    ProviderQuotaSnapshot {
-        limit_id,
-        limit_name,
-        primary,
-        secondary,
-        credits: credits.map(|details| ProviderQuotaCredits {
-            has_credits: details.has_credits,
-            unlimited: details.unlimited,
-            balance: details.balance,
-        }),
-        plan_type,
-    }
-}
-
-fn rate_limit_window_from_payload(
-    window: Option<CodexUsageRateLimitWindow>,
-) -> Option<ProviderQuotaWindow> {
-    let window = window?;
-    Some(ProviderQuotaWindow {
-        used_percent: f64::from(window.used_percent),
-        window_minutes: Some(i64::from(window.limit_window_seconds) / 60),
-        resets_at: Some(window.reset_at),
-    })
 }
 
 #[derive(Debug)]

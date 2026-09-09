@@ -44,32 +44,37 @@ export interface GatewayIssue {
   created_at: number;
 }
 
-export interface ProviderQuotaWindow {
+export interface CodexUsageRateLimitWindow {
   used_percent: number;
-  window_minutes?: number;
-  resets_at?: number;
+  limit_window_seconds: number;
+  reset_after_seconds: number;
+  reset_at: number;
 }
 
-export interface ProviderQuotaCredits {
+export interface CodexUsageRateLimit {
+  allowed: boolean;
+  limit_reached: boolean;
+  primary_window?: CodexUsageRateLimitWindow;
+  secondary_window?: CodexUsageRateLimitWindow;
+}
+
+export interface CodexUsageCredits {
   has_credits: boolean;
   unlimited: boolean;
-  balance?: string;
+  balance?: string | null;
 }
 
-export interface ProviderQuotaSnapshot {
-  limit_id?: string;
-  limit_name?: string;
-  primary?: ProviderQuotaWindow;
-  secondary?: ProviderQuotaWindow;
-  credits?: ProviderQuotaCredits;
-  plan_type?: string;
+export interface CodexUsageAdditionalRateLimit {
+  limit_name: string;
+  metered_feature: string;
+  rate_limit?: CodexUsageRateLimit;
 }
 
-export interface ProviderQuotaSummary {
-  status: "supported" | "unsupported";
-  snapshot?: ProviderQuotaSnapshot;
-  additional_snapshots?: ProviderQuotaSnapshot[];
-  message?: string;
+export interface CodexUsageResponse {
+  plan_type: string;
+  rate_limit?: CodexUsageRateLimit;
+  credits?: CodexUsageCredits;
+  additional_rate_limits?: CodexUsageAdditionalRateLimit[];
 }
 
 export interface OfficialCodexAuthPayload {

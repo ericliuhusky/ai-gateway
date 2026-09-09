@@ -30,8 +30,8 @@ import type {
   GatewayModel,
   GatewayIssue,
   GatewayProvider,
-  ProviderQuotaSummary,
-  ProviderQuotaWindow,
+  CodexUsageRateLimitWindow,
+  CodexUsageResponse,
   ReasoningEffort,
   SelectedProvider,
   OpenAiDeviceLoginStart,
@@ -40,7 +40,7 @@ import type {
 const GATEWAY_ERROR_PREFIX = "AI网关错误：";
 const UPSTREAM_ERROR_PREFIX = "上游服务错误：";
 type Dialog = "provider" | "delete-provider" | null;
-type QuotaMap = Record<string, ProviderQuotaSummary | undefined>;
+type QuotaMap = Record<string, CodexUsageResponse | undefined>;
 type ErrorMap = Record<string, string | undefined>;
 function errorMessage(error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
@@ -62,13 +62,13 @@ function parseCodexAuthPayload(value: unknown): CodexAuthPayload | null {
   return supported ? value as CodexAuthPayload : null;
 }
 const NINEBOT_PRIVATE_DEPLOYMENT_PRESET = { name: "九号私有部署", baseUrl: "https://ai-service.segway-ninebot.com/v1" };
-function remaining(window: ProviderQuotaWindow) { return Math.min(100, Math.max(0, 100 - window.used_percent)); }
+function remaining(window: CodexUsageRateLimitWindow) { return Math.min(100, Math.max(0, 100 - window.used_percent)); }
 function quotaTone(value: number) { return value <= 15 ? "danger" : value <= 35 ? "warning" : "good"; }
-function resetLabel(window: ProviderQuotaWindow) {
-  if (!window.resets_at) return null;
-  const date = new Date(window.resets_at * 1000);
+function resetLabel(window: CodexUsageRateLimitWindow) {
+  if (!window.reset_at) return null;
+  const date = new Date(window.reset_at * 1000);
   const time = `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
-  if (window.window_minutes === 300) return `${time} 重置`;
+  if (window.limit_window_seconds === 5 * 60 * 60) return `${time} 重置`;
   const weekdays = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
   return `${date.getMonth() + 1}月${date.getDate()}日 ${weekdays[date.getDay()]} ${time} 重置`;
 }
@@ -521,7 +521,7 @@ function ProviderCard({
 }: {
   provider: GatewayProvider;
   selected: boolean;
-  quota?: ProviderQuotaSummary;
+  quota?: CodexUsageResponse;
   quotaError?: string;
   loadingQuota: boolean;
   deleting: boolean;
@@ -605,14 +605,13 @@ function QuotaPanel({
   loading,
   onRefresh,
 }: {
-  quota?: ProviderQuotaSummary;
+  quota?: CodexUsageResponse;
   error?: string;
   loading: boolean;
   onRefresh: () => void;
 }) {
-  const snapshot = quota?.snapshot;
-  const primary = snapshot?.primary;
-  const secondary = snapshot?.secondary;
+  const primary = quota?.rate_limit?.primary_window;
+  const secondary = quota?.rate_limit?.secondary_window;
 
   return (
     <ControlPanel icon={Gauge} title="额度窗口" actionLabel="刷新额度" loading={loading} onRefresh={onRefresh}>
@@ -620,8 +619,6 @@ function QuotaPanel({
         <div className="flex h-[68px] items-center justify-center text-xs text-slate-400">同步中…</div>
       ) : error ? (
         <div className="line-clamp-2 text-xs leading-5 text-red-500">{error}</div>
-      ) : quota?.status === "unsupported" ? (
-        <div className="text-xs leading-5 text-slate-400">{quota.message ?? "暂不支持额度快照"}</div>
       ) : primary || secondary ? (
         <div className="space-y-2.5">
           {primary ? <QuotaRow title={windowTitle(primary, "五小时窗口")} window={primary} /> : null}
@@ -698,20 +695,21 @@ function ControlPanel({
   );
 }
 
-function windowTitle(window: ProviderQuotaWindow, fallback: string) {
-  if (!window.window_minutes) return fallback;
-  if (window.window_minutes === 300) return "五小时窗口";
-  if (window.window_minutes >= 7 * 24 * 60) return "周窗口";
-  if (window.window_minutes % (24 * 60) === 0) {
-    return `${window.window_minutes / (24 * 60)} 天窗口`;
+function windowTitle(window: CodexUsageRateLimitWindow, fallback: string) {
+  const windowMinutes = Math.round(window.limit_window_seconds / 60);
+  if (!windowMinutes) return fallback;
+  if (windowMinutes === 300) return "五小时窗口";
+  if (windowMinutes >= 7 * 24 * 60) return "周窗口";
+  if (windowMinutes % (24 * 60) === 0) {
+    return `${windowMinutes / (24 * 60)} 天窗口`;
   }
-  if (window.window_minutes % 60 === 0) {
-    return `${window.window_minutes / 60} 小时窗口`;
+  if (windowMinutes % 60 === 0) {
+    return `${windowMinutes / 60} 小时窗口`;
   }
-  return `${window.window_minutes} 分钟窗口`;
+  return `${windowMinutes} 分钟窗口`;
 }
 
-function QuotaRow({ title, window }: { title: string; window: ProviderQuotaWindow }) {
+function QuotaRow({ title, window }: { title: string; window: CodexUsageRateLimitWindow }) {
   const value = remaining(window);
   const tone = quotaTone(value);
   return (
@@ -745,17 +743,12 @@ function QuotaRow({ title, window }: { title: string; window: ProviderQuotaWindo
   );
 }
 
-function QuotaFootnote({ quota }: { quota: ProviderQuotaSummary }) {
-  const snapshots = [
-    ...(quota.snapshot ? [quota.snapshot] : []),
-    ...(quota.additional_snapshots ?? []),
-  ];
-  const credits = snapshots.map((snapshot) => snapshot.credits).filter(Boolean);
-  const unlimited = credits.some((item) => item?.unlimited);
-  const balance = credits.find((item) => item?.balance)?.balance;
+function QuotaFootnote({ quota }: { quota: CodexUsageResponse }) {
+  const unlimited = quota.credits?.unlimited;
+  const balance = quota.credits?.balance;
   const parts = [
     unlimited ? "账户余额无限" : balance ? `余额 ${balance}` : null,
-    quota.snapshot?.plan_type ? `Plan ${quota.snapshot.plan_type}` : null,
+    quota.plan_type ? `Plan ${quota.plan_type}` : null,
   ].filter(Boolean);
   return parts.length ? <div className="text-[10px] text-slate-400">{parts.join(" · ")}</div> : null;
 }
