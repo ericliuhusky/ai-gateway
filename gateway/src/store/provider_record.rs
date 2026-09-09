@@ -29,12 +29,24 @@ impl TryFrom<ProviderRecord> for Provider {
                     .ok_or_else(|| "API Key 供应商缺少 api_key".to_string())?,
             },
             ProviderAuthMode::Account => ProviderCredentials::Account {
-                email: record.email,
-                access_token: record.access_token,
-                refresh_token: record.refresh_token,
-                expiry_timestamp: record.expiry_timestamp,
-                client_id: record.client_id,
-                account_id: record.account_id,
+                email: record
+                    .email
+                    .ok_or_else(|| "账户供应商缺少 email".to_string())?,
+                access_token: record
+                    .access_token
+                    .ok_or_else(|| "账户供应商缺少 access_token".to_string())?,
+                refresh_token: record
+                    .refresh_token
+                    .ok_or_else(|| "账户供应商缺少 refresh_token".to_string())?,
+                expiry_timestamp: record
+                    .expiry_timestamp
+                    .ok_or_else(|| "账户供应商缺少 expiry_timestamp".to_string())?,
+                client_id: record
+                    .client_id
+                    .ok_or_else(|| "账户供应商缺少 client_id".to_string())?,
+                account_id: record
+                    .account_id
+                    .ok_or_else(|| "账户供应商缺少 account_id".to_string())?,
             },
         };
         Ok(Provider {
@@ -74,12 +86,12 @@ impl From<&Provider> for ProviderRecord {
                 auth_mode: ProviderAuthMode::Account,
                 base_url: None,
                 api_key: None,
-                email: email.clone(),
-                access_token: access_token.clone(),
-                refresh_token: refresh_token.clone(),
-                expiry_timestamp: *expiry_timestamp,
-                client_id: client_id.clone(),
-                account_id: account_id.clone(),
+                email: Some(email.clone()),
+                access_token: Some(access_token.clone()),
+                refresh_token: Some(refresh_token.clone()),
+                expiry_timestamp: Some(*expiry_timestamp),
+                client_id: Some(client_id.clone()),
+                account_id: Some(account_id.clone()),
             },
         }
     }

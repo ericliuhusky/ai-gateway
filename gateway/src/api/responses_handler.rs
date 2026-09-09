@@ -39,12 +39,7 @@ pub async fn responses(
 
     let upstream_result = if routed_provider.auth_mode() == ProviderAuthMode::Account {
         let provider_record = acquire_provider_for_use(&state, routed_provider.id()).await?;
-        let access_token = provider_record.access_token().ok_or_else(|| {
-            AppError::bad_request(format!(
-                "账户认证供应商 `{}` 缺少 access token",
-                routed_provider.name()
-            ))
-        })?;
+        let access_token = provider_record.account_access_token();
         state
             .upstream
             .account_responses_passthrough(access_token, request_body, &headers)

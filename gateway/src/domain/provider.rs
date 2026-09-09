@@ -16,12 +16,12 @@ pub enum ProviderCredentials {
         api_key: String,
     },
     Account {
-        email: Option<String>,
-        access_token: Option<String>,
-        refresh_token: Option<String>,
-        expiry_timestamp: Option<i64>,
-        client_id: Option<String>,
-        account_id: Option<String>,
+        email: String,
+        access_token: String,
+        refresh_token: String,
+        expiry_timestamp: i64,
+        client_id: String,
+        account_id: String,
     },
 }
 
@@ -65,7 +65,7 @@ impl Provider {
     pub fn email(&self) -> Option<&str> {
         match &self.credentials {
             ProviderCredentials::ApiKey { .. } => None,
-            ProviderCredentials::Account { email, .. } => email.as_deref(),
+            ProviderCredentials::Account { email, .. } => Some(email),
         }
     }
 
@@ -74,28 +74,30 @@ impl Provider {
             ProviderCredentials::ApiKey { .. } => None,
             ProviderCredentials::Account {
                 expiry_timestamp, ..
-            } => *expiry_timestamp,
+            } => Some(*expiry_timestamp),
         }
     }
 
-    pub fn access_token(&self) -> Option<&str> {
+    pub fn account_access_token(&self) -> &str {
         match &self.credentials {
-            ProviderCredentials::ApiKey { .. } => None,
-            ProviderCredentials::Account { access_token, .. } => access_token.as_deref(),
+            ProviderCredentials::Account { access_token, .. } => access_token,
+            ProviderCredentials::ApiKey { .. } => {
+                unreachable!("account access token requested for an API key provider")
+            }
         }
     }
 
     pub fn refresh_token(&self) -> Option<&str> {
         match &self.credentials {
             ProviderCredentials::ApiKey { .. } => None,
-            ProviderCredentials::Account { refresh_token, .. } => refresh_token.as_deref(),
+            ProviderCredentials::Account { refresh_token, .. } => Some(refresh_token),
         }
     }
 
     pub fn client_id(&self) -> Option<&str> {
         match &self.credentials {
             ProviderCredentials::ApiKey { .. } => None,
-            ProviderCredentials::Account { client_id, .. } => client_id.as_deref(),
+            ProviderCredentials::Account { client_id, .. } => Some(client_id),
         }
     }
 
@@ -105,7 +107,7 @@ impl Provider {
             ..
         } = &mut self.credentials
         {
-            *current = Some(expiry_timestamp);
+            *current = expiry_timestamp;
         }
     }
 
@@ -115,7 +117,7 @@ impl Provider {
             ..
         } = &mut self.credentials
         {
-            *current = Some(access_token);
+            *current = access_token;
         }
     }
 
@@ -125,7 +127,7 @@ impl Provider {
             ..
         } = &mut self.credentials
         {
-            *current = Some(refresh_token);
+            *current = refresh_token;
         }
     }
 
@@ -141,12 +143,12 @@ impl Provider {
             id: Uuid::new_v4().to_string(),
             name: None,
             credentials: ProviderCredentials::Account {
-                email: Some(email),
-                access_token: Some(access_token),
-                refresh_token: Some(refresh_token),
-                expiry_timestamp: Some(expiry_timestamp),
-                client_id,
-                account_id,
+                email,
+                access_token,
+                refresh_token,
+                expiry_timestamp,
+                client_id: client_id.unwrap_or_default(),
+                account_id: account_id.unwrap_or_default(),
             },
         }
     }

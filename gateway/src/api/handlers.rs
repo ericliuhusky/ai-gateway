@@ -396,12 +396,7 @@ pub async fn get_provider_quota(
     }
 
     let provider_record = acquire_provider_for_use(&state, provider.id()).await?;
-    let access_token = provider_record.access_token().ok_or_else(|| {
-        AppError::bad_request(format!(
-            "账户认证供应商 `{}` 缺少 access token",
-            provider.name()
-        ))
-    })?;
+    let access_token = provider_record.account_access_token();
     let upstream = state
         .upstream
         .account_usage(access_token)
@@ -658,12 +653,7 @@ async fn fetch_provider_models(
 ) -> Result<reqwest::Response, AppError> {
     if provider.auth_mode() == ProviderAuthMode::Account {
         let provider_record = acquire_provider_for_use(state, provider.id()).await?;
-        let access_token = provider_record.access_token().ok_or_else(|| {
-            AppError::bad_request(format!(
-                "账户认证供应商 `{}` 缺少 access token",
-                provider.name()
-            ))
-        })?;
+        let access_token = provider_record.account_access_token();
         let client_version = DEFAULT_CODEX_CLIENT_VERSION;
         let upstream = state
             .upstream
