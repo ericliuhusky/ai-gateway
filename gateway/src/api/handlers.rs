@@ -13,12 +13,11 @@ use crate::{
     store::{ProviderStore, RouteStore},
 };
 use axum::{
-    body::{Body, Bytes},
+    body::Body,
     extract::{Path as AxumPath, Query, State},
     http::{HeaderMap, HeaderName, StatusCode},
     response::{IntoResponse, Json, Response},
 };
-use futures_util::StreamExt;
 use reqwest::Client;
 use serde::Deserialize;
 use serde::Serialize;
@@ -587,79 +586,6 @@ pub async fn clear_selected_reasoning_effort(
     })))
 }
 
-pub async fn responses(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Result<Response, AppError> {
-    let route = selected_route(&state).await?;
-    let provider_id = route
-        .provider_id
-        .as_deref()
-        .ok_or_else(no_provider_selected_error)?;
-    let routed_provider = resolve_provider_by_id(&state, provider_id).await?;
-    let has_overrides = route.selected_model.is_some() || route.selected_reasoning_effort.is_some();
-    let request_body = if has_overrides {
-        let mut request_json: Value = serde_json::from_slice(&body)
-            .map_err(|err| AppError::bad_request(format!("无效的请求 JSON: {err}")))?;
-        apply_responses_route_overrides(&mut request_json, &route)?;
-        Bytes::from(request_json.to_string())
-    } else {
-        body
-    };
-
-    let upstream_result = if routed_provider.auth_mode == ProviderAuthMode::Account {
-        if !provider_uses_openai_account(&routed_provider) {
-            return Err(AppError::bad_request(format!(
-                "账户认证供应商 `{}` 暂不支持",
-                routed_provider.name
-            )));
-        }
-        let provider_record = resolve_provider_record_for_use(&state, &routed_provider).await?;
-        let access_token = provider_record.access_token().ok_or_else(|| {
-            AppError::bad_request(format!(
-                "账户认证供应商 `{}` 缺少 access token",
-                routed_provider.name
-            ))
-        })?;
-        state
-            .upstream
-            .account_responses_passthrough(access_token, request_body, &headers)
-            .await
-    } else {
-        let native_provider = routed_provider.record.as_ref().ok_or_else(|| {
-            AppError::bad_request(format!("未知供应商: {}", routed_provider.name))
-        })?;
-        state
-            .upstream
-            .api_responses_passthrough(
-                native_provider.base_url.as_str(),
-                native_provider.api_key.as_str(),
-                request_body,
-                &headers,
-            )
-            .await
-    };
-    responses_passthrough_inner(upstream_result)
-}
-
-fn responses_passthrough_inner(
-    upstream_result: Result<reqwest::Response, String>,
-) -> Result<Response, AppError> {
-    let upstream = upstream_result.map_err(AppError::upstream_message)?;
-    let upstream_status = upstream.status();
-    let upstream_headers = upstream.headers().clone();
-    let output = upstream
-        .bytes_stream()
-        .map(|result| result.map_err(std::io::Error::other));
-
-    build_passthrough_response(
-        upstream_status,
-        &upstream_headers,
-        Body::from_stream(output),
-    )
-}
-
 async fn resolve_selected_provider(state: &AppState) -> Result<ResolvedProvider, AppError> {
     let route = selected_route(state).await?;
     if let Some(provider_id) = route.provider_id {
@@ -668,11 +594,11 @@ async fn resolve_selected_provider(state: &AppState) -> Result<ResolvedProvider,
     Err(no_provider_selected_error())
 }
 
-fn no_provider_selected_error() -> AppError {
+pub(super) fn no_provider_selected_error() -> AppError {
     AppError::bad_request("尚未选择供应商；请先调用 PUT /selected-provider")
 }
 
-async fn selected_route(state: &AppState) -> Result<SelectedRoute, AppError> {
+pub(super) async fn selected_route(state: &AppState) -> Result<SelectedRoute, AppError> {
     Ok(state.routes.get().await)
 }
 
@@ -683,32 +609,6 @@ fn route_payload(route: SelectedRoute) -> Value {
         "selected_reasoning_effort": route.selected_reasoning_effort,
         "updated_at": route.updated_at,
     })
-}
-
-fn apply_responses_route_overrides(
-    request: &mut Value,
-    route: &SelectedRoute,
-) -> Result<(), AppError> {
-    let request = request
-        .as_object_mut()
-        .ok_or_else(|| AppError::bad_request("请求 JSON 必须是对象"))?;
-
-    if let Some(model) = route.selected_model.as_ref() {
-        request.insert("model".to_string(), Value::String(model.clone()));
-    }
-    if let Some(effort) = route.selected_reasoning_effort.as_deref() {
-        let reasoning = request
-            .entry("reasoning".to_string())
-            .or_insert_with(|| json!({}));
-        if !reasoning.is_object() {
-            *reasoning = json!({});
-        }
-        reasoning
-            .as_object_mut()
-            .expect("reasoning object was just initialized")
-            .insert("effort".to_string(), Value::String(effort.to_string()));
-    }
-    Ok(())
 }
 
 async fn update_route(
@@ -745,7 +645,7 @@ fn should_skip_passthrough_header(name: &HeaderName) -> bool {
     )
 }
 
-fn build_passthrough_response(
+pub(super) fn build_passthrough_response(
     status: StatusCode,
     headers: &HeaderMap,
     body: Body,
@@ -832,7 +732,7 @@ pub(super) struct ResolvedProvider {
     pub(super) record: Option<ProviderRecord>,
 }
 
-async fn resolve_provider_by_id(
+pub(super) async fn resolve_provider_by_id(
     state: &AppState,
     provider_id: &str,
 ) -> Result<ResolvedProvider, AppError> {
@@ -852,7 +752,7 @@ fn resolved_provider_from_record(record: ProviderRecord) -> ResolvedProvider {
     }
 }
 
-async fn resolve_provider_record_for_use(
+pub(super) async fn resolve_provider_record_for_use(
     state: &AppState,
     provider: &ResolvedProvider,
 ) -> Result<ProviderRecord, AppError> {
@@ -866,14 +766,6 @@ async fn resolve_provider_record_for_use(
         .acquire_by_id(&state.openai_tokens, provider_id)
         .await
         .map_err(AppError::bad_request)
-}
-
-pub(super) fn provider_uses_openai_account(provider: &ResolvedProvider) -> bool {
-    provider
-        .record
-        .as_ref()
-        .map(|record| record.auth_mode == ProviderAuthMode::Account)
-        .unwrap_or(false)
 }
 
 async fn hydrated_provider_summaries(state: &AppState) -> Vec<ProviderSummary> {
@@ -894,7 +786,7 @@ enum AppErrorSource {
 }
 
 impl AppError {
-    fn bad_request(message: impl Into<String>) -> Self {
+    pub(super) fn bad_request(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::BAD_REQUEST,
             message: message.into(),
@@ -902,7 +794,7 @@ impl AppError {
         }
     }
 
-    fn upstream(error: reqwest::Error) -> Self {
+    pub(super) fn upstream(error: reqwest::Error) -> Self {
         Self {
             status: StatusCode::BAD_GATEWAY,
             message: error.to_string(),
@@ -910,7 +802,7 @@ impl AppError {
         }
     }
 
-    fn upstream_message(message: impl Into<String>) -> Self {
+    pub(super) fn upstream_message(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::BAD_GATEWAY,
             message: message.into(),
@@ -918,7 +810,7 @@ impl AppError {
         }
     }
 
-    fn internal(message: impl Into<String>) -> Self {
+    pub(super) fn internal(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             message: message.into(),

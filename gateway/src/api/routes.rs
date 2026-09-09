@@ -1,10 +1,11 @@
 use super::AppState;
+use super::responses_handler::responses;
 use crate::api::handlers::{
     add_provider, cancel_openai_device_login, clear_selected_model,
     clear_selected_reasoning_effort, delete_provider, gateway_status, get_provider_quota,
     get_route, get_selected_model, get_selected_reasoning_effort, healthz, import_openai_token,
-    list_models, list_providers, poll_openai_device_login, refresh_openai_provider, responses,
-    set_route, set_selected_model, set_selected_reasoning_effort, start_openai_device_login,
+    list_models, list_providers, poll_openai_device_login, refresh_openai_provider, set_route,
+    set_selected_model, set_selected_reasoning_effort, start_openai_device_login,
 };
 use axum::{
     Router,
