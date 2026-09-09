@@ -1,6 +1,5 @@
 mod api;
 mod config;
-mod control;
 mod models;
 mod openai;
 mod openai_device_login;
@@ -23,9 +22,7 @@ use std::{
 use axum::http::{Method, header::ACCEPT};
 use openai::{OpenAiClient, build_http_client};
 use serde_json::Value;
-use store::{IssueStore, ModelStore, ProviderStore, RouteStore};
-
-pub use control::GatewayRuntime;
+use store::{IssueStore, ProviderStore, RouteStore};
 
 pub const LOCAL_GATEWAY_URL: &str = "http://127.0.0.1:42401/v1";
 pub const LOCAL_API_ROOT: &str = "http://127.0.0.1:42401";
@@ -316,8 +313,6 @@ async fn initialize_local_gateway() -> Result<AppState, String> {
     providers.load().await?;
     let routes = RouteStore::new(config.clone())?;
     routes.load().await?;
-    let models = ModelStore::new(config.clone())?;
-    let gateway_runtime = GatewayRuntime::new(true);
     let state = AppState {
         _client: Client::new(),
         _config: config.clone(),
@@ -325,10 +320,8 @@ async fn initialize_local_gateway() -> Result<AppState, String> {
         openai_device_login: OpenAiDeviceLoginService::new(),
         providers,
         routes,
-        models,
         issues: IssueStore::new(config.clone())?,
         upstream: OpenAiClient::new(build_http_client()),
-        gateway_runtime,
     };
     Ok(state)
 }

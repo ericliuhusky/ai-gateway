@@ -25,6 +25,25 @@ function gatewayRequest<T>(
   });
 }
 
+function modelId(value: unknown): string | undefined {
+  if (typeof value === "string") return value;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const entry = value as Record<string, unknown>;
+  for (const key of ["slug", "id", "model", "name"]) {
+    if (typeof entry[key] === "string" && entry[key].trim()) return entry[key] as string;
+  }
+  return undefined;
+}
+
+function modelEntries(payload: unknown): unknown[] {
+  if (Array.isArray(payload)) return payload;
+  if (!payload || typeof payload !== "object") return [];
+  const record = payload as Record<string, unknown>;
+  if (Array.isArray(record.data)) return record.data;
+  if (Array.isArray(record.models)) return record.models;
+  return [];
+}
+
 export const gatewayApi = {
   async gatewayIssues(limit = 200) {
     const payload = await gatewayRequest<{ issues: GatewayIssue[] }>(
@@ -45,7 +64,7 @@ export const gatewayApi = {
   async providers() { const payload = await gatewayRequest<{ providers: GatewayProvider[] }>("GET", "/management/providers"); return payload.providers; },
   async selectedProvider() { const payload = await gatewayRequest<{ selected_provider: SelectedProvider }>("GET", "/management/selected-provider"); return payload.selected_provider; },
   async selectProvider(providerId: string) { const payload = await gatewayRequest<{ selected_provider: SelectedProvider }>("PUT", "/management/selected-provider", { provider_id: providerId }); return payload.selected_provider; },
-  async models(providerId?: string, force = false) { const query = new URLSearchParams(); if (providerId) query.set("provider_id", providerId); if (force) query.set("force", "true"); const payload = await gatewayRequest<{ data: GatewayModel[] }>("GET", `/v1/models${query.size ? `?${query.toString()}` : ""}`); return payload.data; },
+  async models(providerId?: string) { const query = new URLSearchParams(); if (providerId) query.set("provider_id", providerId); const payload = await gatewayRequest<unknown>("GET", `/v1/models${query.size ? `?${query.toString()}` : ""}`); const ids = modelEntries(payload).map(modelId).filter((id): id is string => Boolean(id)); return [...new Map(ids.map((id) => [id, { id }])).values()]; },
   async selectModel(model: string) { const payload = await gatewayRequest<{ selected_model: SelectedProvider }>("PUT", "/management/selected-model", { model }); return payload.selected_model; },
   async clearSelectedModel() { const payload = await gatewayRequest<{ selected_model: SelectedProvider }>("DELETE", "/management/selected-model"); return payload.selected_model; },
   async selectReasoningEffort(effort: ReasoningEffort) { const payload = await gatewayRequest<{ selected_reasoning_effort: SelectedProvider }>("PUT", "/management/selected-reasoning-effort", { effort }); return payload.selected_reasoning_effort; },

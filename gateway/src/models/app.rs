@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -121,19 +120,6 @@ pub struct GatewayIssueRecord {
     pub upstream_response: String,
     pub upstream_response_truncated: bool,
     pub created_at: i64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ModelListResponse {
-    pub object: String,
-    pub data: Vec<ModelListItem>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub models: Vec<Value>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ModelListItem {
-    pub id: String,
 }
 
 impl ProviderRecord {

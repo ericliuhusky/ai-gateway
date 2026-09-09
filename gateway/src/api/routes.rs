@@ -9,10 +9,7 @@ use crate::api::handlers::{
 };
 use axum::{
     Router,
-    extract::{DefaultBodyLimit, Request, State},
-    http::StatusCode,
-    middleware::{self, Next},
-    response::{IntoResponse, Response},
+    extract::DefaultBodyLimit,
     routing::{delete, get, post},
 };
 
@@ -69,10 +66,6 @@ pub fn build_management_router(state: AppState) -> Router {
                 .put(set_selected_reasoning_effort)
                 .delete(clear_selected_reasoning_effort),
         )
-        .route_layer(middleware::from_fn_with_state(
-            state.clone(),
-            management_runtime_scope,
-        ))
         .with_state(state);
     Router::new().nest("/management", management_routes)
 }
@@ -81,39 +74,8 @@ fn gateway_router(state: AppState) -> Router {
     Router::new()
         .route("/v1/models", get(list_models))
         .route("/v1/responses", post(responses))
-        .route_layer(middleware::from_fn_with_state(
-            state.clone(),
-            gateway_runtime_scope,
-        ))
         .layer(DefaultBodyLimit::max(RESPONSES_REQUEST_BODY_LIMIT))
         .with_state(state)
-}
-
-async fn management_runtime_scope(
-    State(state): State<AppState>,
-    request: Request,
-    next: Next,
-) -> Response {
-    let path = request.uri().path();
-    let allowed_while_stopped =
-        matches!(path, "/management/healthz" | "/management/control/status");
-    if state.gateway_runtime.enabled() || allowed_while_stopped {
-        next.run(request).await
-    } else {
-        (StatusCode::SERVICE_UNAVAILABLE, "AI Gateway 服务未启动").into_response()
-    }
-}
-
-async fn gateway_runtime_scope(
-    State(state): State<AppState>,
-    request: Request,
-    next: Next,
-) -> Response {
-    if state.gateway_runtime.enabled() {
-        next.run(request).await
-    } else {
-        (StatusCode::SERVICE_UNAVAILABLE, "AI Gateway 服务未启动").into_response()
-    }
 }
 
 #[cfg(test)]
@@ -126,7 +88,7 @@ mod tests {
         openai::{OpenAiClient, build_http_client},
         openai_device_login::OpenAiDeviceLoginService,
         openai_tokens::OpenAiTokenService,
-        store::{IssueStore, ModelStore, ProviderStore, RouteStore},
+        store::{IssueStore, ProviderStore, RouteStore},
     };
     use axum::{
         Json, Router,
@@ -356,7 +318,6 @@ mod tests {
         providers.load().await.expect("load providers");
         let routes = RouteStore::new(config.clone()).expect("create routes");
         routes.load().await.expect("load routes");
-        let models = ModelStore::new(config.clone()).expect("create models");
         let state = AppState {
             _client: Client::new(),
             _config: config.clone(),
@@ -364,10 +325,8 @@ mod tests {
             openai_device_login: OpenAiDeviceLoginService::new(),
             providers: providers.clone(),
             routes: routes.clone(),
-            models,
             issues: IssueStore::new(config.clone()).expect("create issues"),
             upstream: OpenAiClient::new(build_http_client()),
-            gateway_runtime: crate::GatewayRuntime::new(true),
         };
         (state, providers, routes)
     }

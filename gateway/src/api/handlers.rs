@@ -1,9 +1,8 @@
 use crate::{
     config::{Config, DEFAULT_CODEX_CLIENT_VERSION},
     models::{
-        CreateProviderRequest, GatewayIssue, GatewayIssueRecord, ModelListItem, ModelListResponse,
-        ProviderAuthMode, ProviderRecord, ProviderSummary, SelectedRoute,
-        UpdateSelectedModelRequest, UpdateSelectedProviderRequest,
+        CreateProviderRequest, GatewayIssue, GatewayIssueRecord, ProviderAuthMode, ProviderRecord,
+        ProviderSummary, SelectedRoute, UpdateSelectedModelRequest, UpdateSelectedProviderRequest,
         UpdateSelectedReasoningEffortRequest,
     },
     openai::{OPENAI_CODEX_BASE_URL, OpenAiClient, responses_api_url},
@@ -11,7 +10,7 @@ use crate::{
         DeviceLoginCompletion, DeviceLoginPoll, DeviceLoginStart, OpenAiDeviceLoginService,
     },
     openai_tokens::OpenAiTokenService,
-    store::{IssueStore, ModelStore, ProviderStore, RouteStore, issue_store::truncate_issue_body},
+    store::{IssueStore, ProviderStore, RouteStore, issue_store::truncate_issue_body},
     support::time::now_unix,
 };
 use async_stream::stream;
@@ -40,16 +39,12 @@ pub struct AppState {
     pub openai_device_login: OpenAiDeviceLoginService,
     pub providers: ProviderStore,
     pub routes: RouteStore,
-    pub models: ModelStore,
     pub issues: IssueStore,
     pub upstream: OpenAiClient,
-    pub gateway_runtime: crate::GatewayRuntime,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct ListModelsQuery {
-    #[serde(default)]
-    pub force: bool,
     #[serde(default)]
     pub provider_id: Option<String>,
 }
@@ -479,16 +474,18 @@ pub async fn get_provider_quota(
 pub async fn list_models(
     State(state): State<AppState>,
     Query(query): Query<ListModelsQuery>,
-) -> Result<Json<ModelListResponse>, AppError> {
+) -> Result<Response, AppError> {
     let provider = match query.provider_id.as_deref().map(str::trim) {
         Some(provider_id) if !provider_id.is_empty() => {
             resolve_provider_by_id(&state, provider_id).await?
         }
         _ => resolve_selected_provider(&state).await?,
     };
-    let mut response = load_provider_models(&state, &provider, query.force).await?;
-    ensure_codex_model_infos(&mut response);
-    Ok(Json(response))
+    let upstream = fetch_provider_models(&state, &provider).await?;
+    let status = upstream.status();
+    let headers = upstream.headers().clone();
+    let body = upstream.bytes().await.map_err(AppError::upstream)?;
+    build_passthrough_response(status, &headers, Body::from(body))
 }
 
 pub async fn add_provider(
@@ -567,15 +564,6 @@ pub async fn set_selected_model(
     Json(request): Json<UpdateSelectedModelRequest>,
 ) -> Result<Json<Value>, AppError> {
     let model = normalize_selected_model(request.model)?;
-    let provider = resolve_selected_provider(&state).await?;
-    let models = load_provider_models(&state, &provider, false).await?;
-    if !models.data.iter().any(|item| item.id == model) {
-        return Err(AppError::bad_request(format!(
-            "模型 `{model}` 不可用于所选供应商 `{}`",
-            provider.name
-        )));
-    }
-
     let existing = selected_route(&state).await?;
     let route = update_route(
         &state,
@@ -1209,7 +1197,7 @@ fn decorate_upstream_sse_frame(frame: &str) -> String {
 async fn fetch_provider_models(
     state: &AppState,
     provider: &ResolvedProvider,
-) -> Result<ModelListResponse, AppError> {
+) -> Result<reqwest::Response, AppError> {
     if provider.auth_mode == ProviderAuthMode::Account {
         let provider_record = resolve_provider_record_for_use(state, provider).await?;
         let access_token = provider_record.access_token().ok_or_else(|| {
@@ -1224,8 +1212,7 @@ async fn fetch_provider_models(
             .account_models(access_token, Some(client_version))
             .await
             .map_err(AppError::upstream_message)?;
-        let raw: Value = upstream.json().await.map_err(AppError::upstream)?;
-        return openai_models_response(&provider.name, &raw);
+        return Ok(upstream);
     }
 
     let native_provider = provider
@@ -1240,33 +1227,7 @@ async fn fetch_provider_models(
         )
         .await
         .map_err(AppError::upstream_message)?;
-    let raw: Value = upstream.json().await.map_err(AppError::upstream)?;
-    native_models_response(&provider.name, &raw)
-}
-
-async fn load_provider_models(
-    state: &AppState,
-    provider: &ResolvedProvider,
-    force_refresh: bool,
-) -> Result<ModelListResponse, AppError> {
-    let provider_id = provider
-        .record
-        .as_ref()
-        .map(|record| record.id.as_str())
-        .ok_or_else(|| AppError::bad_request(format!("供应商缓存键缺失: {}", provider.name)))?;
-
-    if !force_refresh
-        && let Some(cached) = state.models.load(provider_id).map_err(AppError::internal)?
-    {
-        return Ok(cached);
-    }
-
-    let models = fetch_provider_models(state, provider).await?;
-    state
-        .models
-        .save(provider_id, &models)
-        .map_err(AppError::internal)?;
-    Ok(models)
+    Ok(upstream)
 }
 
 fn normalize_selected_provider_id(provider_id: Option<String>) -> Result<String, AppError> {
@@ -1294,152 +1255,6 @@ fn normalize_selected_reasoning_effort(effort: String) -> Result<String, AppErro
     Err(AppError::bad_request(
         "推理强度必须是以下值之一：low、medium、high、xhigh",
     ))
-}
-
-fn native_models_response(_provider: &str, raw: &Value) -> Result<ModelListResponse, AppError> {
-    let entries: Vec<&Value> = if let Some(data) = raw.get("data").and_then(Value::as_array) {
-        data.iter().collect()
-    } else if let Some(models) = raw.get("models").and_then(Value::as_array) {
-        models.iter().collect()
-    } else if let Some(array) = raw.as_array() {
-        array.iter().collect()
-    } else {
-        return Err(AppError::upstream_message(
-            "原生模型响应缺少 `data` 或 `models` 数组",
-        ));
-    };
-
-    let mut data = Vec::with_capacity(entries.len());
-    for entry in entries {
-        if let Some(id) = native_model_id(entry) {
-            data.push((
-                id.to_string(),
-                ModelListItem { id: id.to_string() },
-                codex_model_info(id, Some(entry)),
-            ));
-        }
-    }
-    data.sort_by(|left, right| left.0.cmp(&right.0));
-
-    Ok(ModelListResponse {
-        object: "list".to_string(),
-        data: data.iter().map(|(_, item, _)| item.clone()).collect(),
-        models: data.into_iter().map(|(_, _, model)| model).collect(),
-    })
-}
-
-fn openai_models_response(_provider: &str, raw: &Value) -> Result<ModelListResponse, AppError> {
-    let entries = raw
-        .get("models")
-        .and_then(Value::as_array)
-        .ok_or_else(|| AppError::upstream_message("OpenAI 模型响应缺少 `models` 数组"))?;
-
-    let mut data = Vec::with_capacity(entries.len());
-    for entry in entries {
-        if entry.get("supported_in_api").and_then(Value::as_bool) == Some(false) {
-            continue;
-        }
-        let id = entry
-            .get("slug")
-            .or_else(|| entry.get("id"))
-            .and_then(Value::as_str);
-        if let Some(id) = id {
-            let priority = entry
-                .get("priority")
-                .and_then(Value::as_i64)
-                .unwrap_or(i64::MAX);
-            data.push((
-                priority,
-                id.to_string(),
-                ModelListItem { id: id.to_string() },
-                codex_model_info(id, Some(entry)),
-            ));
-        }
-    }
-    data.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
-
-    Ok(ModelListResponse {
-        object: "list".to_string(),
-        data: data.iter().map(|(_, _, item, _)| item.clone()).collect(),
-        models: data.into_iter().map(|(_, _, _, model)| model).collect(),
-    })
-}
-
-fn ensure_codex_model_infos(response: &mut ModelListResponse) {
-    if response.models.is_empty() {
-        response.models = response
-            .data
-            .iter()
-            .map(|item| codex_model_info(item.id.as_str(), None))
-            .collect();
-    }
-}
-
-fn codex_model_info(id: &str, entry: Option<&Value>) -> Value {
-    let context_window = entry
-        .and_then(|entry| entry.get("context_window").and_then(Value::as_i64))
-        .or_else(|| entry.and_then(|entry| entry.get("max_context_window").and_then(Value::as_i64)))
-        .unwrap_or(272_000);
-    let max_context_window = entry
-        .and_then(|entry| entry.get("max_context_window").and_then(Value::as_i64))
-        .unwrap_or(context_window);
-    let auto_compact_token_limit = entry
-        .and_then(|entry| entry.get("auto_compact_token_limit"))
-        .filter(|value| value.is_number())
-        .cloned()
-        .unwrap_or(Value::Null);
-    let display_name = entry
-        .and_then(|entry| entry.get("display_name").and_then(Value::as_str))
-        .unwrap_or(id);
-    let description = entry
-        .and_then(|entry| entry.get("description").and_then(Value::as_str))
-        .map(Value::from)
-        .unwrap_or(Value::Null);
-
-    json!({
-        "slug": id,
-        "display_name": display_name,
-        "description": description,
-        "default_reasoning_level": "medium",
-        "supported_reasoning_levels": [
-            { "effort": "low", "description": "Fast responses with lighter reasoning" },
-            { "effort": "medium", "description": "Balances speed and reasoning depth for everyday tasks" },
-            { "effort": "high", "description": "Greater reasoning depth for complex problems" },
-            { "effort": "xhigh", "description": "Extra high reasoning depth for complex problems" }
-        ],
-        "shell_type": "shell_command",
-        "visibility": "list",
-        "supported_in_api": true,
-        "priority": entry.and_then(|entry| entry.get("priority").and_then(Value::as_i64)).unwrap_or(0),
-        "availability_nux": null,
-        "upgrade": null,
-        "base_instructions": "",
-        "model_messages": null,
-        "supports_reasoning_summaries": true,
-        "default_reasoning_summary": "none",
-        "support_verbosity": true,
-        "default_verbosity": "low",
-        "apply_patch_tool_type": "freeform",
-        "web_search_tool_type": "text_and_image",
-        "truncation_policy": { "mode": "tokens", "limit": 10000 },
-        "supports_parallel_tool_calls": true,
-        "supports_image_detail_original": true,
-        "context_window": context_window,
-        "max_context_window": max_context_window,
-        "auto_compact_token_limit": auto_compact_token_limit,
-        "effective_context_window_percent": 95,
-        "experimental_supported_tools": [],
-        "input_modalities": ["text", "image"],
-        "supports_search_tool": true
-    })
-}
-
-fn native_model_id(entry: &Value) -> Option<&str> {
-    entry
-        .get("id")
-        .or_else(|| entry.get("model"))
-        .or_else(|| entry.get("name"))
-        .and_then(Value::as_str)
 }
 
 #[derive(Clone, Debug)]

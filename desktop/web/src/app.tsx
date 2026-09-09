@@ -39,9 +39,28 @@ import type {
 
 const GATEWAY_ERROR_PREFIX = "AI网关错误：";
 const UPSTREAM_ERROR_PREFIX = "上游服务错误：";
+const MODEL_CACHE_STORAGE_KEY = "ai-gateway:model-cache:v1";
+const QUOTA_CACHE_STORAGE_KEY = "ai-gateway:quota-cache:v1";
+const MODEL_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 type Dialog = "provider" | "delete-provider" | null;
 type QuotaMap = Record<string, CodexUsageResponse | undefined>;
 type ErrorMap = Record<string, string | undefined>;
+type ModelCache = Record<string, { models: GatewayModel[]; fetchedAt: number }>;
+type QuotaCache = Record<string, { quota: CodexUsageResponse; fetchedAt: number }>;
+function readLocalCache<T>(key: string, fallback: T): T {
+  try {
+    const raw = window.localStorage.getItem(key);
+    return raw ? JSON.parse(raw) as T : fallback;
+  } catch {
+    return fallback;
+  }
+}
+function writeLocalCache<T>(key: string, value: T) {
+  try { window.localStorage.setItem(key, JSON.stringify(value)); } catch { /* storage is best effort */ }
+}
+function quotasFromCache(cache: QuotaCache): QuotaMap {
+  return Object.fromEntries(Object.entries(cache).map(([id, entry]) => [id, entry.quota]));
+}
 function errorMessage(error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
   return message.startsWith(GATEWAY_ERROR_PREFIX) || message.startsWith(UPSTREAM_ERROR_PREFIX) ? message : `${GATEWAY_ERROR_PREFIX}${message}`;
@@ -86,7 +105,9 @@ export function GatewayDashboard() {
   const [providers, setProviders] = React.useState<GatewayProvider[]>([]);
   const [selected, setSelected] = React.useState<SelectedProvider>({ updated_at: 0 });
   const [gatewayIssues, setGatewayIssues] = React.useState<GatewayIssue[]>([]);
-  const [quotas, setQuotas] = React.useState<QuotaMap>({});
+  const quotaCacheRef = React.useRef<QuotaCache>(readLocalCache(QUOTA_CACHE_STORAGE_KEY, {}));
+  const quotaRequestsRef = React.useRef(new Map<string, Promise<void>>());
+  const [quotas, setQuotas] = React.useState<QuotaMap>(() => quotasFromCache(quotaCacheRef.current));
   const [quotaErrors, setQuotaErrors] = React.useState<ErrorMap>({});
   const [loadingQuotas, setLoadingQuotas] = React.useState<Set<string>>(new Set());
   const [loading, setLoading] = React.useState(true);
@@ -96,27 +117,47 @@ export function GatewayDashboard() {
   const [error, setError] = React.useState<string | null>(null);
   const [deleting, setDeleting] = React.useState<Set<string>>(new Set());
   const [refreshingProviders, setRefreshingProviders] = React.useState<Set<string>>(new Set());
-  const loadQuotas = React.useCallback(async (items: GatewayProvider[], visibleLoading = true) => {
+  const loadQuotas = React.useCallback(async (items: GatewayProvider[], forceRefresh = false, visibleLoading = true) => {
     const ids = items.filter((item) => item.auth_mode === "account").map((item) => item.id);
     if (!ids.length) return;
-    if (visibleLoading) setLoadingQuotas((current) => new Set([...current, ...ids]));
-    await Promise.all(ids.map(async (id) => {
-      try { const quota = await gatewayApi.quota(id); setQuotas((current) => ({ ...current, [id]: quota })); setQuotaErrors((current) => ({ ...current, [id]: undefined })); }
-      catch (quotaError) { setQuotaErrors((current) => ({ ...current, [id]: errorMessage(quotaError) })); }
-      finally { setLoadingQuotas((current) => { const next = new Set(current); next.delete(id); return next; }); }
-    }));
+    const requestIds = ids.filter((id) => forceRefresh || !quotaCacheRef.current[id]);
+    if (!requestIds.length) return;
+    const fetchQuota = (id: string) => {
+      const inFlight = quotaRequestsRef.current.get(id);
+      if (inFlight) return inFlight;
+      if (visibleLoading) setLoadingQuotas((current) => new Set([...current, id]));
+      const request = gatewayApi.quota(id)
+        .then((quota) => {
+          quotaCacheRef.current = { ...quotaCacheRef.current, [id]: { quota, fetchedAt: Date.now() } };
+          writeLocalCache(QUOTA_CACHE_STORAGE_KEY, quotaCacheRef.current);
+          setQuotas((current) => ({ ...current, [id]: quota }));
+          setQuotaErrors((current) => ({ ...current, [id]: undefined }));
+        })
+        .catch((quotaError) => { setQuotaErrors((current) => ({ ...current, [id]: errorMessage(quotaError) })); })
+        .finally(() => {
+          quotaRequestsRef.current.delete(id);
+          setLoadingQuotas((current) => { const next = new Set(current); next.delete(id); return next; });
+        });
+      quotaRequestsRef.current.set(id, request);
+      return request;
+    };
+    await Promise.all(requestIds.map(fetchQuota));
   }, []);
   const refresh = React.useCallback(async () => {
     setLoading(true);
     try {
       const [providerList, route, issues] = await Promise.all([gatewayApi.providers(), gatewayApi.selectedProvider(), gatewayApi.gatewayIssues(200)]);
       const sorted = [...providerList].sort((a, b) => a.name.localeCompare(b.name));
+      const accountIds = new Set(sorted.filter((provider) => provider.auth_mode === "account").map((provider) => provider.id));
+      quotaCacheRef.current = Object.fromEntries(Object.entries(quotaCacheRef.current).filter(([id]) => accountIds.has(id)));
+      writeLocalCache(QUOTA_CACHE_STORAGE_KEY, quotaCacheRef.current);
+      setQuotas(quotasFromCache(quotaCacheRef.current));
       setProviders(sorted); setSelected(route); setGatewayIssues(issues); setError(null); void loadQuotas(sorted);
       return sorted;
     } catch (loadError) { setError(errorMessage(loadError)); } finally { setLoading(false); }
   }, [loadQuotas]);
   React.useEffect(() => { void refresh(); }, [refresh]);
-  React.useEffect(() => { const timer = window.setInterval(() => void loadQuotas(providers, false), 60000); return () => window.clearInterval(timer); }, [loadQuotas, providers]);
+  React.useEffect(() => { const timer = window.setInterval(() => void loadQuotas(providers, true, false), 60000); return () => window.clearInterval(timer); }, [loadQuotas, providers]);
   async function selectProvider(provider: GatewayProvider) {
     if (provider.id === selected.provider_id || deleting.has(provider.id)) return;
     setSelected((current) => ({ ...current, provider_id: provider.id, selected_model: undefined, selected_reasoning_effort: undefined }));
@@ -146,7 +187,7 @@ export function GatewayDashboard() {
     finally { setDeleting((current) => { const next = new Set(current); next.delete(provider.id); return next; }); }
   }
   return <div className="min-h-screen min-w-0">
-    <main className="mx-auto max-w-[1480px] px-3 py-4 sm:px-8 sm:py-8">{loading ? <LoadingState /> : <><section><div className="mb-3 flex flex-wrap items-center gap-3 px-1"><h2 className="text-xs font-bold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">AI 网关</h2><Button className="ml-auto" variant="outline" size="sm" onClick={() => setDialog("provider")}><Plus className="size-3.5" />添加供应商</Button></div><DefaultRouteSection providers={providers} selected={selected} onChanged={refresh} onError={setError} onOpenIssues={() => setIssuesOpen(true)} /></section>{providers.length === 0 ? <div className="mt-8"><EmptyState onAdd={() => setDialog("provider")} /></div> : <div className="mt-8"><ProviderSection title="供应商" providers={providers} selectedId={selected.provider_id} quotas={quotas} quotaErrors={quotaErrors} loadingQuotas={loadingQuotas} deleting={deleting} refreshingProviders={refreshingProviders} onSelect={selectProvider} onDelete={requestDeleteProvider} onRefreshQuota={(provider) => void loadQuotas([provider])} onRefreshProvider={(provider) => void refreshProvider(provider)} /></div>}</>}</main>
+    <main className="mx-auto max-w-[1480px] px-3 py-4 sm:px-8 sm:py-8">{loading ? <LoadingState /> : <><section><div className="mb-3 flex flex-wrap items-center gap-3 px-1"><h2 className="text-xs font-bold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">AI 网关</h2><Button className="ml-auto" variant="outline" size="sm" onClick={() => setDialog("provider")}><Plus className="size-3.5" />添加供应商</Button></div><DefaultRouteSection providers={providers} selected={selected} onChanged={refresh} onError={setError} onOpenIssues={() => setIssuesOpen(true)} /></section>{providers.length === 0 ? <div className="mt-8"><EmptyState onAdd={() => setDialog("provider")} /></div> : <div className="mt-8"><ProviderSection title="供应商" providers={providers} selectedId={selected.provider_id} quotas={quotas} quotaErrors={quotaErrors} loadingQuotas={loadingQuotas} deleting={deleting} refreshingProviders={refreshingProviders} onSelect={selectProvider} onDelete={requestDeleteProvider} onRefreshQuota={(provider) => void loadQuotas([provider], true)} onRefreshProvider={(provider) => void refreshProvider(provider)} /></div>}</>}</main>
     {issuesOpen ? <GatewayIssueDialog issues={gatewayIssues} onChanged={async () => setGatewayIssues(await gatewayApi.gatewayIssues(200))} onError={setError} onClose={() => setIssuesOpen(false)} /> : null}{error ? <ErrorToast message={error} onClose={() => setError(null)} /> : null}{dialog === "provider" ? <ProviderDialog onClose={() => setDialog(null)} onCreated={handleProviderCreated} onError={setError} /> : null}{dialog === "delete-provider" && providerToDelete ? <DeleteProviderDialog provider={providerToDelete} deleting={deleting.has(providerToDelete.id)} onClose={() => { if (!deleting.has(providerToDelete.id)) { setProviderToDelete(null); setDialog(null); } }} onConfirm={() => void confirmDeleteProvider()} /> : null}
   </div>;
 }
@@ -234,11 +275,43 @@ function DefaultCodexGatewayControl({ onError, onOpenIssues }: { onError: (messa
 }
 
 function DefaultRouteSection({ providers, selected, onChanged, onError, onOpenIssues }: { providers: GatewayProvider[]; selected: SelectedProvider; onChanged: () => Promise<unknown>; onError: (message: string) => void; onOpenIssues: () => void }) {
+  const modelCacheRef = React.useRef<ModelCache>(readLocalCache(MODEL_CACHE_STORAGE_KEY, {}));
+  const modelRequestsRef = React.useRef(new Map<string, Promise<void>>());
+  const selectedProviderIdRef = React.useRef(selected.provider_id);
   const [models, setModels] = React.useState<GatewayModel[]>([]); const [loadingModels, setLoadingModels] = React.useState(false); const [saving, setSaving] = React.useState(false);
   const provider = providers.find((item) => item.id === selected.provider_id);
-  React.useEffect(() => { if (!selected.provider_id) { setModels([]); return; } let cancelled = false; setLoadingModels(true); void gatewayApi.models(selected.provider_id).then((items) => { if (!cancelled) setModels([...items].sort((a,b) => a.id.localeCompare(b.id))); }).catch((e) => onError(errorMessage(e))).finally(() => { if (!cancelled) setLoadingModels(false); }); return () => { cancelled = true; }; }, [selected.provider_id, onError]);
+  React.useEffect(() => {
+    const providerIds = new Set(providers.map((item) => item.id));
+    const nextCache = Object.fromEntries(Object.entries(modelCacheRef.current).filter(([id]) => providerIds.has(id)));
+    modelCacheRef.current = nextCache;
+    writeLocalCache(MODEL_CACHE_STORAGE_KEY, nextCache);
+  }, [providers]);
+  React.useEffect(() => { selectedProviderIdRef.current = selected.provider_id; setModels(selected.provider_id ? modelCacheRef.current[selected.provider_id]?.models ?? [] : []); setLoadingModels(false); }, [selected.provider_id]);
+  const loadModels = React.useCallback(async () => {
+    const providerId = selected.provider_id;
+    if (!providerId) return;
+    const cached = modelCacheRef.current[providerId];
+    if (cached) {
+      setModels(cached.models);
+      if (Date.now() - cached.fetchedAt <= MODEL_CACHE_MAX_AGE_MS) return;
+    }
+    const inFlight = modelRequestsRef.current.get(providerId);
+    if (inFlight) return inFlight;
+    setLoadingModels(true);
+    const request = gatewayApi.models(providerId)
+      .then((items) => {
+        const models = [...items].sort((a, b) => a.id.localeCompare(b.id));
+        modelCacheRef.current = { ...modelCacheRef.current, [providerId]: { models, fetchedAt: Date.now() } };
+        writeLocalCache(MODEL_CACHE_STORAGE_KEY, modelCacheRef.current);
+        if (selectedProviderIdRef.current === providerId) setModels(models);
+      })
+      .catch((error) => onError(errorMessage(error)))
+      .finally(() => { modelRequestsRef.current.delete(providerId); setLoadingModels(false); });
+    modelRequestsRef.current.set(providerId, request);
+    return request;
+  }, [onError, selected.provider_id]);
   async function run(action: () => Promise<unknown>) { setSaving(true); try { await action(); await onChanged(); } catch (e) { onError(errorMessage(e)); } finally { setSaving(false); } }
-  return <article className="glass-panel flex flex-col gap-4 rounded-[22px] p-3.5 sm:p-4 lg:flex-row lg:items-center lg:gap-5"><DefaultCodexGatewayControl onError={onError} onOpenIssues={onOpenIssues} /><div className="flex min-w-0 flex-1 flex-col gap-3 sm:flex-row"><label className="min-w-0 flex-1"><span className="eyebrow">模型</span><select className="field mt-1 h-9 w-full font-mono text-xs font-semibold" value={selected.selected_model ?? ""} disabled={saving || loadingModels || !provider} onChange={(e) => void run(() => e.target.value ? gatewayApi.selectModel(e.target.value) : gatewayApi.clearSelectedModel())}><option value="">跟随请求模型</option>{models.map((item) => <option key={item.id} value={item.id}>{item.id}</option>)}</select></label><label className="min-w-0 flex-1"><span className="eyebrow">推理强度</span><select className="field mt-1 h-9 w-full text-xs font-semibold" value={selected.selected_reasoning_effort ?? ""} disabled={saving || !provider} onChange={(e) => void run(() => e.target.value ? gatewayApi.selectReasoningEffort(e.target.value as ReasoningEffort) : gatewayApi.clearSelectedReasoningEffort())}><option value="">跟随请求</option><option value="low">低（low）</option><option value="medium">中（medium）</option><option value="high">高（high）</option><option value="xhigh">极高（xhigh）</option></select></label></div></article>;
+  return <article className="glass-panel flex flex-col gap-4 rounded-[22px] p-3.5 sm:p-4 lg:flex-row lg:items-center lg:gap-5"><DefaultCodexGatewayControl onError={onError} onOpenIssues={onOpenIssues} /><div className="flex min-w-0 flex-1 flex-col gap-3 sm:flex-row"><label className="min-w-0 flex-1"><span className="eyebrow">模型</span><select className="field mt-1 h-9 w-full font-mono text-xs font-semibold" value={selected.selected_model ?? ""} disabled={saving || loadingModels || !provider} onFocus={() => void loadModels()} onClick={() => void loadModels()} onChange={(e) => void run(() => e.target.value ? gatewayApi.selectModel(e.target.value) : gatewayApi.clearSelectedModel())}><option value="">跟随请求模型</option>{models.map((item) => <option key={item.id} value={item.id}>{item.id}</option>)}</select></label><label className="min-w-0 flex-1"><span className="eyebrow">推理强度</span><select className="field mt-1 h-9 w-full text-xs font-semibold" value={selected.selected_reasoning_effort ?? ""} disabled={saving || !provider} onChange={(e) => void run(() => e.target.value ? gatewayApi.selectReasoningEffort(e.target.value as ReasoningEffort) : gatewayApi.clearSelectedReasoningEffort())}><option value="">跟随请求</option><option value="low">低（low）</option><option value="medium">中（medium）</option><option value="high">高（high）</option><option value="xhigh">极高（xhigh）</option></select></label></div></article>;
 }
 
 function ProviderSection(props: {
@@ -1148,7 +1221,7 @@ function DeleteProviderDialog({
   return (
     <DialogFrame
       title={`删除供应商：${providerName}`}
-      description="删除后将清除该供应商的模型缓存及关联路由配置。"
+      description="删除后将清除该供应商的本地模型缓存及关联路由配置。"
       onClose={onClose}
     >
       <div className="space-y-5">

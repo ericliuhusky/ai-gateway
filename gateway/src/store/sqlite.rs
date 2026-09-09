@@ -1,9 +1,6 @@
 use crate::{
     config::Config,
-    models::{
-        CachedProviderModels, GatewayIssue, GatewayIssueRecord, ProviderAuthMode, ProviderRecord,
-        SelectedRoute,
-    },
+    models::{GatewayIssue, GatewayIssueRecord, ProviderAuthMode, ProviderRecord, SelectedRoute},
 };
 use rusqlite::{Connection, OptionalExtension, params};
 use std::{fs, path::PathBuf, sync::Arc};
@@ -178,42 +175,6 @@ impl SqliteStore {
         .map(|value| value.flatten())
     }
 
-    pub fn load_cached_models(
-        &self,
-        provider_id: &str,
-    ) -> Result<Option<CachedProviderModels>, String> {
-        let conn = self.connect()?;
-        conn.query_row(
-            "SELECT provider_id, models_json, updated_at
-             FROM provider_model_cache
-             WHERE provider_id = ?1",
-            params![provider_id],
-            |row| {
-                Ok(CachedProviderModels {
-                    provider_id: row.get(0)?,
-                    models_json: row.get(1)?,
-                    updated_at: row.get(2)?,
-                })
-            },
-        )
-        .optional()
-        .map_err(|err| format!("load cached provider models failed: {err}"))
-    }
-
-    pub fn upsert_cached_models(&self, models: &CachedProviderModels) -> Result<(), String> {
-        let conn = self.connect()?;
-        conn.execute(
-            "INSERT INTO provider_model_cache (provider_id, models_json, updated_at)
-             VALUES (?1, ?2, ?3)
-             ON CONFLICT(provider_id) DO UPDATE SET
-                models_json = excluded.models_json,
-                updated_at = excluded.updated_at",
-            params![models.provider_id, models.models_json, models.updated_at],
-        )
-        .map_err(|err| format!("upsert cached provider models failed: {err}"))?;
-        Ok(())
-    }
-
     pub fn record_gateway_issue(
         &self,
         issue: &GatewayIssueRecord,
@@ -328,13 +289,6 @@ impl SqliteStore {
                 selected_provider_id TEXT,
                 route_updated_at INTEGER NOT NULL DEFAULT 0,
                 FOREIGN KEY (selected_provider_id) REFERENCES providers(id) ON DELETE SET NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS provider_model_cache (
-                provider_id TEXT PRIMARY KEY,
-                models_json TEXT NOT NULL,
-                updated_at INTEGER NOT NULL,
-                FOREIGN KEY (provider_id) REFERENCES providers(id) ON DELETE CASCADE
             );
 
             CREATE TABLE IF NOT EXISTS gateway_issues (
@@ -638,7 +592,7 @@ fn provider_auth_mode_from_str(
 #[cfg(test)]
 mod tests {
     use super::SqliteStore;
-    use crate::models::{CachedProviderModels, ProviderAuthMode, ProviderRecord, SelectedRoute};
+    use crate::models::{ProviderAuthMode, ProviderRecord, SelectedRoute};
     use rusqlite::Connection;
     use std::{
         fs,
@@ -647,18 +601,11 @@ mod tests {
     };
 
     #[test]
-    fn deleting_provider_cascades_cache_and_clears_active_route() {
+    fn deleting_provider_clears_active_route() {
         let db_path = unique_test_db_path("provider-cascade");
         let store = SqliteStore::for_test(db_path.clone()).expect("create compact database");
         let provider = api_provider("provider-a");
         store.upsert_provider(&provider).expect("save provider");
-        store
-            .upsert_cached_models(&CachedProviderModels {
-                provider_id: provider.id.clone(),
-                models_json: "{\"object\":\"list\",\"data\":[]}".to_string(),
-                updated_at: 1,
-            })
-            .expect("save model cache");
         store
             .upsert_route(&SelectedRoute {
                 provider_id: Some(provider.id.clone()),
@@ -681,8 +628,6 @@ mod tests {
                 updated_at: 2,
             }
         );
-        assert!(store.load_cached_models(&provider.id).unwrap().is_none());
-
         let _ = fs::remove_file(db_path);
     }
 
