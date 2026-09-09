@@ -1,7 +1,6 @@
 import { invokeTauri } from "./lib/connection";
 import type {
   CodexAuthPayload,
-  GatewayIssue,
   GatewayModel,
   GatewayProvider,
   CodexUsageResponse,
@@ -45,22 +44,6 @@ function modelEntries(payload: unknown): unknown[] {
 }
 
 export const gatewayApi = {
-  async gatewayIssues(limit = 200) {
-    const payload = await gatewayRequest<{ issues: GatewayIssue[] }>(
-      "GET",
-      `/management/gateway/issues?limit=${limit}`,
-    );
-    return payload.issues;
-  },
-  gatewayIssueRepairPrompt(issueId: string) {
-    return gatewayRequest<{ prompt: string }>(
-      "GET",
-      `/management/gateway/issues/${encodeURIComponent(issueId)}/repair-prompt`,
-    );
-  },
-  clearGatewayIssues() {
-    return gatewayRequest<{ deleted: number }>("DELETE", "/management/gateway/issues");
-  },
   async providers() { const payload = await gatewayRequest<{ providers: GatewayProvider[] }>("GET", "/management/providers"); return payload.providers; },
   async selectedProvider() { const payload = await gatewayRequest<{ selected_provider: SelectedProvider }>("GET", "/management/selected-provider"); return payload.selected_provider; },
   async selectProvider(providerId: string) { const payload = await gatewayRequest<{ selected_provider: SelectedProvider }>("PUT", "/management/selected-provider", { provider_id: providerId }); return payload.selected_provider; },

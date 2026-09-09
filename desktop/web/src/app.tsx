@@ -1,7 +1,6 @@
 import * as React from "react";
 import {
   Activity,
-  Bug,
   Check,
   CheckCircle2,
   ChevronDown,
@@ -16,7 +15,6 @@ import {
   Server,
   Trash2,
   UserRound,
-  Wrench,
   Play,
   Square,
   X,
@@ -28,7 +26,6 @@ import { cn } from "./lib/utils";
 import type {
   CodexAuthPayload,
   GatewayModel,
-  GatewayIssue,
   GatewayProvider,
   CodexUsageRateLimitWindow,
   CodexUsageResponse,
@@ -104,7 +101,6 @@ export function App() { return <GatewayDashboard />; }
 export function GatewayDashboard() {
   const [providers, setProviders] = React.useState<GatewayProvider[]>([]);
   const [selected, setSelected] = React.useState<SelectedProvider>({ updated_at: 0 });
-  const [gatewayIssues, setGatewayIssues] = React.useState<GatewayIssue[]>([]);
   const quotaCacheRef = React.useRef<QuotaCache>(readLocalCache(QUOTA_CACHE_STORAGE_KEY, {}));
   const quotaRequestsRef = React.useRef(new Map<string, Promise<void>>());
   const [quotas, setQuotas] = React.useState<QuotaMap>(() => quotasFromCache(quotaCacheRef.current));
@@ -113,7 +109,6 @@ export function GatewayDashboard() {
   const [loading, setLoading] = React.useState(true);
   const [dialog, setDialog] = React.useState<Dialog>(null);
   const [providerToDelete, setProviderToDelete] = React.useState<GatewayProvider | null>(null);
-  const [issuesOpen, setIssuesOpen] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [deleting, setDeleting] = React.useState<Set<string>>(new Set());
   const [refreshingProviders, setRefreshingProviders] = React.useState<Set<string>>(new Set());
@@ -159,7 +154,7 @@ export function GatewayDashboard() {
   const refresh = React.useCallback(async () => {
     setLoading(true);
     try {
-      const [providerList, route, issues] = await Promise.all([gatewayApi.providers(), gatewayApi.selectedProvider(), gatewayApi.gatewayIssues(200)]);
+      const [providerList, route] = await Promise.all([gatewayApi.providers(), gatewayApi.selectedProvider()]);
       const sorted = [...providerList].sort((a, b) => a.name.localeCompare(b.name));
       const accountIds = new Set(sorted.filter((provider) => provider.auth_mode === "account").map((provider) => provider.id));
       quotaCacheRef.current = Object.fromEntries(Object.entries(quotaCacheRef.current).filter(([id]) => accountIds.has(id)));
@@ -171,7 +166,7 @@ export function GatewayDashboard() {
         Object.fromEntries(Object.entries(modelCache).filter(([id]) => providerIds.has(id))),
       );
       setQuotas(quotasFromCache(quotaCacheRef.current));
-      setProviders(sorted); setSelected(route); setGatewayIssues(issues); setError(null);
+      setProviders(sorted); setSelected(route); setError(null);
       return sorted;
     } catch (loadError) { setError(errorMessage(loadError)); } finally { setLoading(false); }
   }, [loadQuotas]);
@@ -209,11 +204,11 @@ export function GatewayDashboard() {
     finally { setDeleting((current) => { const next = new Set(current); next.delete(provider.id); return next; }); }
   }
   return <div className="min-h-screen min-w-0">
-    <main className="mx-auto max-w-[1480px] px-3 py-4 sm:px-8 sm:py-8">{loading ? <LoadingState /> : <><section><div className="mb-3 flex flex-wrap items-center gap-3 px-1"><h2 className="text-xs font-bold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">AI 网关</h2><Button className="ml-auto" variant="outline" size="sm" onClick={() => setDialog("provider")}><Plus className="size-3.5" />添加供应商</Button></div><DefaultRouteSection providers={providers} selected={selected} onChanged={refresh} onError={setError} onOpenIssues={() => setIssuesOpen(true)} /></section>{providers.length === 0 ? <div className="mt-8"><EmptyState onAdd={() => setDialog("provider")} /></div> : <div className="mt-8"><ProviderSection title="供应商" providers={providers} selectedId={selected.provider_id} quotas={quotas} quotaErrors={quotaErrors} loadingQuotas={loadingQuotas} deleting={deleting} refreshingProviders={refreshingProviders} onSelect={selectProvider} onDelete={requestDeleteProvider} onRefreshQuota={(provider) => void loadQuotas([provider], true)} onRefreshProvider={(provider) => void refreshProvider(provider)} /></div>}</>}</main>
-    {issuesOpen ? <GatewayIssueDialog issues={gatewayIssues} onChanged={async () => setGatewayIssues(await gatewayApi.gatewayIssues(200))} onError={setError} onClose={() => setIssuesOpen(false)} /> : null}{error ? <ErrorToast message={error} onClose={() => setError(null)} /> : null}{dialog === "provider" ? <ProviderDialog onClose={() => setDialog(null)} onCreated={handleProviderCreated} onError={setError} /> : null}{dialog === "delete-provider" && providerToDelete ? <DeleteProviderDialog provider={providerToDelete} deleting={deleting.has(providerToDelete.id)} onClose={() => { if (!deleting.has(providerToDelete.id)) { setProviderToDelete(null); setDialog(null); } }} onConfirm={() => void confirmDeleteProvider()} /> : null}
+    <main className="mx-auto max-w-[1480px] px-3 py-4 sm:px-8 sm:py-8">{loading ? <LoadingState /> : <><section><div className="mb-3 flex flex-wrap items-center gap-3 px-1"><h2 className="text-xs font-bold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">AI 网关</h2><Button className="ml-auto" variant="outline" size="sm" onClick={() => setDialog("provider")}><Plus className="size-3.5" />添加供应商</Button></div><DefaultRouteSection providers={providers} selected={selected} onChanged={refresh} onError={setError} /></section>{providers.length === 0 ? <div className="mt-8"><EmptyState onAdd={() => setDialog("provider")} /></div> : <div className="mt-8"><ProviderSection title="供应商" providers={providers} selectedId={selected.provider_id} quotas={quotas} quotaErrors={quotaErrors} loadingQuotas={loadingQuotas} deleting={deleting} refreshingProviders={refreshingProviders} onSelect={selectProvider} onDelete={requestDeleteProvider} onRefreshQuota={(provider) => void loadQuotas([provider], true)} onRefreshProvider={(provider) => void refreshProvider(provider)} /></div>}</>}</main>
+    {error ? <ErrorToast message={error} onClose={() => setError(null)} /> : null}{dialog === "provider" ? <ProviderDialog onClose={() => setDialog(null)} onCreated={handleProviderCreated} onError={setError} /> : null}{dialog === "delete-provider" && providerToDelete ? <DeleteProviderDialog provider={providerToDelete} deleting={deleting.has(providerToDelete.id)} onClose={() => { if (!deleting.has(providerToDelete.id)) { setProviderToDelete(null); setDialog(null); } }} onConfirm={() => void confirmDeleteProvider()} /> : null}
   </div>;
 }
-function DefaultCodexGatewayControl({ onError, onOpenIssues }: { onError: (message: string) => void; onOpenIssues: () => void }) {
+function DefaultCodexGatewayControl({ onError }: { onError: (message: string) => void }) {
   const [started, setStarted] = React.useState(false);
   const [loading, setLoading] = React.useState(true);
   const [busy, setBusy] = React.useState(false);
@@ -282,21 +277,11 @@ function DefaultCodexGatewayControl({ onError, onOpenIssues }: { onError: (messa
       >
         {restartingChatGpt ? <LoaderCircle className="size-4 animate-spin" /> : <RotateCcw className="size-4" />}
       </Button>
-      <Button
-        type="button"
-        variant="outline"
-        size="icon"
-        title="查看网关问题"
-        aria-label="查看网关问题"
-        onClick={onOpenIssues}
-      >
-        <Bug className="size-4" />
-      </Button>
     </div>
   );
 }
 
-function DefaultRouteSection({ providers, selected, onChanged, onError, onOpenIssues }: { providers: GatewayProvider[]; selected: SelectedProvider; onChanged: () => Promise<unknown>; onError: (message: string) => void; onOpenIssues: () => void }) {
+function DefaultRouteSection({ providers, selected, onChanged, onError }: { providers: GatewayProvider[]; selected: SelectedProvider; onChanged: () => Promise<unknown>; onError: (message: string) => void }) {
   const modelCacheRef = React.useRef<ModelCache>(readLocalCache(MODEL_CACHE_STORAGE_KEY, {}));
   const modelRequestsRef = React.useRef(new Map<string, Promise<void>>());
   const selectedProviderIdRef = React.useRef(selected.provider_id);
@@ -336,7 +321,7 @@ function DefaultRouteSection({ providers, selected, onChanged, onError, onOpenIs
     return request;
   }, [onError, selected.provider_id]);
   async function run(action: () => Promise<unknown>) { setSaving(true); try { await action(); await onChanged(); } catch (e) { onError(errorMessage(e)); } finally { setSaving(false); } }
-  return <article className="glass-panel flex flex-col gap-4 rounded-[22px] p-3.5 sm:p-4 lg:flex-row lg:items-center lg:gap-5"><DefaultCodexGatewayControl onError={onError} onOpenIssues={onOpenIssues} /><div className="flex min-w-0 flex-1 flex-col gap-3 sm:flex-row"><label className="min-w-0 flex-1"><span className="eyebrow">模型</span><select className="field mt-1 h-9 w-full font-mono text-xs font-semibold" value={selected.selected_model ?? ""} disabled={saving || loadingModels || !provider} onFocus={() => void loadModels()} onClick={() => void loadModels()} onChange={(e) => void run(() => e.target.value ? gatewayApi.selectModel(e.target.value) : gatewayApi.clearSelectedModel())}><option value="">跟随请求模型</option>{models.map((item) => <option key={item.id} value={item.id}>{item.id}</option>)}</select></label><label className="min-w-0 flex-1"><span className="eyebrow">推理强度</span><select className="field mt-1 h-9 w-full text-xs font-semibold" value={selected.selected_reasoning_effort ?? ""} disabled={saving || !provider} onChange={(e) => void run(() => e.target.value ? gatewayApi.selectReasoningEffort(e.target.value as ReasoningEffort) : gatewayApi.clearSelectedReasoningEffort())}><option value="">跟随请求</option><option value="low">低（low）</option><option value="medium">中（medium）</option><option value="high">高（high）</option><option value="xhigh">极高（xhigh）</option></select></label></div></article>;
+  return <article className="glass-panel flex flex-col gap-4 rounded-[22px] p-3.5 sm:p-4 lg:flex-row lg:items-center lg:gap-5"><DefaultCodexGatewayControl onError={onError} /><div className="flex min-w-0 flex-1 flex-col gap-3 sm:flex-row"><label className="min-w-0 flex-1"><span className="eyebrow">模型</span><select className="field mt-1 h-9 w-full font-mono text-xs font-semibold" value={selected.selected_model ?? ""} disabled={saving || loadingModels || !provider} onFocus={() => void loadModels()} onClick={() => void loadModels()} onChange={(e) => void run(() => e.target.value ? gatewayApi.selectModel(e.target.value) : gatewayApi.clearSelectedModel())}><option value="">跟随请求模型</option>{models.map((item) => <option key={item.id} value={item.id}>{item.id}</option>)}</select></label><label className="min-w-0 flex-1"><span className="eyebrow">推理强度</span><select className="field mt-1 h-9 w-full text-xs font-semibold" value={selected.selected_reasoning_effort ?? ""} disabled={saving || !provider} onChange={(e) => void run(() => e.target.value ? gatewayApi.selectReasoningEffort(e.target.value as ReasoningEffort) : gatewayApi.clearSelectedReasoningEffort())}><option value="">跟随请求</option><option value="low">低（low）</option><option value="medium">中（medium）</option><option value="high">高（high）</option><option value="xhigh">极高（xhigh）</option></select></label></div></article>;
 }
 
 function ProviderSection(props: {
@@ -385,224 +370,6 @@ function ProviderSection(props: {
     </section>
   );
 }
-
-function GatewayIssueDialog({
-  issues,
-  onChanged,
-  onError,
-  onClose,
-}: {
-  issues: GatewayIssue[];
-  onChanged: () => Promise<void>;
-  onError: (message: string) => void;
-  onClose: () => void;
-}) {
-  React.useEffect(() => {
-    const handler = (event: KeyboardEvent) => event.key === "Escape" && onClose();
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [onClose]);
-
-  return (
-    <div
-      className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/25 p-3 backdrop-blur-sm sm:p-6"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onClose();
-      }}
-    >
-      <div
-        className="dialog-panel max-h-[calc(100dvh-6rem)] w-full max-w-3xl overflow-y-auto rounded-[22px] p-4 sm:max-h-[calc(100vh-8rem)] sm:rounded-[26px] sm:p-5"
-        role="dialog"
-        aria-modal="true"
-        aria-label="网关问题"
-        onMouseDown={(event) => event.stopPropagation()}
-      >
-        <GatewayIssueSection issues={issues} onChanged={onChanged} onError={onError} onClose={onClose} />
-      </div>
-    </div>
-  );
-}
-
-
-function GatewayIssueSection({
-  issues,
-  onChanged,
-  onError,
-  onClose,
-}: {
-  issues: GatewayIssue[];
-  onChanged: () => Promise<void>;
-  onError: (message: string) => void;
-  onClose?: () => void;
-}) {
-  const [copyingId, setCopyingId] = React.useState<string | null>(null);
-  const [copiedId, setCopiedId] = React.useState<string | null>(null);
-  const [clearing, setClearing] = React.useState(false);
-
-  async function copyRepairPrompt(issue: GatewayIssue) {
-    setCopyingId(issue.id);
-    try {
-      const { prompt } = await gatewayApi.gatewayIssueRepairPrompt(issue.id);
-      await copyText(prompt);
-      setCopiedId(issue.id);
-      window.setTimeout(
-        () => setCopiedId((current) => (current === issue.id ? null : current)),
-        2_000,
-      );
-    } catch (copyError) {
-      onError(errorMessage(copyError));
-    } finally {
-      setCopyingId(null);
-    }
-  }
-
-  async function clearIssues() {
-    if (!issues.length || !window.confirm(`确定清空全部 ${issues.length} 条网关问题记录吗？`)) {
-      return;
-    }
-    setClearing(true);
-    try {
-      await gatewayApi.clearGatewayIssues();
-      await onChanged();
-    } catch (clearError) {
-      onError(errorMessage(clearError));
-    } finally {
-      setClearing(false);
-    }
-  }
-
-  return (
-    <section>
-      <div className="mb-3 flex flex-wrap items-center gap-3 px-1">
-        <div className="flex items-center gap-2">
-          <Bug className="size-4 text-red-500" />
-          <h2 className="text-xs font-bold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">
-            网关问题
-          </h2>
-        </div>
-        <span className="rounded-full bg-red-500/10 px-2 py-0.5 text-[10px] font-bold text-red-600 dark:text-red-400">
-          {issues.length} / 200
-        </span>
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={!issues.length || clearing}
-          onClick={() => void clearIssues()}
-        >
-          {clearing ? <LoaderCircle className="size-3.5 animate-spin" /> : <Trash2 className="size-3.5" />}
-          一键清空
-        </Button>
-        {onClose ? (
-          <Button className="ml-auto" variant="outline" size="icon" title="关闭" aria-label="关闭" onClick={onClose}>
-            <X className="size-3.5" />
-          </Button>
-        ) : null}
-      </div>
-      <div className="overflow-hidden rounded-[22px] border border-white/70 bg-white/55 shadow-sm backdrop-blur-xl dark:border-white/8 dark:bg-white/[0.035]">
-        {!issues.length ? (
-          <div className="px-5 py-10 text-center">
-            <CheckCircle2 className="mx-auto size-7 text-emerald-500" />
-            <div className="mt-2 text-sm font-semibold text-slate-600 dark:text-slate-300">
-              暂无网关问题
-            </div>
-            <div className="mt-1 text-xs text-slate-400">成功请求不会写入该列表。</div>
-          </div>
-        ) : (
-          <div className="divide-y divide-slate-100/80 dark:divide-white/[0.055]">
-            {issues.map((issue) => (
-              <article key={issue.id} className="p-4 sm:p-5">
-                <div className="flex flex-col gap-4 lg:flex-row lg:items-start">
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <Badge tone="red">
-                        {issue.status_code ? `HTTP ${issue.status_code}` : gatewayIssueKindLabel(issue.failure_kind)}
-                      </Badge>
-                      <span className="font-mono text-[11px] font-semibold text-slate-700 dark:text-slate-200">
-                        {issue.model}
-                      </span>
-                      <span className="text-[10px] text-slate-400">
-                        {issue.provider_name}
-                      </span>
-                      <span className="text-[10px] text-slate-400">{formatIssueTime(issue.created_at)}</span>
-                    </div>
-                    <div className="mt-2 break-words text-xs font-medium leading-5 text-red-600 dark:text-red-400">
-                      {issue.error_message}
-                    </div>
-                    <div className="mt-1 truncate font-mono text-[10px] text-slate-400" title={issue.upstream_url}>
-                      {issue.upstream_url}
-                    </div>
-                    <details className="mt-3 rounded-xl bg-slate-900/[0.035] px-3 py-2 text-[10px] dark:bg-white/[0.05]">
-                      <summary className="cursor-pointer font-semibold text-slate-500 dark:text-slate-400">
-                        查看上游原始返回
-                      </summary>
-                      <IssuePayload
-                        label={`上游原始返回${issue.upstream_response_truncated ? "（已截断）" : ""}`}
-                        value={issue.upstream_response || "（上游返回空响应体）"}
-                      />
-                    </details>
-                  </div>
-                  <Button
-                    variant="default"
-                    size="sm"
-                    disabled={copyingId === issue.id}
-                    onClick={() => void copyRepairPrompt(issue)}
-                  >
-                    {copyingId === issue.id ? (
-                      <LoaderCircle className="size-3.5 animate-spin" />
-                    ) : copiedId === issue.id ? (
-                      <Check className="size-3.5" />
-                    ) : (
-                      <Wrench className="size-3.5" />
-                    )}
-                    {copiedId === issue.id ? "提示词已复制" : "复制修复提示词"}
-                  </Button>
-                </div>
-              </article>
-            ))}
-          </div>
-        )}
-      </div>
-      <p className="mt-2 px-1 text-[11px] leading-5 text-slate-400">
-        仅记录本机的上游连接失败、非 2xx、响应读取失败和流中断；最多保留 200 条，单个请求和响应各最多 128 KiB。
-        “复制修复提示词”只负责把故障证据和安全约束组成提示词并复制到剪贴板，不会在网关内执行修复；
-        复制后可粘贴到 Codex 或其他 Agent 的用户输入中。
-      </p>
-    </section>
-  );
-}
-
-function IssuePayload({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="mt-3">
-      <div className="font-bold uppercase tracking-[0.08em] text-slate-400">{label}</div>
-      <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-words font-mono leading-4 text-slate-600 dark:text-slate-300">
-        {value}
-      </pre>
-    </div>
-  );
-}
-
-function gatewayIssueKindLabel(kind: string) {
-  const labels: Record<string, string> = {
-    upstream_connect_error: "连接上游失败",
-    upstream_http_error: "上游响应异常",
-    response_read_error: "读取响应失败",
-    stream_interrupted: "响应流中断",
-  };
-  return labels[kind] ?? kind;
-}
-
-function formatIssueTime(timestamp: number) {
-  return new Date(timestamp * 1000).toLocaleString("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  });
-}
-
 
 function ProviderCard({
   provider,

@@ -1,6 +1,6 @@
 use crate::{
     config::Config,
-    models::{GatewayIssue, GatewayIssueRecord, ProviderAuthMode, ProviderRecord, SelectedRoute},
+    models::{ProviderAuthMode, ProviderRecord, SelectedRoute},
 };
 use rusqlite::{Connection, OptionalExtension, params};
 use std::{fs, path::PathBuf, sync::Arc};
@@ -175,93 +175,6 @@ impl SqliteStore {
         .map(|value| value.flatten())
     }
 
-    pub fn record_gateway_issue(
-        &self,
-        issue: &GatewayIssueRecord,
-        limit: i64,
-    ) -> Result<(), String> {
-        let mut conn = self.connect()?;
-        let transaction = conn
-            .transaction()
-            .map_err(|err| format!("begin gateway issue transaction failed: {err}"))?;
-        transaction
-            .execute(
-                "INSERT INTO gateway_issues (
-                    id, provider_id, provider_name, model,
-                    upstream_url, failure_kind, status_code, error_message,
-                    upstream_response, upstream_response_truncated, created_at
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-                params![
-                    issue.id,
-                    issue.provider_id,
-                    issue.provider_name,
-                    issue.model,
-                    issue.upstream_url,
-                    issue.failure_kind,
-                    issue.status_code,
-                    issue.error_message,
-                    issue.upstream_response,
-                    i64::from(issue.upstream_response_truncated),
-                    issue.created_at,
-                ],
-            )
-            .map_err(|err| format!("insert gateway issue failed: {err}"))?;
-        transaction
-            .execute(
-                "DELETE FROM gateway_issues
-                 WHERE id IN (
-                    SELECT id FROM gateway_issues
-                    ORDER BY created_at DESC, rowid DESC
-                    LIMIT -1 OFFSET ?1
-                 )",
-                params![limit],
-            )
-            .map_err(|err| format!("trim gateway issues failed: {err}"))?;
-        transaction
-            .commit()
-            .map_err(|err| format!("commit gateway issue transaction failed: {err}"))
-    }
-
-    pub fn list_gateway_issues(&self, limit: i64) -> Result<Vec<GatewayIssue>, String> {
-        let conn = self.connect()?;
-        let mut statement = conn
-            .prepare(
-                "SELECT id, provider_id, provider_name, model, upstream_url,
-                        failure_kind, status_code, error_message, upstream_response,
-                        upstream_response_truncated, created_at
-                 FROM gateway_issues
-                 ORDER BY created_at DESC, rowid DESC
-                 LIMIT ?1",
-            )
-            .map_err(|err| format!("prepare gateway issue list failed: {err}"))?;
-        statement
-            .query_map(params![limit], gateway_issue_from_row)
-            .map_err(|err| format!("query gateway issues failed: {err}"))?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|err| format!("read gateway issues failed: {err}"))
-    }
-
-    pub fn load_gateway_issue(&self, issue_id: &str) -> Result<Option<GatewayIssue>, String> {
-        let conn = self.connect()?;
-        conn.query_row(
-            "SELECT id, provider_id, provider_name, model, upstream_url,
-                    failure_kind, status_code, error_message, upstream_response,
-                    upstream_response_truncated, created_at
-             FROM gateway_issues
-             WHERE id = ?1",
-            params![issue_id],
-            gateway_issue_from_row,
-        )
-        .optional()
-        .map_err(|err| format!("load gateway issue failed: {err}"))
-    }
-
-    pub fn clear_gateway_issues(&self) -> Result<usize, String> {
-        let conn = self.connect()?;
-        conn.execute("DELETE FROM gateway_issues", [])
-            .map_err(|err| format!("clear gateway issues failed: {err}"))
-    }
-
     fn init(&self) -> Result<(), String> {
         let conn = self.connect()?;
         conn.execute_batch(
@@ -291,19 +204,6 @@ impl SqliteStore {
                 FOREIGN KEY (selected_provider_id) REFERENCES providers(id) ON DELETE SET NULL
             );
 
-            CREATE TABLE IF NOT EXISTS gateway_issues (
-                id TEXT PRIMARY KEY,
-                provider_id TEXT NOT NULL,
-                provider_name TEXT NOT NULL,
-                model TEXT NOT NULL,
-                upstream_url TEXT NOT NULL,
-                failure_kind TEXT NOT NULL,
-                status_code INTEGER,
-                error_message TEXT NOT NULL,
-                upstream_response TEXT NOT NULL,
-                upstream_response_truncated INTEGER NOT NULL DEFAULT 0,
-                created_at INTEGER NOT NULL
-            );
             ",
         )
         .map_err(|err| format!("initialize sqlite schema failed: {err}"))?;
@@ -317,7 +217,6 @@ impl SqliteStore {
         conn.execute("INSERT OR IGNORE INTO gateway_state (id) VALUES (1)", [])
             .map_err(|err| format!("initialize gateway state failed: {err}"))?;
         drop_provider_compatibility_profile(&conn)?;
-        migrate_gateway_issue_payloads(&conn)?;
         Ok(())
     }
 
@@ -439,45 +338,6 @@ fn table_exists(conn: &Connection, table: &str) -> Result<bool, String> {
     .map_err(|err| format!("inspect table `{table}` failed: {err}"))
 }
 
-// Legacy databases may still contain the removed instance_id column. The
-// migration reads old rows but does not carry that field into the new schema.
-fn migrate_gateway_issue_payloads(conn: &Connection) -> Result<(), String> {
-    if table_has_column(conn, "gateway_issues", "upstream_response")? {
-        return Ok(());
-    }
-
-    conn.execute_batch(
-        "BEGIN;
-         CREATE TABLE gateway_issues_new (
-            id TEXT PRIMARY KEY,
-            provider_id TEXT NOT NULL,
-            provider_name TEXT NOT NULL,
-            model TEXT NOT NULL,
-            upstream_url TEXT NOT NULL,
-            failure_kind TEXT NOT NULL,
-            status_code INTEGER,
-            error_message TEXT NOT NULL,
-            upstream_response TEXT NOT NULL,
-            upstream_response_truncated INTEGER NOT NULL DEFAULT 0,
-            created_at INTEGER NOT NULL
-         );
-         INSERT INTO gateway_issues_new (
-            id, provider_id, provider_name, model,
-            upstream_url, failure_kind, status_code, error_message,
-            upstream_response, upstream_response_truncated, created_at
-         )
-         SELECT
-            id, provider_id, provider_name, model,
-            upstream_url, failure_kind, status_code, error_message,
-            COALESCE(response_body, ''), response_truncated, created_at
-         FROM gateway_issues;
-         DROP TABLE gateway_issues;
-         ALTER TABLE gateway_issues_new RENAME TO gateway_issues;
-         COMMIT;",
-    )
-    .map_err(|err| format!("migrate gateway issue payloads failed: {err}"))
-}
-
 fn table_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool, String> {
     let mut statement = conn
         .prepare(&format!("PRAGMA table_info({table})"))
@@ -512,22 +372,6 @@ fn drop_database_encryption_key(conn: &Connection) -> Result<(), String> {
     )
     .map_err(|err| format!("remove database encryption key failed: {err}"))?;
     Ok(())
-}
-
-fn gateway_issue_from_row(row: &rusqlite::Row<'_>) -> Result<GatewayIssue, rusqlite::Error> {
-    Ok(GatewayIssue {
-        id: row.get(0)?,
-        provider_id: row.get(1)?,
-        provider_name: row.get(2)?,
-        model: row.get(3)?,
-        upstream_url: row.get(4)?,
-        failure_kind: row.get(5)?,
-        status_code: row.get(6)?,
-        error_message: row.get(7)?,
-        upstream_response: row.get(8)?,
-        upstream_response_truncated: row.get::<_, i64>(9)? != 0,
-        created_at: row.get(10)?,
-    })
 }
 
 fn upsert_provider_record(conn: &Connection, provider: &ProviderRecord) -> Result<(), String> {
@@ -818,67 +662,6 @@ mod tests {
         assert_eq!(provider.expiry_timestamp, Some(1700000000));
         assert_eq!(provider.client_id.as_deref(), Some("client-1"));
         assert_eq!(provider.upstream_account_id.as_deref(), Some("upstream-1"));
-
-        let _ = fs::remove_file(db_path);
-    }
-
-    #[test]
-    fn migrates_gateway_issues_to_drop_request_payloads() {
-        let db_path = unique_test_db_path("gateway-issue-payloads");
-        let conn = Connection::open(&db_path).expect("create legacy database");
-        conn.execute_batch(
-            "CREATE TABLE gateway_issues (
-                id TEXT PRIMARY KEY,
-                instance_id TEXT,
-                provider_id TEXT NOT NULL,
-                provider_name TEXT NOT NULL,
-                model TEXT NOT NULL,
-                upstream_url TEXT NOT NULL,
-                failure_kind TEXT NOT NULL,
-                status_code INTEGER,
-                error_message TEXT NOT NULL,
-                request_body TEXT NOT NULL,
-                response_body TEXT,
-                request_truncated INTEGER NOT NULL DEFAULT 0,
-                response_truncated INTEGER NOT NULL DEFAULT 0,
-                created_at INTEGER NOT NULL
-             );
-             INSERT INTO gateway_issues (
-                id, instance_id, provider_id, provider_name, model,
-                upstream_url, failure_kind, status_code, error_message,
-                request_body, response_body, request_truncated, response_truncated, created_at
-             ) VALUES (
-                'legacy', NULL, 'provider', 'Provider', 'model',
-                'https://example.com/v1/responses', 'upstream_http_error', 500, 'failed',
-                '{\"input\":\"secret\"}', '{\"error\":\"failed\"}', 0, 1, 1
-             );",
-        )
-        .expect("create legacy gateway issues");
-        drop(conn);
-
-        let store = SqliteStore {
-            db_path: db_path.clone(),
-        };
-        store.init().expect("migrate legacy database");
-
-        let conn = Connection::open(&db_path).expect("open migrated database");
-        let columns: Vec<String> = conn
-            .prepare("PRAGMA table_info(gateway_issues)")
-            .expect("prepare column query")
-            .query_map([], |row| row.get(1))
-            .expect("query columns")
-            .collect::<Result<_, _>>()
-            .expect("read columns");
-        assert!(!columns.iter().any(|column| column == "request_body"));
-        assert!(!columns.iter().any(|column| column == "response_body"));
-        assert!(columns.iter().any(|column| column == "upstream_response"));
-
-        let issue = store
-            .load_gateway_issue("legacy")
-            .expect("load migrated issue")
-            .expect("migrated issue exists");
-        assert_eq!(issue.upstream_response, "{\"error\":\"failed\"}");
-        assert!(issue.upstream_response_truncated);
 
         let _ = fs::remove_file(db_path);
     }

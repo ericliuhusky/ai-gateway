@@ -1,11 +1,10 @@
 use super::AppState;
 use crate::api::handlers::{
-    add_provider, cancel_openai_device_login, clear_gateway_issues, clear_selected_model,
-    clear_selected_reasoning_effort, delete_provider, gateway_status,
-    get_gateway_issue_repair_prompt, get_provider_quota, get_route, get_selected_model,
-    get_selected_reasoning_effort, healthz, import_openai_token, list_gateway_issues, list_models,
-    list_providers, poll_openai_device_login, refresh_openai_provider, responses, set_route,
-    set_selected_model, set_selected_reasoning_effort, start_openai_device_login,
+    add_provider, cancel_openai_device_login, clear_selected_model,
+    clear_selected_reasoning_effort, delete_provider, gateway_status, get_provider_quota,
+    get_route, get_selected_model, get_selected_reasoning_effort, healthz, import_openai_token,
+    list_models, list_providers, poll_openai_device_login, refresh_openai_provider, responses,
+    set_route, set_selected_model, set_selected_reasoning_effort, start_openai_device_login,
 };
 use axum::{
     Router,
@@ -45,14 +44,6 @@ pub fn build_management_router(state: AppState) -> Router {
         .route("/providers", get(list_providers).post(add_provider))
         .route("/providers/:provider_id", delete(delete_provider))
         .route("/providers/:provider_id/quota", get(get_provider_quota))
-        .route(
-            "/gateway/issues",
-            get(list_gateway_issues).delete(clear_gateway_issues),
-        )
-        .route(
-            "/gateway/issues/:issue_id/repair-prompt",
-            get(get_gateway_issue_repair_prompt),
-        )
         .route("/selected-provider", get(get_route).put(set_route))
         .route(
             "/selected-model",
@@ -88,7 +79,7 @@ mod tests {
         openai::{OpenAiClient, build_http_client},
         openai_device_login::OpenAiDeviceLoginService,
         openai_tokens::OpenAiTokenService,
-        store::{IssueStore, ProviderStore, RouteStore},
+        store::{ProviderStore, RouteStore},
     };
     use axum::{
         Json, Router,
@@ -126,7 +117,6 @@ mod tests {
 
         let data_dir = unique_test_data_dir("local-routes");
         let (state, providers, routes) = test_state(data_dir.clone()).await;
-        let issues = state.issues.clone();
         let provider = providers
             .upsert(CreateProviderRequest {
                 name: "Mock Provider".to_string(),
@@ -226,11 +216,6 @@ mod tests {
                 Some(2 * 1024 * 1024)
             );
         }
-        assert!(
-            issues.list(50).expect("list gateway issues").is_empty(),
-            "successful requests must not be recorded as gateway issues"
-        );
-
         let _ = fs::remove_dir_all(data_dir);
     }
 
@@ -324,12 +309,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn returns_and_records_upstream_http_errors() {
+    async fn transparently_returns_upstream_http_errors() {
         let captured = Arc::new(Mutex::new(Vec::<CapturedUpstreamRequest>::new()));
         let upstream_addr = start_mock_responses_server(captured).await;
         let data_dir = unique_test_data_dir("upstream-http-error");
         let (state, providers, routes) = test_state(data_dir.clone()).await;
-        let issues = state.issues.clone();
         let provider = providers
             .upsert(CreateProviderRequest {
                 name: "Mock Provider".to_string(),
@@ -358,18 +342,16 @@ mod tests {
             .await
             .expect("collect response")
             .to_bytes();
-        assert!(String::from_utf8_lossy(&body).contains("上游服务错误：rate limited"));
-
-        let recorded = issues.list(50).expect("list gateway issues");
-        assert_eq!(recorded.len(), 1);
-        assert_eq!(recorded[0].failure_kind, "upstream_http_error");
-        assert_eq!(recorded[0].status_code, Some(429));
+        assert_eq!(
+            body,
+            Bytes::from_static(br#"{"error":{"message":"rate limited"}}"#)
+        );
 
         let _ = fs::remove_dir_all(data_dir);
     }
 
     #[tokio::test]
-    async fn records_upstream_connection_failures() {
+    async fn upstream_connection_failures_are_not_recorded() {
         let dead_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("reserve local address");
@@ -390,7 +372,6 @@ mod tests {
             .update(Some(provider.id.clone()), None, None, true)
             .await
             .expect("select unavailable provider");
-        let issues = state.issues.clone();
         let router = build_router(state);
 
         let response = router
@@ -410,13 +391,6 @@ mod tests {
             .expect("gateway response");
 
         assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
-        let recorded = issues.list(50).expect("list gateway issues");
-        assert_eq!(recorded.len(), 1);
-        assert_eq!(recorded[0].failure_kind, "upstream_connect_error");
-        assert_eq!(recorded[0].provider_id, provider.id);
-        assert!(recorded[0].status_code.is_none());
-        assert!(recorded[0].upstream_response.is_empty());
-
         let _ = fs::remove_dir_all(data_dir);
     }
 
@@ -509,7 +483,6 @@ mod tests {
             openai_device_login: OpenAiDeviceLoginService::new(),
             providers: providers.clone(),
             routes: routes.clone(),
-            issues: IssueStore::new(config.clone()).expect("create issues"),
             upstream: OpenAiClient::new(build_http_client()),
         };
         (state, providers, routes)

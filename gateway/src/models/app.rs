@@ -91,37 +91,6 @@ pub struct UpdateSelectedReasoningEffortRequest {
     pub effort: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct GatewayIssue {
-    pub id: String,
-    pub provider_id: String,
-    pub provider_name: String,
-    pub model: String,
-    pub upstream_url: String,
-    pub failure_kind: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub status_code: Option<u16>,
-    pub error_message: String,
-    pub upstream_response: String,
-    pub upstream_response_truncated: bool,
-    pub created_at: i64,
-}
-
-#[derive(Debug, Clone)]
-pub struct GatewayIssueRecord {
-    pub id: String,
-    pub provider_id: String,
-    pub provider_name: String,
-    pub model: String,
-    pub upstream_url: String,
-    pub failure_kind: String,
-    pub status_code: Option<u16>,
-    pub error_message: String,
-    pub upstream_response: String,
-    pub upstream_response_truncated: bool,
-    pub created_at: i64,
-}
-
 impl ProviderRecord {
     pub fn new_openai_account(
         email: String,

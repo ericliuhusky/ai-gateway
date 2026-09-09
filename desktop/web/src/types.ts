@@ -30,20 +30,6 @@ export interface GatewayModel {
   id: string;
 }
 
-export interface GatewayIssue {
-  id: string;
-  provider_id: string;
-  provider_name: string;
-  model: string;
-  upstream_url: string;
-  failure_kind: string;
-  status_code?: number;
-  error_message: string;
-  upstream_response: string;
-  upstream_response_truncated: boolean;
-  created_at: number;
-}
-
 export interface CodexUsageRateLimitWindow {
   used_percent: number;
   limit_window_seconds: number;

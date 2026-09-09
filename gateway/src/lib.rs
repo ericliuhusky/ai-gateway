@@ -4,9 +4,9 @@ mod models;
 mod openai;
 mod openai_device_login;
 mod openai_tokens;
+mod scproxy;
 mod store;
 mod support;
-mod scproxy;
 
 use api::{AppState, build_router};
 use config::Config;
@@ -23,7 +23,7 @@ use std::{
 use axum::http::{Method, header::ACCEPT};
 use openai::{OpenAiClient, build_http_client};
 use serde_json::Value;
-use store::{IssueStore, ProviderStore, RouteStore};
+use store::{ProviderStore, RouteStore};
 
 pub const LOCAL_GATEWAY_URL: &str = "http://127.0.0.1:42401/v1";
 pub const LOCAL_API_ROOT: &str = "http://127.0.0.1:42401";
@@ -321,7 +321,6 @@ async fn initialize_local_gateway() -> Result<AppState, String> {
         openai_device_login: OpenAiDeviceLoginService::new(),
         providers,
         routes,
-        issues: IssueStore::new(config.clone())?,
         upstream: OpenAiClient::new(build_http_client()),
     };
     Ok(state)
