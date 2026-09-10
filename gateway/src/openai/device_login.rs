@@ -289,7 +289,7 @@ impl OpenAiDeviceLoginService {
 
         let payload: OAuthTokenResponse = serde_json::from_str(&body)
             .map_err(|error| format!("解析 OpenAI Token 交换响应失败：{error}"))?;
-        tokens.import_codex_tokens(payload.access_token, payload.refresh_token, None)
+        tokens.import_codex_tokens(payload.access_token, payload.refresh_token)
     }
 
     pub async fn complete(&self, login_id: &str, completion: DeviceLoginCompletion) {

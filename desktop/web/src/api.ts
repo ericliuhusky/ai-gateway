@@ -4,8 +4,7 @@ import type {
   GatewayModel,
   GatewayProvider,
   CodexUsageResponse,
-  SelectedProvider,
-  ReasoningEffort,
+  GatewayRoute,
   OpenAiDeviceLoginStart,
   OpenAiDeviceLoginStatus,
   DefaultCodexStatus,
@@ -48,17 +47,23 @@ export const gatewayApi = {
     const payload = await gatewayRequest<{ providers: GatewayProvider[] }>("GET", "/management/providers");
     return payload.providers;
   },
-  async selectedProvider() {
-    const payload = await gatewayRequest<{ selected_provider: SelectedProvider }>("GET", "/management/selected-provider");
-    return payload.selected_provider;
+  async route() {
+    const payload = await gatewayRequest<{ route: GatewayRoute }>("GET", "/management/route");
+    return payload.route;
   },
-  async selectProvider(providerId: string) {
-    const payload = await gatewayRequest<{ selected_provider: SelectedProvider }>(
+  async updateRoute(route: GatewayRoute, useSavedPreferences = false) {
+    if (!route.provider_id) throw new Error("必须先选择供应商");
+    const payload = await gatewayRequest<{ route: GatewayRoute }>(
       "PUT",
-      "/management/selected-provider",
-      { provider_id: providerId },
+      "/management/route",
+      {
+        provider_id: route.provider_id,
+        model: route.model ?? null,
+        reasoning_effort: route.reasoning_effort ?? null,
+        use_saved_preferences: useSavedPreferences,
+      },
     );
-    return payload.selected_provider;
+    return payload.route;
   },
   async models(providerId?: string) {
     const query = new URLSearchParams();
@@ -69,36 +74,6 @@ export const gatewayApi = {
       .map(modelId)
       .filter((id): id is string => Boolean(id));
     return [...new Map(ids.map((id) => [id, { id }])).values()];
-  },
-  async selectModel(model: string) {
-    const payload = await gatewayRequest<{ selected_model: SelectedProvider }>(
-      "PUT",
-      "/management/selected-model",
-      { model },
-    );
-    return payload.selected_model;
-  },
-  async clearSelectedModel() {
-    const payload = await gatewayRequest<{ selected_model: SelectedProvider }>(
-      "DELETE",
-      "/management/selected-model",
-    );
-    return payload.selected_model;
-  },
-  async selectReasoningEffort(effort: ReasoningEffort) {
-    const payload = await gatewayRequest<{ selected_reasoning_effort: SelectedProvider }>(
-      "PUT",
-      "/management/selected-reasoning-effort",
-      { effort },
-    );
-    return payload.selected_reasoning_effort;
-  },
-  async clearSelectedReasoningEffort() {
-    const payload = await gatewayRequest<{ selected_reasoning_effort: SelectedProvider }>(
-      "DELETE",
-      "/management/selected-reasoning-effort",
-    );
-    return payload.selected_reasoning_effort;
   },
   createProvider(input: { name: string; base_url: string; api_key: string }) {
     return gatewayRequest("POST", "/management/providers", input);

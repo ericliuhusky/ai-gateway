@@ -22,7 +22,6 @@ use openai::{OpenAiClient, build_http_client};
 use serde_json::Value;
 use store::{ProviderStore, RouteStore};
 
-pub const LOCAL_GATEWAY_URL: &str = "http://127.0.0.1:42401/v1";
 pub const LOCAL_API_ROOT: &str = "http://127.0.0.1:42401";
 
 /// Client for the daemon's local HTTP management API.
@@ -298,9 +297,7 @@ fn gateway_listen_addr() -> String {
 async fn initialize_local_gateway() -> Result<AppState, String> {
     let config = Arc::new(Config::local()?);
     let providers = ProviderStore::new(config.clone())?;
-    providers.load().await?;
     let routes = RouteStore::new(config.clone())?;
-    routes.load().await?;
     let state = AppState {
         openai_tokens: OpenAiTokenService::new(),
         openai_device_login: OpenAiDeviceLoginService::new(),

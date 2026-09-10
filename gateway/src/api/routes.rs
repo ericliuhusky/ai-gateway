@@ -1,11 +1,9 @@
 use super::AppState;
 use super::responses_handler::responses;
 use crate::api::handlers::{
-    add_provider, cancel_openai_device_login, clear_selected_model,
-    clear_selected_reasoning_effort, delete_provider, get_provider_quota, get_route,
-    get_selected_model, get_selected_reasoning_effort, healthz, import_openai_token, list_models,
-    list_providers, poll_openai_device_login, refresh_openai_provider, set_route,
-    set_selected_model, set_selected_reasoning_effort, start_openai_device_login,
+    add_provider, cancel_openai_device_login, delete_provider, get_provider_quota, get_route,
+    healthz, import_openai_token, list_models, list_providers, poll_openai_device_login,
+    refresh_openai_provider, set_route, start_openai_device_login,
 };
 use axum::{
     Router,
@@ -44,19 +42,7 @@ pub fn build_management_router(state: AppState) -> Router {
         .route("/providers", get(list_providers).post(add_provider))
         .route("/providers/:provider_id", delete(delete_provider))
         .route("/providers/:provider_id/quota", get(get_provider_quota))
-        .route("/selected-provider", get(get_route).put(set_route))
-        .route(
-            "/selected-model",
-            get(get_selected_model)
-                .put(set_selected_model)
-                .delete(clear_selected_model),
-        )
-        .route(
-            "/selected-reasoning-effort",
-            get(get_selected_reasoning_effort)
-                .put(set_selected_reasoning_effort)
-                .delete(clear_selected_reasoning_effort),
-        )
+        .route("/route", get(get_route).put(set_route))
         .with_state(state);
     Router::new().nest("/management", management_routes)
 }
@@ -117,14 +103,13 @@ mod tests {
         let provider = providers
             .upsert(CreateProviderReq {
                 name: "Mock Provider".to_string(),
-                base_url: Some(format!("http://{upstream_addr}/v1")),
-                api_key: Some("sk-local-only".to_string()),
+                base_url: format!("http://{upstream_addr}/v1"),
+                api_key: "sk-local-only".to_string(),
             })
             .await
             .expect("add local provider");
         routes
             .update(Some(provider.id().to_string()), None, None, true)
-            .await
             .expect("select local provider");
         let router = build_router(state);
 
@@ -214,14 +199,13 @@ mod tests {
         let provider = providers
             .upsert(CreateProviderReq {
                 name: "Mock Provider".to_string(),
-                base_url: Some(format!("http://{upstream_addr}/v1")),
-                api_key: Some("sk-local-only".to_string()),
+                base_url: format!("http://{upstream_addr}/v1"),
+                api_key: "sk-local-only".to_string(),
             })
             .await
             .expect("add local provider");
         routes
             .update(Some(provider.id().to_string()), None, None, true)
-            .await
             .expect("select local provider");
 
         let raw_body = Bytes::from_static(b"this is intentionally not JSON");
@@ -252,8 +236,8 @@ mod tests {
         let provider = providers
             .upsert(CreateProviderReq {
                 name: "Mock Provider".to_string(),
-                base_url: Some(format!("http://{upstream_addr}/v1")),
-                api_key: Some("sk-local-only".to_string()),
+                base_url: format!("http://{upstream_addr}/v1"),
+                api_key: "sk-local-only".to_string(),
             })
             .await
             .expect("add local provider");
@@ -264,7 +248,6 @@ mod tests {
                 Some("high".to_string()),
                 false,
             )
-            .await
             .expect("select route overrides");
 
         let response = build_router(state)
@@ -303,14 +286,13 @@ mod tests {
         let provider = providers
             .upsert(CreateProviderReq {
                 name: "Mock Provider".to_string(),
-                base_url: Some(format!("http://{upstream_addr}/v1")),
-                api_key: Some("sk-local-only".to_string()),
+                base_url: format!("http://{upstream_addr}/v1"),
+                api_key: "sk-local-only".to_string(),
             })
             .await
             .expect("add local provider");
         routes
             .update(Some(provider.id().to_string()), None, None, true)
-            .await
             .expect("select local provider");
 
         let response = build_router(state)
@@ -349,14 +331,13 @@ mod tests {
         let provider = providers
             .upsert(CreateProviderReq {
                 name: "Unavailable Provider".to_string(),
-                base_url: Some(format!("http://{upstream_addr}/v1")),
-                api_key: Some("sk-local-only".to_string()),
+                base_url: format!("http://{upstream_addr}/v1"),
+                api_key: "sk-local-only".to_string(),
             })
             .await
             .expect("add unavailable provider");
         routes
             .update(Some(provider.id().to_string()), None, None, true)
-            .await
             .expect("select unavailable provider");
         let router = build_router(state);
 
@@ -459,9 +440,7 @@ mod tests {
     async fn test_state(data_dir: PathBuf) -> (AppState, ProviderStore, RouteStore) {
         let config = Arc::new(Config::for_test(data_dir.clone()));
         let providers = ProviderStore::new(config.clone()).expect("create providers");
-        providers.load().await.expect("load providers");
         let routes = RouteStore::new(config.clone()).expect("create routes");
-        routes.load().await.expect("load routes");
         let state = AppState {
             openai_tokens: OpenAiTokenService::new(),
             openai_device_login: OpenAiDeviceLoginService::new(),

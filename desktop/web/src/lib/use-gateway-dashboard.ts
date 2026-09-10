@@ -1,7 +1,7 @@
 import * as React from "react";
 
 import { gatewayApi } from "../api";
-import type { GatewayProvider, SelectedProvider } from "../types";
+import type { GatewayProvider, GatewayRoute } from "../types";
 import {
   MODEL_CACHE_STORAGE_KEY,
   QUOTA_CACHE_STORAGE_KEY,
@@ -18,7 +18,7 @@ import {
 
 export function useGatewayDashboard() {
   const [providers, setProviders] = React.useState<GatewayProvider[]>([]);
-  const [selected, setSelected] = React.useState<SelectedProvider>({ updated_at: 0 });
+  const [selected, setSelected] = React.useState<GatewayRoute>({});
   const quotaCacheRef = React.useRef<QuotaCache>(readLocalCache(QUOTA_CACHE_STORAGE_KEY, {}));
   const quotaRequestsRef = React.useRef(new Map<string, Promise<void>>());
   const [quotas, setQuotas] = React.useState<QuotaMap>(() => quotasFromCache(quotaCacheRef.current));
@@ -89,7 +89,7 @@ export function useGatewayDashboard() {
     try {
       const [providerList, route] = await Promise.all([
         gatewayApi.providers(),
-        gatewayApi.selectedProvider(),
+        gatewayApi.route(),
       ]);
       const sorted = [...providerList].sort((a, b) => a.name.localeCompare(b.name));
       const accountIds = new Set(
@@ -129,11 +129,11 @@ export function useGatewayDashboard() {
     setSelected((current) => ({
       ...current,
       provider_id: provider.id,
-      selected_model: undefined,
-      selected_reasoning_effort: undefined,
+      model: undefined,
+      reasoning_effort: undefined,
     }));
     try {
-      setSelected(await gatewayApi.selectProvider(provider.id));
+      setSelected(await gatewayApi.updateRoute({ provider_id: provider.id }, true));
       await loadQuotas([provider]);
     } catch (selectionError) {
       setError(errorMessage(selectionError));

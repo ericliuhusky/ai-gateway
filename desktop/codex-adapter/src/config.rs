@@ -287,6 +287,28 @@ fn set_private_permissions(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn is_gateway_configured(content: &str) -> bool {
+    let mut root = true;
+    let mut has_marker = false;
+    let mut has_provider = false;
+    let mut has_gateway_table = false;
+    for line in content.lines() {
+        if root && is_root_table(line) {
+            root = false;
+        }
+        if root && line.starts_with(MARKER_PREFIX) {
+            has_marker = true;
+        }
+        if root && root_model_provider(line).is_some_and(|value| value.trim() == "\"ai-gateway\"") {
+            has_provider = true;
+        }
+        if is_gateway_table(line) {
+            has_gateway_table = true;
+        }
+    }
+    has_marker && has_provider && has_gateway_table
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -308,26 +330,4 @@ mod tests {
             configure_gateway_config(&Some(first.clone()), "http://127.0.0.1:42401/v1");
         assert_eq!(first, second);
     }
-}
-
-fn is_gateway_configured(content: &str) -> bool {
-    let mut root = true;
-    let mut has_marker = false;
-    let mut has_provider = false;
-    let mut has_gateway_table = false;
-    for line in content.lines() {
-        if root && is_root_table(line) {
-            root = false;
-        }
-        if root && line.starts_with(MARKER_PREFIX) {
-            has_marker = true;
-        }
-        if root && root_model_provider(line).is_some_and(|value| value.trim() == "\"ai-gateway\"") {
-            has_provider = true;
-        }
-        if is_gateway_table(line) {
-            has_gateway_table = true;
-        }
-    }
-    has_marker && has_provider && has_gateway_table
 }

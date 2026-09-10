@@ -68,14 +68,8 @@ function hasTokenPair(value: unknown): boolean {
 }
 
 export function parseCodexAuthPayload(value: unknown): CodexAuthPayload | null {
-  const entries = Array.isArray(value) ? value : [value];
-  if (!entries.length) return null;
-  const supported = entries.every((entry) => {
-    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return false;
-    const record = entry as Record<string, unknown>;
-    return hasTokenPair(record.tokens) || hasTokenPair(record);
-  });
-  return supported ? (value as CodexAuthPayload) : null;
+  if (!Array.isArray(value) || value.length !== 1) return null;
+  return hasTokenPair(value[0]) ? (value as CodexAuthPayload) : null;
 }
 
 export function remaining(window: CodexUsageRateLimitWindow): number {

@@ -3,16 +3,14 @@ use crate::domain::{Provider, ProviderAuthMode, ProviderCredentials};
 #[derive(Debug, Clone)]
 pub struct ProviderRecord {
     pub id: String,
-    pub name: Option<String>,
+    pub name: String,
     pub auth_mode: ProviderAuthMode,
     pub base_url: Option<String>,
     pub api_key: Option<String>,
-    pub email: Option<String>,
     pub access_token: Option<String>,
     pub refresh_token: Option<String>,
     pub expiry_timestamp: Option<i64>,
     pub client_id: Option<String>,
-    pub account_id: Option<String>,
 }
 
 impl TryFrom<ProviderRecord> for Provider {
@@ -29,9 +27,6 @@ impl TryFrom<ProviderRecord> for Provider {
                     .ok_or_else(|| "API Key 供应商缺少 api_key".to_string())?,
             },
             ProviderAuthMode::Account => ProviderCredentials::Account {
-                email: record
-                    .email
-                    .ok_or_else(|| "账户供应商缺少 email".to_string())?,
                 access_token: record
                     .access_token
                     .ok_or_else(|| "账户供应商缺少 access_token".to_string())?,
@@ -44,9 +39,6 @@ impl TryFrom<ProviderRecord> for Provider {
                 client_id: record
                     .client_id
                     .ok_or_else(|| "账户供应商缺少 client_id".to_string())?,
-                account_id: record
-                    .account_id
-                    .ok_or_else(|| "账户供应商缺少 account_id".to_string())?,
             },
         };
         Ok(Provider {
@@ -66,32 +58,26 @@ impl From<&Provider> for ProviderRecord {
                 auth_mode: ProviderAuthMode::ApiKey,
                 base_url: Some(base_url.clone()),
                 api_key: Some(api_key.clone()),
-                email: None,
                 access_token: None,
                 refresh_token: None,
                 expiry_timestamp: None,
                 client_id: None,
-                account_id: None,
             },
             ProviderCredentials::Account {
-                email,
                 access_token,
                 refresh_token,
                 expiry_timestamp,
                 client_id,
-                account_id,
             } => Self {
                 id: provider.id.clone(),
                 name: provider.name.clone(),
                 auth_mode: ProviderAuthMode::Account,
                 base_url: None,
                 api_key: None,
-                email: Some(email.clone()),
                 access_token: Some(access_token.clone()),
                 refresh_token: Some(refresh_token.clone()),
                 expiry_timestamp: Some(*expiry_timestamp),
                 client_id: Some(client_id.clone()),
-                account_id: Some(account_id.clone()),
             },
         }
     }

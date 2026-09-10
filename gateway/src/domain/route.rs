@@ -5,9 +5,7 @@ pub struct SelectedRoute {
     #[serde(default)]
     pub provider_id: Option<String>,
     #[serde(default)]
-    pub selected_model: Option<String>,
+    pub model: Option<String>,
     #[serde(default)]
-    pub selected_reasoning_effort: Option<String>,
-    #[serde(default)]
-    pub updated_at: i64,
+    pub reasoning_effort: Option<String>,
 }

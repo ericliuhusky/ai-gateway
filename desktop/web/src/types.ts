@@ -23,11 +23,10 @@ export interface CodexConfigurationResult {
   changed: boolean;
 }
 
-export interface SelectedProvider {
+export interface GatewayRoute {
   provider_id?: string;
-  selected_model?: string;
-  selected_reasoning_effort?: ReasoningEffort;
-  updated_at: number;
+  model?: string;
+  reasoning_effort?: ReasoningEffort;
 }
 
 export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
@@ -69,26 +68,14 @@ export interface CodexUsageResponse {
   additional_rate_limits?: CodexUsageAdditionalRateLimit[];
 }
 
-export interface OfficialCodexAuthPayload {
-  tokens: {
-    access_token: string;
-    refresh_token: string;
-    account_id?: string;
-  };
-}
-
 export interface CockpitToolsCodexToken {
   access_token: string;
   refresh_token: string;
-  account_id?: string;
   type?: string;
   [key: string]: unknown;
 }
 
-export type CodexAuthPayload =
-  | OfficialCodexAuthPayload
-  | CockpitToolsCodexToken
-  | CockpitToolsCodexToken[];
+export type CodexAuthPayload = [CockpitToolsCodexToken];
 
 export interface OpenAiDeviceLoginStart {
   login_id: string;

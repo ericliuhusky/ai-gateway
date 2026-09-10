@@ -16,19 +16,17 @@ pub enum ProviderCredentials {
         api_key: String,
     },
     Account {
-        email: String,
         access_token: String,
         refresh_token: String,
         expiry_timestamp: i64,
         client_id: String,
-        account_id: String,
     },
 }
 
 #[derive(Debug, Clone)]
 pub struct Provider {
     pub id: String,
-    pub name: Option<String>,
+    pub name: String,
     pub credentials: ProviderCredentials,
 }
 
@@ -38,7 +36,7 @@ impl Provider {
     }
 
     pub fn name(&self) -> &str {
-        self.name.as_deref().or(self.email()).unwrap_or("")
+        &self.name
     }
 
     pub fn auth_mode(&self) -> ProviderAuthMode {
@@ -65,7 +63,7 @@ impl Provider {
     pub fn email(&self) -> Option<&str> {
         match &self.credentials {
             ProviderCredentials::ApiKey { .. } => None,
-            ProviderCredentials::Account { email, .. } => Some(email),
+            ProviderCredentials::Account { .. } => Some(&self.name),
         }
     }
 
@@ -137,18 +135,15 @@ impl Provider {
         refresh_token: String,
         expiry_timestamp: i64,
         client_id: Option<String>,
-        account_id: Option<String>,
     ) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
-            name: None,
+            name: email,
             credentials: ProviderCredentials::Account {
-                email,
                 access_token,
                 refresh_token,
                 expiry_timestamp,
                 client_id: client_id.unwrap_or_default(),
-                account_id: account_id.unwrap_or_default(),
             },
         }
     }

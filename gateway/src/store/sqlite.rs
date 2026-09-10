@@ -36,19 +36,10 @@ impl SqliteStore {
 
     pub fn load_providers(&self) -> Result<Vec<ProviderRecord>, String> {
         let conn = self.connect()?;
-        let has_providers: bool = conn
-            .query_row("SELECT EXISTS(SELECT 1 FROM providers)", [], |row| {
-                row.get(0)
-            })
-            .map_err(|err| format!("check providers failed: {err}"))?;
-        if !has_providers {
-            return Ok(Vec::new());
-        }
         let mut stmt = conn
             .prepare(
                 "SELECT id, name, auth_mode, base_url, api_key,
-                        email, access_token, refresh_token, expiry_timestamp, client_id,
-                        upstream_account_id
+                        access_token, refresh_token, expiry_timestamp, client_id
                  FROM providers
                  ORDER BY rowid ASC",
             )
@@ -63,12 +54,10 @@ impl SqliteStore {
                     auth_mode,
                     base_url: row.get(3)?,
                     api_key: row.get(4)?,
-                    email: row.get(5)?,
-                    access_token: row.get(6)?,
-                    refresh_token: row.get(7)?,
-                    expiry_timestamp: row.get(8)?,
-                    client_id: row.get(9)?,
-                    account_id: row.get(10)?,
+                    access_token: row.get(5)?,
+                    refresh_token: row.get(6)?,
+                    expiry_timestamp: row.get(7)?,
+                    client_id: row.get(8)?,
                 })
             })
             .map_err(|err| format!("query providers failed: {err}"))?;
@@ -93,7 +82,7 @@ impl SqliteStore {
         let conn = self.connect()?;
         conn.query_row(
             "SELECT state.selected_provider_id, provider.preferred_model,
-                    provider.preferred_reasoning_effort, state.route_updated_at
+                    provider.preferred_reasoning_effort
              FROM gateway_state AS state
              LEFT JOIN providers AS provider ON provider.id = state.selected_provider_id
              WHERE state.id = 1",
@@ -101,9 +90,8 @@ impl SqliteStore {
             |row| {
                 Ok(SelectedRoute {
                     provider_id: row.get(0)?,
-                    selected_model: row.get(1)?,
-                    selected_reasoning_effort: row.get(2)?,
-                    updated_at: row.get(3)?,
+                    model: row.get(1)?,
+                    reasoning_effort: row.get(2)?,
                 })
             },
         )
@@ -119,12 +107,11 @@ impl SqliteStore {
             .map_err(|err| format!("begin route transaction failed: {err}"))?;
 
         tx.execute(
-            "INSERT INTO gateway_state (id, selected_provider_id, route_updated_at)
-             VALUES (1, ?1, ?2)
+            "INSERT INTO gateway_state (id, selected_provider_id)
+             VALUES (1, ?1)
              ON CONFLICT(id) DO UPDATE SET
-                selected_provider_id = excluded.selected_provider_id,
-                route_updated_at = excluded.route_updated_at",
-            params![route.provider_id, route.updated_at],
+                selected_provider_id = excluded.selected_provider_id",
+            params![route.provider_id],
         )
         .map_err(|err| format!("upsert route failed: {err}"))?;
 
@@ -133,11 +120,7 @@ impl SqliteStore {
                 "UPDATE providers
                  SET preferred_model = ?1, preferred_reasoning_effort = ?2
                  WHERE id = ?3",
-                params![
-                    route.selected_model,
-                    route.selected_reasoning_effort,
-                    provider_id
-                ],
+                params![route.model, route.reasoning_effort, provider_id],
             )
             .map_err(|err| format!("update provider routing preferences failed: {err}"))?;
         }
@@ -185,16 +168,14 @@ impl SqliteStore {
 
             CREATE TABLE IF NOT EXISTS providers (
                 id TEXT PRIMARY KEY,
-                name TEXT,
+                name TEXT NOT NULL,
                 auth_mode TEXT NOT NULL CHECK (auth_mode IN ('api_key', 'account')),
                 base_url TEXT,
                 api_key TEXT,
-                email TEXT,
                 access_token TEXT,
                 refresh_token TEXT,
                 expiry_timestamp INTEGER,
                 client_id TEXT,
-                upstream_account_id TEXT,
                 preferred_model TEXT,
                 preferred_reasoning_effort TEXT
             );
@@ -202,23 +183,14 @@ impl SqliteStore {
             CREATE TABLE IF NOT EXISTS gateway_state (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 selected_provider_id TEXT,
-                route_updated_at INTEGER NOT NULL DEFAULT 0,
                 FOREIGN KEY (selected_provider_id) REFERENCES providers(id) ON DELETE SET NULL
             );
 
             ",
         )
         .map_err(|err| format!("initialize sqlite schema failed: {err}"))?;
-        migrate_accounts_into_providers(&conn)?;
-        add_column_if_missing(
-            &conn,
-            "gateway_state",
-            "route_updated_at INTEGER NOT NULL DEFAULT 0",
-        )?;
-        drop_database_encryption_key(&conn)?;
         conn.execute("INSERT OR IGNORE INTO gateway_state (id) VALUES (1)", [])
             .map_err(|err| format!("initialize gateway state failed: {err}"))?;
-        drop_provider_compatibility_profile(&conn)?;
         Ok(())
     }
 
@@ -235,208 +207,51 @@ impl SqliteStore {
     }
 }
 
-fn add_column_if_missing(conn: &Connection, table: &str, definition: &str) -> Result<(), String> {
-    match conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {definition}"), []) {
-        Ok(_) => Ok(()),
-        Err(rusqlite::Error::SqliteFailure(_, Some(message)))
-            if message.contains("duplicate column name") =>
-        {
-            Ok(())
-        }
-        Err(error) => Err(format!(
-            "add column `{definition}` to `{table}` failed: {error}"
-        )),
-    }
-}
-
-fn migrate_accounts_into_providers(conn: &Connection) -> Result<(), String> {
-    if !table_exists(conn, "accounts")? {
-        return Ok(());
-    }
-
-    if table_has_column(conn, "accounts", "upstream_account_id")?
-        && !table_has_column(conn, "accounts", "account_id")?
-    {
-        conn.execute(
-            "ALTER TABLE accounts RENAME COLUMN upstream_account_id TO account_id",
-            [],
-        )
-        .map_err(|err| format!("rename legacy account id column failed: {err}"))?;
-    }
-
-    if !table_has_column(conn, "providers", "account_id")? {
-        conn.execute("DROP TABLE accounts", [])
-            .map_err(|err| format!("remove orphaned accounts table failed: {err}"))?;
-        return Ok(());
-    }
-
-    for definition in [
-        "email TEXT",
-        "access_token TEXT",
-        "refresh_token TEXT",
-        "expiry_timestamp INTEGER",
-        "client_id TEXT",
-        "upstream_account_id TEXT",
-    ] {
-        add_column_if_missing(conn, "providers", definition)?;
-    }
-
-    conn.execute(
-        "UPDATE providers
-         SET email = (SELECT email FROM accounts WHERE accounts.id = providers.account_id),
-             access_token = (SELECT access_token FROM accounts WHERE accounts.id = providers.account_id),
-             refresh_token = (SELECT refresh_token FROM accounts WHERE accounts.id = providers.account_id),
-             expiry_timestamp = (SELECT expiry_timestamp FROM accounts WHERE accounts.id = providers.account_id),
-             client_id = (SELECT client_id FROM accounts WHERE accounts.id = providers.account_id),
-             upstream_account_id = (SELECT account_id FROM accounts WHERE accounts.id = providers.account_id)
-         WHERE providers.account_id IS NOT NULL",
-        [],
-    )
-    .map_err(|err| format!("copy account credentials into providers failed: {err}"))?;
-
-    conn.execute_batch(
-        "PRAGMA foreign_keys = OFF;
-         BEGIN;
-         CREATE TABLE providers_new (
-            id TEXT PRIMARY KEY,
-            name TEXT,
-            auth_mode TEXT NOT NULL CHECK (auth_mode IN ('api_key', 'account')),
-            base_url TEXT,
-            api_key TEXT,
-            email TEXT,
-            access_token TEXT,
-            refresh_token TEXT,
-            expiry_timestamp INTEGER,
-            client_id TEXT,
-            upstream_account_id TEXT,
-            preferred_model TEXT,
-            preferred_reasoning_effort TEXT
-         );
-         INSERT INTO providers_new (
-            id, name, auth_mode, base_url, api_key, email, access_token,
-            refresh_token, expiry_timestamp, client_id, upstream_account_id,
-            preferred_model, preferred_reasoning_effort
-         )
-         SELECT
-            id, name, auth_mode, base_url, api_key, email, access_token,
-            refresh_token, expiry_timestamp, client_id, upstream_account_id,
-            preferred_model, preferred_reasoning_effort
-         FROM providers;
-         DROP TABLE providers;
-         ALTER TABLE providers_new RENAME TO providers;
-         DROP TABLE accounts;
-         COMMIT;
-         PRAGMA foreign_keys = ON;",
-    )
-    .map_err(|err| format!("migrate accounts into providers failed: {err}"))
-}
-
-fn table_exists(conn: &Connection, table: &str) -> Result<bool, String> {
-    conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
-        [table],
-        |row| row.get(0),
-    )
-    .map_err(|err| format!("inspect table `{table}` failed: {err}"))
-}
-
-fn table_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool, String> {
-    let mut statement = conn
-        .prepare(&format!("PRAGMA table_info({table})"))
-        .map_err(|err| format!("inspect `{table}` columns failed: {err}"))?;
-    let columns = statement
-        .query_map([], |row| row.get::<_, String>(1))
-        .map_err(|err| format!("query `{table}` columns failed: {err}"))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|err| format!("read `{table}` columns failed: {err}"))?;
-    Ok(columns.iter().any(|name| name == column))
-}
-
-fn drop_provider_compatibility_profile(conn: &Connection) -> Result<(), String> {
-    if !table_has_column(conn, "providers", "compatibility_profile")? {
-        return Ok(());
-    }
-    conn.execute(
-        "ALTER TABLE providers DROP COLUMN compatibility_profile",
-        [],
-    )
-    .map_err(|err| format!("remove provider compatibility profile failed: {err}"))?;
-    Ok(())
-}
-
-fn drop_database_encryption_key(conn: &Connection) -> Result<(), String> {
-    if !table_has_column(conn, "gateway_state", "database_encryption_key")? {
-        return Ok(());
-    }
-    conn.execute(
-        "ALTER TABLE gateway_state DROP COLUMN database_encryption_key",
-        [],
-    )
-    .map_err(|err| format!("remove database encryption key failed: {err}"))?;
-    Ok(())
-}
-
 fn upsert_provider_record(conn: &Connection, provider: &ProviderRecord) -> Result<(), String> {
-    let (
-        base_url,
-        api_key,
-        email,
-        access_token,
-        refresh_token,
-        expiry_timestamp,
-        client_id,
-        account_id,
-    ) = match &provider.auth_mode {
-        ProviderAuthMode::ApiKey => (
-            provider.base_url.as_deref(),
-            provider.api_key.as_deref(),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        ),
-        ProviderAuthMode::Account => (
-            None,
-            None,
-            provider.email.as_deref(),
-            provider.access_token.as_deref(),
-            provider.refresh_token.as_deref(),
-            provider.expiry_timestamp,
-            provider.client_id.as_deref(),
-            provider.account_id.as_deref(),
-        ),
-    };
+    let (base_url, api_key, access_token, refresh_token, expiry_timestamp, client_id) =
+        match &provider.auth_mode {
+            ProviderAuthMode::ApiKey => (
+                provider.base_url.as_deref(),
+                provider.api_key.as_deref(),
+                None,
+                None,
+                None,
+                None,
+            ),
+            ProviderAuthMode::Account => (
+                None,
+                None,
+                provider.access_token.as_deref(),
+                provider.refresh_token.as_deref(),
+                provider.expiry_timestamp,
+                provider.client_id.as_deref(),
+            ),
+        };
     let auth_mode = provider_auth_mode_to_str(&provider.auth_mode);
     conn.execute(
         "INSERT INTO providers (
-            id, name, auth_mode, base_url, api_key, email, access_token,
-            refresh_token, expiry_timestamp, client_id, upstream_account_id
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+            id, name, auth_mode, base_url, api_key, access_token,
+            refresh_token, expiry_timestamp, client_id
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
          ON CONFLICT(id) DO UPDATE SET
             name = excluded.name,
             auth_mode = excluded.auth_mode,
             base_url = excluded.base_url,
             api_key = excluded.api_key,
-            email = excluded.email,
             access_token = excluded.access_token,
             refresh_token = excluded.refresh_token,
             expiry_timestamp = excluded.expiry_timestamp,
-            client_id = excluded.client_id,
-            upstream_account_id = excluded.upstream_account_id",
+            client_id = excluded.client_id",
         params![
             provider.id,
             provider.name,
             auth_mode,
             base_url,
             api_key,
-            email,
             access_token,
             refresh_token,
             expiry_timestamp,
-            client_id,
-            account_id
+            client_id
         ],
     )
     .map_err(|err| format!("upsert provider failed: {err}"))?;
@@ -475,6 +290,46 @@ mod tests {
     };
 
     #[test]
+    fn creates_only_the_current_schema() {
+        let db_path = unique_test_db_path("schema");
+        SqliteStore::for_test(db_path.clone()).expect("create database");
+        let conn = Connection::open(&db_path).expect("open database");
+        let tables = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(tables, ["gateway_state", "providers"]);
+
+        let columns = conn
+            .prepare("PRAGMA table_info(providers)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            columns,
+            [
+                "id",
+                "name",
+                "auth_mode",
+                "base_url",
+                "api_key",
+                "access_token",
+                "refresh_token",
+                "expiry_timestamp",
+                "client_id",
+                "preferred_model",
+                "preferred_reasoning_effort",
+            ]
+        );
+        let _ = fs::remove_file(db_path);
+    }
+
+    #[test]
     fn deleting_provider_clears_active_route() {
         let db_path = unique_test_db_path("provider-cascade");
         let store = SqliteStore::for_test(db_path.clone()).expect("create compact database");
@@ -483,9 +338,8 @@ mod tests {
         store
             .upsert_route(&SelectedRoute {
                 provider_id: Some(provider.id.clone()),
-                selected_model: Some("model-a".to_string()),
-                selected_reasoning_effort: Some("high".to_string()),
-                updated_at: 2,
+                model: Some("model-a".to_string()),
+                reasoning_effort: Some("high".to_string()),
             })
             .expect("save route");
 
@@ -497,9 +351,8 @@ mod tests {
             store.load_route().unwrap(),
             SelectedRoute {
                 provider_id: None,
-                selected_model: None,
-                selected_reasoning_effort: None,
-                updated_at: 2,
+                model: None,
+                reasoning_effort: None,
             }
         );
         let _ = fs::remove_file(db_path);
@@ -511,16 +364,14 @@ mod tests {
         let store = SqliteStore::for_test(db_path.clone()).expect("create compact database");
         let provider = ProviderRecord {
             id: "provider-account".to_string(),
-            name: Some("account".to_string()),
+            name: "account@example.com".to_string(),
             auth_mode: ProviderAuthMode::Account,
             base_url: None,
             api_key: None,
-            email: Some("account@example.com".to_string()),
             access_token: Some("access".to_string()),
             refresh_token: Some("refresh".to_string()),
             expiry_timestamp: Some(1),
             client_id: Some("client".to_string()),
-            account_id: Some("upstream".to_string()),
         };
         store.upsert_provider(&provider).expect("save provider");
 
@@ -544,16 +395,14 @@ mod tests {
         let store = SqliteStore::for_test(db_path.clone()).expect("create database");
         let account_provider = ProviderRecord {
             id: "provider-account".to_string(),
-            name: Some("account".to_string()),
+            name: "account@example.com".to_string(),
             auth_mode: ProviderAuthMode::Account,
             base_url: None,
             api_key: None,
-            email: Some("account@example.com".to_string()),
             access_token: Some("access-secret".to_string()),
             refresh_token: Some("refresh-secret".to_string()),
             expiry_timestamp: Some(1),
             client_id: None,
-            account_id: None,
         };
         store
             .upsert_provider(&account_provider)
@@ -613,102 +462,17 @@ mod tests {
         let _ = fs::remove_file(db_path);
     }
 
-    #[test]
-    fn migrates_legacy_accounts_into_provider_records() {
-        let db_path = unique_test_db_path("accounts-to-providers");
-        let conn = Connection::open(&db_path).expect("create legacy database");
-        conn.execute_batch(
-            "CREATE TABLE accounts (
-                id TEXT PRIMARY KEY,
-                email TEXT NOT NULL,
-                access_token TEXT NOT NULL,
-                refresh_token TEXT NOT NULL,
-                expiry_timestamp INTEGER NOT NULL,
-                client_id TEXT,
-                upstream_account_id TEXT
-             );
-             CREATE TABLE providers (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                auth_mode TEXT NOT NULL CHECK (auth_mode IN ('api_key', 'account')),
-                base_url TEXT,
-                api_key TEXT,
-                account_id TEXT,
-                preferred_model TEXT,
-                preferred_reasoning_effort TEXT,
-                FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
-             );
-             INSERT INTO accounts (
-                id, email, access_token, refresh_token, expiry_timestamp,
-                client_id, upstream_account_id
-             ) VALUES (
-                'account-1', 'user@example.com', 'access-secret', 'refresh-secret',
-                1700000000, 'client-1', 'upstream-1'
-             );
-             INSERT INTO providers (
-                id, name, auth_mode, base_url, api_key, account_id,
-                preferred_model, preferred_reasoning_effort
-             ) VALUES (
-                'provider-1', 'GPT账户', 'account', NULL, NULL, 'account-1',
-                'gpt-5', 'high'
-             );",
-        )
-        .expect("create legacy provider schema");
-        drop(conn);
-
-        let store = SqliteStore {
-            db_path: db_path.clone(),
-        };
-        store.init().expect("migrate legacy provider schema");
-
-        let conn = Connection::open(&db_path).expect("open migrated database");
-        let accounts_exist: bool = conn
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'accounts')",
-                [],
-                |row| row.get(0),
-            )
-            .expect("check accounts table");
-        assert!(!accounts_exist);
-
-        let columns: Vec<String> = conn
-            .prepare("PRAGMA table_info(providers)")
-            .expect("prepare provider column query")
-            .query_map([], |row| row.get(1))
-            .expect("query provider columns")
-            .collect::<Result<_, _>>()
-            .expect("read provider columns");
-        assert!(!columns.iter().any(|column| column == "account_id"));
-
-        let provider = store
-            .load_providers()
-            .expect("load migrated providers")
-            .into_iter()
-            .find(|provider| provider.id == "provider-1")
-            .expect("migrated provider exists");
-        assert_eq!(provider.email.as_deref(), Some("user@example.com"));
-        assert_eq!(provider.access_token.as_deref(), Some("access-secret"));
-        assert_eq!(provider.refresh_token.as_deref(), Some("refresh-secret"));
-        assert_eq!(provider.expiry_timestamp, Some(1700000000));
-        assert_eq!(provider.client_id.as_deref(), Some("client-1"));
-        assert_eq!(provider.account_id.as_deref(), Some("upstream-1"));
-
-        let _ = fs::remove_file(db_path);
-    }
-
     fn api_provider(id: &str) -> ProviderRecord {
         ProviderRecord {
             id: id.to_string(),
-            name: Some(id.to_string()),
+            name: id.to_string(),
             auth_mode: ProviderAuthMode::ApiKey,
             base_url: Some("https://example.com/v1".to_string()),
             api_key: Some("sk-test".to_string()),
-            email: None,
             access_token: None,
             refresh_token: None,
             expiry_timestamp: None,
             client_id: None,
-            account_id: None,
         }
     }
 

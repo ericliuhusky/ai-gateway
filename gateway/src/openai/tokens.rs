@@ -82,7 +82,6 @@ impl OpenAiTokenService {
         &self,
         access_token: String,
         refresh_token: String,
-        account_id_hint: Option<String>,
     ) -> Result<Provider, String> {
         let access_claims = decode_openai_claims(&access_token)?;
         let email = openai_email_from_claims(&access_claims)
@@ -101,7 +100,6 @@ impl OpenAiTokenService {
                     .clone()
                     .unwrap_or_else(|| CODEX_CLIENT_ID.to_string()),
             ),
-            account_id_hint,
         ))
     }
 

@@ -1,17 +1,13 @@
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct UpdateSelectedProviderRequest {
+#[serde(deny_unknown_fields)]
+pub struct UpdateRouteRequest {
+    pub provider_id: String,
     #[serde(default)]
-    pub provider_id: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct UpdateSelectedModelRequest {
-    pub model: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct UpdateSelectedReasoningEffortRequest {
-    pub effort: String,
+    pub model: Option<String>,
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
+    #[serde(default)]
+    pub use_saved_preferences: bool,
 }

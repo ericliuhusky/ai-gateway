@@ -50,8 +50,8 @@ import type {
   GatewayProvider,
   CodexUsageRateLimitWindow,
   CodexUsageResponse,
+  GatewayRoute,
   ReasoningEffort,
-  SelectedProvider,
   OpenAiDeviceLoginStart,
 } from "./types";
 
@@ -158,7 +158,7 @@ function DefaultCodexGatewayControl({ onError }: { onError: (message: string) =>
   );
 }
 
-function DefaultRouteSection({ providers, selected, onChanged, onError }: { providers: GatewayProvider[]; selected: SelectedProvider; onChanged: () => Promise<unknown>; onError: (message: string) => void }) {
+function DefaultRouteSection({ providers, selected, onChanged, onError }: { providers: GatewayProvider[]; selected: GatewayRoute; onChanged: () => Promise<unknown>; onError: (message: string) => void }) {
   const modelCacheRef = React.useRef<ModelCache>(readLocalCache(MODEL_CACHE_STORAGE_KEY, {}));
   const modelRequestsRef = React.useRef(new Map<string, Promise<void>>());
   const selectedProviderIdRef = React.useRef(selected.provider_id);
@@ -198,7 +198,13 @@ function DefaultRouteSection({ providers, selected, onChanged, onError }: { prov
     return request;
   }, [onError, selected.provider_id]);
   async function run(action: () => Promise<unknown>) { setSaving(true); try { await action(); await onChanged(); } catch (e) { onError(errorMessage(e)); } finally { setSaving(false); } }
-  return <article className="glass-panel flex flex-col gap-4 rounded-[22px] p-3.5 sm:p-4 lg:flex-row lg:items-center lg:gap-5"><DefaultCodexGatewayControl onError={onError} /><div className="flex min-w-0 flex-1 flex-col gap-3 sm:flex-row"><label className="min-w-0 flex-1"><span className="eyebrow">模型</span><select className="field mt-1 h-9 w-full font-mono text-xs font-semibold" value={selected.selected_model ?? ""} disabled={saving || loadingModels || !provider} onFocus={() => void loadModels()} onClick={() => void loadModels()} onChange={(e) => void run(() => e.target.value ? gatewayApi.selectModel(e.target.value) : gatewayApi.clearSelectedModel())}><option value="">跟随请求模型</option>{models.map((item) => <option key={item.id} value={item.id}>{item.id}</option>)}</select></label><label className="min-w-0 flex-1"><span className="eyebrow">推理强度</span><select className="field mt-1 h-9 w-full text-xs font-semibold" value={selected.selected_reasoning_effort ?? ""} disabled={saving || !provider} onChange={(e) => void run(() => e.target.value ? gatewayApi.selectReasoningEffort(e.target.value as ReasoningEffort) : gatewayApi.clearSelectedReasoningEffort())}><option value="">跟随请求</option><option value="low">低（low）</option><option value="medium">中（medium）</option><option value="high">高（high）</option><option value="xhigh">极高（xhigh）</option></select></label></div></article>;
+  const saveRoute = (model: string | undefined, reasoningEffort: ReasoningEffort | undefined) =>
+    gatewayApi.updateRoute({
+      provider_id: provider?.id,
+      model,
+      reasoning_effort: reasoningEffort,
+    });
+  return <article className="glass-panel flex flex-col gap-4 rounded-[22px] p-3.5 sm:p-4 lg:flex-row lg:items-center lg:gap-5"><DefaultCodexGatewayControl onError={onError} /><div className="flex min-w-0 flex-1 flex-col gap-3 sm:flex-row"><label className="min-w-0 flex-1"><span className="eyebrow">模型</span><select className="field mt-1 h-9 w-full font-mono text-xs font-semibold" value={selected.model ?? ""} disabled={saving || loadingModels || !provider} onFocus={() => void loadModels()} onClick={() => void loadModels()} onChange={(e) => void run(() => saveRoute(e.target.value || undefined, selected.reasoning_effort))}><option value="">跟随请求模型</option>{models.map((item) => <option key={item.id} value={item.id}>{item.id}</option>)}</select></label><label className="min-w-0 flex-1"><span className="eyebrow">推理强度</span><select className="field mt-1 h-9 w-full text-xs font-semibold" value={selected.reasoning_effort ?? ""} disabled={saving || !provider} onChange={(e) => void run(() => saveRoute(selected.model, (e.target.value || undefined) as ReasoningEffort | undefined))}><option value="">跟随请求</option><option value="low">低（low）</option><option value="medium">中（medium）</option><option value="high">高（high）</option><option value="xhigh">极高（xhigh）</option></select></label></div></article>;
 }
 
 function ProviderSection(props: {
@@ -883,14 +889,14 @@ function ProviderAuthForm({
               className="field min-h-56 resize-y font-mono text-[11px] leading-5"
               value={json}
               onChange={(event) => setJson(event.target.value)}
-              placeholder={'{\n  "tokens": {\n    "access_token": "...",\n    "refresh_token": "..."\n  }\n}\n\n或 Cockpit Tools 导出的 JSON 数组：\n[\n  {\n    "access_token": "...",\n    "refresh_token": "...",\n    "type": "codex"\n  }\n]'}
+              placeholder={'Cockpit Tools 导出的 JSON 数组（只能包含一个账号）：\n[\n  {\n    "access_token": "...",\n    "refresh_token": "...",\n    "type": "codex"\n  }\n]'}
               autoFocus
             />
           </FormField>
           <div className={cn("mt-2 flex items-center gap-2 text-[11px]", !json || parsed ? "text-slate-400" : "text-red-500")}>
             {parsed ? <Check className="size-3.5 text-emerald-500" /> : <CircleAlert className="size-3.5" />}
             {!json || parsed
-              ? "支持官方 auth.json，以及 Cockpit Tools 导出的单个或多个 Codex 账号。"
+              ? "支持 Cockpit Tools 导出的单个 Codex 账号。"
               : "JSON 格式无效，或缺少 access_token / refresh_token。"}
           </div>
           <DialogActions onClose={onClose} disabled={!parsed || submitting} submitting={submitting} label="导入 Token" />

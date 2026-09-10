@@ -1,43 +1,30 @@
-use crate::{
-    config::Config, domain::SelectedRoute, store::sqlite::SqliteStore, support::time::now_unix,
-};
+use crate::{config::Config, domain::SelectedRoute, store::sqlite::SqliteStore};
 use std::sync::Arc;
-use tokio::sync::Mutex;
 
 #[derive(Clone, Debug)]
 pub struct RouteStore {
     sqlite: SqliteStore,
-    route: Arc<Mutex<SelectedRoute>>,
 }
 
 impl RouteStore {
     pub fn new(config: Arc<Config>) -> Result<Self, String> {
-        let store = Self {
-            sqlite: SqliteStore::new(config.clone())?,
-            route: Arc::new(Mutex::new(SelectedRoute::default())),
-        };
-        Ok(store)
+        Ok(Self {
+            sqlite: SqliteStore::new(config)?,
+        })
     }
 
-    pub async fn load(&self) -> Result<(), String> {
-        let route = self.sqlite.load_route()?;
-        *self.route.lock().await = route.clone();
-        Ok(())
+    pub fn get(&self) -> Result<SelectedRoute, String> {
+        self.sqlite.load_route()
     }
 
-    pub async fn get(&self) -> SelectedRoute {
-        self.route.lock().await.clone()
-    }
-
-    pub async fn update(
+    pub fn update(
         &self,
         provider_id: Option<String>,
-        selected_model: Option<String>,
-        selected_reasoning_effort: Option<String>,
+        model: Option<String>,
+        reasoning_effort: Option<String>,
         load_provider_preferences: bool,
     ) -> Result<SelectedRoute, String> {
-        let mut current = self.route.lock().await;
-        let (selected_model, selected_reasoning_effort) = if load_provider_preferences {
+        let (model, reasoning_effort) = if load_provider_preferences {
             match provider_id.as_deref() {
                 Some(provider_id) => (
                     self.sqlite.load_provider_preferred_model(provider_id)?,
@@ -47,17 +34,15 @@ impl RouteStore {
                 None => (None, None),
             }
         } else {
-            (selected_model, selected_reasoning_effort)
+            (model, reasoning_effort)
         };
         let route = SelectedRoute {
             provider_id,
-            selected_model,
-            selected_reasoning_effort,
-            updated_at: now_unix() as i64,
+            model,
+            reasoning_effort,
         };
 
         self.sqlite.upsert_route(&route)?;
-        *current = route.clone();
         Ok(route)
     }
 }
@@ -72,7 +57,6 @@ mod tests {
     use std::{
         fs,
         path::PathBuf,
-        sync::Arc,
         time::{SystemTime, UNIX_EPOCH},
     };
 
@@ -82,43 +66,32 @@ mod tests {
         let sqlite = SqliteStore::for_test(db_path.clone()).expect("create sqlite store");
         let provider = ProviderRecord {
             id: "provider-a".to_string(),
-            name: Some("Provider A".to_string()),
+            name: "Provider A".to_string(),
             auth_mode: ProviderAuthMode::ApiKey,
             base_url: Some("https://example.com/v1".to_string()),
             api_key: Some("key".to_string()),
-            email: None,
             access_token: None,
             refresh_token: None,
             expiry_timestamp: None,
             client_id: None,
-            account_id: None,
         };
         sqlite.upsert_provider(&provider).expect("save provider");
         sqlite
             .upsert_route(&SelectedRoute {
                 provider_id: Some(provider.id.clone()),
-                selected_model: Some("preferred-model".to_string()),
-                selected_reasoning_effort: Some("medium".to_string()),
-                updated_at: 1,
+                model: Some("preferred-model".to_string()),
+                reasoning_effort: Some("medium".to_string()),
             })
             .expect("save provider preferences");
         let store = RouteStore {
             sqlite: sqlite.clone(),
-            route: Arc::new(tokio::sync::Mutex::new(SelectedRoute::default())),
         };
 
         let preferred_route = store
             .update(Some(provider.id.clone()), None, None, true)
-            .await
             .expect("load provider preferences");
-        assert_eq!(
-            preferred_route.selected_model,
-            Some("preferred-model".to_string())
-        );
-        assert_eq!(
-            preferred_route.selected_reasoning_effort,
-            Some("medium".to_string())
-        );
+        assert_eq!(preferred_route.model, Some("preferred-model".to_string()));
+        assert_eq!(preferred_route.reasoning_effort, Some("medium".to_string()));
 
         let route = store
             .update(
@@ -127,10 +100,9 @@ mod tests {
                 Some("high".to_string()),
                 false,
             )
-            .await
             .expect("update route");
 
-        assert_eq!(store.get().await, route);
+        assert_eq!(store.get().unwrap(), route);
         assert_eq!(sqlite.load_route().expect("load route"), route);
         assert_eq!(
             sqlite

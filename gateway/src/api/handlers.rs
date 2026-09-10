@@ -1,7 +1,4 @@
-use super::dto::{
-    CreateProviderReq, ProviderSummaryResp, UpdateSelectedModelRequest,
-    UpdateSelectedProviderRequest, UpdateSelectedReasoningEffortRequest,
-};
+use super::dto::{CreateProviderReq, ProviderSummaryResp, UpdateRouteRequest};
 use crate::{
     config::DEFAULT_CODEX_CLIENT_VERSION,
     domain::{Provider, ProviderAuthMode, SelectedRoute},
@@ -52,69 +49,25 @@ pub async fn healthz() -> &'static str {
 #[derive(Debug, Clone, Deserialize)]
 struct CodexAuthTokensFile {
     access_token: String,
-    #[serde(default)]
-    refresh_token: Option<String>,
-    #[serde(default)]
-    account_id: Option<String>,
+    refresh_token: String,
 }
 
-#[derive(Debug, Deserialize)]
-pub(crate) struct CodexAuthFile {
-    #[serde(default)]
-    tokens: Option<CodexAuthTokensFile>,
-}
-
-fn import_tokens_from_value(value: Value) -> Result<Vec<CodexAuthTokensFile>, String> {
-    let entries = match value {
-        Value::Array(entries) => {
-            if entries.is_empty() {
-                return Err("导入 JSON 不包含任何账号".to_string());
-            }
-            entries
-        }
-        entry @ Value::Object(_) => vec![entry],
-        _ => {
-            return Err(
-                "导入内容必须是 Codex auth.json，或 Cockpit Tools 导出的账号对象/数组".to_string(),
-            );
-        }
-    };
-
-    entries
-        .into_iter()
-        .enumerate()
-        .map(|(index, entry)| {
-            let label = if index == 0 {
-                "导入 JSON"
-            } else {
-                "导入 JSON 账号"
-            };
-            let object = entry
-                .as_object()
-                .ok_or_else(|| format!("{label} 必须是对象"))?;
-
-            if object.contains_key("tokens") {
-                let auth_file = serde_json::from_value::<CodexAuthFile>(entry)
-                    .map_err(|error| format!("{label} 格式无效: {error}"))?;
-                return auth_file
-                    .tokens
-                    .ok_or_else(|| format!("{label} 缺少 `tokens`"));
-            }
-
-            // Cockpit Tools exports portable Codex accounts as flat objects. A single
-            // export is still wrapped in an array, and includes fields such as
-            // `type`, `email`, `last_refresh`, and `expired` in addition to tokens.
-            serde_json::from_value::<CodexAuthTokensFile>(entry).map_err(|error| {
-                format!("{label} 不是有效的 Codex 或 Cockpit Tools Token: {error}")
-            })
-        })
-        .collect()
+fn import_tokens_from_value(value: Value) -> Result<CodexAuthTokensFile, String> {
+    let entries = value
+        .as_array()
+        .ok_or_else(|| "导入内容必须是包含一个账号的 JSON 数组".to_string())?;
+    let entry = entries
+        .first()
+        .ok_or_else(|| "导入 JSON 不包含账号".to_string())?;
+    if entries.len() != 1 {
+        return Err("只支持导入一个账号，请确保 JSON 数组只包含一项".to_string());
+    }
+    serde_json::from_value(entry.clone())
+        .map_err(|error| format!("导入 JSON 格式无效，需要 access_token 和 refresh_token: {error}"))
 }
 
 #[derive(Debug, Serialize)]
 pub struct ImportOpenAiFromLocalResponse {
-    imported: bool,
-    imported_count: usize,
     email: String,
     provider_id: String,
 }
@@ -170,56 +123,35 @@ fn device_login_conflict_response(email: String) -> OpenAiDeviceLoginStatusRespo
     }
 }
 
-/// Import OpenAI accounts from a pasted Codex `auth.json` or Cockpit Tools export.
+/// Import one OpenAI account from a one-item Cockpit Tools export.
 pub async fn import_openai_token(
     State(state): State<AppState>,
     Query(query): Query<ReplaceProviderQuery>,
     Json(payload): Json<Value>,
 ) -> Result<Json<ImportOpenAiFromLocalResponse>, AppError> {
     let tokens = import_tokens_from_value(payload).map_err(AppError::bad_request)?;
-    let imported_count = tokens.len();
-    let mut first_imported = None;
-
-    for (index, tokens) in tokens.into_iter().enumerate() {
-        let refresh_token = tokens
-            .refresh_token
-            .filter(|token| !token.trim().is_empty())
-            .ok_or_else(|| {
-                AppError::bad_request(format!(
-                    "第 {} 个账号缺少 `refresh_token`，无法导入可自动刷新的 OpenAI 账号",
-                    index + 1
-                ))
-            })?;
-        let imported = state
-            .openai_tokens
-            .import_codex_tokens(tokens.access_token, refresh_token, tokens.account_id)
-            .map_err(AppError::bad_request)?;
-        let provider = if query.replace {
-            state
-                .providers
-                .import_openai_provider_with_replacement(imported, true)
-                .await
-        } else {
-            state.providers.import_openai_provider(imported).await
-        }
-        .map_err(AppError::bad_request)?;
-
-        if first_imported.is_none() {
-            first_imported = Some((
-                provider.email().unwrap_or_default().to_string(),
-                provider.id().to_string(),
-            ));
-        }
+    if tokens.access_token.trim().is_empty() || tokens.refresh_token.trim().is_empty() {
+        return Err(AppError::bad_request(
+            "access_token 和 refresh_token 不能为空",
+        ));
     }
-
-    let (email, provider_id) =
-        first_imported.ok_or_else(|| AppError::bad_request("导入 JSON 不包含任何账号"))?;
+    let imported = state
+        .openai_tokens
+        .import_codex_tokens(tokens.access_token, tokens.refresh_token)
+        .map_err(AppError::bad_request)?;
+    let provider = if query.replace {
+        state
+            .providers
+            .import_openai_provider_with_replacement(imported, true)
+            .await
+    } else {
+        state.providers.import_openai_provider(imported).await
+    }
+    .map_err(AppError::bad_request)?;
 
     Ok(Json(ImportOpenAiFromLocalResponse {
-        imported: true,
-        imported_count,
-        email,
-        provider_id,
+        email: provider.email().unwrap_or_default().to_string(),
+        provider_id: provider.id().to_string(),
     }))
 }
 
@@ -313,7 +245,12 @@ pub async fn poll_openai_device_login(
                     .email()
                     .ok_or_else(|| AppError::bad_request("导入的 OpenAI 凭据缺少邮箱"))?
                     .to_string();
-                if !query.replace && state.providers.account_exists(&email).await {
+                if !query.replace
+                    && state
+                        .providers
+                        .account_exists(&email)
+                        .map_err(AppError::internal)?
+                {
                     state
                         .openai_device_login
                         .mark_replacement(&login_id, imported)
@@ -437,9 +374,9 @@ fn device_login_failed_response(error: String) -> OpenAiDeviceLoginStatusRespons
     }
 }
 
-pub async fn list_providers(State(state): State<AppState>) -> Json<Value> {
-    let providers = hydrated_provider_summaries(&state).await;
-    Json(json!({ "providers": providers }))
+pub async fn list_providers(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
+    let providers = state.providers.list().map_err(AppError::internal)?;
+    Ok(Json(json!({ "providers": providers })))
 }
 
 pub async fn get_provider_quota(
@@ -488,43 +425,27 @@ pub async fn list_models(
 pub async fn add_provider(
     State(state): State<AppState>,
     Json(request): Json<CreateProviderReq>,
-) -> Result<Json<Value>, AppError> {
+) -> Result<(StatusCode, Json<ProviderSummaryResp>), AppError> {
     let provider = state
         .providers
         .upsert(request)
         .await
         .map_err(AppError::bad_request)?;
 
-    Ok(Json(json!({
-        "provider": {
-            "id": provider.id(),
-            "name": provider.name(),
-            "auth_mode": provider.auth_mode(),
-            "base_url": provider.base_url(),
-            "api_key": provider.api_key(),
-        }
-    })))
+    Ok((
+        StatusCode::CREATED,
+        Json(ProviderSummaryResp::from(&provider)),
+    ))
 }
 
 pub async fn delete_provider(
     State(state): State<AppState>,
     AxumPath(provider_id): AxumPath<String>,
 ) -> Result<Json<Value>, AppError> {
-    let _provider = state
-        .providers
-        .find_by_id(&provider_id)
-        .await
-        .ok_or_else(|| AppError::bad_request(format!("未知的 provider_id: {provider_id}")))?;
     let deleted = state
         .providers
         .delete(&provider_id)
-        .await
         .map_err(AppError::bad_request)?;
-
-    let route = selected_route(&state).await?;
-    if route.provider_id.as_deref() == Some(provider_id.as_str()) {
-        let _ = update_route(&state, None, None, None, false).await?;
-    }
 
     Ok(Json(json!({
         "deleted_provider": {
@@ -534,100 +455,31 @@ pub async fn delete_provider(
     })))
 }
 
-pub async fn get_route(State(state): State<AppState>) -> Json<Value> {
-    let route = selected_route(&state).await.unwrap_or_default();
-    Json(json!({ "selected_provider": route_payload(route) }))
+pub async fn get_route(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
+    Ok(Json(json!({ "route": selected_route(&state).await? })))
 }
 
 pub async fn set_route(
     State(state): State<AppState>,
-    Json(request): Json<UpdateSelectedProviderRequest>,
+    Json(request): Json<UpdateRouteRequest>,
 ) -> Result<Json<Value>, AppError> {
     let provider_id = normalize_selected_provider_id(request.provider_id)?;
-    let _provider = resolve_provider_by_id(&state, &provider_id).await?;
-    let route = update_route(&state, Some(provider_id), None, None, true).await?;
-    Ok(Json(json!({
-        "selected_provider": route_payload(route),
-    })))
-}
-
-pub async fn get_selected_model(State(state): State<AppState>) -> Json<Value> {
-    let route = selected_route(&state).await.unwrap_or_default();
-    Json(json!({ "selected_model": route_payload(route) }))
-}
-
-pub async fn set_selected_model(
-    State(state): State<AppState>,
-    Json(request): Json<UpdateSelectedModelRequest>,
-) -> Result<Json<Value>, AppError> {
-    let model = normalize_selected_model(request.model)?;
-    let existing = selected_route(&state).await?;
-    let route = update_route(
-        &state,
-        existing.provider_id,
-        Some(model),
-        existing.selected_reasoning_effort,
-        false,
-    )
-    .await?;
-    Ok(Json(json!({ "selected_model": route_payload(route) })))
-}
-
-pub async fn clear_selected_model(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
-    let existing = selected_route(&state).await?;
-    let route = update_route(
-        &state,
-        existing.provider_id,
-        None,
-        existing.selected_reasoning_effort,
-        false,
-    )
-    .await?;
-    Ok(Json(json!({ "selected_model": route_payload(route) })))
-}
-
-pub async fn get_selected_reasoning_effort(State(state): State<AppState>) -> Json<Value> {
-    let route = selected_route(&state).await.unwrap_or_default();
-    Json(json!({
-        "selected_reasoning_effort": route_payload(route)
-    }))
-}
-
-pub async fn set_selected_reasoning_effort(
-    State(state): State<AppState>,
-    Json(request): Json<UpdateSelectedReasoningEffortRequest>,
-) -> Result<Json<Value>, AppError> {
-    resolve_selected_provider(&state).await?;
-    let effort = normalize_selected_reasoning_effort(request.effort)?;
-    let existing = selected_route(&state).await?;
-    let route = update_route(
-        &state,
-        existing.provider_id,
-        existing.selected_model,
-        Some(effort),
-        false,
-    )
-    .await?;
-    Ok(Json(json!({
-        "selected_reasoning_effort": route_payload(route)
-    })))
-}
-
-pub async fn clear_selected_reasoning_effort(
-    State(state): State<AppState>,
-) -> Result<Json<Value>, AppError> {
-    let existing = selected_route(&state).await?;
-    let route = update_route(
-        &state,
-        existing.provider_id,
-        existing.selected_model,
-        None,
-        false,
-    )
-    .await?;
-    Ok(Json(json!({
-        "selected_reasoning_effort": route_payload(route)
-    })))
+    resolve_provider_by_id(&state, &provider_id).await?;
+    let model = request.model.map(normalize_model).transpose()?;
+    let reasoning_effort = request
+        .reasoning_effort
+        .map(normalize_reasoning_effort)
+        .transpose()?;
+    let route = state
+        .routes
+        .update(
+            Some(provider_id),
+            model,
+            reasoning_effort,
+            request.use_saved_preferences,
+        )
+        .map_err(AppError::internal)?;
+    Ok(Json(json!({ "route": route })))
 }
 
 async fn resolve_selected_provider(state: &AppState) -> Result<Provider, AppError> {
@@ -639,39 +491,11 @@ async fn resolve_selected_provider(state: &AppState) -> Result<Provider, AppErro
 }
 
 pub(super) fn no_provider_selected_error() -> AppError {
-    AppError::bad_request("尚未选择供应商；请先调用 PUT /selected-provider")
+    AppError::bad_request("尚未选择供应商；请先调用 PUT /management/route")
 }
 
 pub(super) async fn selected_route(state: &AppState) -> Result<SelectedRoute, AppError> {
-    Ok(state.routes.get().await)
-}
-
-fn route_payload(route: SelectedRoute) -> Value {
-    json!({
-        "provider_id": route.provider_id,
-        "selected_model": route.selected_model,
-        "selected_reasoning_effort": route.selected_reasoning_effort,
-        "updated_at": route.updated_at,
-    })
-}
-
-async fn update_route(
-    state: &AppState,
-    provider_id: Option<String>,
-    selected_model: Option<String>,
-    selected_reasoning_effort: Option<String>,
-    load_provider_preferences: bool,
-) -> Result<SelectedRoute, AppError> {
-    state
-        .routes
-        .update(
-            provider_id,
-            selected_model,
-            selected_reasoning_effort,
-            load_provider_preferences,
-        )
-        .await
-        .map_err(AppError::internal)
+    state.routes.get().map_err(AppError::internal)
 }
 
 fn should_skip_passthrough_header(name: &HeaderName) -> bool {
@@ -737,8 +561,7 @@ async fn fetch_provider_models(
     Ok(upstream)
 }
 
-fn normalize_selected_provider_id(provider_id: Option<String>) -> Result<String, AppError> {
-    let provider_id = provider_id.ok_or_else(|| AppError::bad_request("必须提供 provider_id"))?;
+fn normalize_selected_provider_id(provider_id: String) -> Result<String, AppError> {
     let trimmed = provider_id.trim();
     if trimmed.is_empty() {
         return Err(AppError::bad_request("provider_id 不能为空"));
@@ -746,7 +569,7 @@ fn normalize_selected_provider_id(provider_id: Option<String>) -> Result<String,
     Ok(trimmed.to_string())
 }
 
-fn normalize_selected_model(model: String) -> Result<String, AppError> {
+fn normalize_model(model: String) -> Result<String, AppError> {
     let trimmed = model.trim();
     if trimmed.is_empty() {
         return Err(AppError::bad_request("模型不能为空"));
@@ -754,7 +577,7 @@ fn normalize_selected_model(model: String) -> Result<String, AppError> {
     Ok(trimmed.to_string())
 }
 
-fn normalize_selected_reasoning_effort(effort: String) -> Result<String, AppError> {
+fn normalize_reasoning_effort(effort: String) -> Result<String, AppError> {
     let effort = effort.trim();
     if matches!(effort, "low" | "medium" | "high" | "xhigh") {
         return Ok(effort.to_string());
@@ -771,7 +594,7 @@ pub(super) async fn resolve_provider_by_id(
     let record = state
         .providers
         .find_by_id(provider_id)
-        .await
+        .map_err(AppError::internal)?
         .ok_or_else(|| AppError::bad_request(format!("未知的 provider_id: {provider_id}")))?;
     Ok(record)
 }
@@ -785,10 +608,6 @@ pub(super) async fn acquire_provider_for_use(
         .acquire_by_id(&state.openai_tokens, provider_id)
         .await
         .map_err(AppError::bad_request)
-}
-
-async fn hydrated_provider_summaries(state: &AppState) -> Vec<ProviderSummaryResp> {
-    state.providers.list().await
 }
 
 #[derive(Debug)]
@@ -853,5 +672,40 @@ impl IntoResponse for AppError {
             })),
         )
             .into_response()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::import_tokens_from_value;
+    use serde_json::json;
+
+    #[test]
+    fn token_import_accepts_exactly_one_flat_array_entry() {
+        let tokens = import_tokens_from_value(json!([{
+            "access_token": "access",
+            "refresh_token": "refresh",
+            "type": "codex"
+        }]))
+        .unwrap();
+        assert_eq!(tokens.access_token, "access");
+        assert_eq!(tokens.refresh_token, "refresh");
+    }
+
+    #[test]
+    fn token_import_rejects_old_and_batch_formats() {
+        assert!(
+            import_tokens_from_value(json!({
+                "tokens": { "access_token": "access", "refresh_token": "refresh" }
+            }))
+            .is_err()
+        );
+        assert!(
+            import_tokens_from_value(json!([
+                { "access_token": "one", "refresh_token": "one" },
+                { "access_token": "two", "refresh_token": "two" }
+            ]))
+            .is_err()
+        );
     }
 }

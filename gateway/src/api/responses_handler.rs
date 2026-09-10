@@ -27,7 +27,7 @@ pub async fn responses(
         .as_deref()
         .ok_or_else(no_provider_selected_error)?;
     let routed_provider = resolve_provider_by_id(&state, provider_id).await?;
-    let has_overrides = route.selected_model.is_some() || route.selected_reasoning_effort.is_some();
+    let has_overrides = route.model.is_some() || route.reasoning_effort.is_some();
     let request_body = if has_overrides {
         let mut request_json: Value = serde_json::from_slice(&body)
             .map_err(|err| AppError::bad_request(format!("无效的请求 JSON: {err}")))?;
@@ -90,10 +90,10 @@ fn apply_route_overrides(request: &mut Value, route: &SelectedRoute) -> Result<(
         .as_object_mut()
         .ok_or_else(|| AppError::bad_request("请求 JSON 必须是对象"))?;
 
-    if let Some(model) = route.selected_model.as_ref() {
+    if let Some(model) = route.model.as_ref() {
         request.insert("model".to_string(), Value::String(model.clone()));
     }
-    if let Some(effort) = route.selected_reasoning_effort.as_deref() {
+    if let Some(effort) = route.reasoning_effort.as_deref() {
         let reasoning = request
             .entry("reasoning".to_string())
             .or_insert_with(|| json!({}));

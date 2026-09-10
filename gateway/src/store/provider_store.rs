@@ -7,51 +7,30 @@ use crate::{
     support::time::now_unix,
 };
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use uuid::Uuid;
 
 #[derive(Clone, Debug)]
 pub struct ProviderStore {
     sqlite: SqliteStore,
-    providers: Arc<Mutex<Vec<Provider>>>,
 }
 
 impl ProviderStore {
     pub fn new(config: Arc<Config>) -> Result<Self, String> {
-        let store = Self {
-            sqlite: SqliteStore::new(config.clone())?,
-            providers: Arc::new(Mutex::new(Vec::new())),
-        };
-        Ok(store)
+        Ok(Self {
+            sqlite: SqliteStore::new(config)?,
+        })
     }
 
-    pub async fn load(&self) -> Result<(), String> {
-        let mut loaded = self
-            .sqlite
+    fn load(&self) -> Result<Vec<Provider>, String> {
+        self.sqlite
             .load_providers()?
             .into_iter()
             .map(Provider::try_from)
-            .collect::<Result<Vec<_>, _>>()?;
-        let removed_shared_ids = loaded
-            .iter()
-            .filter(|provider| provider.id().starts_with("shared_"))
-            .map(|provider| provider.id().to_string())
-            .collect::<Vec<_>>();
-        for provider_id in &removed_shared_ids {
-            self.sqlite.delete_provider(provider_id)?;
-        }
-        loaded.retain(|provider| !provider.id().starts_with("shared_"));
-        *self.providers.lock().await = loaded;
-        Ok(())
+            .collect()
     }
 
-    pub async fn list(&self) -> Vec<ProviderSummaryResp> {
-        self.providers
-            .lock()
-            .await
-            .iter()
-            .map(ProviderSummaryResp::from)
-            .collect()
+    pub fn list(&self) -> Result<Vec<ProviderSummaryResp>, String> {
+        Ok(self.load()?.iter().map(ProviderSummaryResp::from).collect())
     }
 
     pub async fn upsert(&self, request: CreateProviderReq) -> Result<Provider, String> {
@@ -60,26 +39,25 @@ impl ProviderStore {
             return Err("供应商名称不能为空".to_string());
         }
 
-        let base_url = request.base_url.unwrap_or_default().trim().to_string();
-        let api_key = request.api_key.unwrap_or_default().trim().to_string();
+        let base_url = request.base_url.trim().to_string();
+        let api_key = request.api_key.trim().to_string();
         if api_key.is_empty() {
             return Err("api_key 不能为空".to_string());
         }
         if base_url.is_empty() {
             return Err("base_url 不能为空".to_string());
         }
-        let mut providers = self.providers.lock().await;
+        let providers = self.load()?;
         if providers.iter().any(|provider| provider.name() == name) {
             return Err(format!("供应商名称已存在: {name}"));
         }
 
         let provider = Provider {
             id: Uuid::new_v4().to_string(),
-            name: Some(name),
+            name,
             credentials: ProviderCredentials::ApiKey { base_url, api_key },
         };
         self.persist_provider(&provider)?;
-        providers.push(provider.clone());
         Ok(provider)
     }
 
@@ -100,8 +78,8 @@ impl ProviderStore {
             .email()
             .filter(|email| !email.trim().is_empty())
             .ok_or_else(|| "导入的 OpenAI 凭据缺少邮箱".to_string())?;
-        let mut providers = self.providers.lock().await;
-        if let Some((index, existing)) = providers.iter().enumerate().find(|(_, existing)| {
+        let providers = self.load()?;
+        if let Some(existing) = providers.iter().find(|existing| {
             existing.auth_mode() == ProviderAuthMode::Account && existing.email() == Some(email)
         }) {
             if !replace {
@@ -112,19 +90,17 @@ impl ProviderStore {
             // the same account after its credentials are replaced.
             provider.id = existing.id().to_string();
             self.persist_provider(&provider)?;
-            providers[index] = provider.clone();
             return Ok(provider);
         }
 
         self.persist_provider(&provider)?;
-        providers.push(provider.clone());
         Ok(provider)
     }
 
-    pub async fn account_exists(&self, email: &str) -> bool {
-        self.providers.lock().await.iter().any(|provider| {
+    pub fn account_exists(&self, email: &str) -> Result<bool, String> {
+        Ok(self.load()?.iter().any(|provider| {
             provider.auth_mode() == ProviderAuthMode::Account && provider.email() == Some(email)
-        })
+        }))
     }
 
     pub async fn acquire_by_id(
@@ -133,8 +109,7 @@ impl ProviderStore {
         provider_id: &str,
     ) -> Result<Provider, String> {
         let provider = self
-            .find_by_id(provider_id)
-            .await
+            .find_by_id(provider_id)?
             .ok_or_else(|| format!("供应商不存在: {provider_id}"))?;
         self.prepare_provider_for_use(provider, token_service).await
     }
@@ -145,30 +120,25 @@ impl ProviderStore {
         provider_id: &str,
     ) -> Result<Provider, String> {
         let provider = self
-            .find_by_id(provider_id)
-            .await
+            .find_by_id(provider_id)?
             .ok_or_else(|| format!("供应商不存在: {provider_id}"))?;
         let provider = self.refresh_provider(provider, token_service).await?;
-        self.update_provider(provider.clone()).await?;
+        self.persist_provider(&provider)?;
         Ok(provider)
     }
 
-    pub async fn find_by_id(&self, id: &str) -> Option<Provider> {
-        self.providers
-            .lock()
-            .await
+    pub fn find_by_id(&self, id: &str) -> Result<Option<Provider>, String> {
+        Ok(self
+            .load()?
             .iter()
             .find(|provider| provider.id() == id)
-            .cloned()
+            .cloned())
     }
 
-    pub async fn delete(&self, id: &str) -> Result<Provider, String> {
-        let mut providers = self.providers.lock().await;
-        let index = providers
-            .iter()
-            .position(|provider| provider.id() == id)
+    pub fn delete(&self, id: &str) -> Result<Provider, String> {
+        let provider = self
+            .find_by_id(id)?
             .ok_or_else(|| format!("unknown provider_id: {id}"))?;
-        let provider = providers.remove(index);
         self.sqlite.delete_provider(id)?;
         Ok(provider)
     }
@@ -188,7 +158,7 @@ impl ProviderStore {
             provider = self.refresh_provider(provider, token_service).await?;
         }
 
-        self.update_provider(provider.clone()).await?;
+        self.persist_provider(&provider)?;
         Ok(provider)
     }
 
@@ -221,15 +191,6 @@ impl ProviderStore {
         Ok(provider)
     }
 
-    async fn update_provider(&self, provider: Provider) -> Result<(), String> {
-        self.persist_provider(&provider)?;
-        let mut providers = self.providers.lock().await;
-        if let Some(existing) = providers.iter_mut().find(|item| item.id() == provider.id()) {
-            *existing = provider;
-        }
-        Ok(())
-    }
-
     fn persist_provider(&self, provider: &Provider) -> Result<(), String> {
         self.sqlite.upsert_provider(&ProviderRecord::from(provider))
     }
@@ -245,18 +206,13 @@ mod tests {
     };
     use std::{
         path::PathBuf,
-        sync::Arc,
         time::{SystemTime, UNIX_EPOCH},
     };
-    use tokio::sync::Mutex;
 
     #[tokio::test]
     async fn imports_one_provider_per_openai_email() {
         let sqlite = test_sqlite_store("openai-providers");
-        let store = ProviderStore {
-            sqlite,
-            providers: Arc::new(Mutex::new(Vec::new())),
-        };
+        let store = ProviderStore { sqlite };
         let provider = || {
             Provider::new_openai_account(
                 "user@example.com".to_string(),
@@ -264,7 +220,6 @@ mod tests {
                 "refresh".to_string(),
                 1_700_000_000,
                 Some("client".to_string()),
-                Some("upstream".to_string()),
             )
         };
 
@@ -282,7 +237,6 @@ mod tests {
             "new-refresh".to_string(),
             1_800_000_000,
             Some("client".to_string()),
-            Some("upstream".to_string()),
         );
         let updated = store
             .import_openai_provider_with_replacement(replacement, true)
@@ -295,16 +249,13 @@ mod tests {
     #[tokio::test]
     async fn creates_api_key_provider_without_profile() {
         let sqlite = test_sqlite_store("create-provider");
-        let store = ProviderStore {
-            sqlite,
-            providers: Arc::new(Mutex::new(Vec::new())),
-        };
+        let store = ProviderStore { sqlite };
 
         let provider = store
             .upsert(CreateProviderReq {
                 name: "official".to_string(),
-                base_url: Some("https://api.openai.com/v1".to_string()),
-                api_key: Some("sk-test".to_string()),
+                base_url: "https://api.openai.com/v1".to_string(),
+                api_key: "sk-test".to_string(),
             })
             .await
             .expect("create provider");

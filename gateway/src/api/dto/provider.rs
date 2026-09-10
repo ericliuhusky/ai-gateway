@@ -5,10 +5,8 @@ use serde::{Deserialize, Serialize};
 #[serde(deny_unknown_fields)]
 pub struct CreateProviderReq {
     pub name: String,
-    #[serde(default)]
-    pub base_url: Option<String>,
-    #[serde(default)]
-    pub api_key: Option<String>,
+    pub base_url: String,
+    pub api_key: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -42,14 +40,12 @@ impl From<&Provider> for ProviderSummaryResp {
                 },
             },
             ProviderCredentials::Account {
-                email,
-                expiry_timestamp,
-                ..
+                expiry_timestamp, ..
             } => Self {
                 id: provider.id().to_string(),
                 name: provider.name().to_string(),
                 auth: ProviderSummaryAuth::Account {
-                    account_email: email.clone(),
+                    account_email: provider.name().to_string(),
                     account_expires_at: *expiry_timestamp,
                 },
             },
@@ -67,7 +63,7 @@ mod tests {
     fn serializes_variant_specific_provider_fields() {
         let api_key_provider = Provider {
             id: "api-key-id".to_string(),
-            name: Some("Official".to_string()),
+            name: "Official".to_string(),
             credentials: ProviderCredentials::ApiKey {
                 base_url: "https://api.example.com/v1".to_string(),
                 api_key: "secret".to_string(),
@@ -79,7 +75,6 @@ mod tests {
             "refresh".to_string(),
             1_700_000_000,
             Some("client".to_string()),
-            Some("account".to_string()),
         );
 
         assert_eq!(
