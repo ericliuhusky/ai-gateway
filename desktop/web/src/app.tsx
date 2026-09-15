@@ -1,6 +1,9 @@
 import * as React from "react";
+import { createPortal } from "react-dom";
 import {
   Activity,
+  Bug,
+  Braces,
   Check,
   CheckCircle2,
   ChevronDown,
@@ -53,6 +56,8 @@ import type {
   GatewayRoute,
   ReasoningEffort,
   OpenAiDeviceLoginStart,
+  RawProviderTrafficItem,
+  RawProviderTrafficState,
 } from "./types";
 
 export function App() { return <GatewayDashboard />; }
@@ -90,6 +95,7 @@ function DefaultCodexGatewayControl({ onError }: { onError: (message: string) =>
   const [loading, setLoading] = React.useState(true);
   const [busy, setBusy] = React.useState(false);
   const [restartingChatGpt, setRestartingChatGpt] = React.useState(false);
+  const [debugOpen, setDebugOpen] = React.useState(false);
 
   React.useEffect(() => {
     void gatewayApi.codexGatewayStatus()
@@ -154,6 +160,17 @@ function DefaultCodexGatewayControl({ onError }: { onError: (message: string) =>
       >
         {restartingChatGpt ? <LoaderCircle className="size-4 animate-spin" /> : <RotateCcw className="size-4" />}
       </Button>
+      <Button
+        type="button"
+        variant="outline"
+        size="icon"
+        title="打开网关调试"
+        aria-label="打开网关调试"
+        onClick={() => setDebugOpen(true)}
+      >
+        <Bug className="size-4" />
+      </Button>
+      {debugOpen ? <RawProviderTrafficDialog onClose={() => setDebugOpen(false)} onError={onError} /> : null}
     </div>
   );
 }
@@ -205,6 +222,140 @@ function DefaultRouteSection({ providers, selected, onChanged, onError }: { prov
       reasoning_effort: reasoningEffort,
     });
   return <article className="glass-panel flex flex-col gap-4 rounded-[22px] p-3.5 sm:p-4 lg:flex-row lg:items-center lg:gap-5"><DefaultCodexGatewayControl onError={onError} /><div className="flex min-w-0 flex-1 flex-col gap-3 sm:flex-row"><label className="min-w-0 flex-1"><span className="eyebrow">模型</span><select className="field mt-1 h-9 w-full font-mono text-xs font-semibold" value={selected.model ?? ""} disabled={saving || loadingModels || !provider} onFocus={() => void loadModels()} onClick={() => void loadModels()} onChange={(e) => void run(() => saveRoute(e.target.value || undefined, selected.reasoning_effort))}><option value="">跟随请求模型</option>{models.map((item) => <option key={item.id} value={item.id}>{item.id}</option>)}</select></label><label className="min-w-0 flex-1"><span className="eyebrow">推理强度</span><select className="field mt-1 h-9 w-full text-xs font-semibold" value={selected.reasoning_effort ?? ""} disabled={saving || !provider} onChange={(e) => void run(() => saveRoute(selected.model, (e.target.value || undefined) as ReasoningEffort | undefined))}><option value="">跟随请求</option><option value="low">低（low）</option><option value="medium">中（medium）</option><option value="high">高（high）</option><option value="xhigh">极高（xhigh）</option></select></label></div></article>;
+}
+
+function RawProviderTrafficDialog({ onClose, onError }: { onClose: () => void; onError: (message: string) => void }) {
+  const [state, setState] = React.useState<RawProviderTrafficState>({ enabled: false });
+  const [loading, setLoading] = React.useState(true);
+  const [changing, setChanging] = React.useState(false);
+
+  const refresh = React.useCallback(async () => {
+    try {
+      setState(await gatewayApi.rawProviderTraffic());
+    } catch (loadError) {
+      onError(errorMessage(loadError));
+    } finally {
+      setLoading(false);
+    }
+  }, [onError]);
+
+  React.useEffect(() => { void refresh(); }, [refresh]);
+  React.useEffect(() => {
+    if (!state.enabled) return;
+    const timer = window.setInterval(() => void refresh(), 1000);
+    return () => window.clearInterval(timer);
+  }, [refresh, state.enabled]);
+
+  async function updateSettings(enabled: boolean) {
+    if (loading || changing) return;
+    setChanging(true);
+    try {
+      setState(await gatewayApi.setRawProviderTraffic(enabled));
+    } catch (toggleError) {
+      onError(errorMessage(toggleError));
+    } finally {
+      setChanging(false);
+    }
+  }
+
+  const traffic = state.traffic;
+  return (
+    <DialogFrame title="网关调试" description="查看最近一次供应商交互的原始 JSON。调试内容只保留在内存中。" onClose={onClose} wide>
+      <div className="flex items-center gap-3 rounded-2xl border border-slate-200/70 bg-white/45 p-3 dark:border-white/10 dark:bg-white/[0.035]">
+        <Braces className={cn("size-4", state.enabled ? "text-blue-500" : "text-slate-400")} />
+        <div className="min-w-0 flex-1">
+          <div className="text-xs font-bold">记录并保留最近一次</div>
+          <div className="mt-0.5 text-[10px] text-slate-500 dark:text-slate-400">开启后持续接收新数据，关闭后停止记录但保留当前快照</div>
+        </div>
+        <button type="button" role="switch" aria-checked={state.enabled} aria-label="记录并保留最近一次" disabled={loading || changing} className={cn("raw-json-switch", state.enabled && "is-on")} onClick={() => void updateSettings(!state.enabled)}>
+          <span className="raw-json-switch-thumb" />
+        </button>
+      </div>
+      <div className="mt-5 border-t border-slate-200/70 pt-4 dark:border-white/10">
+        {!traffic ? (
+          state.enabled ? (
+            <div className="flex items-center gap-2 text-xs text-slate-400"><LoaderCircle className="size-3.5 animate-spin" />等待下一次供应商请求…</div>
+          ) : (
+            <div className="flex items-center gap-2 text-xs text-slate-400"><Braces className="size-3.5" />尚未记录数据</div>
+          )
+        ) : (
+          <>
+            <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-slate-400">
+              <span>供应商：{traffic.provider_name}</span>
+              {traffic.response_status ? <span>响应：{traffic.response_status}</span> : <span>响应：等待中</span>}
+              {!state.enabled ? <span>记录已暂停，当前快照保持不变</span> : null}
+              {traffic.response_truncated ? <span className="text-amber-600 dark:text-amber-400">响应内容过大，已截断</span> : null}
+            </div>
+            <div className="grid gap-3 xl:grid-cols-2">
+              <JsonViewer title="发送给供应商" value={traffic.request} />
+              <TrafficItemsViewer items={traffic.items} outputText={traffic.response_output_text} />
+            </div>
+          </>
+        )}
+      </div>
+    </DialogFrame>
+  );
+}
+
+function JsonViewer({ title, value }: { title: string; value: unknown }) {
+  return (
+    <div className="raw-json-viewer">
+      <div className="mb-2 flex items-center gap-2 text-[11px] font-bold text-slate-500 dark:text-slate-400"><Braces className="size-3.5" />{title}</div>
+      <div className="raw-json-tree"><JsonTreeNode value={value} depth={0} /></div>
+    </div>
+  );
+}
+
+function RawTextViewer({ title, value }: { title: string; value?: string }) {
+  return (
+    <div className="raw-json-viewer">
+      <div className="mb-2 flex items-center gap-2 text-[11px] font-bold text-slate-500 dark:text-slate-400"><Braces className="size-3.5" />{title}</div>
+      <pre className="raw-json-text">{value || "等待供应商输出数据…"}</pre>
+    </div>
+  );
+}
+
+function TrafficItemsViewer({ items, outputText }: { items: RawProviderTrafficItem[]; outputText?: string }) {
+  const itemJson = items.map((entry) => ({
+    type: entry.type,
+    direction: entry.direction,
+    item: entry.item,
+  }));
+  return (
+    <div className="space-y-3">
+      <JsonViewer title={`关键 item（${items.length}）`} value={itemJson} />
+      <RawTextViewer title="完整文本输出" value={outputText} />
+    </div>
+  );
+}
+
+function JsonTreeNode({ value, depth, label }: { value: unknown; depth: number; label?: string }) {
+  const isObject = typeof value === "object" && value !== null;
+  const entries = isObject ? Object.entries(value as Record<string, unknown>) : [];
+  const [expanded, setExpanded] = React.useState(depth < 1);
+  if (!isObject) {
+    return <div className="raw-json-line"><span className="raw-json-key">{label}</span>{label ? <span className="raw-json-punctuation">: </span> : null}<JsonPrimitive value={value} /></div>;
+  }
+  const isArray = Array.isArray(value);
+  return (
+    <div className="raw-json-node">
+      <button type="button" className="raw-json-toggle" onClick={() => setExpanded((current) => !current)}>
+        <ChevronDown className={cn("size-3 transition-transform", !expanded && "-rotate-90")} />
+        {label ? <span className="raw-json-key">{label}<span className="raw-json-punctuation">: </span></span> : null}
+        <span className="raw-json-bracket">{isArray ? "[" : "{"}</span>
+        <span className="raw-json-count">{entries.length} 项</span>
+        {!expanded ? <span className="raw-json-bracket">{isArray ? "]" : "}"}</span> : null}
+      </button>
+      {expanded ? <div className="raw-json-children">{entries.map(([key, child]) => <JsonTreeNode key={key} label={isArray ? `[${key}]` : key} value={child} depth={depth + 1} />)}<div className="raw-json-bracket">{isArray ? "]" : "}"}</div></div> : null}
+    </div>
+  );
+}
+
+function JsonPrimitive({ value }: { value: unknown }) {
+  if (value === null) return <span className="raw-json-null">null</span>;
+  if (typeof value === "string") return <span className="raw-json-string">&quot;{value}&quot;</span>;
+  if (typeof value === "number" || typeof value === "boolean") return <span className="raw-json-number">{String(value)}</span>;
+  return <span className="raw-json-null">undefined</span>;
 }
 
 function ProviderSection(props: {
@@ -538,14 +689,14 @@ function DialogFrame({
     return () => window.removeEventListener("keydown", handler);
   }, [onClose]);
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/30 p-2 sm:items-center sm:p-4 backdrop-blur-sm" onMouseDown={onClose}>
+  return createPortal(
+    <div className="fixed inset-0 z-[100] flex items-end justify-center bg-slate-950/30 p-2 backdrop-blur-sm sm:items-center sm:p-4" onClick={onClose}>
       <div
         className={cn(
           "dialog-panel max-h-[calc(100dvh-1rem)] w-full overflow-y-auto rounded-[22px] p-4 sm:max-h-[calc(100vh-2rem)] sm:rounded-[26px] sm:p-7",
           wide ? "max-w-4xl" : "max-w-xl",
         )}
-        onMouseDown={(event) => event.stopPropagation()}
+        onClick={(event) => event.stopPropagation()}
       >
         <div className="mb-5 flex items-start gap-3 sm:mb-6 sm:gap-4">
           <div className="min-w-0 flex-1">
@@ -558,7 +709,8 @@ function DialogFrame({
         </div>
         {children}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 

@@ -9,6 +9,7 @@ import type {
   OpenAiDeviceLoginStatus,
   DefaultCodexStatus,
   CodexConfigurationResult,
+  RawProviderTrafficState,
 } from "./types";
 
 function gatewayRequest<T>(
@@ -106,6 +107,12 @@ export const gatewayApi = {
       "GET",
       `/management/providers/openai/login/device/${encodeURIComponent(loginId)}${query}`,
     );
+  },
+  rawProviderTraffic() {
+    return gatewayRequest<RawProviderTrafficState>("GET", "/management/debug/raw-provider-traffic");
+  },
+  setRawProviderTraffic(enabled: boolean) {
+    return gatewayRequest<RawProviderTrafficState>("PUT", "/management/debug/raw-provider-traffic", { enabled });
   },
   cancelOpenAiDeviceLogin(loginId: string) {
     return gatewayRequest<{ cancelled: boolean }>(

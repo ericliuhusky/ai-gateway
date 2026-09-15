@@ -6,7 +6,7 @@ mod scproxy;
 mod store;
 mod support;
 
-use api::{AppState, build_router};
+use api::{AppState, RawProviderTrafficState, build_router};
 use config::Config;
 use openai::{OpenAiDeviceLoginService, OpenAiTokenService};
 use reqwest::Client;
@@ -304,6 +304,7 @@ async fn initialize_local_gateway() -> Result<AppState, String> {
         providers,
         routes,
         upstream: OpenAiClient::new(build_http_client()),
+        raw_provider_traffic: RawProviderTrafficState::default(),
     };
     Ok(state)
 }

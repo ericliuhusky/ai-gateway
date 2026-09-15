@@ -36,6 +36,11 @@ pub async fn responses(
     } else {
         body
     };
+    let raw_traffic = state.raw_provider_traffic.begin(
+        routed_provider.id(),
+        routed_provider.name(),
+        &request_body,
+    );
 
     let upstream_result = if routed_provider.auth_mode() == ProviderAuthMode::Account {
         let provider_record = acquire_provider_for_use(&state, routed_provider.id()).await?;
@@ -65,18 +70,27 @@ pub async fn responses(
             )
             .await
     };
-    responses_passthrough_inner(upstream_result)
+    responses_passthrough_inner(upstream_result, raw_traffic)
 }
 
 fn responses_passthrough_inner(
     upstream_result: Result<reqwest::Response, String>,
+    raw_traffic: Option<super::handlers::RawProviderTrafficHandle>,
 ) -> Result<Response, AppError> {
     let upstream = upstream_result.map_err(AppError::upstream_message)?;
     let upstream_status = upstream.status();
     let upstream_headers = upstream.headers().clone();
-    let output = upstream
-        .bytes_stream()
-        .map(|result| result.map_err(std::io::Error::other));
+    if let Some(traffic) = raw_traffic.as_ref() {
+        traffic.set_response_status(upstream_status.as_u16());
+    }
+    let output = upstream.bytes_stream().map(move |result| {
+        if let Some(traffic) = raw_traffic.as_ref() {
+            if let Ok(bytes) = &result {
+                traffic.append_response(bytes);
+            }
+        }
+        result.map_err(std::io::Error::other)
+    });
 
     build_passthrough_response(
         upstream_status,

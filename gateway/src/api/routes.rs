@@ -1,9 +1,10 @@
 use super::AppState;
 use super::responses_handler::responses;
 use crate::api::handlers::{
-    add_provider, cancel_openai_device_login, delete_provider, get_provider_quota, get_route,
-    healthz, import_openai_token, list_models, list_providers, poll_openai_device_login,
-    refresh_openai_provider, set_route, start_openai_device_login,
+    add_provider, cancel_openai_device_login, delete_provider, get_provider_quota,
+    get_raw_provider_traffic, get_route, healthz, import_openai_token, list_models, list_providers,
+    poll_openai_device_login, refresh_openai_provider, set_raw_provider_traffic, set_route,
+    start_openai_device_login,
 };
 use axum::{
     Router,
@@ -43,6 +44,10 @@ pub fn build_management_router(state: AppState) -> Router {
         .route("/providers/:provider_id", delete(delete_provider))
         .route("/providers/:provider_id/quota", get(get_provider_quota))
         .route("/route", get(get_route).put(set_route))
+        .route(
+            "/debug/raw-provider-traffic",
+            get(get_raw_provider_traffic).put(set_raw_provider_traffic),
+        )
         .with_state(state);
     Router::new().nest("/management", management_routes)
 }
@@ -447,6 +452,7 @@ mod tests {
             providers: providers.clone(),
             routes: routes.clone(),
             upstream: OpenAiClient::new(build_http_client()),
+            raw_provider_traffic: crate::api::RawProviderTrafficState::default(),
         };
         (state, providers, routes)
     }

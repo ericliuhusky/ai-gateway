@@ -17,6 +17,10 @@ use axum::{
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::{Value, json};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 
 const GATEWAY_ERROR_PREFIX: &str = "AI网关错误：";
 const UPSTREAM_ERROR_PREFIX: &str = "上游服务错误：";
@@ -28,6 +32,544 @@ pub struct AppState {
     pub providers: ProviderStore,
     pub routes: RouteStore,
     pub upstream: OpenAiClient,
+    pub raw_provider_traffic: RawProviderTrafficState,
+}
+
+const RAW_PROVIDER_RESPONSE_MAX_BYTES: usize = 8 * 1024 * 1024;
+
+/// In-memory inspection state for the most recent provider exchange.
+///
+/// This is deliberately opt-in and never persisted: provider payloads can
+/// contain private conversations, tool arguments, or other sensitive data.
+#[derive(Clone, Default)]
+pub struct RawProviderTrafficState {
+    enabled: Arc<AtomicBool>,
+    latest: Arc<Mutex<Option<Arc<Mutex<RawProviderTrafficRecord>>>>>,
+}
+
+struct RawProviderTrafficRecord {
+    provider_id: String,
+    provider_name: String,
+    request: Value,
+    response_status: Option<u16>,
+    response_raw: Vec<u8>,
+    response_buffer: Vec<u8>,
+    response_output_text: String,
+    items: Vec<RawProviderTrafficItem>,
+    response_truncated: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct RawProviderTrafficItem {
+    #[serde(rename = "type")]
+    pub item_type: String,
+    pub direction: String,
+    pub item: Value,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct RawProviderTrafficView {
+    pub provider_id: String,
+    pub provider_name: String,
+    pub request: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_raw: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_output_text: Option<String>,
+    pub items: Vec<RawProviderTrafficItem>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_status: Option<u16>,
+    pub response_truncated: bool,
+}
+
+impl RawProviderTrafficState {
+    pub fn enabled(&self) -> bool {
+        self.enabled.load(Ordering::Relaxed)
+    }
+
+    pub fn set_enabled(&self, enabled: bool) {
+        self.enabled.store(enabled, Ordering::Relaxed);
+    }
+
+    pub fn begin(
+        &self,
+        provider_id: &str,
+        provider_name: &str,
+        request_body: &[u8],
+    ) -> Option<RawProviderTrafficHandle> {
+        if !self.enabled() {
+            return None;
+        }
+        let request = serde_json::from_slice(request_body).ok()?;
+        let record = Arc::new(Mutex::new(RawProviderTrafficRecord {
+            provider_id: provider_id.to_string(),
+            provider_name: provider_name.to_string(),
+            request: sanitized_value(&request),
+            response_status: None,
+            response_raw: Vec::new(),
+            response_buffer: Vec::new(),
+            response_output_text: String::new(),
+            items: request_items(&request),
+            response_truncated: false,
+        }));
+        if let Ok(mut latest) = self.latest.lock() {
+            *latest = Some(record.clone());
+            Some(RawProviderTrafficHandle { record })
+        } else {
+            None
+        }
+    }
+
+    pub fn view(&self) -> Option<RawProviderTrafficView> {
+        let record = self.latest.lock().ok()?.as_ref()?.clone();
+        let record = record.lock().ok()?;
+        let response_raw = if record.response_raw.is_empty() {
+            None
+        } else {
+            Some(String::from_utf8_lossy(&record.response_raw).into_owned())
+        };
+        let response = response_raw
+            .as_deref()
+            .and_then(|raw| serde_json::from_str::<Value>(raw).ok());
+        let response_output_text = if record.response_output_text.is_empty() {
+            None
+        } else {
+            Some(record.response_output_text.clone())
+        };
+        Some(RawProviderTrafficView {
+            provider_id: record.provider_id.clone(),
+            provider_name: record.provider_name.clone(),
+            request: record.request.clone(),
+            response,
+            response_raw,
+            response_output_text,
+            items: record.items.clone(),
+            response_status: record.response_status,
+            response_truncated: record.response_truncated,
+        })
+    }
+}
+
+pub struct RawProviderTrafficHandle {
+    record: Arc<Mutex<RawProviderTrafficRecord>>,
+}
+
+impl RawProviderTrafficHandle {
+    pub fn set_response_status(&self, status: u16) {
+        if let Ok(mut record) = self.record.lock() {
+            record.response_status = Some(status);
+        }
+    }
+
+    pub fn append_response(&self, chunk: &[u8]) {
+        if let Ok(mut record) = self.record.lock() {
+            record.response_buffer.extend_from_slice(chunk);
+            if record.response_buffer.len() > RAW_PROVIDER_RESPONSE_MAX_BYTES {
+                record.response_buffer.clear();
+                record.response_truncated = true;
+                return;
+            }
+
+            while let Some(newline) = record
+                .response_buffer
+                .iter()
+                .position(|byte| *byte == b'\n')
+            {
+                let line = record.response_buffer.drain(..=newline).collect::<Vec<_>>();
+                if let Some(payload) = line.strip_prefix(b"data:") {
+                    if let Ok(value) = serde_json::from_slice::<Value>(payload) {
+                        process_response_event(&mut record, value);
+                    }
+                }
+            }
+
+            if record.response_buffer.first() == Some(&b'{')
+                && let Ok(value) = serde_json::from_slice::<Value>(&record.response_buffer)
+            {
+                record.response_buffer.clear();
+                process_response_event(&mut record, value);
+            }
+        }
+    }
+}
+
+const EXCLUDED_ITEM_TYPES: &[&str] = &["reasoning", "handoff"];
+
+fn classify_item(value: &Value) -> Option<&'static str> {
+    let item_type = value
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("message");
+    match item_type {
+        "message" => match value.get("role").and_then(Value::as_str) {
+            Some("user") => Some("user_message"),
+            Some("assistant") => Some("assistant_message"),
+            _ => None,
+        },
+        "function_call" => Some("function_call"),
+        "tool_call" => Some("tool_call"),
+        "custom_tool_call" => Some("custom_tool_call"),
+        "mcp_call" => Some("mcp_call"),
+        "code_interpreter_call" => Some("code_interpreter_call"),
+        "local_shell_call" | "shell_call" => Some("shell_call"),
+        "image_generation_call" => Some("image_generation_call"),
+        "apply_patch_call" => Some("apply_patch_call"),
+        "function_call_output" => Some("function_call_output"),
+        "tool_result" => Some("tool_result"),
+        "approval_request" | "mcp_approval_request" => Some("approval_request"),
+        "approval_response" | "mcp_approval_response" => Some("approval_response"),
+        "file_search" | "file_search_call" => Some("file_search"),
+        "web_search" | "web_search_call" => Some("web_search"),
+        "computer_action" | "computer_call" | "computer_call_output" => Some("computer_action"),
+        "error" => Some("error"),
+        _ if EXCLUDED_ITEM_TYPES.contains(&item_type) => None,
+        _ => None,
+    }
+}
+
+fn sanitized_value(value: &Value) -> Value {
+    match value {
+        Value::Array(values) => Value::Array(
+            values
+                .iter()
+                .filter_map(|value| {
+                    if value
+                        .get("type")
+                        .and_then(Value::as_str)
+                        .is_some_and(|item_type| EXCLUDED_ITEM_TYPES.contains(&item_type))
+                    {
+                        None
+                    } else {
+                        Some(sanitized_value(value))
+                    }
+                })
+                .collect(),
+        ),
+        Value::Object(object) => Value::Object(
+            object
+                .iter()
+                .filter(|(key, _)| !matches!(key.as_str(), "usage" | "metadata" | "reasoning"))
+                .map(|(key, value)| (key.clone(), sanitized_value(value)))
+                .collect(),
+        ),
+        _ => value.clone(),
+    }
+}
+
+fn push_item(
+    record: &mut RawProviderTrafficRecord,
+    direction: &str,
+    item_type: &str,
+    mut item: Value,
+) {
+    let item_id = item.get("id").and_then(Value::as_str);
+    if let Some(index) = record.items.iter().position(|existing| {
+        existing.direction == direction
+            && existing.item_type == item_type
+            && item_id.is_some()
+            && existing.item.get("id").and_then(Value::as_str) == item_id
+    }) {
+        merge_tool_item_fields(&record.items[index].item, &mut item);
+        record.items[index].item = item;
+        return;
+    }
+
+    if record.items.iter().any(|existing| {
+        existing.direction == direction && existing.item_type == item_type && existing.item == item
+    }) {
+        return;
+    }
+
+    record.items.push(RawProviderTrafficItem {
+        item_type: item_type.to_string(),
+        direction: direction.to_string(),
+        item,
+    });
+}
+
+fn merge_tool_item_fields(existing: &Value, incoming: &mut Value) {
+    let is_tool_item = existing
+        .get("type")
+        .and_then(Value::as_str)
+        .is_some_and(|item_type| item_type.contains("call"));
+    if !is_tool_item {
+        return;
+    }
+    let Some(existing_object) = existing.as_object() else {
+        return;
+    };
+    let Some(incoming_object) = incoming.as_object_mut() else {
+        return;
+    };
+    for key in ["arguments", "input"] {
+        let incoming_value = incoming_object
+            .get(key)
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let existing_value = existing_object
+            .get(key)
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if incoming_value.is_empty() && !existing_value.is_empty() {
+            incoming_object.insert(key.to_string(), Value::String(existing_value.to_string()));
+        }
+    }
+}
+
+fn append_classified_item(record: &mut RawProviderTrafficRecord, direction: &str, item: &Value) {
+    if let Some(item_type) = classify_item(item) {
+        push_item(record, direction, item_type, sanitized_value(item));
+    }
+}
+
+fn request_items(request: &Value) -> Vec<RawProviderTrafficItem> {
+    let mut record = RawProviderTrafficRecord {
+        provider_id: String::new(),
+        provider_name: String::new(),
+        request: Value::Null,
+        response_status: None,
+        response_raw: Vec::new(),
+        response_buffer: Vec::new(),
+        response_output_text: String::new(),
+        items: Vec::new(),
+        response_truncated: false,
+    };
+    let input = request.get("input").or_else(|| request.get("messages"));
+    match input {
+        Some(Value::Array(items)) => {
+            for item in items {
+                append_classified_item(&mut record, "request", item);
+            }
+        }
+        Some(Value::String(text)) if !text.is_empty() => {
+            push_item(
+                &mut record,
+                "request",
+                "user_message",
+                Value::String(text.clone()),
+            );
+        }
+        Some(value) if value.is_object() => append_classified_item(&mut record, "request", value),
+        _ => {}
+    }
+    record.items
+}
+
+fn process_response_event(record: &mut RawProviderTrafficRecord, value: Value) {
+    let event_type = value
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    match event_type {
+        "response.output_text.delta" => {
+            if let Some(delta) = value.get("delta").and_then(Value::as_str) {
+                record.response_output_text.push_str(delta);
+            }
+        }
+        "response.function_call_arguments.delta"
+        | "response.custom_tool_call_input.delta"
+        | "response.mcp_call_arguments.delta" => {
+            append_tool_call_delta(record, event_type, &value);
+        }
+        "response.function_call_arguments.done" => {
+            update_tool_call_value(record, &value, "arguments");
+        }
+        "response.custom_tool_call_input.done" | "response.mcp_call_arguments.done" => {
+            update_tool_call_value(record, &value, "input");
+        }
+        "response.output_item.added" | "response.output_item.done" => {
+            if let Some(item) = value.get("item") {
+                append_classified_item(record, "response", item);
+            }
+        }
+        "response.completed" | "response" => {
+            if let Some(response) = value.get("response") {
+                if let Some(output) = response.get("output").and_then(Value::as_array) {
+                    for item in output {
+                        append_classified_item(record, "response", item);
+                    }
+                }
+                append_response_output_text(record, response);
+                push_item(
+                    record,
+                    "response",
+                    "final_response",
+                    sanitized_value(response),
+                );
+                record.response_raw =
+                    serde_json::to_vec(&sanitized_value(&value)).unwrap_or_default();
+            } else if event_type == "response" {
+                if let Some(output) = value.get("output").and_then(Value::as_array) {
+                    for item in output {
+                        append_classified_item(record, "response", item);
+                    }
+                }
+                append_response_output_text(record, &value);
+                push_item(
+                    record,
+                    "response",
+                    "final_response",
+                    sanitized_value(&value),
+                );
+                record.response_raw =
+                    serde_json::to_vec(&sanitized_value(&value)).unwrap_or_default();
+            }
+        }
+        "response.error" | "response.failed" | "error" => {
+            push_item(record, "response", "error", sanitized_value(&value));
+        }
+        _ => {
+            if event_type.ends_with(".error") {
+                push_item(record, "response", "error", sanitized_value(&value));
+            }
+        }
+    }
+
+    if event_type.is_empty() && value.get("output").is_some() {
+        if let Some(output) = value.get("output").and_then(Value::as_array) {
+            for item in output {
+                append_classified_item(record, "response", item);
+            }
+        }
+        append_response_output_text(record, &value);
+        push_item(
+            record,
+            "response",
+            "final_response",
+            sanitized_value(&value),
+        );
+        record.response_raw = serde_json::to_vec(&sanitized_value(&value)).unwrap_or_default();
+    } else if event_type.is_empty() && value.get("error").is_some() {
+        push_item(record, "response", "error", sanitized_value(&value));
+    }
+}
+
+fn response_item_id(value: &Value) -> Option<String> {
+    ["item_id", "output_item_id", "id"]
+        .iter()
+        .find_map(|key| value.get(*key).and_then(Value::as_str).map(str::to_string))
+}
+
+fn append_tool_call_delta(record: &mut RawProviderTrafficRecord, event_type: &str, value: &Value) {
+    let Some(delta) = value.get("delta").and_then(Value::as_str) else {
+        return;
+    };
+    let item_id = response_item_id(value);
+    let item_type = if event_type.contains("function_call") {
+        "function_call"
+    } else if event_type.contains("mcp_call") {
+        "mcp_call"
+    } else {
+        "custom_tool_call"
+    };
+    let field = if event_type.contains("function_call") {
+        "arguments"
+    } else {
+        "input"
+    };
+
+    let existing_index = item_id.as_deref().and_then(|id| {
+        record.items.iter().position(|item| {
+            item.direction == "response" && item.item.get("id").and_then(Value::as_str) == Some(id)
+        })
+    });
+    if let Some(index) = existing_index {
+        if let Some(object) = record.items[index].item.as_object_mut() {
+            let current = object
+                .get(field)
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            object.insert(
+                field.to_string(),
+                Value::String(format!("{current}{delta}")),
+            );
+        }
+        return;
+    }
+
+    let mut item = json!({ "type": item_type });
+    let object = item.as_object_mut().expect("tool call item is an object");
+    object.insert(field.to_string(), Value::String(delta.to_string()));
+    if let Some(id) = item_id {
+        object.insert("id".to_string(), Value::String(id));
+    }
+    push_item(record, "response", item_type, item);
+}
+
+fn update_tool_call_value(record: &mut RawProviderTrafficRecord, value: &Value, field: &str) {
+    let Some(item_id) = response_item_id(value) else {
+        return;
+    };
+    let Some(argument) = value.get(field).and_then(Value::as_str) else {
+        return;
+    };
+    if let Some(item) = record.items.iter_mut().find(|item| {
+        item.direction == "response"
+            && item.item.get("id").and_then(Value::as_str) == Some(item_id.as_str())
+    }) {
+        if let Some(object) = item.item.as_object_mut() {
+            object.insert(field.to_string(), Value::String(argument.to_string()));
+        }
+    }
+}
+
+fn append_response_output_text(record: &mut RawProviderTrafficRecord, response: &Value) {
+    if !record.response_output_text.is_empty() {
+        return;
+    }
+    let Some(output) = response.get("output").and_then(Value::as_array) else {
+        return;
+    };
+    let mut text = String::new();
+    for item in output {
+        if item.get("type").and_then(Value::as_str) != Some("message") {
+            continue;
+        }
+        let Some(content) = item.get("content").and_then(Value::as_array) else {
+            continue;
+        };
+        for part in content {
+            if matches!(
+                part.get("type").and_then(Value::as_str),
+                Some("output_text") | Some("text")
+            ) {
+                if let Some(value) = part.get("text").and_then(Value::as_str) {
+                    text.push_str(value);
+                }
+            }
+        }
+    }
+    if !text.is_empty() {
+        record.response_output_text = text;
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RawProviderTrafficSettings {
+    pub enabled: Option<bool>,
+}
+
+pub async fn get_raw_provider_traffic(State(state): State<AppState>) -> Json<Value> {
+    Json(json!({
+        "enabled": state.raw_provider_traffic.enabled(),
+        "traffic": state.raw_provider_traffic.view(),
+    }))
+}
+
+pub async fn set_raw_provider_traffic(
+    State(state): State<AppState>,
+    Json(settings): Json<RawProviderTrafficSettings>,
+) -> Json<Value> {
+    if let Some(enabled) = settings.enabled {
+        state.raw_provider_traffic.set_enabled(enabled);
+    }
+    Json(json!({
+        "enabled": state.raw_provider_traffic.enabled(),
+        "traffic": state.raw_provider_traffic.view(),
+    }))
 }
 
 #[derive(Debug, Deserialize)]
@@ -677,8 +1219,8 @@ impl IntoResponse for AppError {
 
 #[cfg(test)]
 mod tests {
-    use super::import_tokens_from_value;
-    use serde_json::json;
+    use super::{RawProviderTrafficState, import_tokens_from_value};
+    use serde_json::{Value, json};
 
     #[test]
     fn token_import_accepts_exactly_one_flat_array_entry() {
@@ -707,5 +1249,80 @@ mod tests {
             ]))
             .is_err()
         );
+    }
+
+    #[test]
+    fn raw_provider_traffic_keeps_selected_items_and_total_text() {
+        let state = RawProviderTrafficState::default();
+        state.set_enabled(true);
+        let traffic = state
+            .begin("provider-1", "Mock Provider", br#"{"input":"hello"}"#)
+            .expect("debug recording is enabled");
+
+        assert_eq!(
+            state
+                .view()
+                .expect("traffic view")
+                .items
+                .first()
+                .map(|item| item.item_type.as_str()),
+            Some("user_message")
+        );
+
+        traffic.append_response(
+            b"data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n",
+        );
+        let partial = state.view().expect("traffic view");
+        assert!(partial.response.is_none());
+        assert_eq!(partial.response_output_text.as_deref(), Some("hello"));
+
+        traffic.append_response(
+            b"data: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"msg-1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[]}}\n\n",
+        );
+        traffic.append_response(
+            b"data: {\"type\":\"response.output_item.added\",\"item\":{\"id\":\"call-1\",\"type\":\"function_call\",\"name\":\"lookup_weather\",\"arguments\":\"\"}}\n\n",
+        );
+        traffic.append_response(
+            b"data: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"call-1\",\"delta\":\"{\\\"city\\\":\\\"Beijing\\\"}\"}\n\n",
+        );
+        traffic.append_response(
+            b"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\",\"metadata\":{\"secret\":true},\"usage\":{\"total_tokens\":1},\"output\":[{\"id\":\"msg-1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[]},{\"type\":\"reasoning\",\"encrypted_content\":\"secret\"}]}}\n\n",
+        );
+        let view = state.view().expect("traffic view");
+        assert_eq!(view.response_output_text.as_deref(), Some("hello"));
+        let function_call = view
+            .items
+            .iter()
+            .find(|item| item.item_type == "function_call")
+            .expect("function call");
+        assert_eq!(
+            function_call.item.get("arguments").and_then(Value::as_str),
+            Some("{\"city\":\"Beijing\"}")
+        );
+        assert_eq!(
+            view.items
+                .iter()
+                .filter(|item| item.item_type == "assistant_message")
+                .count(),
+            1
+        );
+        assert!(view.items.iter().all(|item| item.item_type != "reasoning"));
+        assert!(view.items.iter().all(|item| item.item_type != "handoff"));
+        assert!(
+            view.items
+                .iter()
+                .any(|item| item.item_type == "final_response")
+        );
+        let final_response = view
+            .items
+            .iter()
+            .find(|item| item.item_type == "final_response")
+            .expect("final response");
+        assert!(final_response.item.get("metadata").is_none());
+        assert!(final_response.item.get("usage").is_none());
+        assert!(final_response.item.get("reasoning").is_none());
+
+        state.set_enabled(false);
+        assert!(state.view().is_some());
     }
 }

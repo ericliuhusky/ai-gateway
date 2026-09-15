@@ -35,6 +35,29 @@ export interface GatewayModel {
   id: string;
 }
 
+export interface RawProviderTraffic {
+  provider_id: string;
+  provider_name: string;
+  request: unknown;
+  response?: unknown;
+  response_raw?: string;
+  response_output_text?: string;
+  items: RawProviderTrafficItem[];
+  response_status?: number;
+  response_truncated: boolean;
+}
+
+export interface RawProviderTrafficItem {
+  type: string;
+  direction: "request" | "response";
+  item: unknown;
+}
+
+export interface RawProviderTrafficState {
+  enabled: boolean;
+  traffic?: RawProviderTraffic;
+}
+
 export interface CodexUsageRateLimitWindow {
   used_percent: number;
   limit_window_seconds: number;
